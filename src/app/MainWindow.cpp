@@ -18,6 +18,8 @@
 #include <QPluginLoader>
 #include <QPushButton>
 #include <QStackedWidget>
+#include <QScreen>
+#include <QGuiApplication>
 #include <algorithm>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -28,6 +30,14 @@ MainWindow::MainWindow(QWidget *parent)
   // 1. Frameless window
   setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
   setAttribute(Qt::WA_TranslucentBackground);
+
+  // Prevent frameless window from expanding beyond screen height when docks are opened
+  if (QScreen *screen = QGuiApplication::primaryScreen()) {
+      setMaximumSize(screen->availableGeometry().size());
+      connect(screen, &QScreen::availableGeometryChanged, this, [this](const QRect &geom) {
+          setMaximumSize(geom.size());
+      });
+  }
 
   // 2. Root container
   QWidget *central = new QWidget(this);
@@ -161,8 +171,16 @@ void MainWindow::setupTitleBar(QWidget * /*root*/,
   m_titleBar = titleBar;
 
   connect(minBtn, &QPushButton::clicked, this, &QMainWindow::showMinimized);
-  connect(maxBtn, &QPushButton::clicked, this,
-          [=]() { isMaximized() ? showNormal() : showMaximized(); });
+  connect(maxBtn, &QPushButton::clicked, this, [this]() {
+      if (this->property("customMaximized").toBool()) {
+          this->setGeometry(this->property("normalGeometry").toRect());
+          this->setProperty("customMaximized", false);
+      } else {
+          this->setProperty("normalGeometry", this->geometry());
+          this->setGeometry(QGuiApplication::primaryScreen()->availableGeometry());
+          this->setProperty("customMaximized", true);
+      }
+  });
   connect(closeBtn, &QPushButton::clicked, this, &QMainWindow::close);
 
   // Activate first tab

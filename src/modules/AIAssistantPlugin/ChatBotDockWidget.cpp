@@ -10,9 +10,12 @@ ChatBotDockWidget::ChatBotDockWidget(IAppContext* ctx, QObject* parent)
 {
     m_dockWidget = new QDockWidget(m_ctx->translate("ai.dock_title"), m_ctx->mainWindow());
     m_dockWidget->setMinimumWidth(AppConstants::AIAssistant::DEFAULT_DOCK_WIDTH);
-    m_dockWidget->setTitleBarWidget(new QWidget()); // Hide native title bar to use custom one below
+    QWidget* emptyTitle = new QWidget();
+    emptyTitle->setFixedHeight(0);
+    m_dockWidget->setTitleBarWidget(emptyTitle); // Hide native title bar to use custom one below
 
     QWidget     *dw = new QWidget(m_dockWidget);
+    dw->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     QVBoxLayout *dl = new QVBoxLayout(dw);
     dl->setContentsMargins(0, 0, 0, 0);
     dl->setSpacing(0);

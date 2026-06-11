@@ -1,0 +1,13 @@
+{
+  "name": "3d-reconstruction",
+  "version": "1.0.0",
+  "builtin-baseline": "9432c416e5c543eded0b4df35a4d347b2e669208",
+  "dependencies": [
+    {
+      "name": "vtk",
+      "features": ["qt"]
+    },
+    "pcl",
+    "opencv4"
+  ]
+}

@@ -213,4 +213,16 @@ Bạn sẽ thấy:
 
 ---
 
+## 🤖 Hệ sinh thái AI Agent Workflow
+Dự án được thiết lập sẵn một hệ thống quy trình chuẩn hóa dành riêng cho AI Agent (Copilot, Gemini, Cursor) khi tham gia lập trình:
+
+- **`Instructions.md`**: Đóng vai trò là "System Prompt" cốt lõi. AI Agent khi mở project sẽ đọc file này để hiểu tổng quan kiến trúc (Service-Oriented, Plugin), các quy tắc SOLID bắt buộc, coding standards và những Anti-patterns bị cấm.
+- **`.github/`**: Chứa CI/CD pipeline (`build.yml`). Hệ thống tự động kiểm tra cú pháp (Syntax check với chuẩn C++20) mỗi khi có Push/PR, đảm bảo code do người dùng hay AI sinh ra đều chuẩn xác.
+- **`.prompts/`**: Chứa các template hướng dẫn cụ thể cho AI theo từng loại task (`bugfix.md`, `feature.md`, `refactor.md`). AI tuân theo các bước trong này để lập kế hoạch và viết code có hệ thống.
+- **`.review/`**: Chứa `checklist.md` quy định tiêu chí đánh giá code (memory leak, thread safety, SOLID). AI sẽ dựa vào đây để tự kiểm tra (verify) lại code của mình trước khi hoàn thành task.
+- **`.tasks/`**: Thư mục quản lý tiến độ. Gồm `README.md` hướng dẫn quy trình làm việc 8 bước và `task-template.md` chứa form khai báo Goal, Requirements cho từng task cụ thể, giúp AI làm việc tập trung và không đi lạc đề.
+- **`scripts/`**: Chứa các đoạn script tự động hóa (vd: `agent_pipeline.ps1`, `agent_pipeline.sh`). AI Agent có thể gọi trực tiếp các script này để tự động build, chạy test và sinh commit mà không cần gõ lệnh thủ công lặp đi lặp lại.
+
+---
+
 ## END

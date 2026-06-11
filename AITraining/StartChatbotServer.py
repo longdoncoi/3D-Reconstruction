@@ -91,17 +91,17 @@ EMBED_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 # False = tắt hoàn toàn, hành vi như v2.1
 USE_RERANKER    = True
 RERANKER_MODEL  = "cross-encoder/ms-marco-MiniLM-L-6-v2"  # ~80MB
-RERANKER_TOP_K  = 6    # Lấy top-K sau khi rerank
+RERANKER_TOP_K  = 8    # Tăng lên 8 để lấy thêm context
 
 # [FIX-9] Chunk nhỏ hơn → embedding signal tập trung, ít nhiễu
 # 1200 thay vì 1800: mỗi chunk mang một ý chính, không pha trộn nhiều chủ đề
 # LƯU Ý: thay đổi giá trị này buộc rebuild cache
 CHUNK_CHARS     = 1200
-OVERLAP_CHARS   = 200
+OVERLAP_CHARS   = 300  # Tăng lên 300 để giữ liên kết tiếng Việt
 
 # v2.1 constants (giữ nguyên)
 SIMILARITY_THRESHOLD = 0.25
-MAX_CONTEXT_CHARS    = 7500
+MAX_CONTEXT_CHARS    = 9000 # Tăng lên 9000 để chứa đủ chi tiết tiếng Việt
 CHARS_PER_TOKEN      = 2.2   # Việt+code, tránh underestimate
 LLM_N_CTX            = 8192
 
@@ -194,17 +194,28 @@ except (ValueError, IndexError):
 def _tokenize_vn(text: str) -> list:
     """
     Tokenizer BM25 hỗ trợ Việt + English + code.
-    - Latin/số/underscore: r"[a-z0-9][a-z0-9_]*"  (từ code, tên biến, English)
-    - Tiếng Việt: tách theo khoảng trắng sau khi lọc ký tự Unicode non-ASCII
-      (bắt từ dính dấu như 'khởi_tạo', 'đầu_vào', v.v.)
-    Không cần thư viện ngoài — hoạt động offline.
+    - Xử lý một số từ ghép tiếng Việt cơ bản
+    - Loại bỏ stopwords cơ bản
     """
     t = text.lower()
-    # Latin, số, code identifiers
+    
+    # Nối từ ghép cơ bản (có thể mở rộng thêm)
+    compounds = {
+        "tái tạo": "tái_tạo", "hình ảnh": "hình_ảnh", "mô hình": "mô_hình",
+        "dữ liệu": "dữ_liệu", "hệ thống": "hệ_thống", "đầu vào": "đầu_vào",
+        "đầu ra": "đầu_ra", "cấu hình": "cấu_hình", "giao diện": "giao_diện"
+    }
+    for k, v in compounds.items():
+        t = t.replace(k, v)
+
+    # Stopwords tiếng Việt cơ bản
+    stopwords = {"là", "của", "và", "các", "trong", "được", "có", "cho", "với", "để", "những"}
+
     latin_tokens = re.findall(r"[a-z0-9][a-z0-9_]*", t)
-    # Ký tự Việt và Unicode — tách theo space/dấu câu
     viet_tokens  = re.findall(r"[^\x00-\x7f\s.,!?;:()\[\]{}'\"<>/\\|@#$%^&*+=~`]+", t)
-    return latin_tokens + viet_tokens
+    
+    tokens = latin_tokens + viet_tokens
+    return [tk for tk in tokens if tk not in stopwords]
 
 
 # ─── 8. Typed chunk ───────────────────────────────────────────────────────────
@@ -739,7 +750,8 @@ def hybrid_retrieve(query: str, k: int = 14, final_k: int = 10) -> list:
         raw_cos = float(sem_raw[sem_idx_list.index(cid)]) if cid in sem_norm else 0.0
         if raw_cos < SIMILARITY_THRESHOLD and b < 0.3:
             continue
-        combined.append((cid, 0.60*s + 0.40*b))
+        # Tăng trọng số BM25 lên 0.45 để keyword tiếng Việt match chuẩn hơn
+        combined.append((cid, 0.55*s + 0.45*b))
 
     combined.sort(key=lambda x: x[1], reverse=True)
     return [knowledge_chunks[cid] for cid, _ in combined[:final_k]]
@@ -869,8 +881,11 @@ def build_prompt(messages: list, doc_ctx: str, code_ctx: str) -> str:
         "5. Ưu tiên trả lời ĐẦY ĐỦ và CHI TIẾT — giải thích từng bước, nêu lý do "
         "   kỹ thuật, trích dẫn trực tiếp từ tài liệu khi có thể.\n"
         "6. Cấu trúc câu trả lời: tóm tắt ngắn → giải thích chi tiết → ví dụ/code.\n"
-        "7. Trả lời bằng tiếng Việt trừ khi người dùng hỏi bằng tiếng Anh.\n"
-        "8. QUAN TRỌNG: Luôn hoàn thành câu cuối cùng trước khi kết thúc. "
+        "7. Trả lời bằng tiếng Việt trừ khi người dùng hỏi bằng tiếng Anh. Nếu tài liệu "
+        "   nguồn là tiếng Anh, hãy DỊCH và GIẢI THÍCH sang tiếng Việt.\n"
+        "8. LUÔN sử dụng định dạng Markdown (tiêu đề in đậm, bullet points, code blocks "
+        "   có highlight syntax) để trình bày đẹp và dễ đọc.\n"
+        "9. QUAN TRỌNG: Luôn hoàn thành câu cuối cùng trước khi kết thúc. "
         "   Không bao giờ dừng giữa câu, giữa đoạn code, hoặc giữa danh sách.\n"
     )
 

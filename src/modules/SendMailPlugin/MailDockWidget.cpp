@@ -45,8 +45,12 @@ void MailDockWidget::setupUi()
     m_dock = new QDockWidget(m_ctx->translate("mail.dock_title"), m_ctx->mainWindow());
     m_dock->setObjectName("mailDockWidget");
     m_dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea | Qt::BottomDockWidgetArea);
+    QWidget* emptyTitle = new QWidget();
+    emptyTitle->setFixedHeight(0);
+    m_dock->setTitleBarWidget(emptyTitle); // Hide native title bar completely
 
     m_root = new QWidget(m_dock);
+    m_root->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     auto *rootLayout = new QVBoxLayout(m_root);
     rootLayout->setContentsMargins(8, 8, 8, 8);
     rootLayout->setSpacing(8);
@@ -83,25 +87,28 @@ QWidget *MailDockWidget::buildInboxPage()
 
     auto *splitter = new QSplitter(Qt::Horizontal, page);
     m_inboxList = new QListWidget(splitter);
-    m_inboxList->setMinimumWidth(260);
-    
-    // Style inbox list items with clear bounding boxes (dark theme)
+    m_inboxList->setMinimumWidth(280);
+
+    // Style inbox list — items are rendered via custom widgets, so keep base simple
     m_inboxList->setStyleSheet(
-        "QListWidget { background-color: #1f2937; }"
-        "QListWidget::item { padding: 10px; margin: 4px; border: 1px solid #4b5563; "
-        "border-radius: 4px; background-color: #111827; color: #e2e8f0; }"
-        "QListWidget::item:hover { background-color: #1f2937; border: 1px solid #6b7280; color: #f1f5f9; }"
-        "QListWidget::item:selected { background-color: #3b82f6; color: #ffffff; border: 1px solid #2563eb; font-weight: bold; }"
+        "QListWidget { background-color: #1f2937; border: none; outline: none; }"
+        "QListWidget::item { padding: 0px; margin: 3px 4px; border: 1px solid #374151; "
+        "border-radius: 6px; background-color: #111827; }"
+        "QListWidget::item:hover { background-color: #1e293b; border: 1px solid #6b7280; }"
+        "QListWidget::item:selected { background-color: #1e3a5f; border: 1px solid #3b82f6; }"
     );
-    
+
     m_preview = new QTextBrowser(splitter);
     m_preview->setOpenExternalLinks(true);
     m_preview->setStyleSheet(
-        "QTextBrowser { background-color: #111827; color: #e2e8f0; border: none; padding: 16px; }"
+        "QTextBrowser { background-color: #0f172a; color: #e2e8f0; border: none; "
+        "padding: 20px; font-size: 14px; line-height: 1.6; }"
     );
     splitter->addWidget(m_inboxList);
     splitter->addWidget(m_preview);
+    splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
+    splitter->setSizes({320, 500});
     layout->addWidget(splitter, 1);
 
     connect(m_inboxList, &QListWidget::itemSelectionChanged, this, &MailDockWidget::onInboxSelectionChanged);
@@ -131,7 +138,7 @@ QWidget *MailDockWidget::buildComposePage()
 
     m_bodyEdit = new QTextEdit(page);
     m_bodyEdit->setAcceptRichText(true);
-    m_bodyEdit->setMinimumHeight(260);
+    m_bodyEdit->setMinimumHeight(100);
     layout->addWidget(m_bodyEdit, 1);
 
     auto *attachmentRow = new QHBoxLayout();
@@ -322,6 +329,26 @@ static bool looksLikeHtml(const QString &body)
         "<\\s*/?\\s*(html|body|div|p|br|pre|span|table|tr|td|th|blockquote|b|strong|i|em|a)\\b",
         QRegularExpression::CaseInsensitiveOption);
     return htmlTagRe.match(body).hasMatch();
+}
+
+// Extract a clean display name from email From header
+// "John Doe <john@example.com>" → "John Doe"
+// "john@example.com" → "john@example.com"
+static QString extractSenderName(const QString &from)
+{
+    const QString trimmed = from.trimmed();
+    const int angleBracket = trimmed.indexOf('<');
+    if (angleBracket > 0) {
+        QString name = trimmed.left(angleBracket).trimmed();
+        // Remove surrounding quotes
+        if (name.startsWith('"') && name.endsWith('"'))
+            name = name.mid(1, name.length() - 2).trimmed();
+        if (!name.isEmpty()) return name;
+    }
+    // Fallback: return the email part or full string
+    static const QRegularExpression emailRe("<([^>]+)>");
+    const auto match = emailRe.match(trimmed);
+    return match.hasMatch() ? match.captured(1) : trimmed;
 }
 
 static QString normalizeMailText(QString body)
@@ -520,20 +547,57 @@ void MailDockWidget::refreshInbox()
             m_messages = fullMessages;
         }
 
-        // Populate UI list
+        // Populate UI list with rich item widgets (Subject + Sender + Date)
         m_inboxList->clear();
         for (int i = 0; i < m_messages.size(); ++i) {
             const MailMessage &msg = m_messages[i];
-            auto *item = new QListWidgetItem(msg.subject.isEmpty() ? m_ctx->translate("mail.no_subject") : msg.subject);
-            item->setData(Qt::UserRole, msg.uid);  // Store UID for reference
-            item->setData(Qt::UserRole + 1, i);    // Store index in m_messages
-            item->setToolTip(msg.from);
-            if (!msg.isRead) {
-                QFont f = item->font();
-                f.setBold(true);
-                item->setFont(f);
+
+            // Build a custom widget for each inbox item
+            auto *itemWidget = new QWidget();
+            auto *itemLayout = new QVBoxLayout(itemWidget);
+            itemLayout->setContentsMargins(12, 8, 12, 8);
+            itemLayout->setSpacing(3);
+
+            // Row 1: Subject (with unread dot indicator)
+            const QString subjectText = msg.subject.isEmpty()
+                ? m_ctx->translate("mail.no_subject") : msg.subject;
+            const QString unreadDot = msg.isRead ? "" : "● ";
+            auto *subjectLabel = new QLabel(unreadDot + subjectText, itemWidget);
+            subjectLabel->setStyleSheet(
+                msg.isRead
+                    ? "color: #e2e8f0; font-size: 13px;"
+                    : "color: #f1f5f9; font-size: 13px; font-weight: bold;"
+            );
+            subjectLabel->setWordWrap(false);
+            subjectLabel->setTextFormat(Qt::PlainText);
+            itemLayout->addWidget(subjectLabel);
+
+            // Row 2: Sender name
+            const QString senderName = extractSenderName(msg.from);
+            auto *senderLabel = new QLabel(senderName, itemWidget);
+            senderLabel->setStyleSheet("color: #94a3b8; font-size: 11px;");
+            senderLabel->setTextFormat(Qt::PlainText);
+            itemLayout->addWidget(senderLabel);
+
+            // Row 3: Date
+            const QString dateStr = msg.date.isValid()
+                ? msg.date.toString("dd/MM/yyyy  hh:mm") : QString();
+            if (!dateStr.isEmpty()) {
+                auto *dateLabel = new QLabel(dateStr, itemWidget);
+                dateLabel->setStyleSheet("color: #64748b; font-size: 10px;");
+                itemLayout->addWidget(dateLabel);
             }
+
+            itemWidget->setLayout(itemLayout);
+
+            // Create list item and attach the custom widget
+            auto *item = new QListWidgetItem();
+            item->setData(Qt::UserRole, msg.uid);
+            item->setData(Qt::UserRole + 1, i);
+            item->setToolTip(msg.from);
+            item->setSizeHint(itemWidget->sizeHint());
             m_inboxList->addItem(item);
+            m_inboxList->setItemWidget(item, itemWidget);
         }
     });
     watcher->setFuture(QtConcurrent::run([this]() {
@@ -556,45 +620,65 @@ void MailDockWidget::onInboxSelectionChanged()
 
     const MailMessage &msg = m_messages[row];
 
-    // Build clean header similar to Gmail
+    // Build clean header — dark mode compatible to match app theme
     const QString header = QString(
         "<style>"
-        "body { font-family: Arial, sans-serif; color: #202124; font-size: 14px; line-height: 1.6; }"
-        "h3 { font-size: 16px; font-weight: 600; margin: 0 0 16px 0; color: #202124; }"
-        ".mail-header { background-color: #f8f9fa; padding: 16px; border-radius: 8px; margin-bottom: 16px; }"
-        ".mail-header-row { margin: 8px 0; }"
-        ".mail-header-label { font-weight: 600; color: #5f6368; display: inline-block; width: 60px; }"
-        ".mail-header-value { color: #202124; }"
-        ".mail-body { margin-top: 16px; word-wrap: break-word; }"
+        "body { font-family: 'Segoe UI', Arial, sans-serif; color: #e2e8f0; font-size: 14px; line-height: 1.7; "
+        "       background-color: #0f172a; }"
+        "h3 { font-size: 18px; font-weight: 600; margin: 0 0 14px 0; color: #f1f5f9; }"
+        ".mail-header { background-color: #1e293b; padding: 18px 20px; border-radius: 10px; "
+        "               margin-bottom: 20px; border: 1px solid #334155; }"
+        ".mail-header-row { margin: 6px 0; font-size: 13px; }"
+        ".mail-header-label { font-weight: 600; color: #94a3b8; display: inline-block; "
+        "                     min-width: 55px; }"
+        ".mail-header-value { color: #cbd5e1; }"
+        ".mail-body { margin-top: 20px; word-wrap: break-word; color: #e2e8f0; }"
         ".mail-body p { margin: 8px 0; }"
-        ".reply-header { margin: 16px 0 8px 0; color: #cbd5e1; font-weight: 600; }"
-        ".quoted-mail { margin: 8px 0 0 0; padding: 8px 0 8px 12px; border-left: 3px solid #60a5fa; color: #cbd5e1; }"
-        ".quote-line { margin: 4px 0; }"
-        ".quote-meta { margin: 4px 0; color: #93c5fd; font-weight: 600; }"
-        "a { color: #1a73e8; text-decoration: none; }"
-        "a:hover { text-decoration: underline; }"
-        "table { border-collapse: collapse; width: 100%; margin: 12px 0; }"
-        "td, th { padding: 8px; border: 1px solid #d3d3d3; }"
-        "th { background-color: #f8f9fa; }"
-        "pre { background-color: #f8f9fa; padding: 12px; border-radius: 4px; overflow-x: auto; }"
+        ".reply-header { margin: 20px 0 8px 0; padding: 8px 12px; color: #94a3b8; "
+        "                font-weight: 600; font-size: 12px; background: #1e293b; "
+        "                border-radius: 6px; }"
+        ".quoted-mail { margin: 4px 0 0 0; padding: 10px 0 10px 14px; "
+        "               border-left: 3px solid #3b82f6; color: #94a3b8; }"
+        ".quote-line { margin: 3px 0; }"
+        ".quote-meta { margin: 3px 0; color: #60a5fa; font-weight: 600; }"
+        "a { color: #60a5fa; text-decoration: none; }"
+        "a:hover { text-decoration: underline; color: #93c5fd; }"
+        "table { border-collapse: collapse; width: 100%%; margin: 12px 0; }"
+        "td, th { padding: 8px 12px; border: 1px solid #334155; color: #e2e8f0; }"
+        "th { background-color: #1e293b; color: #f1f5f9; }"
+        "pre { background-color: #1e293b; color: #e2e8f0; padding: 14px; "
+        "      border-radius: 6px; overflow-x: auto; border: 1px solid #334155; }"
+        "code { background-color: #1e293b; padding: 2px 6px; border-radius: 3px; "
+        "       font-size: 13px; color: #f472b6; }"
+        "img { max-width: 100%%; height: auto; border-radius: 6px; }"
+        "hr { border: none; border-top: 1px solid #334155; margin: 16px 0; }"
         "</style>"
     );
-    
+
     const QString mailHeader = QString(
         "<div class='mail-header'>"
         "<h3>%1</h3>"
-        "<div class='mail-header-row'><span class='mail-header-label'>From:</span> <span class='mail-header-value'>%2</span></div>"
-        "<div class='mail-header-row'><span class='mail-header-label'>To:</span> <span class='mail-header-value'>%3</span></div>"
-        "<div class='mail-header-row'><span class='mail-header-label'>Date:</span> <span class='mail-header-value'>%4</span></div>"
+        "<div class='mail-header-row'>"
+        "  <span class='mail-header-label'>From:</span> "
+        "  <span class='mail-header-value'>%2</span>"
+        "</div>"
+        "<div class='mail-header-row'>"
+        "  <span class='mail-header-label'>To:</span> "
+        "  <span class='mail-header-value'>%3</span>"
+        "</div>"
+        "<div class='mail-header-row'>"
+        "  <span class='mail-header-label'>Date:</span> "
+        "  <span class='mail-header-value'>%4</span>"
+        "</div>"
         "</div>"
     ).arg(msg.subject.toHtmlEscaped(),
           msg.from.toHtmlEscaped(),
           msg.to.toHtmlEscaped(),
-          msg.date.isValid() ? msg.date.toString("ddd, MMM d, yyyy h:mm AP") : QString());
-    
+          msg.date.isValid() ? msg.date.toString("ddd, dd MMM yyyy  hh:mm") : QString());
+
     QString bodyHtml = msg.htmlBody.trimmed();
     if (bodyHtml.isEmpty()) {
-        bodyHtml = "<p></p>";
+        bodyHtml = "<p style='color:#64748b;font-style:italic;'>(Không có nội dung)</p>";
     } else if (!looksLikeHtml(bodyHtml)) {
         bodyHtml = renderMailBodyHtml(normalizeMailText(bodyHtml));
     }

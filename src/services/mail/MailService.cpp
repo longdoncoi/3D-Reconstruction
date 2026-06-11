@@ -163,8 +163,17 @@ QString decodeBytesForCharset(const QByteArray &bytes, QString charset)
         return QString::fromLatin1(bytes);
     }
 
-    const QString decoded = QString::fromUtf8(bytes);
-    return decoded.contains(QChar::ReplacementCharacter) ? QString::fromLatin1(bytes) : decoded;
+    // Map Asian and Russian charsets to use QStringDecoder if needed,
+    // For simplicity, we fallback to fromUtf8 and check for ReplacementCharacter
+    QString decoded = QString::fromUtf8(bytes);
+    if (decoded.contains(QChar::ReplacementCharacter)) {
+        // Fallback to latin1 or system local
+        decoded = QString::fromLocal8Bit(bytes);
+        if (decoded.contains(QChar::ReplacementCharacter)) {
+            decoded = QString::fromLatin1(bytes);
+        }
+    }
+    return decoded;
 }
 
 QString decodeTransferBody(const QString &body, QString transferEncoding, QString charset)
@@ -495,7 +504,7 @@ QList<MailMessage> MailService::fetchInbox(int limit, QString& errorMsg)
     int tagIndex = 4;
     for (const QString &uid : uids) {
         const QString tag = QString("A%1").arg(tagIndex++, 3, 10, QLatin1Char('0'));
-        const QString command = QString("UID FETCH %1 (FLAGS BODY.PEEK[]<0.200000>)").arg(uid);
+        const QString command = QString("UID FETCH %1 (FLAGS BODY.PEEK[]<0.500000>)").arg(uid);
         if (!sendImap(sock, tag, command, response)) {
             errorMsg = "IMAP fetch failed: " + response;
             break;

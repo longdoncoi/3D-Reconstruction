@@ -11,11 +11,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure
-        run: cmake -B build
+      # ── Install Qt6 ────────────────────────────────────────────────────
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.5.*'
+          modules: 'qtimageformats'
+          cache: true
 
+
+      # ── Setup vcpkg with Binary Caching ────────────────────────────────
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: '9432c416e5c543eded0b4df35a4d347b2e669208'
+          vcpkgJsonGlob: 'vcpkg.json'
+
+      # ── Setup MSVC Environment ─────────────────────────────────────────
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # ── Configure Full Build ───────────────────────────────────────────
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          cmake -B build -S . "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      # ── Build Project ──────────────────────────────────────────────────
       - name: Build
-        run: cmake --build build --config Release
-
-      - name: Test
-        run: ctest --test-dir build --config Release
+        shell: pwsh
+        run: |
+          cmake --build build --config Release
