@@ -84,7 +84,7 @@ namespace ChatTemplates {
     )";
 
     const QString IMAGE_ATTACHMENT = R"(
-        <a href='img:%1'><img src='%1' width='150' style='border-radius:10px; margin-right:10px;'></a>
+        <a href='img:%1'><img src='%2' width='150' style='border-radius:10px; margin-right:10px;'></a>
     )";
 
     const QString FILE_ATTACHMENT = R"(

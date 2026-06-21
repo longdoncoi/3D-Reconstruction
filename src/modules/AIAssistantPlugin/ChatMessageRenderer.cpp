@@ -33,7 +33,7 @@ QString ChatMessageRenderer::buildMessageHtml(const QString &role, const QString
             for (const auto &v : attachments) {
                 QString path = v.toString();
                 if (path.endsWith(".png") || path.endsWith(".jpg") || path.endsWith(".jpeg")) {
-                    innerAtt += ChatTemplates::IMAGE_ATTACHMENT.arg(path);
+                    innerAtt += ChatTemplates::IMAGE_ATTACHMENT.arg(path).arg(QUrl::fromLocalFile(path).toString());
                 } else {
                     innerAtt += ChatTemplates::FILE_ATTACHMENT
                                 .arg(QUrl::fromLocalFile(path).toString())

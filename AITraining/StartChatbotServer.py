@@ -188,11 +188,11 @@ MODELS = [
     },
     {
         "repo_id":       "bartowski/Qwen_Qwen2.5-VL-7B-Instruct-GGUF",
-        "filename":      "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+        "filename":      "Qwen_Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
         "desc":          "Qwen2.5-VL-7B (Q4_K_M) — Vision",
         "is_vision":     True,
         "mmproj_repo_id":  "bartowski/Qwen_Qwen2.5-VL-7B-Instruct-GGUF",
-        "mmproj_filename": "mmproj-Qwen2.5-VL-7B-Instruct-f16.gguf",
+        "mmproj_filename": "mmproj-Qwen_Qwen2.5-VL-7B-Instruct-f16.gguf",
     },
 ]
 
@@ -737,14 +737,47 @@ def _is_image_file(filepath: str) -> bool:
     return os.path.splitext(filepath)[1].lower() in _IMAGE_EXTS
 
 
-def _image_to_data_uri(filepath: str) -> str:
-    """Đọc file ảnh và chuyển thành data:image/...;base64,... URI."""
+def _image_to_data_uri(filepath: str, max_dim: int = 512) -> str:
+    """
+    Đọc file ảnh, resize nếu cần (giữ aspect ratio), rồi chuyển thành
+    data:image/...;base64,... URI.
+    
+    max_dim: chiều dài tối đa (width hoặc height). Giảm kích thước ảnh
+    giúp inference nhanh hơn đáng kể (từ 2-3 phút → 10-30 giây).
+    """
+    from PIL import Image
+    import io
+
     ext = os.path.splitext(filepath)[1].lower()
     mime_map = {".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png",
                 ".bmp": "bmp", ".gif": "gif", ".webp": "webp"}
     mime = mime_map.get(ext, "jpeg")
-    with open(filepath, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode("utf-8")
+
+    try:
+        img = Image.open(filepath)
+        # Resize nếu ảnh quá lớn
+        w, h = img.size
+        if max(w, h) > max_dim:
+            ratio = max_dim / max(w, h)
+            new_w = int(w * ratio)
+            new_h = int(h * ratio)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            logger.info("Vision: resized image %s from %dx%d → %dx%d",
+                       os.path.basename(filepath), w, h, new_w, new_h)
+        
+        # Convert RGBA to RGB for JPEG
+        if mime == "jpeg" and img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        
+        buf = io.BytesIO()
+        save_fmt = "JPEG" if mime == "jpeg" else mime.upper()
+        img.save(buf, format=save_fmt, quality=85)
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    except Exception as e:
+        logger.warning("PIL resize failed for %s: %s — falling back to raw read", filepath, e)
+        with open(filepath, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+
     return f"data:image/{mime};base64,{b64}"
 
 
@@ -1115,7 +1148,18 @@ async def chat_completions(request: ChatRequest, http_req: Request):
     if is_vision_model:
         # Vision path: dùng create_chat_completion() với multimodal messages
         vision_msgs      = build_vision_messages(messages_raw, doc_ctx, code_ctx)
-        estimated_tokens = sum(estimate_tokens(str(m.get("content", ""))) for m in vision_msgs)
+        estimated_tokens = 0
+        for m in vision_msgs:
+            content = m.get("content", "")
+            if isinstance(content, str):
+                estimated_tokens += estimate_tokens(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if part.get("type") == "text":
+                        estimated_tokens += estimate_tokens(part.get("text", ""))
+                    elif part.get("type") == "image_url":
+                        estimated_tokens += 1000  # Ước lượng ~1000 token cho mỗi ảnh đã resize
+
 
         if estimated_tokens >= LLM_N_CTX - 512:
             raise HTTPException(

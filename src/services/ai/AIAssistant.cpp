@@ -259,6 +259,9 @@ void AIAssistant::sendMessageToSession(const QString &sessionId, const QString &
     js["temperature"] = AppConstants::AIServer::DEFAULT_TEMPERATURE;
     js["max_tokens"]  = AppConstants::AIServer::DEFAULT_MAX_TOKENS;
 
+    // Set generous timeout for LLM inference (vision model can take 2-3 minutes)
+    req.setTransferTimeout(AppConstants::AIServer::INFERENCE_TIMEOUT_MS);
+
     QNetworkReply *reply = networkManager->post(req, QJsonDocument(js).toJson());
     m_pendingRequests[reply] = sessionId;  // Track this request for the session
     m_isThinking = true;

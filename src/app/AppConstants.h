@@ -52,6 +52,7 @@ namespace AppConstants {
         constexpr double DEFAULT_TEMPERATURE        = 0.7;
         constexpr int    DEFAULT_MAX_TOKENS         = 512;
         constexpr int    STOP_SERVER_TIMEOUT_MS     = 3000;
+        constexpr int    INFERENCE_TIMEOUT_MS       = 300000;  // 5 min for vision model
 
         inline QString apiEndpoint() {
             return QStringLiteral("http://127.0.0.1:%1/v1/chat/completions").arg(SERVER_PORT);
