@@ -8,6 +8,8 @@
 - [ ] No race condition
 - [ ] No circular dependency
 - [ ] Thread safe
-- [ ] Build passes
-- [ ] Tests pass
+- [ ] Local Build & Tests pass (C++)
+- [ ] Local Python Lint passes (Ruff)
+- [ ] Compatible with GitHub Actions CI workflows (`ci.yml`, `python-ci.yml`)
+- [ ] Release changes generate valid MSI Installer (`release.yml`)
 - [ ] No duplicated code

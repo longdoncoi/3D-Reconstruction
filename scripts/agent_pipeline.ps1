@@ -1,17 +1,24 @@
 git pull
 
-# Build project
+# Build project (C++)
 cmake --build build --config Release
 if ($LASTEXITCODE -ne 0) { 
-    Write-Error "Build failed"
+    Write-Error "C++ Build failed"
     exit 1 
 }
 
-# Run tests
+# Run tests (C++)
 ctest --output-on-failure
 if ($LASTEXITCODE -ne 0) { 
-    Write-Error "Tests failed"
+    Write-Error "C++ Tests failed"
     exit 1 
+}
+
+# Lint Python code
+ruff check AITraining/ --output-format=github
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Python Lint failed"
+    exit 1
 }
 
 # Commit and push

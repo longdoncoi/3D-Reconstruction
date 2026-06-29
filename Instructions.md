@@ -86,7 +86,7 @@ ctest --test-dir build --output-on-failure
 
 ## Agent Pipeline
 
-Automated build & test pipeline:
+Automated build & test pipeline (Local Pre-commit Check):
 
 ```powershell
 # Windows
@@ -121,17 +121,17 @@ bash ./scripts/agent_pipeline.sh
    bash ./scripts/agent_pipeline.sh
    ```
 
-3. **Pipeline steps (automatic):**
+3. **Pipeline steps (automatic local checks before push):**
    - `git pull` - Fetch latest changes
-   - `cmake --build build --config Release` - Build project
-   - `ctest --output-on-failure` - Run tests
+   - `cmake --build build --config Release` - Build project (C++)
+   - `ctest --output-on-failure` - Run local tests (C++)
+   - `ruff check AITraining/` - Run Python linting
    - `git add .` - Stage changes
    - `git commit -m "Agent task completed"` - Commit
-   - `git push` - Push to remote
+   - `git push` - Push to remote (Triggers `ci.yml` and `python-ci.yml`)
 
 4. **Report results:**
-   - ✅ If success: Inform user task completed with all tests passing
-   - ❌ If failed: Report which step failed (build/test/push) and provide error details
+   - ✅ If success: Inform user task completed with all tests passing locally.
 
 ## Exit Code Handling
 
@@ -617,7 +617,10 @@ After coding:
 [ ] No race condition
 [ ] No raw ownership
 [ ] Thread safe
-[ ] Build passes
-[ ] Tests pass
+[ ] Build passes (Local & Remote `ci.yml`)
+[ ] Tests pass (Local CTest)
+[ ] Python Lint passes (Ruff, `python-ci.yml`)
+[ ] Default branch targeted is `main`
+[ ] Release triggers MSI Installer generation (`release.yml`)
 [ ] No duplicated code
 [ ] No God Object
