@@ -22,6 +22,9 @@ public:
     QString getCurrentAIMode() const override;
     void setAIMode(const QString& mode) override;
 
+    bool isUpdateSceneEnabled() const override { return m_updateScene; }
+    void setUpdateSceneEnabled(bool enabled) override { m_updateScene = enabled; }
+
 private slots:
     void onAutoTimerTimeout();
 
@@ -33,6 +36,7 @@ private:
     QString currentAIMode;
     QTimer *autoTimer;
     bool isAutoNext;
+    bool m_updateScene = true;
 };
 
 #endif // VIEWERSERVICE_H

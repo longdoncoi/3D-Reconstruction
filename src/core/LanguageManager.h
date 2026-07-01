@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QString>
 #include <QMap>
+#include <shared_mutex>
 #include "Global.h"
 
 /**
@@ -24,7 +25,7 @@ public:
     static LanguageManager& instance();
 
     /** Trả về ngôn ngữ hiện tại: "vi" hoặc "en" */
-    QString currentLanguage() const { return m_lang; }
+    QString currentLanguage() const;
 
     /** Đổi ngôn ngữ và phát signal languageChanged() */
     void setLanguage(const QString &lang);
@@ -51,6 +52,7 @@ private:
 
     void loadTranslations();
 
+    mutable std::shared_mutex m_mutex;
     QString m_lang = "vi"; // default: Vietnamese
 
     // Map: key → {vi, en}

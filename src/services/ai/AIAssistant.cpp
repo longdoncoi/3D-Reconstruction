@@ -11,9 +11,10 @@
 #include <QDir>
 #include <QUuid>
 
-AIAssistant::AIAssistant(QObject *parent) : QObject(parent) {
-    aiServerProcess = new QProcess(this);
-    networkManager = new QNetworkAccessManager(this);
+AIAssistant::AIAssistant(QObject *parent)
+    : IAIAssistantService(parent),
+      aiServerProcess(new QProcess(this)),
+      networkManager(new QNetworkAccessManager(this)) {
 
     connect(aiServerProcess, &QProcess::readyReadStandardOutput, this, &AIAssistant::onProcessReadyRead);
     connect(aiServerProcess, &QProcess::readyReadStandardError, this, &AIAssistant::onProcessError);
@@ -266,6 +267,54 @@ void AIAssistant::sendMessageToSession(const QString &sessionId, const QString &
     m_pendingRequests[reply] = sessionId;  // Track this request for the session
     m_isThinking = true;
     emit historyChanged();
+}
+
+void AIAssistant::retryMessage(const QString &sessionId, int msgIndex) {
+    ChatSession *sess = getSession(sessionId);
+    if (!sess) return;
+    if (msgIndex < 0 || msgIndex >= sess->messages.size()) return;
+
+    // Discard any messages after the target message
+    while (sess->messages.size() > msgIndex + 1) {
+        sess->messages.removeLast();
+    }
+    
+    // Update timestamp of the message to reflect when retry occurred
+    QJsonObject msg = sess->messages[msgIndex];
+    msg["timestamp"] = QDateTime::currentDateTime().toString(AppConstants::Format::chatTimestamp());
+    sess->messages[msgIndex] = msg;
+
+    saveAllSessions();
+    emit historyChanged();
+
+    QNetworkRequest req{QUrl(AppConstants::AIServer::apiEndpoint())};
+    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+
+    QJsonArray msgs;
+    for (const auto &m : sess->messages) msgs.append(m);
+
+    QJsonObject js;
+    js["messages"]    = msgs;
+    js["temperature"] = AppConstants::AIServer::DEFAULT_TEMPERATURE;
+    js["max_tokens"]  = AppConstants::AIServer::DEFAULT_MAX_TOKENS;
+
+    req.setTransferTimeout(AppConstants::AIServer::INFERENCE_TIMEOUT_MS);
+    QNetworkReply *reply = networkManager->post(req, QJsonDocument(js).toJson());
+    m_pendingRequests[reply] = sessionId;
+    m_isThinking = true;
+    emit historyChanged();
+}
+
+void AIAssistant::editMessage(const QString &sessionId, int msgIndex, const QString &newText) {
+    ChatSession *sess = getSession(sessionId);
+    if (!sess) return;
+    if (msgIndex < 0 || msgIndex >= sess->messages.size()) return;
+    
+    QJsonObject msg = sess->messages[msgIndex];
+    msg["content"] = newText;
+    sess->messages[msgIndex] = msg;
+    
+    retryMessage(sessionId, msgIndex);
 }
 
 // ── Process callbacks ─────────────────────────────────────────────────────────

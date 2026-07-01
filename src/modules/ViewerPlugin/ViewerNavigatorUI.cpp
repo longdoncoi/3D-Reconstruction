@@ -7,10 +7,10 @@
 ViewerNavigatorUI::ViewerNavigatorUI(IAppContext* ctx, QObject* parent)
     : QObject(parent), m_ctx(ctx)
 {
-    QWidget *nw = new QWidget(m_ctx->mainWindow()); 
-    nw->setObjectName("viewerNavigatorWidget");
-    QHBoxLayout *nl = new QHBoxLayout(nw);
-    nw->setFixedHeight(80);
+    m_widget = new QWidget(m_ctx->mainWindow()); 
+    m_widget->setObjectName("viewerNavigatorWidget");
+    QHBoxLayout *nl = new QHBoxLayout(m_widget);
+    m_widget->setFixedHeight(80);
     
     m_btnPrev = new QPushButton(m_ctx->translate("viewer.prev"), m_ctx->mainWindow());
     m_btnPrev->setMinimumWidth(80);
@@ -43,6 +43,6 @@ ViewerNavigatorUI::ViewerNavigatorUI(IAppContext* ctx, QObject* parent)
     nl->addStretch();
     
     if (m_ctx->mainWindow()->centralWidget() && m_ctx->mainWindow()->centralWidget()->layout()) {
-        qobject_cast<QVBoxLayout*>(m_ctx->mainWindow()->centralWidget()->layout())->addWidget(nw);
+        qobject_cast<QVBoxLayout*>(m_ctx->mainWindow()->centralWidget()->layout())->addWidget(m_widget);
     }
 }

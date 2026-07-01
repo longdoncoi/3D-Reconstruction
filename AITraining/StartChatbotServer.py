@@ -567,6 +567,7 @@ def build_registry() -> DocumentLoaderRegistry:
 EXCLUDED_DIRS  = {
     ".git", "build", "__pycache__", ".qtcreator", ".cache", "Cache",
     "runs", "Dicom", "Predict", "3DModels", "Dataset", "logs",
+    ".github", ".prompts", ".review", ".tasks", "scripts"
 }
 SCANNABLE_EXTS = {".cpp", ".h", ".py", ".md", ".cmake", ".jpg", ".jpeg", ".png", ".webp"}
 DOC_EXTS_GLOB  = ("*.docx", "*.pdf", "*.txt", "*.jpg", "*.jpeg", "*.png", "*.webp")
@@ -968,54 +969,24 @@ def trim_history(messages: list, max_tokens: int = 2000) -> list:
     return messages
 
 
-def build_prompt(messages: list, doc_ctx: str, code_ctx: str) -> str:
-    system_prompt = (
-        "Bạn là trợ lý AI chuyên nghiệp cho dự án 3D-Reconstruction.\n"
-        "NGUYÊN TẮC TRẢ LỜI:\n"
-        "1. Dựa chủ yếu vào tài liệu và mã nguồn được cung cấp bên dưới để trả lời.\n"
-        "2. Nếu câu hỏi không liên quan đến bất kỳ nội dung nào trong ngữ cảnh, "
-        "   hãy nói ngắn gọn: 'Câu hỏi này nằm ngoài phạm vi tài liệu dự án.' rồi dừng.\n"
-        "3. Không bịa đặt hoặc suy đoán thông tin kỹ thuật không có trong tài liệu.\n"
-        "4. Khi nhắc đến code hoặc tài liệu, hãy ghi rõ số thứ tự nguồn [1], [2]... "
-        "   tương ứng với danh sách ngữ cảnh bên dưới.\n"
-        "5. Ưu tiên trả lời ĐẦY ĐỦ và CHI TIẾT — giải thích từng bước, nêu lý do "
-        "   kỹ thuật, trích dẫn trực tiếp từ tài liệu khi có thể.\n"
-        "6. Cấu trúc câu trả lời: tóm tắt ngắn → giải thích chi tiết → ví dụ/code.\n"
-        "7. Trả lời bằng tiếng Việt trừ khi người dùng hỏi bằng tiếng Anh. Nếu tài liệu "
-        "   nguồn là tiếng Anh, hãy DỊCH và GIẢI THÍCH sang tiếng Việt.\n"
-        "8. LUÔN sử dụng định dạng Markdown (tiêu đề in đậm, bullet points, code blocks "
-        "   có highlight syntax) để trình bày đẹp và dễ đọc.\n"
-        "9. QUAN TRỌNG: Luôn hoàn thành câu cuối cùng trước khi kết thúc. "
-        "   Không bao giờ dừng giữa câu, giữa đoạn code, hoặc giữa danh sách.\n"
-    )
-
-    # [FIX-11] Context đã được format có số thứ tự từ get_context()
-    if doc_ctx:
-        system_prompt += f"\n\n{doc_ctx}"
-    if code_ctx:
-        system_prompt += f"\n\n{code_ctx}"
-    if not doc_ctx and not code_ctx:
-        system_prompt += "\n\n[Không tìm thấy ngữ cảnh liên quan. Từ chối theo nguyên tắc số 2.]"
-
+def build_text_messages(messages: list, doc_ctx: str, code_ctx: str) -> list:
+    system_prompt = _build_system_prompt(doc_ctx, code_ctx)
+    result = [{"role": "system", "content": system_prompt}]
+    
     history = trim_history(list(messages[:-1]), max_tokens=2000)
-    prompt  = f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-
     for msg in history:
-        role    = "user" if msg.get("role") == "user" else "assistant"
+        role = "user" if msg.get("role") == "user" else "assistant"
         content = msg.get("content", "")
         if msg.get("attachments"):
-            content += (f"\n\n[Hệ thống: Người dùng tải lên: {', '.join(msg['attachments'])}. "
-                        "Model text-only, không thể xem ảnh.]")
-        prompt += f"<|im_start|>{role}\n{content}<|im_end|>\n"
-
+            content += f"\n\n[Hệ thống: Người dùng tải lên: {', '.join(msg['attachments'])}. Model text-only, không thể xem ảnh.]"
+        result.append({"role": role, "content": content})
+        
     last = messages[-1]
     last_content = last.get("content", "")
     if last.get("attachments"):
-        last_content += (f"\n\n[Hệ thống: Người dùng tải lên: {', '.join(last['attachments'])}. "
-                         "Model text-only, không thể xem ảnh.]")
-    prompt += f"<|im_start|>user\n{last_content}<|im_end|>\n"
-    prompt += "<|im_start|>assistant\n"
-    return prompt
+        last_content += f"\n\n[Hệ thống: Người dùng tải lên: {', '.join(last['attachments'])}. Model text-only, không thể xem ảnh.]"
+    result.append({"role": "user", "content": last_content})
+    return result
 
 
 def _build_system_prompt(doc_ctx: str, code_ctx: str) -> str:
@@ -1040,6 +1011,8 @@ def _build_system_prompt(doc_ctx: str, code_ctx: str) -> str:
         "   Không bao giờ dừng giữa câu, giữa đoạn code, hoặc giữa danh sách.\n"
         "10. Nếu người dùng gửi ảnh, hãy phân tích nội dung ảnh chi tiết "
         "    và liên hệ với tài liệu dự án nếu có thể.\n"
+        "11. Nếu câu hỏi liên quan đến nhân vật trong dự án (như thành viên, tác giả, người tham gia), hãy trả lời trực tiếp mà KHÔNG trích dẫn tài liệu tham khảo.\n"
+        "12. KHÔNG liệt kê hay in lại log 'TÀI LIỆU THAM KHẢO' hoặc 'MÃ NGUỒN LIÊN QUAN' trong câu trả lời.\n"
     )
     if doc_ctx:
         system_prompt += f"\n\n{doc_ctx}"
@@ -1165,8 +1138,14 @@ app.add_middleware(
 )
 
 
+import threading
+import asyncio
+
+llm_lock = threading.Lock()
+current_task_id = None
+
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatRequest, http_req: Request):
+def chat_completions(request: ChatRequest, http_req: Request):
     if llm is None:
         raise HTTPException(status_code=503, detail="LLM chưa khởi tạo")
 
@@ -1191,88 +1170,59 @@ async def chat_completions(request: ChatRequest, http_req: Request):
 
     messages_raw     = [m.model_dump() for m in request.messages]
 
-    # ── Phân luồng: Vision model vs Text-only model ──
     if is_vision_model:
-        # Vision path: dùng create_chat_completion() với multimodal messages
-        vision_msgs      = build_vision_messages(messages_raw, doc_ctx, code_ctx, image_chunks)
-        estimated_tokens = 0
-        for m in vision_msgs:
-            content = m.get("content", "")
-            if isinstance(content, str):
-                estimated_tokens += estimate_tokens(content)
-            elif isinstance(content, list):
-                for part in content:
-                    if part.get("type") == "text":
-                        estimated_tokens += estimate_tokens(part.get("text", ""))
-                    elif part.get("type") == "image_url":
-                        estimated_tokens += 1000  # Ước lượng ~1000 token cho mỗi ảnh đã resize
-
-
-        if estimated_tokens >= LLM_N_CTX - 512:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Hội thoại quá dài (~{estimated_tokens} tokens). Vui lòng bắt đầu phiên mới."
-            )
-
-        available_tokens = LLM_N_CTX - estimated_tokens - 400
-        max_tokens       = min(request.max_tokens, max(512, available_tokens))
-
-        logger.debug("[Vision] Token budget: prompt≈%d  available=%d  max_tokens=%d",
-                     estimated_tokens, available_tokens, max_tokens)
-
-        t_llm = time.monotonic()
-        try:
-            response = llm.create_chat_completion(
-                messages       = vision_msgs,
-                max_tokens     = max_tokens,
-                temperature    = request.temperature,
-                repeat_penalty = 1.1,
-            )
-        except Exception as e:
-            logger.error("LLM Vision error: %s", e)
-            raise HTTPException(status_code=500, detail=f"Lỗi inference (vision): {e}")
-
-        llm_ms        = (time.monotonic() - t_llm) * 1000
-        total_ms      = (time.monotonic() - req_start) * 1000
-        answer        = response["choices"][0]["message"]["content"].strip()
-        finish_reason = response["choices"][0].get("finish_reason", "")
-
+        msgs = build_vision_messages(messages_raw, doc_ctx, code_ctx, image_chunks)
+        estimated_tokens = sum(estimate_tokens(m.get("text", "")) for p in msgs for m in (p.get("content") if isinstance(p.get("content"), list) else [{"text": p.get("content", "")}]))
     else:
-        # Text-only path: giữ nguyên flow cũ
-        full_prompt      = build_prompt(messages_raw, doc_ctx, code_ctx)
-        estimated_tokens = estimate_tokens(full_prompt)
+        msgs = build_text_messages(messages_raw, doc_ctx, code_ctx)
+        estimated_tokens = sum(estimate_tokens(m.get("content", "")) for m in msgs)
 
-        if estimated_tokens >= LLM_N_CTX - 512:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Hội thoại quá dài (~{estimated_tokens} tokens). Vui lòng bắt đầu phiên mới."
-            )
+    if estimated_tokens >= LLM_N_CTX - 512:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Hội thoại quá dài (~{estimated_tokens} tokens). Vui lòng bắt đầu phiên mới."
+        )
 
-        available_tokens = LLM_N_CTX - estimated_tokens - 400  # v2.1 buffer
-        max_tokens       = min(request.max_tokens, max(512, available_tokens))
+    available_tokens = LLM_N_CTX - estimated_tokens - 400
+    max_tokens       = min(request.max_tokens, max(512, available_tokens))
 
-        logger.debug("Token budget: prompt≈%d  available=%d  max_tokens=%d",
-                     estimated_tokens, available_tokens, max_tokens)
+    def run_llm():
+        with llm_lock:
+            answer = ""
+            finish_reason = "stop"
+            start_time = time.monotonic()
+            
+            try:
+                response_iter = llm.create_chat_completion(
+                    messages       = msgs,
+                    max_tokens     = max_tokens,
+                    temperature    = request.temperature,
+                    repeat_penalty = 1.1,
+                    stream         = True,
+                )
+                
+                for chunk in response_iter:
+                    delta = chunk["choices"][0].get("delta", {})
+                    if "content" in delta:
+                        answer += delta["content"]
+                        
+                    fr = chunk["choices"][0].get("finish_reason")
+                    if fr is not None:
+                        finish_reason = fr
 
-        t_llm = time.monotonic()
-        try:
-            response = llm(
-                full_prompt,
-                stop           = ["<|im_end|>", "<|im_start|>"],
-                max_tokens     = max_tokens,
-                temperature    = request.temperature,
-                repeat_penalty = 1.1,
-            )
-        except Exception as e:
-            logger.error("LLM error: %s", e)
-            raise HTTPException(status_code=500, detail=f"Lỗi inference: {e}")
+            except Exception as e:
+                logger.error("LLM error: %s", e)
+                raise
+                
+            return answer.strip(), finish_reason, (time.monotonic() - start_time) * 1000
 
-        llm_ms        = (time.monotonic() - t_llm) * 1000
-        total_ms      = (time.monotonic() - req_start) * 1000
-        answer        = response["choices"][0]["text"].strip()
-        finish_reason = response["choices"][0].get("finish_reason", "")
+    try:
+        answer, finish_reason, llm_ms = run_llm()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi inference: {e}")
 
-    # [FIX-10] Phát hiện và cảnh báo khi câu trả lời bị cắt do hết max_tokens
+    total_ms = (time.monotonic() - req_start) * 1000
+
     if finish_reason == "length":
         logger.warning(
             "Answer truncated (finish_reason=length): max_tokens=%d, estimated_prompt=%d",

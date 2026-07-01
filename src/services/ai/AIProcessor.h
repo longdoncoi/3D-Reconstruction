@@ -7,6 +7,7 @@
 #include <onnxruntime_cxx_api.h>
 #include <vector>
 #include <memory>
+#include <mutex>
 
 struct AIResult {
     int class_id;
@@ -58,6 +59,7 @@ private:
     bool isTrackingLoaded;
 
     // Tracking state
+    std::mutex m_trackingMutex;
     std::map<int, cv::Rect> currentTracks;
     int nextTrackId = 0;
 

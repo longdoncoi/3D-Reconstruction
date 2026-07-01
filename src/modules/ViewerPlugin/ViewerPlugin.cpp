@@ -30,6 +30,7 @@
 
 #include "ViewerRibbonUI.h"
 #include "ViewerNavigatorUI.h"
+#include "ViewerListUI.h"
 
 void ViewerPlugin::initialize(IAppContext* context) {
     m_ctx = context;
@@ -43,6 +44,8 @@ void ViewerPlugin::initialize(IAppContext* context) {
     m_loadDicomAct = viewerMenu->addAction(m_ctx->translate("viewer.load_dicom"), this, &ViewerPlugin::onLoadDicom);
 
     m_navUI = new ViewerNavigatorUI(m_ctx, this);
+    m_listUI = new ViewerListUI(m_ctx, this);
+    m_listUI->setupUI();
 
     connect(m_navUI->btnPrev(), &QPushButton::clicked, this, &ViewerPlugin::onPrevImage); 
     connect(m_navUI->btnNext(), &QPushButton::clicked, this, &ViewerPlugin::onNextImage);
@@ -107,40 +110,12 @@ void ViewerPlugin::onLoad2DImages() {
       int currentImageIndex = imageFileList.indexOf(fi.fileName());
       m_ctx->viewer()->setImageList(imageFileList, currentImageIndex);
 
-      // Populate list widget at the bottom with 2D images in the directory
-      if (QListWidget *list = m_ctx->mainWindow()->findChild<QListWidget*>("reconstructionImageList")) {
-          list->blockSignals(true);
-          list->clear();
-          
-          if (m_progressDialog) {
-              m_progressDialog->setRange(0, imageFileList.size());
-          }
-          
-          int progress = 0;
-          for (const QString& fName : imageFileList) {
-              QString fullPath = dir.absoluteFilePath(fName);
-              QListWidgetItem* item = new QListWidgetItem(QIcon(fullPath), fName);
-              item->setToolTip(fullPath);
-              list->addItem(item);
-              
-              progress++;
-              if (m_progressDialog) {
-                  m_progressDialog->setValue(progress);
-              }
-              QApplication::processEvents();
-          }
-          
-          if (currentImageIndex >= 0 && currentImageIndex < list->count()) {
-              list->setCurrentRow(currentImageIndex);
-          }
-          list->setProperty("mode", "view2d");
-          list->show();
-          list->blockSignals(false);
-      }
+      // Image list population is now handled automatically by ViewerListUI 
+      // listening to the imageListUpdated signal emitted by ViewerService::setImageList()
   }
   
-  if (QWidget *navigator = m_ctx->mainWindow()->findChild<QWidget*>("viewerNavigatorWidget")) {
-      navigator->show();
+  if (m_navUI && m_navUI->widget()) {
+      m_navUI->widget()->show();
   }
   m_ctx->updateMenuStates();
   
@@ -163,12 +138,8 @@ void ViewerPlugin::onLoad3DImages() {
       QApplication::processEvents();
   }
 
-  if (QListWidget *list = m_ctx->mainWindow()->findChild<QListWidget*>("reconstructionImageList")) {
-      list->clear();
-      list->hide();
-  }
-  if (QWidget *navigator = m_ctx->mainWindow()->findChild<QWidget*>("viewerNavigatorWidget")) {
-      navigator->hide();
+  if (m_navUI && m_navUI->widget()) {
+      m_navUI->widget()->hide();
   }
   
   QFileInfo fi(obj); 
@@ -217,13 +188,9 @@ void ViewerPlugin::onLoadDicom() {
         QApplication::processEvents();
     }
 
-    if (QListWidget *list = m_ctx->mainWindow()->findChild<QListWidget*>("reconstructionImageList")) {
-        list->clear();
-        list->hide();
-    }
-    if (QWidget *navigator = m_ctx->mainWindow()->findChild<QWidget*>("viewerNavigatorWidget")) {
-        navigator->hide();
-    }
+  if (m_navUI && m_navUI->widget()) {
+      m_navUI->widget()->hide();
+  }
     
     m_ctx->settings()->setLastUsedPath("viewer_dicom", QFileInfo(fn).absolutePath());
     m_ctx->viewer()->setCurrent2DImagePath("");

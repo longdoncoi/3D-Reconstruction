@@ -63,7 +63,15 @@ namespace ChatTemplates {
 
     const QString USER_MESSAGE_CONTAINER = R"(
         <div align='right' style='margin-bottom:15px;'>
-            %1 %2
+            %1 %2 %3
+        </div>
+    )";
+
+    const QString USER_ACTION_FOOTER = R"(
+        <div style='font-size:11px; color:#888; text-align:right; margin-top:4px;'>
+            %1
+            <a href='action:retry:%2' style='text-decoration:none; color:#aaa; margin-left:8px; font-size:14px;' title='Retry'>&#x21BB;</a>
+            <a href='action:edit:%2' style='text-decoration:none; color:#aaa; margin-left:8px; font-size:14px;' title='Edit'>&#x270E;</a>
         </div>
     )";
 

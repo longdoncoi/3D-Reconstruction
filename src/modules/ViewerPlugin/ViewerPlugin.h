@@ -13,6 +13,7 @@ class QPushButton;
 class CustomProgressDialog;
 class ViewerRibbonUI;
 class ViewerNavigatorUI;
+class ViewerListUI;
 
 class ViewerPlugin : public QObject, public IPlugin {
     Q_OBJECT
@@ -46,6 +47,7 @@ private:
 
     ViewerNavigatorUI *m_navUI = nullptr;
     ViewerRibbonUI *m_ribbonUI = nullptr;
+    ViewerListUI *m_listUI = nullptr;
     CustomProgressDialog *m_progressDialog = nullptr;
 };
 

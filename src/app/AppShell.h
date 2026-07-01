@@ -18,6 +18,7 @@ class ViewerService;
 class SettingsService;
 class ReconstructionService;
 class AIService;
+class AIAssistant;
 class MailService;
 
 /**
@@ -84,6 +85,7 @@ private:
     std::unique_ptr<SettingsService>            m_settingsService;
     std::unique_ptr<ReconstructionService>      m_reconService;
     std::unique_ptr<AIService>                  m_aiService;
+    std::unique_ptr<AIAssistant>                m_aiAssistant;
     std::unique_ptr<MailService>                m_mailService;
 
     // Tab panels map (key → QWidget*)

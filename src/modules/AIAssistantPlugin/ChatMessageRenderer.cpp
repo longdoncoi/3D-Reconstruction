@@ -11,8 +11,9 @@ void ChatMessageRenderer::renderChatHistory(QTextBrowser* browser, IAppContext* 
     QString h = ChatTemplates::CSS;
     h += QString("<div class='chat-start'>%1</div>").arg(ctx->translate("ai.new_chat_start"));
     
-    for (const auto &m : history) {
-        h += buildMessageHtml(m["role"].toString(), m["content"].toString(), m["attachments"].toArray());
+    for (int i = 0; i < history.size(); ++i) {
+        const auto &m = history[i];
+        h += buildMessageHtml(m["role"].toString(), m["content"].toString(), m["attachments"].toArray(), m["timestamp"].toString(), i);
     }
     
     if (isThinking) {
@@ -23,7 +24,7 @@ void ChatMessageRenderer::renderChatHistory(QTextBrowser* browser, IAppContext* 
     browser->moveCursor(QTextCursor::End);
 }
 
-QString ChatMessageRenderer::buildMessageHtml(const QString &role, const QString &content, const QJsonArray &attachments) {
+QString ChatMessageRenderer::buildMessageHtml(const QString &role, const QString &content, const QJsonArray &attachments, const QString &timestamp, int index) {
     if (role == "assistant") {
         return ChatTemplates::AI_MESSAGE_CONTAINER.arg(HtmlUtilities::mdToHtml(content));
     } else {
@@ -49,6 +50,17 @@ QString ChatMessageRenderer::buildMessageHtml(const QString &role, const QString
             escaped.replace("\n", "<br>");
             textHtml = ChatTemplates::USER_TEXT_TABLE.arg(escaped);
         }
-        return ChatTemplates::USER_MESSAGE_CONTAINER.arg(attHtml).arg(textHtml);
+        
+        QString footerHtml = ChatTemplates::USER_ACTION_FOOTER;
+        QDateTime dt = QDateTime::fromString(timestamp, "yyyy-MM-dd HH:mm:ss"); // Default chat format
+        QString dateStr;
+        if (dt.isValid()) {
+            dateStr = dt.toString("MMM d");
+        } else {
+            dateStr = timestamp;
+        }
+        footerHtml = footerHtml.arg(dateStr).arg(index);
+
+        return ChatTemplates::USER_MESSAGE_CONTAINER.arg(attHtml).arg(textHtml).arg(footerHtml);
     }
 }

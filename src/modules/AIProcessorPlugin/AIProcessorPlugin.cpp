@@ -371,8 +371,11 @@ void AIProcessorPlugin::onObjectTracking() {
         return;
     }
 
-    QString videoPath = QFileDialog::getOpenFileName(m_ctx->mainWindow(), "Select Video for Tracking", "", "Video Files (*.mp4 *.avi *.mkv)");
+    QString lastUsedPath = m_ctx->settings()->getLastUsedPath("ai_video_tracking");
+    QString videoPath = QFileDialog::getOpenFileName(m_ctx->mainWindow(), m_ctx->translate("aiproc.select_video_tracking"), lastUsedPath, "Video Files (*.mp4 *.avi *.mkv)");
     if (videoPath.isEmpty()) return;
+    
+    m_ctx->settings()->setLastUsedPath("ai_video_tracking", QFileInfo(videoPath).absolutePath());
 
     // Clear current state
     m_ctx->scene()->clear3DModel();

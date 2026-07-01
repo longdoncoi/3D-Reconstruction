@@ -3,7 +3,6 @@
 AIService::AIService(QObject* parent)
     : QObject(parent)
     , m_processor(std::make_unique<AIProcessor>())
-    , m_assistant(std::make_unique<AIAssistant>())
 {
 }
 

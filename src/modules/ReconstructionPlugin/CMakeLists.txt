@@ -7,8 +7,6 @@ add_library(ReconstructionPlugin SHARED
     ReconstructionPlugin.cpp
     ReconstructionRibbonUI.h
     ReconstructionRibbonUI.cpp
-    ReconstructionListUI.h
-    ReconstructionListUI.cpp
 )
 
 target_include_directories(ReconstructionPlugin PRIVATE

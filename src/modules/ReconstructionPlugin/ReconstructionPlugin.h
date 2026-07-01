@@ -12,7 +12,6 @@
 class ReconstructThread;
 class CustomProgressDialog;
 class ReconstructionRibbonUI;
-class ReconstructionListUI;
 
 class ReconstructionPlugin : public QObject, public IPlugin {
     Q_OBJECT
@@ -33,8 +32,6 @@ private slots:
     void onHidePointCloud();
     void onProgressStopped();
     void updateActions();
-    void onImageIndexChanged(int index, int total);
-    void onImageListRowChanged(int row);
 
 private:
     IAppContext*             m_ctx           = nullptr;
@@ -47,7 +44,6 @@ private:
     
     QAction *m_toggleCloudAct = nullptr;
     ReconstructionRibbonUI* m_ribbonUI = nullptr;
-    ReconstructionListUI* m_listUI = nullptr;
 };
 
 #endif // RECONSTRUCTION_PLUGIN_H

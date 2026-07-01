@@ -5,36 +5,42 @@
 #include <QRandomGenerator>
 #include <QDebug>
 
-UserManager *UserManager::s_instance = nullptr;
-
 UserManager *UserManager::instance() {
-    if (!s_instance)
-        s_instance = new UserManager();
-    return s_instance;
+    static UserManager* instance = new UserManager();
+    return instance;
 }
 
 UserManager::UserManager(QObject *parent) : QObject(parent) {}
 
-bool UserManager::isLoggedIn() const { return !m_currentUsername.isEmpty(); }
-UserInfo UserManager::currentUser() const { return m_users.value(m_currentUsername); }
-QString UserManager::currentUsername() const { return m_currentUsername; }
+bool UserManager::isLoggedIn() const { std::shared_lock lock(m_mutex); return !m_currentUsername.isEmpty(); }
+UserInfo UserManager::currentUser() const { std::shared_lock lock(m_mutex); return m_users.value(m_currentUsername); }
+QString UserManager::currentUsername() const { std::shared_lock lock(m_mutex); return m_currentUsername; }
 
-QStringList UserManager::allUsernames() const { return m_users.keys(); }
-UserInfo UserManager::userInfo(const QString &username) const { return m_users.value(username); }
+QStringList UserManager::allUsernames() const { std::shared_lock lock(m_mutex); return m_users.keys(); }
+UserInfo UserManager::userInfo(const QString &username) const { std::shared_lock lock(m_mutex); return m_users.value(username); }
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 bool UserManager::loadConfig(const QString &configPath) {
+    std::unique_lock lock(m_mutex);
     m_configPath = configPath;
+    if (m_settings) {
+        delete m_settings;
+    }
     m_settings = new QSettings(configPath, QSettings::IniFormat, this);
     loadUsers();
     loadLicenseKeys();
     ensureDefaultAdmin();
-    saveConfig();
+    if (m_settings) {
+        saveUsers();
+        saveLicenseKeys();
+        m_settings->sync();
+    }
     return true;
 }
 
 void UserManager::saveConfig() {
+    std::unique_lock lock(m_mutex);
     if (!m_settings) return;
     saveUsers();
     saveLicenseKeys();
@@ -123,6 +129,7 @@ void UserManager::ensureDefaultAdmin() {
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
 bool UserManager::login(const QString &usernameOrEmail, const QString &password, QString &errorMsg) {
+    std::unique_lock lock(m_mutex);
     QString foundUsername;
     QString lowerInput = usernameOrEmail.toLower();
 
@@ -148,6 +155,7 @@ bool UserManager::login(const QString &usernameOrEmail, const QString &password,
 }
 
 void UserManager::setRememberMe(bool enable, const QString &username) {
+    std::unique_lock lock(m_mutex);
     m_settings->setValue("Session/remember_me", enable);
     if (enable) {
         m_settings->setValue("Session/saved_username", username);
@@ -158,14 +166,17 @@ void UserManager::setRememberMe(bool enable, const QString &username) {
 }
 
 bool UserManager::isRememberMeEnabled() const {
+    std::shared_lock lock(m_mutex);
     return m_settings->value("Session/remember_me", false).toBool();
 }
 
 QString UserManager::savedUsername() const {
+    std::shared_lock lock(m_mutex);
     return m_settings->value("Session/saved_username", "").toString();
 }
 
 void UserManager::logout() {
+    std::unique_lock lock(m_mutex);
     m_currentUsername.clear();
 }
 
@@ -178,33 +189,37 @@ QString UserManager::hashPassword(const QString &password) const {
 
 bool UserManager::changePassword(const QString &username, const QString &oldPass,
                                   const QString &newPass, QString &error) {
+    std::unique_lock lock(m_mutex);
     if (!m_users.contains(username)) { error = "User không tồn tại."; return false; }
     if (m_users[username].passwordHash != hashPassword(oldPass)) {
         error = "Mật khẩu cũ không đúng."; return false;
     }
     if (newPass.length() < 6) { error = "Mật khẩu mới phải có ít nhất 6 ký tự."; return false; }
     m_users[username].passwordHash = hashPassword(newPass);
-    saveConfig();
+    if (m_settings) { saveUsers(); m_settings->sync(); }
     return true;
 }
 
 bool UserManager::resetPassword(const QString &username, const QString &newPass) {
+    std::unique_lock lock(m_mutex);
     if (!m_users.contains(username)) return false;
     m_users[username].passwordHash = hashPassword(newPass);
-    saveConfig();
+    if (m_settings) { saveUsers(); m_settings->sync(); }
     return true;
 }
 
 void UserManager::updateAvatar(const QString &username, const QString &path) {
+    std::unique_lock lock(m_mutex);
     if (m_users.contains(username)) {
         m_users[username].avatarPath = path;
-        saveConfig();
+        if (m_settings) { saveUsers(); m_settings->sync(); }
     }
 }
 
 // ─── OTP ──────────────────────────────────────────────────────────────────────
 
 QString UserManager::findUsernameByEmail(const QString &email) const {
+    std::shared_lock lock(m_mutex);
     for (auto it = m_users.begin(); it != m_users.end(); ++it)
         if (it.value().email.toLower() == email.toLower())
             return it.key();
@@ -219,7 +234,10 @@ bool UserManager::sendPasswordResetOtp(const QString &email, QString &error) {
     // Generate 6-digit OTP
     int code = QRandomGenerator::global()->bounded(100000, 999999);
     QString otp = QString::number(code);
-    m_otpStore[email.toLower()] = { otp, QDateTime::currentDateTime().addSecs(600) };
+    {
+        std::unique_lock lock(m_mutex);
+        m_otpStore[email.toLower()] = { otp, QDateTime::currentDateTime().addSecs(600) };
+    }
 
     QString senderEmail = smtpSenderEmail();
     QString senderPass  = smtpSenderPassword();
@@ -237,6 +255,7 @@ bool UserManager::sendPasswordResetOtp(const QString &email, QString &error) {
 }
 
 bool UserManager::verifyOtp(const QString &email, const QString &otp) {
+    std::unique_lock lock(m_mutex);
     QString key = email.toLower();
     if (!m_otpStore.contains(key)) return false;
     const auto &entry = m_otpStore[key];
@@ -252,12 +271,14 @@ bool UserManager::verifyOtp(const QString &email, const QString &otp) {
 // ─── License ──────────────────────────────────────────────────────────────────
 
 bool UserManager::needsActivation(const QString &username) const {
+    std::shared_lock lock(m_mutex);
     if (!m_users.contains(username)) return false;
     const auto &u = m_users[username];
     return u.licenseStatus == "None";
 }
 
 bool UserManager::isLicenseExpired(const QString &username) const {
+    std::shared_lock lock(m_mutex);
     if (!m_users.contains(username)) return true;
     const auto &u = m_users[username];
     if (u.licenseStatus == "None") return true;
@@ -266,10 +287,12 @@ bool UserManager::isLicenseExpired(const QString &username) const {
 }
 
 QString UserManager::licenseStatusStr(const QString &username) const {
+    std::shared_lock lock(m_mutex);
     return m_users.value(username).licenseStatus;
 }
 
 int UserManager::daysRemaining(const QString &username) const {
+    std::shared_lock lock(m_mutex);
     if (!m_users.contains(username)) return 0;
     const auto &u = m_users[username];
     if (!u.licenseExpiry.isValid()) return 0;
@@ -278,17 +301,19 @@ int UserManager::daysRemaining(const QString &username) const {
 }
 
 bool UserManager::activateTrial(const QString &username, QString &error) {
+    std::unique_lock lock(m_mutex);
     if (!m_users.contains(username)) { error = "User không tồn tại."; return false; }
     auto &u = m_users[username];
     if (u.licenseStatus != "None") { error = "Tài khoản đã được kích hoạt."; return false; }
     u.licenseStatus = "Trial";
     u.trialStart    = QDate::currentDate();
     u.licenseExpiry = QDate::currentDate().addDays(30);
-    saveConfig();
+    if (m_settings) { saveUsers(); m_settings->sync(); }
     return true;
 }
 
 bool UserManager::activateLicenseKey(const QString &username, const QString &key, QString &error) {
+    std::unique_lock lock(m_mutex);
     if (!m_users.contains(username)) { error = "User không tồn tại."; return false; }
     if (!m_licenseKeys.contains(key)) { error = "License key không hợp lệ."; return false; }
     if (m_licenseKeys[key]) { error = "License key đã được sử dụng."; return false; }
@@ -298,41 +323,51 @@ bool UserManager::activateLicenseKey(const QString &username, const QString &key
     u.licenseExpiry = QDate::currentDate().addYears(1);
     m_licenseKeys[key] = true;
     m_keyOwners[key]   = username;
-    saveConfig();
+    if (m_settings) {
+        saveUsers();
+        saveLicenseKeys();
+        m_settings->sync();
+    }
     return true;
 }
 
 // ─── Admin – Users ────────────────────────────────────────────────────────────
 
 bool UserManager::addUser(const UserInfo &info, const QString &plainPassword, QString &error) {
+    std::unique_lock lock(m_mutex);
     if (m_users.contains(info.username)) { error = "Tên đăng nhập đã tồn tại."; return false; }
     if (plainPassword.length() < 6) { error = "Mật khẩu phải có ít nhất 6 ký tự."; return false; }
     UserInfo u = info;
     u.passwordHash = hashPassword(plainPassword);
     u.licenseStatus = "None";
     m_users[info.username] = u;
-    saveConfig();
+    if (m_settings) { saveUsers(); m_settings->sync(); }
     return true;
 }
 
 bool UserManager::updateUser(const UserInfo &info, QString &error) {
+    std::unique_lock lock(m_mutex);
     if (!m_users.contains(info.username)) { error = "User không tồn tại."; return false; }
     // Preserve password hash
     UserInfo u = info;
     u.passwordHash = m_users[info.username].passwordHash;
     m_users[info.username] = u;
-    saveConfig();
+    if (m_settings) { saveUsers(); m_settings->sync(); }
     return true;
 }
 
 bool UserManager::deleteUser(const QString &username, QString &error) {
+    std::unique_lock lock(m_mutex);
     if (username == "admin") { error = "Không thể xóa tài khoản admin mặc định."; return false; }
     if (username == m_currentUsername) { error = "Không thể xóa tài khoản đang đăng nhập."; return false; }
     if (!m_users.contains(username)) { error = "User không tồn tại."; return false; }
     m_users.remove(username);
     // Remove user section from INI
-    m_settings->remove("User_" + username);
-    saveConfig();
+    if (m_settings) {
+        m_settings->remove("User_" + username);
+        saveUsers();
+        m_settings->sync();
+    }
     return true;
 }
 
@@ -346,13 +381,17 @@ QString UserManager::generateLicenseKey() {
             key += chars[QRandomGenerator::global()->bounded(chars.size())];
         if (g < 3) key += '-';
     }
+    std::unique_lock lock(m_mutex);
     m_licenseKeys[key] = false;
-    saveLicenseKeys();
-    m_settings->sync();
+    if (m_settings) {
+        saveLicenseKeys();
+        m_settings->sync();
+    }
     return key;
 }
 
 QStringList UserManager::availableLicenseKeys() const {
+    std::shared_lock lock(m_mutex);
     QStringList result;
     for (auto it = m_licenseKeys.begin(); it != m_licenseKeys.end(); ++it)
         result << it.key();
@@ -360,6 +399,7 @@ QStringList UserManager::availableLicenseKeys() const {
 }
 
 bool UserManager::revokeLicenseKey(const QString &key, QString &error) {
+    std::unique_lock lock(m_mutex);
     if (!m_licenseKeys.contains(key)) { error = "Key không tồn tại."; return false; }
     // Revoke from user if assigned
     if (m_keyOwners.contains(key)) {
@@ -375,22 +415,27 @@ bool UserManager::revokeLicenseKey(const QString &key, QString &error) {
     if (m_settings) {
         m_settings->remove("LicenseKeys/" + key + "_used");
         m_settings->remove("LicenseKeys/" + key + "_user");
+        saveUsers();
+        saveLicenseKeys();
+        m_settings->sync();
     }
-    saveConfig();
     return true;
 }
 
 // ─── SMTP Config ──────────────────────────────────────────────────────────────
 
 QString UserManager::smtpSenderEmail() const {
+    std::shared_lock lock(m_mutex);
     return m_settings ? m_settings->value("SMTP/sender_email").toString() : QString();
 }
 
 QString UserManager::smtpSenderPassword() const {
+    std::shared_lock lock(m_mutex);
     return m_settings ? m_settings->value("SMTP/sender_password").toString() : QString();
 }
 
 void UserManager::setSmtpCredentials(const QString &email, const QString &password) {
+    std::unique_lock lock(m_mutex);
     if (!m_settings) return;
     m_settings->setValue("SMTP/sender_email",    email);
     m_settings->setValue("SMTP/sender_password", password);
@@ -400,11 +445,13 @@ void UserManager::setSmtpCredentials(const QString &email, const QString &passwo
 // ─── Per-user Preferences ─────────────────────────────────────────────────────
 
 QString UserManager::getUserPref(const QString &username, const QString &key, const QString &defaultVal) const {
+    std::shared_lock lock(m_mutex);
     if (!m_settings || username.isEmpty()) return defaultVal;
     return m_settings->value("User_" + username + "/pref_" + key, defaultVal).toString();
 }
 
 void UserManager::setUserPref(const QString &username, const QString &key, const QString &value) {
+    std::unique_lock lock(m_mutex);
     if (!m_settings || username.isEmpty()) return;
     m_settings->setValue("User_" + username + "/pref_" + key, value);
     m_settings->sync();

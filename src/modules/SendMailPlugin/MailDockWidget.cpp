@@ -20,6 +20,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSplitter>
@@ -509,8 +510,20 @@ void MailDockWidget::refreshInbox()
 {
     if (!m_mail) return;
     setBusy(true);
+
+    // Create progress dialog
+    auto *progress = new QProgressDialog(m_ctx->translate("mail.loading_inbox"), QString(), 0, 0, m_ctx->mainWindow());
+    progress->setWindowTitle(m_ctx->translate("mail.inbox_title"));
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(0);
+    progress->setCancelButton(nullptr);
+    progress->show();
+    QApplication::processEvents();
+
     auto *watcher = new QFutureWatcher<QPair<QList<MailMessage>, QString>>(this);
-    connect(watcher, &QFutureWatcher<QPair<QList<MailMessage>, QString>>::finished, this, [this, watcher]() {
+    connect(watcher, &QFutureWatcher<QPair<QList<MailMessage>, QString>>::finished, this, [this, watcher, progress]() {
+        progress->close();
+        progress->deleteLater();
         const auto result = watcher->result();
         setBusy(false);
         watcher->deleteLater();

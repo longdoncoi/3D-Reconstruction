@@ -4,6 +4,7 @@
 #include <QHash>
 #include <typeindex>
 #include <typeinfo>
+#include <shared_mutex>
 
 /**
  * @brief Type-safe service registry (Service Locator pattern).
@@ -34,6 +35,7 @@ public:
      */
     template<typename Interface>
     void registerService(Interface* impl) {
+        std::unique_lock lock(m_mutex);
         m_services[std::type_index(typeid(Interface))] =
             static_cast<void*>(impl);
     }
@@ -45,6 +47,7 @@ public:
      */
     template<typename Interface>
     Interface* get() const {
+        std::shared_lock lock(m_mutex);
         auto it = m_services.find(std::type_index(typeid(Interface)));
         if (it == m_services.end()) return nullptr;
         return static_cast<Interface*>(it.value());
@@ -55,6 +58,7 @@ public:
      */
     template<typename Interface>
     bool has() const {
+        std::shared_lock lock(m_mutex);
         return m_services.contains(std::type_index(typeid(Interface)));
     }
 
@@ -63,15 +67,18 @@ public:
      */
     template<typename Interface>
     void unregister() {
+        std::unique_lock lock(m_mutex);
         m_services.remove(std::type_index(typeid(Interface)));
     }
 
     /** @brief Xóa toàn bộ registrations. */
     void clear() {
+        std::unique_lock lock(m_mutex);
         m_services.clear();
     }
 
 private:
+    mutable std::shared_mutex m_mutex;
     QHash<std::type_index, void*> m_services;
 };
 

@@ -5,6 +5,8 @@
 #include "ReconstructionPipeline.h"
 #include "Global.h"
 #include <memory>
+#include <atomic>
+#include <shared_mutex>
 
 /**
  * @brief Concrete implementation của IReconstructionService.
@@ -29,15 +31,10 @@ public:
     bool hasResult() const override;
     void processPointCloud() override;
 
-    /**
-     * @brief Truy cập pipeline nội bộ (chỉ dùng trong app layer — không expose ra plugin).
-     * Cần thiết để ReconstructThread nhận pipeline pointer.
-     */
-    ReconstructionPipeline* pipeline() { return m_pipeline.get(); }
-
 private:
     std::unique_ptr<ReconstructionPipeline> m_pipeline;
-    bool m_running = false;
+    std::atomic<bool> m_running{false};
+    mutable std::shared_mutex m_mutex;
 };
 
 #endif // RECONSTRUCTIONSERVICE_H

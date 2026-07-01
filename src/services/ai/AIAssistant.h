@@ -11,49 +11,38 @@
 #include <QJsonArray>
 #include <QStringList>
 #include <QDateTime>
-#include <QFile>
-
-struct ChatSession {
-    QString id;           // UUID-like unique ID
-    QString title;        // Auto-generated from first message
-    QDateTime createdAt;
-    QList<QJsonObject> messages;
-};
-
 #include "Global.h"
+#include "IAIAssistantService.h"
 
-class APP_EXPORT AIAssistant : public QObject {
+class APP_EXPORT AIAssistant : public IAIAssistantService {
     Q_OBJECT
 public:
     explicit AIAssistant(QObject *parent = nullptr);
     ~AIAssistant();
 
-    void startServer(int modelIndex);
-    void stopServer();
-    void sendMessage(const QString &text, const QStringList &attachments = QStringList());
-    void sendMessageToSession(const QString &sessionId, const QString &text, const QStringList &attachments = QStringList());
-    void switchModel(int index);
+    void startServer(int modelIndex) override;
+    void stopServer() override;
+    void sendMessage(const QString &text, const QStringList &attachments = QStringList()) override;
+    void sendMessageToSession(const QString &sessionId, const QString &text, const QStringList &attachments = QStringList()) override;
+    void retryMessage(const QString &sessionId, int msgIndex) override;
+    void editMessage(const QString &sessionId, int msgIndex, const QString &newText) override;
+    void switchModel(int index) override;
 
     // Session management
-    void newChat();                              // Create new session (keep old)
-    void loadSession(const QString &sessionId); // Switch to existing session
-    void deleteSession(const QString &sessionId);
-    void clearHistory();
-    void reloadSessions();
+    void newChat() override;                              // Create new session (keep old)
+    void loadSession(const QString &sessionId) override; // Switch to existing session
+    void deleteSession(const QString &sessionId) override;
+    void clearHistory() override;
+    void reloadSessions() override;
 
-    QList<ChatSession> getSessions() const { return m_sessions; }
-    QString currentSessionId() const { return m_currentSessionId; }
-    QList<QJsonObject> getHistory() const;
-    bool isThinking() const { return m_isThinking; }
-    bool isSessionThinking(const QString &sessionId) const;
-    bool isServerRunning() const { return aiServerProcess->state() != QProcess::NotRunning; }
+    QList<ChatSession> getSessions() const override { return m_sessions; }
+    QString currentSessionId() const override { return m_currentSessionId; }
+    QList<QJsonObject> getHistory() const override;
+    bool isThinking() const override { return m_isThinking; }
+    bool isSessionThinking(const QString &sessionId) const override;
+    bool isServerRunning() const override { return aiServerProcess->state() != QProcess::NotRunning; }
 
-signals:
-    void historyChanged();
-    void sessionsChanged();
-    void serverStatusChanged(const QString &status);
-    void errorOccurred(const QString &error);
-    void responseReceived();
+// Signals are declared in IAIAssistantService
 
 private slots:
     void onProcessReadyRead();

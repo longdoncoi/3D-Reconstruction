@@ -5,9 +5,12 @@
 #include <QFileInfo>
 #include <QTextStream>
 #include <iostream>
+#include <mutex>
 #include "AppConfig.h"
 
 namespace Logger {
+
+static std::mutex s_logMutex;
 
 QString getLogFilePath() {
   QString logsDir = AppConfig::instance().logsDir();
@@ -39,6 +42,8 @@ void customMessageHandler(QtMsgType type, const QMessageLogContext &context,
     txt = QString("[%1] [FATAL] %2").arg(timestamp).arg(msg);
     break;
   }
+
+  std::lock_guard<std::mutex> lock(s_logMutex);
 
   // Print to terminal
   std::cout << txt.toLocal8Bit().constData() << std::endl;

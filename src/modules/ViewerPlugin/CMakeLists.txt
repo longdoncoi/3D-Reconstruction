@@ -9,6 +9,8 @@ add_library(ViewerPlugin SHARED
     ViewerRibbonUI.cpp
     ViewerNavigatorUI.h
     ViewerNavigatorUI.cpp
+    ViewerListUI.h
+    ViewerListUI.cpp
 )
 
 target_include_directories(ViewerPlugin PRIVATE
