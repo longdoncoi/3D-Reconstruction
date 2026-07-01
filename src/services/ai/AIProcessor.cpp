@@ -346,6 +346,7 @@ cv::Mat AIProcessor::runSegmentation(const cv::Mat &inputImage) {
 }
 
 void AIProcessor::resetTrackingState() {
+    std::lock_guard<std::mutex> lock(m_trackingMutex);
     currentTracks.clear();
     nextTrackId = 0;
 }
@@ -427,6 +428,8 @@ cv::Mat AIProcessor::runTracking(const cv::Mat &inputImage) {
   for (int idx : indices) {
       current_frame_boxes.push_back(boxes[idx]);
   }
+
+  std::lock_guard<std::mutex> lock(m_trackingMutex);
 
   // Simple IOU Tracking
   std::map<int, cv::Rect> newTracks;

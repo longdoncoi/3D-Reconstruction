@@ -1,6 +1,7 @@
 #include "MailDockWidget.h"
 
 #include "IAppContext.h"
+#include "CustomProgressDialog.h"
 #include "ModernMessageBox.h"
 #include "UserManager.h"
 
@@ -509,8 +510,19 @@ void MailDockWidget::refreshInbox()
 {
     if (!m_mail) return;
     setBusy(true);
+
+    auto *progress = new CustomProgressDialog(m_ctx->mainWindow());
+    progress->setLabelText(m_ctx->translate("mail.loading_inbox"));
+    progress->setRange(0, 0);
+    connect(progress, &CustomProgressDialog::stopRequested, progress, &CustomProgressDialog::hide);
+    progress->show();
+    progress->centerOnWidget(m_dock);
+    QApplication::processEvents();
+
     auto *watcher = new QFutureWatcher<QPair<QList<MailMessage>, QString>>(this);
-    connect(watcher, &QFutureWatcher<QPair<QList<MailMessage>, QString>>::finished, this, [this, watcher]() {
+    connect(watcher, &QFutureWatcher<QPair<QList<MailMessage>, QString>>::finished, this, [this, watcher, progress]() {
+        progress->hide();
+        progress->deleteLater();
         const auto result = watcher->result();
         setBusy(false);
         watcher->deleteLater();

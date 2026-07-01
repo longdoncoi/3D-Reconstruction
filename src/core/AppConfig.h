@@ -4,6 +4,7 @@
 #include <QString>
 #include <QDir>
 #include <QFileInfo>
+#include <shared_mutex>
 #include "Global.h" // For APP_EXPORT
 
 class APP_EXPORT AppConfig {
@@ -29,6 +30,7 @@ private:
     AppConfig(const AppConfig&) = delete;
     AppConfig& operator=(const AppConfig&) = delete;
 
+    mutable std::shared_mutex m_mutex;
     QString m_appDir;
     QString m_projectRoot; // Cache project root for convenience if running from build dir
 };

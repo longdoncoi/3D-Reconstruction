@@ -3,7 +3,7 @@
 #include "IAppContext.h"
 #include "ISettingsService.h"
 #include "SignalBus.h"
-#include "AIAssistant.h"
+#include "IAIAssistantService.h"
 #include "LanguageManager.h"
 #include "UserManager.h"
 #include "../../utils/FileUtilities.h"
@@ -21,6 +21,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QInputDialog>
 #include <QSettings>
 #include <QApplication>
 #include <QDesktopServices>
@@ -44,7 +45,7 @@
 
 void AIAssistantPlugin::initialize(IAppContext* context) {
     m_ctx = context;
-    m_aiAssistant = m_ctx->services()->get<AIAssistant>();
+    m_aiAssistant = m_ctx->services()->get<IAIAssistantService>();
     
     if (m_aiAssistant) {
         m_aiAssistant->reloadSessions();
@@ -54,11 +55,11 @@ void AIAssistantPlugin::initialize(IAppContext* context) {
     
     // Connect AIAssistant signals
     if (m_aiAssistant) {
-        connect(m_aiAssistant, &AIAssistant::historyChanged,     this, &AIAssistantPlugin::updateChatUI);
-        connect(m_aiAssistant, &AIAssistant::sessionsChanged,    this, &AIAssistantPlugin::updateSessionListUI);
-        connect(m_aiAssistant, &AIAssistant::serverStatusChanged,this, &AIAssistantPlugin::onAssistantStatusChanged);
-        connect(m_aiAssistant, &AIAssistant::errorOccurred,      this, &AIAssistantPlugin::onAssistantError);
-        connect(m_aiAssistant, &AIAssistant::responseReceived,   this, &AIAssistantPlugin::updateChatUI);
+        connect(m_aiAssistant, &IAIAssistantService::historyChanged,     this, &AIAssistantPlugin::updateChatUI);
+        connect(m_aiAssistant, &IAIAssistantService::sessionsChanged,    this, &AIAssistantPlugin::updateSessionListUI);
+        connect(m_aiAssistant, &IAIAssistantService::serverStatusChanged,this, &AIAssistantPlugin::onAssistantStatusChanged);
+        connect(m_aiAssistant, &IAIAssistantService::errorOccurred,      this, &AIAssistantPlugin::onAssistantError);
+        connect(m_aiAssistant, &IAIAssistantService::responseReceived,   this, &AIAssistantPlugin::updateChatUI);
     }
     
     // Inject AI Assistant button into tab.ai_assistant panel
@@ -249,6 +250,29 @@ void AIAssistantPlugin::onModelSelected(int index) {
 }
 
 void AIAssistantPlugin::onChatLinkClicked(const QUrl &url) {
+    if (url.scheme() == "action") {
+        QString path = url.path();
+        if (path.startsWith("retry:")) {
+            int msgIndex = path.mid(6).toInt();
+            m_aiAssistant->retryMessage(m_aiAssistant->currentSessionId(), msgIndex);
+        } else if (path.startsWith("edit:")) {
+            int msgIndex = path.mid(5).toInt();
+            auto history = m_aiAssistant->getHistory();
+            if (msgIndex >= 0 && msgIndex < history.size()) {
+                QString currentText = history[msgIndex]["content"].toString();
+                bool ok;
+                QString newText = QInputDialog::getMultiLineText(m_ctx->mainWindow(), 
+                                      "Edit Message", 
+                                      "Update your question:", 
+                                      currentText, &ok);
+                if (ok && !newText.isEmpty() && newText != currentText) {
+                    m_aiAssistant->editMessage(m_aiAssistant->currentSessionId(), msgIndex, newText);
+                }
+            }
+        }
+        return;
+    }
+
     if (url.scheme() == "img") {
         QString path = url.path();
 #ifdef Q_OS_WIN

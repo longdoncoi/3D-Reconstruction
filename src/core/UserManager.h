@@ -8,6 +8,7 @@
 #include <QDate>
 #include <QMap>
 #include <QSettings>
+#include <shared_mutex>
 #include "Global.h"
 
 enum class UserRole { Admin, User };
@@ -87,7 +88,6 @@ public:
 
 private:
     explicit UserManager(QObject *parent = nullptr);
-    static UserManager *s_instance;
 
     QString hashPassword(const QString &password) const;
     void    ensureDefaultAdmin();
@@ -96,6 +96,7 @@ private:
     void    loadLicenseKeys();
     void    saveLicenseKeys();
 
+    mutable std::shared_mutex m_mutex;
     QString m_configPath;
     QSettings *m_settings = nullptr;
     QString    m_currentUsername;

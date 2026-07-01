@@ -12,6 +12,7 @@
 #include <QMainWindow>
 #include <QPainter>
 #include <QCheckBox>
+#include <QPointer>
 
 // Helper: find the top-level QMainWindow
 static QMainWindow* findMainWindow() {
@@ -251,15 +252,17 @@ void ThemeSelectionDialog::applyGlobalBackground(QMainWindow *mw, const QString 
         // We need the overlay to resize with the main window.
         // A simple event filter can do this.
         class OverlayResizer : public QObject {
-            QLabel* m_overlay;
         public:
-            OverlayResizer(QLabel* overlay, QObject* parent) : QObject(parent), m_overlay(overlay) {}
+            OverlayResizer(QObject* parent) : QObject(parent) {}
             bool eventFilter(QObject* obj, QEvent* event) override {
                 if (event->type() == QEvent::Resize) {
                     QWidget* w = qobject_cast<QWidget*>(obj);
-                    if (w && m_overlay) {
-                        m_overlay->setGeometry(w->rect());
-                        m_overlay->lower(); // Keep it at the bottom
+                    if (w) {
+                        QLabel* overlay = w->findChild<QLabel*>("bgGlobalOverlay");
+                        if (overlay) {
+                            overlay->setGeometry(w->rect());
+                            overlay->lower(); // Keep it at the bottom
+                        }
                     }
                 }
                 return QObject::eventFilter(obj, event);
@@ -267,7 +270,7 @@ void ThemeSelectionDialog::applyGlobalBackground(QMainWindow *mw, const QString 
         };
         // Avoid adding multiple filters
         if (!mw->property("hasOverlayResizer").toBool()) {
-            mw->installEventFilter(new OverlayResizer(overlay, mw));
+            mw->installEventFilter(new OverlayResizer(mw));
             mw->setProperty("hasOverlayResizer", true);
         }
     }

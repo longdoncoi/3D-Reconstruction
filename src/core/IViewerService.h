@@ -18,6 +18,8 @@ public:
     virtual void    onAutoPrev() = 0;
     virtual QString  getCurrentAIMode() const = 0;
     virtual void    setAIMode(const QString& mode) = 0;
+    virtual bool    isUpdateSceneEnabled() const = 0;
+    virtual void    setUpdateSceneEnabled(bool enabled) = 0;
 };
 
 #endif // IVIEWERSERVICE_H

@@ -103,6 +103,12 @@ qt_add_executable(3D-Reconstruction WIN32 MACOSX_BUNDLE
     src/core/IAIService.h                       # NEW: AI service interface
     src/core/IMailService.h
     src/core/IAppContext.h                      # Updated: added services()
+    src/core/IAIAssistantService.h
+    src/core/ISceneService.h
+    src/core/ISettingsService.h
+    src/core/IViewerService.h
+    src/core/IPlugin.h
+    src/core/AIMode.h
 
     # ── services/scene/ ──────────────────────────────────────────────────────
     src/services/scene/SceneService.h

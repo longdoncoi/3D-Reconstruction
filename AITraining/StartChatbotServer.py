@@ -65,6 +65,7 @@ import hashlib
 import pickle
 import logging
 import logging.handlers
+import gc
 from abc import ABC, abstractmethod
 from contextlib import contextmanager, asynccontextmanager
 from dataclasses import dataclass, field
@@ -93,6 +94,7 @@ CACHE_METADATA = os.path.join(CACHE_DIR, "metadata.json")
 # Kích thước: ~470MB (so với ~80MB), nhưng độ chính xác retrieval tăng rõ rệt.
 # Nếu muốn giữ model cũ (tiết kiệm RAM/disk): đổi lại "all-MiniLM-L6-v2" hoặc "paraphrase-multilingual-MiniLM-L12-v2"
 EMBED_MODEL_NAME = "clip-ViT-B-32"
+RAG_CACHE_VERSION = 3
 
 # [FIX-7] Cross-encoder re-ranking — bật/tắt tùy tài nguyên
 # True  = kết quả chính xác hơn, latency tăng ~100-300ms/request
@@ -104,6 +106,7 @@ RERANKER_TOP_K  = 8    # Tăng lên 8 để lấy thêm context
 # [FIX-9] Chunk nhỏ hơn → embedding signal tập trung, ít nhiễu
 # 1200 thay vì 1800: mỗi chunk mang một ý chính, không pha trộn nhiều chủ đề
 # LƯU Ý: thay đổi giá trị này buộc rebuild cache
+ENABLE_VISION_LLM = os.environ.get("AI_ENABLE_VISION_LLM", "1").strip().lower() in {"1", "true", "yes", "on"}
 CHUNK_CHARS     = 1200
 OVERLAP_CHARS   = 300  # Tăng lên 300 để giữ liên kết tiếng Việt
 
@@ -186,12 +189,20 @@ MODELS = [
     },
 ]
 
+FALLBACK_TEXT_MODEL = {
+    "repo_id":  "bartowski/Qwen2.5-3B-Instruct-GGUF",
+    "filename": "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+    "desc":     "Qwen2.5-3B (Q4_K_M) — Text Fallback",
+}
+
 try:
     MODEL_IDX = int(sys.argv[1]) if len(sys.argv) > 1 else 0
     if MODEL_IDX < 0 or MODEL_IDX >= len(MODELS):
         MODEL_IDX = 0
 except (ValueError, IndexError):
     MODEL_IDX = 0
+
+active_model_desc = MODELS[MODEL_IDX]["desc"]
 
 # ─── 7. BM25 tokenizer hỗ trợ tiếng Việt ─────────────────────────────────────
 # [FIX-6] CRITICAL: regex cũ r"[a-z0-9_]+" chỉ bắt Latin → bỏ sót TOÀN BỘ
@@ -265,6 +276,22 @@ def _image_to_data_uri(filepath: str, max_dim: int = 512) -> str:
         with open(filepath, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
     return f"data:image/{mime};base64,{b64}"
+
+def _load_image_for_embedding(filepath: str, max_dim: int = 256):
+    from PIL import Image, ImageOps
+    with Image.open(filepath) as img:
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+        return img.copy()
+
+def _release_ml_memory():
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 # ─── 9. Document Loaders ─────────────────────────────────────────────────────
 class BaseDocumentLoader(ABC):
@@ -511,14 +538,12 @@ class ImageLoader(BaseDocumentLoader):
 
     def load(self, fp: str) -> list:
         try:
-            b64 = _image_to_data_uri(fp)
             rel = os.path.relpath(fp, PROJECT_DIR)
             return [ChunkResult(
                 text=f"[Image: {rel}]",
                 source_path=fp,
                 loader_type="image",
                 is_image=True,
-                image_b64=b64
             )]
         except Exception as e:
             logger.error("Error loading image %s: %s", fp, e)
@@ -567,6 +592,7 @@ def build_registry() -> DocumentLoaderRegistry:
 EXCLUDED_DIRS  = {
     ".git", "build", "__pycache__", ".qtcreator", ".cache", "Cache",
     "runs", "Dicom", "Predict", "3DModels", "Dataset", "logs",
+    ".github", ".prompts", ".review", ".tasks", "scripts"
 }
 SCANNABLE_EXTS = {".cpp", ".h", ".py", ".md", ".cmake", ".jpg", ".jpeg", ".png", ".webp"}
 DOC_EXTS_GLOB  = ("*.docx", "*.pdf", "*.txt", "*.jpg", "*.jpeg", "*.png", "*.webp")
@@ -645,6 +671,7 @@ def get_file_system_hash() -> str:
     # [v2.2] Thêm config vào hash: đổi EMBED_MODEL hoặc CHUNK_CHARS → tự rebuild
     entries.append(f"embed_model={EMBED_MODEL_NAME}")
     entries.append(f"chunk_chars={CHUNK_CHARS}")
+    entries.append(f"cache_version={RAG_CACHE_VERSION}")
 
     combined = "\n".join(entries).encode("utf-8")
     return hashlib.md5(combined).hexdigest()
@@ -686,6 +713,7 @@ def save_cache(index, chunks: list, bm25) -> None:
         "model_idx":   MODEL_IDX,
         "embed_model": EMBED_MODEL_NAME,
         "chunk_chars": CHUNK_CHARS,
+        "cache_version": RAG_CACHE_VERSION,
     }
     with open(CACHE_METADATA, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
@@ -714,7 +742,6 @@ def build_index_from_scratch(chunks: list, embed_model):
     import faiss as _faiss
     import numpy as np
     from rank_bm25 import BM25Okapi
-    from PIL import Image
 
     t = time.monotonic()
     logger.info("Building index: %d chunks", len(chunks))
@@ -722,17 +749,11 @@ def build_index_from_scratch(chunks: list, embed_model):
     t_enc = time.monotonic()
     text_indices = []
     texts = []
-    image_indices = []
-    images = []
+    image_items = []
 
     for i, c in enumerate(chunks):
         if getattr(c, "is_image", False):
-            try:
-                images.append(Image.open(c.source_path).convert("RGB"))
-                image_indices.append(i)
-            except Exception:
-                texts.append(getattr(c, "text", str(c)))
-                text_indices.append(i)
+            image_items.append((i, c.source_path))
         else:
             texts.append(getattr(c, "text", str(c)))
             text_indices.append(i)
@@ -745,10 +766,70 @@ def build_index_from_scratch(chunks: list, embed_model):
         for idx, emb in zip(text_indices, text_embs):
             final_embeddings[idx] = emb
             
-    if images:
-        print(f"\n       Encoding {len(images)} image chunks", end="", flush=True)
-        img_embs = embed_model.encode(images, show_progress_bar=False, normalize_embeddings=True, batch_size=64)
-        for idx, emb in zip(image_indices, img_embs):
+    if image_items:
+        image_batch_size = 4
+        print(f"\n       Encoding {len(image_items)} image chunks", end="", flush=True)
+        for start in range(0, len(image_items), image_batch_size):
+            batch_items = image_items[start:start + image_batch_size]
+            batch_indices = []
+            batch_images = []
+            for idx, image_path in batch_items:
+                try:
+                    batch_images.append(_load_image_for_embedding(image_path))
+                    batch_indices.append(idx)
+                except Exception as e:
+                    logger.warning("Image load skipped for embedding: %s | %s", image_path, e)
+
+            if not batch_images:
+                continue
+
+            try:
+                img_embs = embed_model.encode(
+                    batch_images,
+                    show_progress_bar=False,
+                    normalize_embeddings=True,
+                    batch_size=len(batch_images)
+                )
+                for idx, emb in zip(batch_indices, img_embs):
+                    final_embeddings[idx] = emb
+            except Exception as e:
+                logger.warning(
+                    "Image embedding batch failed (%d-%d): %s; retrying one by one",
+                    start + 1, start + len(batch_items), e
+                )
+                for idx, img in zip(batch_indices, batch_images):
+                    try:
+                        emb = embed_model.encode(
+                            [img],
+                            show_progress_bar=False,
+                            normalize_embeddings=True,
+                            batch_size=1
+                        )[0]
+                        final_embeddings[idx] = emb
+                    except Exception as single_e:
+                        logger.warning(
+                            "Image embedding skipped for %s: %s",
+                            getattr(chunks[idx], "source_path", idx), single_e
+                        )
+            finally:
+                for img in batch_images:
+                    try:
+                        img.close()
+                    except Exception:
+                        pass
+                _release_ml_memory()
+
+    missing_indices = [i for i, emb in enumerate(final_embeddings) if emb is None]
+    if missing_indices:
+        logger.warning("Falling back to text embeddings for %d chunks", len(missing_indices))
+        fallback_texts = [getattr(chunks[i], "text", str(chunks[i])) for i in missing_indices]
+        fallback_embs = embed_model.encode(
+            fallback_texts,
+            show_progress_bar=False,
+            normalize_embeddings=True,
+            batch_size=32
+        )
+        for idx, emb in zip(missing_indices, fallback_embs):
             final_embeddings[idx] = emb
 
     embeddings = final_embeddings
@@ -810,6 +891,13 @@ def hybrid_retrieve(query: str, query_image_b64: str = None, k: int = 14, final_
 
     if knowledge_index is None or not knowledge_chunks:
         return []
+
+    if embed_model_ref is None:
+        if bm25_index is None or not query:
+            return []
+        bm25_raw = np.array(bm25_index.get_scores(_tokenize_vn(query)))
+        bm25_top_idx = np.argsort(bm25_raw)[::-1][:final_k]
+        return [knowledge_chunks[int(i)] for i in bm25_top_idx if i >= 0 and bm25_raw[int(i)] > 0]
 
     n = min(k, len(knowledge_chunks))
 
@@ -919,8 +1007,11 @@ def get_context(query: str, query_image_b64: str = None) -> tuple:
 
     for chunk in candidates:
         if getattr(chunk, "is_image", False):
-            if chunk.image_b64:
-                image_chunks.append(chunk.image_b64)
+            try:
+                image_chunks.append(chunk.image_b64 or _image_to_data_uri(chunk.source_path))
+            except Exception as e:
+                logger.warning("Failed to prepare image context %s: %s",
+                               getattr(chunk, "source_path", "?"), e)
             continue
 
         text_content = getattr(chunk, "text", str(chunk))
@@ -968,54 +1059,24 @@ def trim_history(messages: list, max_tokens: int = 2000) -> list:
     return messages
 
 
-def build_prompt(messages: list, doc_ctx: str, code_ctx: str) -> str:
-    system_prompt = (
-        "Bạn là trợ lý AI chuyên nghiệp cho dự án 3D-Reconstruction.\n"
-        "NGUYÊN TẮC TRẢ LỜI:\n"
-        "1. Dựa chủ yếu vào tài liệu và mã nguồn được cung cấp bên dưới để trả lời.\n"
-        "2. Nếu câu hỏi không liên quan đến bất kỳ nội dung nào trong ngữ cảnh, "
-        "   hãy nói ngắn gọn: 'Câu hỏi này nằm ngoài phạm vi tài liệu dự án.' rồi dừng.\n"
-        "3. Không bịa đặt hoặc suy đoán thông tin kỹ thuật không có trong tài liệu.\n"
-        "4. Khi nhắc đến code hoặc tài liệu, hãy ghi rõ số thứ tự nguồn [1], [2]... "
-        "   tương ứng với danh sách ngữ cảnh bên dưới.\n"
-        "5. Ưu tiên trả lời ĐẦY ĐỦ và CHI TIẾT — giải thích từng bước, nêu lý do "
-        "   kỹ thuật, trích dẫn trực tiếp từ tài liệu khi có thể.\n"
-        "6. Cấu trúc câu trả lời: tóm tắt ngắn → giải thích chi tiết → ví dụ/code.\n"
-        "7. Trả lời bằng tiếng Việt trừ khi người dùng hỏi bằng tiếng Anh. Nếu tài liệu "
-        "   nguồn là tiếng Anh, hãy DỊCH và GIẢI THÍCH sang tiếng Việt.\n"
-        "8. LUÔN sử dụng định dạng Markdown (tiêu đề in đậm, bullet points, code blocks "
-        "   có highlight syntax) để trình bày đẹp và dễ đọc.\n"
-        "9. QUAN TRỌNG: Luôn hoàn thành câu cuối cùng trước khi kết thúc. "
-        "   Không bao giờ dừng giữa câu, giữa đoạn code, hoặc giữa danh sách.\n"
-    )
-
-    # [FIX-11] Context đã được format có số thứ tự từ get_context()
-    if doc_ctx:
-        system_prompt += f"\n\n{doc_ctx}"
-    if code_ctx:
-        system_prompt += f"\n\n{code_ctx}"
-    if not doc_ctx and not code_ctx:
-        system_prompt += "\n\n[Không tìm thấy ngữ cảnh liên quan. Từ chối theo nguyên tắc số 2.]"
-
+def build_text_messages(messages: list, doc_ctx: str, code_ctx: str) -> list:
+    system_prompt = _build_system_prompt(doc_ctx, code_ctx)
+    result = [{"role": "system", "content": system_prompt}]
+    
     history = trim_history(list(messages[:-1]), max_tokens=2000)
-    prompt  = f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-
     for msg in history:
-        role    = "user" if msg.get("role") == "user" else "assistant"
+        role = "user" if msg.get("role") == "user" else "assistant"
         content = msg.get("content", "")
         if msg.get("attachments"):
-            content += (f"\n\n[Hệ thống: Người dùng tải lên: {', '.join(msg['attachments'])}. "
-                        "Model text-only, không thể xem ảnh.]")
-        prompt += f"<|im_start|>{role}\n{content}<|im_end|>\n"
-
+            content += f"\n\n[Hệ thống: Người dùng tải lên: {', '.join(msg['attachments'])}. Model text-only, không thể xem ảnh.]"
+        result.append({"role": role, "content": content})
+        
     last = messages[-1]
     last_content = last.get("content", "")
     if last.get("attachments"):
-        last_content += (f"\n\n[Hệ thống: Người dùng tải lên: {', '.join(last['attachments'])}. "
-                         "Model text-only, không thể xem ảnh.]")
-    prompt += f"<|im_start|>user\n{last_content}<|im_end|>\n"
-    prompt += "<|im_start|>assistant\n"
-    return prompt
+        last_content += f"\n\n[Hệ thống: Người dùng tải lên: {', '.join(last['attachments'])}. Model text-only, không thể xem ảnh.]"
+    result.append({"role": "user", "content": last_content})
+    return result
 
 
 def _build_system_prompt(doc_ctx: str, code_ctx: str) -> str:
@@ -1040,6 +1101,8 @@ def _build_system_prompt(doc_ctx: str, code_ctx: str) -> str:
         "   Không bao giờ dừng giữa câu, giữa đoạn code, hoặc giữa danh sách.\n"
         "10. Nếu người dùng gửi ảnh, hãy phân tích nội dung ảnh chi tiết "
         "    và liên hệ với tài liệu dự án nếu có thể.\n"
+        "11. Nếu câu hỏi liên quan đến nhân vật trong dự án (như thành viên, tác giả, người tham gia), hãy trả lời trực tiếp mà KHÔNG trích dẫn tài liệu tham khảo.\n"
+        "12. KHÔNG liệt kê hay in lại log 'TÀI LIỆU THAM KHẢO' hoặc 'MÃ NGUỒN LIÊN QUAN' trong câu trả lời.\n"
     )
     if doc_ctx:
         system_prompt += f"\n\n{doc_ctx}"
@@ -1165,8 +1228,14 @@ app.add_middleware(
 )
 
 
+import threading
+import asyncio
+
+llm_lock = threading.Lock()
+current_task_id = None
+
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatRequest, http_req: Request):
+def chat_completions(request: ChatRequest, http_req: Request):
     if llm is None:
         raise HTTPException(status_code=503, detail="LLM chưa khởi tạo")
 
@@ -1187,92 +1256,70 @@ async def chat_completions(request: ChatRequest, http_req: Request):
 
     t_rag             = time.monotonic()
     doc_ctx, code_ctx, image_chunks = get_context(user_query, query_image_b64=query_image_b64)
+    if not query_image_b64:
+        image_chunks = []
     rag_ms            = (time.monotonic() - t_rag) * 1000
 
     messages_raw     = [m.model_dump() for m in request.messages]
 
-    # ── Phân luồng: Vision model vs Text-only model ──
     if is_vision_model:
-        # Vision path: dùng create_chat_completion() với multimodal messages
-        vision_msgs      = build_vision_messages(messages_raw, doc_ctx, code_ctx, image_chunks)
-        estimated_tokens = 0
-        for m in vision_msgs:
-            content = m.get("content", "")
-            if isinstance(content, str):
-                estimated_tokens += estimate_tokens(content)
-            elif isinstance(content, list):
-                for part in content:
-                    if part.get("type") == "text":
-                        estimated_tokens += estimate_tokens(part.get("text", ""))
-                    elif part.get("type") == "image_url":
-                        estimated_tokens += 1000  # Ước lượng ~1000 token cho mỗi ảnh đã resize
-
-
-        if estimated_tokens >= LLM_N_CTX - 512:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Hội thoại quá dài (~{estimated_tokens} tokens). Vui lòng bắt đầu phiên mới."
-            )
-
-        available_tokens = LLM_N_CTX - estimated_tokens - 400
-        max_tokens       = min(request.max_tokens, max(512, available_tokens))
-
-        logger.debug("[Vision] Token budget: prompt≈%d  available=%d  max_tokens=%d",
-                     estimated_tokens, available_tokens, max_tokens)
-
-        t_llm = time.monotonic()
-        try:
-            response = llm.create_chat_completion(
-                messages       = vision_msgs,
-                max_tokens     = max_tokens,
-                temperature    = request.temperature,
-                repeat_penalty = 1.1,
-            )
-        except Exception as e:
-            logger.error("LLM Vision error: %s", e)
-            raise HTTPException(status_code=500, detail=f"Lỗi inference (vision): {e}")
-
-        llm_ms        = (time.monotonic() - t_llm) * 1000
-        total_ms      = (time.monotonic() - req_start) * 1000
-        answer        = response["choices"][0]["message"]["content"].strip()
-        finish_reason = response["choices"][0].get("finish_reason", "")
-
+        msgs = build_vision_messages(messages_raw, doc_ctx, code_ctx, image_chunks)
+        estimated_tokens = sum(estimate_tokens(m.get("text", "")) for p in msgs for m in (p.get("content") if isinstance(p.get("content"), list) else [{"text": p.get("content", "")}]))
     else:
-        # Text-only path: giữ nguyên flow cũ
-        full_prompt      = build_prompt(messages_raw, doc_ctx, code_ctx)
-        estimated_tokens = estimate_tokens(full_prompt)
+        msgs = build_text_messages(messages_raw, doc_ctx, code_ctx)
+        estimated_tokens = sum(estimate_tokens(m.get("content", "")) for m in msgs)
 
-        if estimated_tokens >= LLM_N_CTX - 512:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Hội thoại quá dài (~{estimated_tokens} tokens). Vui lòng bắt đầu phiên mới."
-            )
+    if estimated_tokens >= LLM_N_CTX - 512:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Hội thoại quá dài (~{estimated_tokens} tokens). Vui lòng bắt đầu phiên mới."
+        )
 
-        available_tokens = LLM_N_CTX - estimated_tokens - 400  # v2.1 buffer
-        max_tokens       = min(request.max_tokens, max(512, available_tokens))
+    available_tokens = LLM_N_CTX - estimated_tokens - 400
+    max_tokens       = min(request.max_tokens, max(512, available_tokens))
+    logger.info(
+        "Context ready | tokens≈%d/%d max_tokens=%d vision=%s images=%d",
+        estimated_tokens, LLM_N_CTX, max_tokens, is_vision_model, len(image_chunks)
+    )
 
-        logger.debug("Token budget: prompt≈%d  available=%d  max_tokens=%d",
-                     estimated_tokens, available_tokens, max_tokens)
+    def run_llm():
+        with llm_lock:
+            answer = ""
+            finish_reason = "stop"
+            start_time = time.monotonic()
+            
+            try:
+                logger.info("LLM inference start")
+                response_iter = llm.create_chat_completion(
+                    messages       = msgs,
+                    max_tokens     = max_tokens,
+                    temperature    = request.temperature,
+                    repeat_penalty = 1.1,
+                    stream         = True,
+                )
+                
+                for chunk in response_iter:
+                    delta = chunk["choices"][0].get("delta", {})
+                    if "content" in delta:
+                        answer += delta["content"]
+                        
+                    fr = chunk["choices"][0].get("finish_reason")
+                    if fr is not None:
+                        finish_reason = fr
 
-        t_llm = time.monotonic()
-        try:
-            response = llm(
-                full_prompt,
-                stop           = ["<|im_end|>", "<|im_start|>"],
-                max_tokens     = max_tokens,
-                temperature    = request.temperature,
-                repeat_penalty = 1.1,
-            )
-        except Exception as e:
-            logger.error("LLM error: %s", e)
-            raise HTTPException(status_code=500, detail=f"Lỗi inference: {e}")
+            except Exception as e:
+                logger.error("LLM error: %s", e)
+                raise
+                
+            return answer.strip(), finish_reason, (time.monotonic() - start_time) * 1000
 
-        llm_ms        = (time.monotonic() - t_llm) * 1000
-        total_ms      = (time.monotonic() - req_start) * 1000
-        answer        = response["choices"][0]["text"].strip()
-        finish_reason = response["choices"][0].get("finish_reason", "")
+    try:
+        answer, finish_reason, llm_ms = run_llm()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi inference: {e}")
 
-    # [FIX-10] Phát hiện và cảnh báo khi câu trả lời bị cắt do hết max_tokens
+    total_ms = (time.monotonic() - req_start) * 1000
+
     if finish_reason == "length":
         logger.warning(
             "Answer truncated (finish_reason=length): max_tokens=%d, estimated_prompt=%d",
@@ -1320,14 +1367,14 @@ async def health():
         "chunk_chars":     CHUNK_CHARS,
         "chars_per_token": CHARS_PER_TOKEN,
         "max_context":     MAX_CONTEXT_CHARS,
-        "model":           MODELS[MODEL_IDX]["desc"],
+        "model":           active_model_desc,
         "is_vision":       is_vision_model,
     }
 
 
 @app.get("/v1/models")
 async def list_models():
-    return {"data": [{"id": MODELS[MODEL_IDX]["filename"],
+    return {"data": [{"id": active_model_desc,
                       "object": "model",
                       "desc": MODELS[MODEL_IDX]["desc"]}]}
 
@@ -1335,7 +1382,10 @@ async def list_models():
 # ─── 15. Main ─────────────────────────────────────────────────────────────────
 def _print_banner():
     desc = MODELS[MODEL_IDX]["desc"]
-    vision_str = "YES" if MODELS[MODEL_IDX].get("is_vision", False) else "no"
+    if MODELS[MODEL_IDX].get("is_vision", False):
+        vision_str = "YES" if ENABLE_VISION_LLM else "fallback text"
+    else:
+        vision_str = "no"
     print(f"""
 ╔══════════════════════════════════════════════════════╗
 ║         3D-Reconstruction AI Server v2.2             ║
@@ -1362,7 +1412,7 @@ if __name__ == "__main__":
         embed_model_ref = _embed
 
     # Step 2: Cross-encoder reranker (optional)
-    if USE_RERANKER:
+    if USE_RERANKER and not MODELS[MODEL_IDX].get("is_vision", False):
         with startup_step(f"Loading reranker ({RERANKER_MODEL})"):
             try:
                 from sentence_transformers import CrossEncoder
@@ -1395,8 +1445,18 @@ if __name__ == "__main__":
             bm25_index       = None
             print("       (skipped — no documents)")
 
+    if MODELS[MODEL_IDX].get("is_vision", False):
+        logger.info("Releasing embedding model before LLM load; retrieval will use BM25 fallback")
+        embed_model_ref = None
+        _embed = None
+    _release_ml_memory()
+
     # Step 5: Download LLM if needed
     selected   = MODELS[MODEL_IDX]
+    if selected.get("is_vision", False) and not ENABLE_VISION_LLM:
+        logger.warning("Vision LLM disabled for stability; using text fallback model")
+        print("  ⏭   Vision LLM disabled; using text fallback model")
+        selected = FALLBACK_TEXT_MODEL
     model_path = os.path.join(MODELS_DIR, selected["filename"])
 
     if not os.path.exists(model_path):
@@ -1443,31 +1503,88 @@ if __name__ == "__main__":
             logger.info("Qwen25VLChatHandler loaded with %s", selected["mmproj_filename"])
 
         with startup_step(f"Loading LLM Vision ({selected['desc']})"):
-            llm = Llama(
-                model_path   = model_path,
-                chat_handler = _chat_handler,
-                chat_format  = "qwen2.5-vl",
-                n_gpu_layers = 99,
-                n_ctx        = LLM_N_CTX,
-                n_batch      = 512,
-                verbose      = False,
-                use_mmap     = True,
-                use_mlock    = False,
-            )
-        is_vision_model = True
-        logger.info("Vision model activated: %s", selected["desc"])
+            try:
+                llm = Llama(
+                    model_path   = model_path,
+                    chat_handler = _chat_handler,
+                    chat_format  = "qwen2.5-vl",
+                    n_gpu_layers = 99,
+                    n_ctx        = LLM_N_CTX,
+                    n_batch      = 256,
+                    verbose      = False,
+                    use_mmap     = True,
+                    use_mlock    = False,
+                )
+                is_vision_model = True
+                active_model_desc = selected["desc"]
+                logger.info("Vision model activated: %s", selected["desc"])
+            except Exception as e:
+                logger.warning("Vision model load failed (%s); retrying on CPU", e)
+                _release_ml_memory()
+                try:
+                    llm = Llama(
+                        model_path   = model_path,
+                        chat_handler = _chat_handler,
+                        chat_format  = "qwen2.5-vl",
+                        n_gpu_layers = 0,
+                        n_ctx        = LLM_N_CTX,
+                        n_batch      = 128,
+                        verbose      = False,
+                        use_mmap     = True,
+                        use_mlock    = False,
+                    )
+                    is_vision_model = True
+                    active_model_desc = selected["desc"] + " — CPU"
+                    logger.info("Vision model activated on CPU: %s", selected["desc"])
+                except Exception as cpu_e:
+                    logger.warning("Vision CPU load failed (%s); falling back to text model", cpu_e)
+                    _chat_handler = None
+                    fallback = FALLBACK_TEXT_MODEL if os.path.exists(os.path.join(MODELS_DIR, FALLBACK_TEXT_MODEL["filename"])) else MODELS[0]
+                    fallback_path = os.path.join(MODELS_DIR, fallback["filename"])
+                    if not os.path.exists(fallback_path):
+                        hf_hub_download(
+                            repo_id=fallback["repo_id"],
+                            filename=fallback["filename"],
+                            local_dir=MODELS_DIR,
+                        )
+                    llm = Llama(
+                        model_path   = fallback_path,
+                        n_gpu_layers = 0,
+                        n_ctx        = LLM_N_CTX,
+                        n_batch      = 256,
+                        verbose      = False,
+                        use_mmap     = True,
+                        use_mlock    = False,
+                    )
+                    is_vision_model = False
+                    active_model_desc = fallback["desc"]
+                    logger.info("Fallback text model activated: %s", fallback["desc"])
     else:
         # ── Text-only model: giữ nguyên flow cũ ──
         with startup_step(f"Loading LLM ({selected['desc']})"):
-            llm = Llama(
-                model_path   = model_path,
-                n_gpu_layers = 99,
-                n_ctx        = LLM_N_CTX,
-                n_batch      = 512,
-                verbose      = False,
-                use_mmap     = True,
-                use_mlock    = False,
-            )
+            try:
+                llm = Llama(
+                    model_path   = model_path,
+                    n_gpu_layers = 99,
+                    n_ctx        = LLM_N_CTX,
+                    n_batch      = 512,
+                    verbose      = False,
+                    use_mmap     = True,
+                    use_mlock    = False,
+                )
+            except Exception as e:
+                logger.warning("Text model load failed with GPU offload (%s); retrying on CPU", e)
+                _release_ml_memory()
+                llm = Llama(
+                    model_path   = model_path,
+                    n_gpu_layers = 0,
+                    n_ctx        = LLM_N_CTX,
+                    n_batch      = 128,
+                    verbose      = False,
+                    use_mmap     = True,
+                    use_mlock    = False,
+                )
+        active_model_desc = selected["desc"]
 
     # Start server
     logger.info("Starting uvicorn on 127.0.0.1:8080")

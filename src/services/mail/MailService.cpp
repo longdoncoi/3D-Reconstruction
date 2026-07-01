@@ -305,6 +305,7 @@ void MailService::loadFromCurrentUser()
     const QString username = currentUsername();
     if (!um || username.isEmpty()) return;
 
+    std::unique_lock lock(m_mutex);
     m_email = um->getUserPref(username, "mail_email", um->currentUser().email);
     m_password = um->getUserPref(username, "mail_password");
     m_displayName = um->getUserPref(username, "mail_display_name", username);
@@ -316,13 +317,18 @@ void MailService::setCredentials(const QString& email,
                                  const QString& password,
                                  const QString& displayName)
 {
-    m_email = email.trimmed();
-    m_password = password;
-    m_displayName = displayName.trimmed();
+    {
+        std::unique_lock lock(m_mutex);
+        m_email = email.trimmed();
+        m_password = password;
+        m_displayName = displayName.trimmed();
+    }
 
     auto *um = UserManager::instance();
     const QString username = currentUsername();
     if (!um || username.isEmpty()) return;
+    
+    std::shared_lock lock(m_mutex);
     um->setUserPref(username, "mail_email", m_email);
     um->setUserPref(username, "mail_password", m_password);
     um->setUserPref(username, "mail_display_name", m_displayName);
@@ -330,17 +336,22 @@ void MailService::setCredentials(const QString& email,
 
 QString MailService::signature() const
 {
+    std::shared_lock lock(m_mutex);
     return m_signature;
 }
 
 QString MailService::displayName() const
 {
+    std::shared_lock lock(m_mutex);
     return m_displayName;
 }
 
 void MailService::setSignature(const QString &signature)
 {
-    m_signature = signature;
+    {
+        std::unique_lock lock(m_mutex);
+        m_signature = signature;
+    }
     auto *um = UserManager::instance();
     const QString username = currentUsername();
     if (um && !username.isEmpty()) {
@@ -351,37 +362,50 @@ void MailService::setSignature(const QString &signature)
 bool MailService::hasCredentials() const
 {
     const_cast<MailService*>(this)->loadFromCurrentUser();
+    std::shared_lock lock(m_mutex);
     return !m_email.trimmed().isEmpty() && !m_password.isEmpty();
 }
 
 QString MailService::senderEmail() const
 {
     const_cast<MailService*>(this)->loadFromCurrentUser();
+    std::shared_lock lock(m_mutex);
     return m_email;
 }
 
 bool MailService::sendMail(const MailMessage& message, QString& errorMsg)
 {
     loadFromCurrentUser();
-    if (!hasCredentials()) {
+    
+    QString email, password, displayName, signature;
+    {
+        std::shared_lock lock(m_mutex);
+        email = m_email;
+        password = m_password;
+        displayName = m_displayName;
+        signature = m_signature;
+    }
+
+    if (email.trimmed().isEmpty() || password.isEmpty()) {
         errorMsg = "Mail account is not configured.";
         return false;
     }
 
-    SmtpMailer mailer(m_email, m_password);
-    return mailer.sendMail(m_email,
+    SmtpMailer mailer(email, password);
+    return mailer.sendMail(email,
                            splitAddresses(message.to),
                            splitAddresses(message.cc),
                            splitAddresses(message.bcc),
                            message.subject,
-                           htmlWithSignature(message.htmlBody, m_signature),
+                           htmlWithSignature(message.htmlBody, signature),
                            message.attachmentPaths,
-                           m_displayName,
+                           displayName,
                            errorMsg);
 }
 
 QString MailService::imapHost() const
 {
+    std::shared_lock lock(m_mutex);
     const QString domain = m_email.section('@', 1).toLower();
     if (domain == "gmail.com") return "imap.gmail.com";
     if (domain == "hotmail.com" || domain == "outlook.com" || domain == "live.com") return "outlook.office365.com";
@@ -452,7 +476,15 @@ bool MailService::sendImap(QSslSocket &sock, const QString &tag, const QString &
 bool MailService::testConnection(QString& errorMsg)
 {
     loadFromCurrentUser();
-    if (!hasCredentials()) {
+    
+    QString email, password;
+    {
+        std::shared_lock lock(m_mutex);
+        email = m_email;
+        password = m_password;
+    }
+
+    if (email.trimmed().isEmpty() || password.isEmpty()) {
         errorMsg = "Mail account is not configured.";
         return false;
     }
@@ -461,7 +493,7 @@ bool MailService::testConnection(QString& errorMsg)
     if (!openImap(errorMsg, sock)) return false;
 
     QString response;
-    const QString login = QString("LOGIN \"%1\" \"%2\"").arg(m_email, m_password);
+    const QString login = QString("LOGIN \"%1\" \"%2\"").arg(email, password);
     if (!sendImap(sock, "A001", login, response)) {
         errorMsg = "IMAP login failed: " + response;
         return false;
@@ -474,7 +506,15 @@ QList<MailMessage> MailService::fetchInbox(int limit, QString& errorMsg)
 {
     loadFromCurrentUser();
     QList<MailMessage> messages;
-    if (!hasCredentials()) {
+    
+    QString email, password;
+    {
+        std::shared_lock lock(m_mutex);
+        email = m_email;
+        password = m_password;
+    }
+
+    if (email.trimmed().isEmpty() || password.isEmpty()) {
         errorMsg = "Mail account is not configured.";
         return messages;
     }
@@ -483,7 +523,7 @@ QList<MailMessage> MailService::fetchInbox(int limit, QString& errorMsg)
     if (!openImap(errorMsg, sock)) return messages;
 
     QString response;
-    if (!sendImap(sock, "A001", QString("LOGIN \"%1\" \"%2\"").arg(m_email, m_password), response)) {
+    if (!sendImap(sock, "A001", QString("LOGIN \"%1\" \"%2\"").arg(email, password), response)) {
         errorMsg = "IMAP login failed: " + response;
         return messages;
     }
@@ -528,10 +568,18 @@ QList<MailMessage> MailService::fetchInbox(int limit, QString& errorMsg)
 bool MailService::markRead(const QString& uid, QString& errorMsg)
 {
     loadFromCurrentUser();
+    
+    QString email, password;
+    {
+        std::shared_lock lock(m_mutex);
+        email = m_email;
+        password = m_password;
+    }
+    
     QSslSocket sock;
     if (!openImap(errorMsg, sock)) return false;
     QString response;
-    if (!sendImap(sock, "A001", QString("LOGIN \"%1\" \"%2\"").arg(m_email, m_password), response)) {
+    if (!sendImap(sock, "A001", QString("LOGIN \"%1\" \"%2\"").arg(email, password), response)) {
         errorMsg = "IMAP login failed: " + response;
         return false;
     }
@@ -545,10 +593,18 @@ bool MailService::markRead(const QString& uid, QString& errorMsg)
 bool MailService::deleteMail(const QString& uid, QString& errorMsg)
 {
     loadFromCurrentUser();
+    
+    QString email, password;
+    {
+        std::shared_lock lock(m_mutex);
+        email = m_email;
+        password = m_password;
+    }
+
     QSslSocket sock;
     if (!openImap(errorMsg, sock)) return false;
     QString response;
-    if (!sendImap(sock, "A001", QString("LOGIN \"%1\" \"%2\"").arg(m_email, m_password), response)) {
+    if (!sendImap(sock, "A001", QString("LOGIN \"%1\" \"%2\"").arg(email, password), response)) {
         errorMsg = "IMAP login failed: " + response;
         return false;
     }

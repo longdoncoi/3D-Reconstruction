@@ -1,5 +1,9 @@
 #include "LanguageManager.h"
 #include <QDebug>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QFile>
+#include <QCoreApplication>
 
 // ─────────────────────────────────────────────────────────────────────────────
 LanguageManager& LanguageManager::instance() {
@@ -7,13 +11,13 @@ LanguageManager& LanguageManager::instance() {
     return inst;
 }
 
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QFile>
-#include <QCoreApplication>
-
 LanguageManager::LanguageManager() {
     loadTranslations();
+}
+
+QString LanguageManager::currentLanguage() const {
+    std::shared_lock lock(m_mutex);
+    return m_lang;
 }
 
 void LanguageManager::setLanguage(const QString &lang) {
@@ -21,12 +25,19 @@ void LanguageManager::setLanguage(const QString &lang) {
         qWarning() << "[LanguageManager] Unknown language:" << lang;
         return;
     }
-    if (m_lang == lang) return;
-    m_lang = lang;
-    emit languageChanged(m_lang);
+    
+    QString newLang;
+    {
+        std::unique_lock lock(m_mutex);
+        if (m_lang == lang) return;
+        m_lang = lang;
+        newLang = m_lang;
+    }
+    emit languageChanged(newLang);
 }
 
 QString LanguageManager::translate(const QString &key) const {
+    std::shared_lock lock(m_mutex);
     if (!m_dict.contains(key)) {
         qWarning() << "[LanguageManager] Missing key:" << key;
         return key;
@@ -40,10 +51,12 @@ QString LanguageManager::translate(const char *key) const {
 }
 
 QString LanguageManager::displayName() const {
+    std::shared_lock lock(m_mutex);
     return m_lang == "vi" ? "Tiếng Việt" : "English";
 }
 
 QString LanguageManager::flagEmoji() const {
+    std::shared_lock lock(m_mutex);
     // Unicode Regional Indicator flags
     return m_lang == "vi" ? "🇻🇳" : "🇬🇧";
 }
@@ -52,6 +65,7 @@ QString LanguageManager::flagEmoji() const {
 // Translation dictionary  (key → vi, en)
 // ─────────────────────────────────────────────────────────────────────────────
 void LanguageManager::loadTranslations() {
+    std::unique_lock lock(m_mutex);
     m_dict.clear();
     QString appDir = QCoreApplication::applicationDirPath();
     

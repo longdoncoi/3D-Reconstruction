@@ -4,6 +4,7 @@
 #include "IViewerService.h"
 #include "ISceneService.h"
 #include "IReconstructionService.h"
+#include "Image2DLoader.h"
 #include "SignalBus.h"
 #include "ReconstructThread.h"
 #include "LanguageManager.h"
@@ -37,7 +38,6 @@
 #include <QListWidgetItem>
 #include <QStyle>
 #include "ReconstructionRibbonUI.h"
-#include "ReconstructionListUI.h"
 
 void ReconstructionPlugin::initialize(IAppContext* context) {
     m_ctx = context;
@@ -67,11 +67,6 @@ void ReconstructionPlugin::initialize(IAppContext* context) {
     if (m_ribbonUI->btnRun()) connect(m_ribbonUI->btnRun(), &QToolButton::clicked, this, &ReconstructionPlugin::onRunReconstruction);
     if (m_ribbonUI->btnToggleCloud()) connect(m_ribbonUI->btnToggleCloud(), &QToolButton::clicked, this, &ReconstructionPlugin::onTogglePointCloud);
 
-    m_listUI = new ReconstructionListUI(m_ctx, this);
-    m_listUI->setupUI();
-    connect(m_listUI, &ReconstructionListUI::imageRowChanged, this, &ReconstructionPlugin::onImageListRowChanged);
-
-    connect(m_ctx->signalBus(), &SignalBus::imageIndexChanged, this, &ReconstructionPlugin::onImageIndexChanged);
     connect(m_ctx->signalBus(), &SignalBus::stateChanged, this, &ReconstructionPlugin::updateActions);
     connect(m_ctx->signalBus(), &SignalBus::languageChanged, this, &ReconstructionPlugin::updateActions);
 
@@ -122,56 +117,33 @@ void ReconstructionPlugin::onLoadMultipleImages() {
     // Dùng IReconstructionService interface — không biết ReconstructionPipeline
     if (m_reconSvc) m_reconSvc->setImages(stdFiles);
     
-    // Show navigator when loading images
-    if (QWidget *navigator = m_ctx->mainWindow()->findChild<QWidget*>("viewerNavigatorWidget")) {
-        navigator->show();
-    }
+    // Disable updating 2D texture actor during navigation for 3D Reconstruction mode
+    m_ctx->viewer()->setUpdateSceneEnabled(false);
     
-    // Populate image list
-    if (m_listUI && m_listUI->listWidget()) {
-        QListWidget* imageList = m_listUI->listWidget();
-        imageList->setProperty("mode", "reconstruct");
-        imageList->blockSignals(true);
-        imageList->clear();
-        
-        if (m_progressDialog) {
-            m_progressDialog->setRange(0, fileNames.size());
-        }
-        
-        int progress = 0;
-        for (const QString& f : fileNames) {
-            QListWidgetItem* item = new QListWidgetItem(QIcon(f), QFileInfo(f).fileName());
-            item->setToolTip(f);
-            imageList->addItem(item);
-            
-            progress++;
-            if (m_progressDialog) {
-                m_progressDialog->setValue(progress);
-            }
-            QApplication::processEvents();
-        }
-        
-        if (imageList->count() > 0) {
-            imageList->setCurrentRow(0);
-        }
-        imageList->show();
-        imageList->blockSignals(false);
-
-        // Push file list to viewer service
-        QStringList filenamesOnly;
-        for (const QString& f : fileNames) {
-            filenamesOnly.append(QFileInfo(f).fileName());
-        }
-        m_ctx->viewer()->setCurrent2DImagePath(fileNames.first());
-        m_ctx->viewer()->setImageList(filenamesOnly, 0);
-        // m_ctx->viewer()->loadCurrentIndexImage(); // Do not display 2D image in main screen for 3D Reconstruction
+    // Reset AI mode to clear any active video tracking
+    m_ctx->viewer()->setAIMode(AIMode::None);
+    
+    // Push file list to viewer service. ViewerPlugin will automatically show the thumbnail list.
+    QStringList filenamesOnly;
+    for (const QString& f : fileNames) {
+        filenamesOnly.append(QFileInfo(f).fileName());
     }
+    m_ctx->viewer()->setCurrent2DImagePath(fileNames.first());
+    m_ctx->viewer()->setImageList(filenamesOnly, 0);
 
     // Immediately clean up any loaded DICOM volume/renderers to free up RAM/VRAM
     m_ctx->scene()->resetToSingleRenderer();
     m_ctx->scene()->clear3DModel();
     m_ctx->scene()->clearPointCloud();
     m_ctx->scene()->clear2DTexture();
+
+    // Display the first image on the VTK scene
+    vtkSmartPointer<vtkActor> actor = Image2DLoader::load(fileNames.first());
+    if (actor) {
+        m_ctx->scene()->setTextureActor(actor);
+        m_ctx->scene()->renderer()->ResetCamera();
+        m_ctx->scene()->vtkWidget()->renderWindow()->Render();
+    }
 
     // Try to load camera params automatically
     QFileInfo firstFile(fileNames.first());
@@ -219,6 +191,9 @@ void ReconstructionPlugin::onRunReconstruction() {
         onLoadMultipleImages();
     }
     if (!m_reconSvc || m_reconSvc->getImageList().isEmpty()) return;
+
+    // Stop any active video tracking before reconstruction
+    m_ctx->viewer()->setAIMode(AIMode::None);
 
     // Immediately clean up any loaded DICOM volume/renderers to free up RAM/VRAM
     m_ctx->scene()->resetToSingleRenderer();
@@ -350,78 +325,5 @@ void ReconstructionPlugin::updateActions() {
     if (m_ribbonUI) {
         m_ribbonUI->updateTranslations();
         m_ribbonUI->updateStates(m_ctx->scene()->isPointCloudVisible());
-    }
-}
-
-void ReconstructionPlugin::onImageIndexChanged(int index, int total) {
-    Q_UNUSED(total);
-    if (!m_listUI || !m_listUI->listWidget()) return;
-    QListWidget* imageList = m_listUI->listWidget();
-
-    QString currentImg = m_ctx->viewer()->getCurrent2DImagePath();
-    if (currentImg.isEmpty()) {
-        imageList->hide();
-        return;
-    }
-
-    QFileInfo fi(currentImg);
-    QDir dir = fi.dir();
-    QStringList imageFileList = dir.entryList(QStringList() << "*.png" << "*.jpg" << "*.jpeg" << "*.bmp", QDir::Files, QDir::Name);
-
-    // Check if we need to refresh/populate imageList
-    bool needsRepopulate = false;
-    if (imageList->count() != imageFileList.size()) {
-        needsRepopulate = true;
-    } else {
-        // Check if first or last item matches
-        if (imageList->count() > 0) {
-            QString firstPath = imageList->item(0)->toolTip();
-            if (QFileInfo(firstPath).dir() != dir) {
-                needsRepopulate = true;
-            }
-        }
-    }
-
-    if (needsRepopulate) {
-        imageList->blockSignals(true);
-        imageList->clear();
-        for (const QString& fName : imageFileList) {
-            QString fullPath = dir.absoluteFilePath(fName);
-            QListWidgetItem* item = new QListWidgetItem(QIcon(fullPath), fName);
-            item->setToolTip(fullPath);
-            imageList->addItem(item);
-        }
-        imageList->show();
-        imageList->blockSignals(false);
-    }
-
-    if (index >= 0 && index < imageList->count()) {
-        imageList->blockSignals(true);
-        imageList->setCurrentRow(index);
-        imageList->scrollToItem(imageList->item(index), QAbstractItemView::PositionAtCenter);
-        imageList->blockSignals(false);
-    }
-}
-
-void ReconstructionPlugin::onImageListRowChanged(int row) {
-    if (row >= 0 && m_listUI && m_listUI->listWidget()) {
-        QListWidget* imageList = m_listUI->listWidget();
-        QStringList filenames;
-        for (int i = 0; i < imageList->count(); ++i) {
-            filenames.append(QFileInfo(imageList->item(i)->toolTip()).fileName());
-        }
-        m_ctx->viewer()->setImageList(filenames, row);
-        m_ctx->viewer()->setCurrent2DImagePath(imageList->item(row)->toolTip());
-        
-        bool isAITab = false;
-        if (QWidget* mw = m_ctx->mainWindow()) {
-            if (QWidget* aiPanel = mw->findChild<QWidget*>("tabPanel_tab.ai")) {
-                isAITab = aiPanel->isVisible();
-            }
-        }
-        
-        if (imageList->property("mode").toString() == "view2d" || isAITab) {
-            m_ctx->viewer()->loadCurrentIndexImage();
-        }
     }
 }

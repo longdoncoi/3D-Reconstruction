@@ -23,6 +23,7 @@ void ViewerService::setCurrent2DImagePath(const QString &path) {
 void ViewerService::setImageList(const QStringList &list, int index) {
     imageFileList = list;
     currentImageIndex = index;
+    emit m_ctx->signalBus()->imageListUpdated(imageFileList, currentImageIndex);
     emit m_ctx->signalBus()->imageIndexChanged(currentImageIndex, imageFileList.size());
 }
 
@@ -30,21 +31,7 @@ void ViewerService::loadCurrentIndexImage() {
     if (currentImageIndex < 0 || currentImageIndex >= imageFileList.size()) return;
     current2DImagePath = QFileInfo(current2DImagePath).absolutePath() + "/" + imageFileList[currentImageIndex];
     
-    bool isReconMode = false;
-    if (QWidget* mw = m_ctx->mainWindow()) {
-        if (QWidget* list = mw->findChild<QWidget*>("reconstructionImageList")) {
-            if (list->isVisible() && list->property("mode").toString() == "reconstruct") {
-                isReconMode = true;
-            }
-        }
-        if (QWidget* aiPanel = mw->findChild<QWidget*>("tabPanel_tab.ai")) {
-            if (aiPanel->isVisible()) {
-                isReconMode = false;
-            }
-        }
-    }
-    
-    if (!isReconMode) {
+    if (m_updateScene) {
         m_ctx->scene()->setTextureActor(Image2DLoader::load(current2DImagePath));
         m_ctx->scene()->vtkWidget()->renderWindow()->Render();
     }

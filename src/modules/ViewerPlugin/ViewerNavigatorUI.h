@@ -13,12 +13,14 @@ public:
     explicit ViewerNavigatorUI(IAppContext* ctx, QObject* parent = nullptr);
     
     QPushButton* btnPrev() const { return m_btnPrev; }
-    QPushButton* btnNext() const { return m_btnNext; }
     QPushButton* btnAutoPrev() const { return m_btnAutoPrev; }
     QPushButton* btnAutoNext() const { return m_btnAutoNext; }
+    QPushButton* btnNext() const { return m_btnNext; }
+    QWidget* widget() const { return m_widget; }
 
 private:
-    IAppContext* m_ctx;
+    IAppContext* m_ctx = nullptr;
+    QWidget* m_widget = nullptr;
     QPushButton* m_btnPrev;
     QPushButton* m_btnNext;
     QPushButton* m_btnAutoPrev;

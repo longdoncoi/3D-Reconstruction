@@ -10,7 +10,7 @@
 #include "IPlugin.h"
 
 #include "IAppContext.h"
-class AIAssistant;
+class IAIAssistantService;
 class AIAssistantRibbonUI;
 class ChatBotDockWidget;
 class QListWidgetItem;
@@ -57,7 +57,7 @@ private:
     QStringList pendingAttachments;
 
     IAppContext* m_ctx = nullptr;
-    AIAssistant* m_aiAssistant = nullptr;
+    IAIAssistantService* m_aiAssistant = nullptr;
 
     AIAssistantRibbonUI* m_ribbonUI = nullptr;
     ChatBotDockWidget* m_dockUI = nullptr;

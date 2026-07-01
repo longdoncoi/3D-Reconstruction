@@ -11,8 +11,8 @@
 /**
  * @brief Concrete implementation của IAIService.
  *
- * Wrap AIProcessor và AIAssistant — expose interface sạch cho plugin.
- * Plugin không cần include AIProcessor.h hoặc AIAssistant.h.
+ * Wrap AIProcessor — expose interface sạch cho plugin.
+ * Plugin không cần include AIProcessor.h.
  */
 class APP_EXPORT AIService : public QObject, public IAIService {
     Q_OBJECT
@@ -34,20 +34,9 @@ public:
     cv::Mat runTracking(const cv::Mat& inputImage) override;
     void resetTrackingState() override;
 
-    /**
-     * Truy cập processor nội bộ (chỉ dùng trong app layer).
-     * Plugin nên dùng IAIService interface.
-     */
-    AIProcessor* processor() { return m_processor.get(); }
-
-    /**
-     * Truy cập AI assistant nội bộ (chat/LLM).
-     */
-    AIAssistant* assistant() { return m_assistant.get(); }
-
+    // IAIService methods...
 private:
     std::unique_ptr<AIProcessor>  m_processor;
-    std::unique_ptr<AIAssistant>  m_assistant;
 };
 
 #endif // AISERVICE_H

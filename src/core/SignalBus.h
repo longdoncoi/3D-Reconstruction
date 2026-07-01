@@ -12,8 +12,10 @@ public:
 
 signals:
     // --- Existing signals (backward-compatible) ---
+    // Data/State signals
     void stateChanged();
     void imageIndexChanged(int index, int total);
+    void imageListUpdated(const QStringList& images, int currentIndex);
     void autoNavigationChanged(bool active, bool isNext);
     void languageChanged(const QString &lang);
     void userChanged(const QString &username);

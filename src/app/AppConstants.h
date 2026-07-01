@@ -33,6 +33,7 @@ namespace AppConstants {
         constexpr int SESSION_PANEL_MIN_WIDTH   = 120;
         constexpr int SESSION_PANEL_MAX_WIDTH   = 280;
         constexpr int MAX_ATTACHMENT_SIZE_MB     = 10;
+        constexpr int VISION_MODEL_INDEX         = 2;
 
         // AI model selector options
         inline QStringList modelNames() {
@@ -50,7 +51,9 @@ namespace AppConstants {
         constexpr double DEFAULT_TEMPERATURE        = 0.7;
         constexpr int    DEFAULT_MAX_TOKENS         = 512;
         constexpr int    STOP_SERVER_TIMEOUT_MS     = 3000;
-        constexpr int    INFERENCE_TIMEOUT_MS       = 300000;  // 5 min for vision model
+        constexpr int    TEXT_INFERENCE_TIMEOUT_MS  = 300000;  // 5 min
+        constexpr int    VISION_INFERENCE_TIMEOUT_MS = 900000; // 15 min
+        constexpr int    INFERENCE_TIMEOUT_MS       = TEXT_INFERENCE_TIMEOUT_MS;
 
         inline QString apiEndpoint() {
             return QStringLiteral("http://127.0.0.1:%1/v1/chat/completions").arg(SERVER_PORT);

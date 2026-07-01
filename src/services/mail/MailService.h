@@ -5,6 +5,7 @@
 #include "Global.h"
 
 #include <QString>
+#include <shared_mutex>
 
 class APP_EXPORT MailService : public IMailService {
 public:
@@ -34,6 +35,7 @@ private:
     QString decodeMimeWords(const QString &value) const;
     MailMessage parseFetchedMessage(const QString &uid, const QString &raw) const;
 
+    mutable std::shared_mutex m_mutex;
     QString m_email;
     QString m_password;
     QString m_displayName;

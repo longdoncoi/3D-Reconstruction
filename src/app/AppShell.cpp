@@ -9,6 +9,7 @@
 #include "AIService.h"
 #include "IReconstructionService.h"
 #include "IAIService.h"
+#include "IAIAssistantService.h"
 #include "IMailService.h"
 #include "MailService.h"
 #include "LanguageManager.h"
@@ -42,6 +43,7 @@ void AppShell::initializeServices() {
     m_settingsService = std::make_unique<SettingsService>();
     m_reconService    = std::make_unique<ReconstructionService>();
     m_aiService       = std::make_unique<AIService>(this);
+    m_aiAssistant     = std::make_unique<AIAssistant>(this);
     m_mailService     = std::make_unique<MailService>();
 
     // 2. Register vào ServiceRegistry (plugin lookup bằng interface type)
@@ -50,7 +52,7 @@ void AppShell::initializeServices() {
     m_registry->registerService<ISettingsService>(m_settingsService.get());
     m_registry->registerService<IReconstructionService>(m_reconService.get());
     m_registry->registerService<IAIService>(m_aiService.get());
-    m_registry->registerService<AIAssistant>(m_aiService->assistant());
+    m_registry->registerService<IAIAssistantService>(m_aiAssistant.get());
     m_registry->registerService<IMailService>(m_mailService.get());
 }
 
