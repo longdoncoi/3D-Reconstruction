@@ -30,11 +30,34 @@ LƯU Ý: v2.2 đổi embedding model và chunk size → xóa Cache/ để rebuil
 """
 
 # ─── 0. Bootstrap ─────────────────────────────────────────────────────────────
-import sys
 import os
+import sys
+import ast
+import base64
+import ctypes
+import gc
+import glob
+import hashlib
+import json
+import logging
+import logging.handlers
+import pickle
+import re
+import threading
+import time
+import unicodedata
+import warnings
+from abc import ABC, abstractmethod
+from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import List, Optional
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, field_validator
 
 if sys.platform == "win32":
-    import ctypes
     ctypes.windll.kernel32.SetConsoleOutputCP(65001)
     ctypes.windll.kernel32.SetConsoleCP(65001)
 
@@ -49,29 +72,11 @@ os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
 
-import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", module="keras")
 
 # ─── 1. Stdlib imports ────────────────────────────────────────────────────────
-import re
-import ast
-import base64
-import glob
-import json
-import time
-import hashlib
-import pickle
-import logging
-import logging.handlers
-import gc
-from abc import ABC, abstractmethod
-from contextlib import contextmanager, asynccontextmanager
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import List, Optional
-
 # ─── 2. Đường dẫn ─────────────────────────────────────────────────────────────
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
@@ -272,7 +277,7 @@ def _image_to_data_uri(filepath: str, max_dim: int = 512) -> str:
         save_fmt = "JPEG" if mime == "jpeg" else mime.upper()
         img.save(buf, format=save_fmt, quality=85)
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-    except Exception as e:
+    except Exception:
         with open(filepath, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
     return f"data:image/{mime};base64,{b64}"
@@ -1038,10 +1043,6 @@ def get_context(query: str, query_image_b64: str = None) -> tuple:
 
 
 # ─── 14. FastAPI + LLM ────────────────────────────────────────────────────────
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
-
 llm = None
 _chat_handler = None  # Qwen25VLChatHandler, chỉ dùng cho vision model
 
@@ -1059,8 +1060,68 @@ def trim_history(messages: list, max_tokens: int = 2000) -> list:
     return messages
 
 
-def build_text_messages(messages: list, doc_ctx: str, code_ctx: str) -> list:
-    system_prompt = _build_system_prompt(doc_ctx, code_ctx)
+_CHARACTER_QUERY_PATTERNS = (
+    r"\b(nhan\s*vat|thanh\s*vien|tac\s*gia|nguoi\s*tham\s*gia|nhan\s*su|doi\s*ngu|member|author|participant|character|person|people)\b",
+    r"\b(team\s*lead|teamlead|leader|project\s*manager|dev\s*manager|devmanager|hr\s*manager|hrmanager|ky\s*su|engineer|developer)\b",
+    r"\b(la\s+ai|who\s+is|who'?s|nguoi\s+nao|ai\s+phu\s+trach|ai\s+quan\s+ly)\b",
+)
+_ROLE_QUERY_PATTERN = r"\b(vai\s*tro|role)\b"
+_PROJECT_CHARACTER_NAMES = (
+    "john",
+    "carpenter",
+    "chris",
+    "hoang",
+    "nancy",
+    "snow",
+    "lavrov",
+)
+
+
+def _normalize_for_intent(text: str) -> str:
+    text = (text or "").casefold().replace("đ", "d")
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _is_character_query(query: str) -> bool:
+    """True khi câu hỏi đang hỏi về nhân vật/thành viên/vai trò trong dự án."""
+    normalized = _normalize_for_intent(query)
+    if not normalized:
+        return False
+
+    if any(re.search(pattern, normalized) for pattern in _CHARACTER_QUERY_PATTERNS):
+        return True
+
+    has_project_cue = re.search(r"\b(du\s*an|project|e2|e3|ewoosoft|story)\b", normalized)
+    has_known_character = any(re.search(rf"\b{re.escape(name)}\b", normalized) for name in _PROJECT_CHARACTER_NAMES)
+    if has_project_cue and has_known_character:
+        return True
+
+    if (has_project_cue or has_known_character) and re.search(_ROLE_QUERY_PATTERN, normalized):
+        return True
+
+    return False
+
+
+def _strip_reference_citations_for_character_answer(answer: str) -> str:
+    if not answer:
+        return answer
+
+    cleaned = re.sub(r"\s*\[(?:\d+)(?:\s*,\s*\d+)*\]", "", answer)
+    source_exts = r"txt|md|pdf|docx?|pptx?|xlsx?|eml|html?"
+    source_intro = rf"(?:Theo|Dựa trên)\s+(?:tài liệu|nguồn)\s*(?:tham khảo)?\s*(?:[^,\n]{{1,160}}\.(?:{source_exts})[,.:;]?\s*)?"
+    cleaned = re.sub(rf"(?im)^\s*{source_intro}", "", cleaned)
+    cleaned = re.sub(rf"(?i)(:\s*(?:\*\*)?\s*){source_intro}", r"\1", cleaned)
+    cleaned = re.sub(r"(?im)^\s*(?:Tài liệu|Nguồn)\s*(?:tham khảo)?\s*[:\-–]\s*", "", cleaned)
+    cleaned = re.sub(r"[ \t]+([,.;:])", r"\1", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def build_text_messages(messages: list, doc_ctx: str, code_ctx: str, suppress_citations: bool = False) -> list:
+    system_prompt = _build_system_prompt(doc_ctx, code_ctx, suppress_citations=suppress_citations)
     result = [{"role": "system", "content": system_prompt}]
     
     history = trim_history(list(messages[:-1]), max_tokens=2000)
@@ -1079,7 +1140,7 @@ def build_text_messages(messages: list, doc_ctx: str, code_ctx: str) -> list:
     return result
 
 
-def _build_system_prompt(doc_ctx: str, code_ctx: str) -> str:
+def _build_system_prompt(doc_ctx: str, code_ctx: str, suppress_citations: bool = False) -> str:
     """Build system prompt chung cho cả text-only và vision model."""
     system_prompt = (
         "Bạn là trợ lý AI chuyên nghiệp cho dự án 3D-Reconstruction.\n"
@@ -1104,6 +1165,14 @@ def _build_system_prompt(doc_ctx: str, code_ctx: str) -> str:
         "11. Nếu câu hỏi liên quan đến nhân vật trong dự án (như thành viên, tác giả, người tham gia), hãy trả lời trực tiếp mà KHÔNG trích dẫn tài liệu tham khảo.\n"
         "12. KHÔNG liệt kê hay in lại log 'TÀI LIỆU THAM KHẢO' hoặc 'MÃ NGUỒN LIÊN QUAN' trong câu trả lời.\n"
     )
+    if suppress_citations:
+        system_prompt += (
+            "\nCHẾ ĐỘ CÂU HỎI NHÂN VẬT/VAI TRÒ ĐANG BẬT:\n"
+            "- Câu hỏi hiện tại liên quan đến nhân vật, thành viên hoặc vai trò trong dự án.\n"
+            "- Trả lời trực tiếp, tự nhiên; TUYỆT ĐỐI KHÔNG dùng ký hiệu nguồn như [1], [2].\n"
+            "- KHÔNG viết các cụm mở đầu như 'Theo tài liệu', 'Theo nguồn', 'Tài liệu tham khảo'.\n"
+            "- Vẫn dùng thông tin trong ngữ cảnh, nhưng không để lộ citation hoặc tên file nguồn trong câu trả lời.\n"
+        )
     if doc_ctx:
         system_prompt += f"\n\n{doc_ctx}"
     if code_ctx:
@@ -1113,14 +1182,14 @@ def _build_system_prompt(doc_ctx: str, code_ctx: str) -> str:
     return system_prompt
 
 
-def build_vision_messages(messages: list, doc_ctx: str, code_ctx: str, image_chunks: list = None) -> list:
+def build_vision_messages(messages: list, doc_ctx: str, code_ctx: str, image_chunks: list = None, suppress_citations: bool = False) -> list:
     """
     Build messages format cho create_chat_completion() — vision model.
     Ảnh đính kèm được encode thành base64 data URI theo OpenAI multimodal format.
     Chỉ ảnh ở message cuối cùng được gửi — ảnh cũ trong history bị bỏ qua
     để tiết kiệm context.
     """
-    system_prompt = _build_system_prompt(doc_ctx, code_ctx)
+    system_prompt = _build_system_prompt(doc_ctx, code_ctx, suppress_citations=suppress_citations)
     result = [{"role": "system", "content": system_prompt}]
 
     # History: chỉ gửi text, bỏ ảnh cũ
@@ -1210,7 +1279,7 @@ async def lifespan(app: FastAPI):
     logger.info("Server ready in %.1fs — http://127.0.0.1:8080", total)
     print(f"\n{'═'*54}")
     print(f"  ✅  Server ready in {total:.1f}s total")
-    print(f"  🌐  http://127.0.0.1:8080")
+    print("  🌐  http://127.0.0.1:8080")
     print(f"  📋  Log: {os.path.relpath(LOG_FILE_PATH, BASE_DIR)}")
     print(f"  🔍  Reranker: {'ON' if _reranker else 'OFF'}")
     print(f"  👁️  Vision: {'YES' if is_vision_model else 'no'}")
@@ -1227,9 +1296,6 @@ app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["POST","GET"], allow_headers=["*"]
 )
 
-
-import threading
-import asyncio
 
 llm_lock = threading.Lock()
 current_task_id = None
@@ -1253,6 +1319,7 @@ def chat_completions(request: ChatRequest, http_req: Request):
 
     logger.info("Query from %s: %s…", http_req.client.host,
                 user_query[:60].replace("\n", " "))
+    suppress_citations = _is_character_query(user_query)
 
     t_rag             = time.monotonic()
     doc_ctx, code_ctx, image_chunks = get_context(user_query, query_image_b64=query_image_b64)
@@ -1263,10 +1330,10 @@ def chat_completions(request: ChatRequest, http_req: Request):
     messages_raw     = [m.model_dump() for m in request.messages]
 
     if is_vision_model:
-        msgs = build_vision_messages(messages_raw, doc_ctx, code_ctx, image_chunks)
+        msgs = build_vision_messages(messages_raw, doc_ctx, code_ctx, image_chunks, suppress_citations=suppress_citations)
         estimated_tokens = sum(estimate_tokens(m.get("text", "")) for p in msgs for m in (p.get("content") if isinstance(p.get("content"), list) else [{"text": p.get("content", "")}]))
     else:
-        msgs = build_text_messages(messages_raw, doc_ctx, code_ctx)
+        msgs = build_text_messages(messages_raw, doc_ctx, code_ctx, suppress_citations=suppress_citations)
         estimated_tokens = sum(estimate_tokens(m.get("content", "")) for m in msgs)
 
     if estimated_tokens >= LLM_N_CTX - 512:
@@ -1278,8 +1345,8 @@ def chat_completions(request: ChatRequest, http_req: Request):
     available_tokens = LLM_N_CTX - estimated_tokens - 400
     max_tokens       = min(request.max_tokens, max(512, available_tokens))
     logger.info(
-        "Context ready | tokens≈%d/%d max_tokens=%d vision=%s images=%d",
-        estimated_tokens, LLM_N_CTX, max_tokens, is_vision_model, len(image_chunks)
+        "Context ready | tokens≈%d/%d max_tokens=%d vision=%s images=%d character_query=%s",
+        estimated_tokens, LLM_N_CTX, max_tokens, is_vision_model, len(image_chunks), suppress_citations
     )
 
     def run_llm():
@@ -1318,6 +1385,9 @@ def chat_completions(request: ChatRequest, http_req: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi inference: {e}")
 
+    if suppress_citations:
+        answer = _strip_reference_citations_for_character_answer(answer)
+
     total_ms = (time.monotonic() - req_start) * 1000
 
     if finish_reason == "length":
@@ -1351,6 +1421,7 @@ def chat_completions(request: ChatRequest, http_req: Request):
             "finish_reason":    finish_reason,
             "reranker_active":  _reranker is not None,
             "vision_model":     is_vision_model,
+            "character_query":  suppress_citations,
         },
     }
 
@@ -1495,7 +1566,7 @@ if __name__ == "__main__":
     # Step 6: Load LLM
     if selected.get("is_vision", False):
         # ── Vision model: cần chat handler + mmproj ──
-        with startup_step(f"Loading VL chat handler"):
+        with startup_step("Loading VL chat handler"):
             from llama_cpp.llama_chat_format import Qwen25VLChatHandler
             _chat_handler = Qwen25VLChatHandler(
                 clip_model_path=os.path.join(MODELS_DIR, selected["mmproj_filename"])

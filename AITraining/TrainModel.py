@@ -1,30 +1,23 @@
 import os
-import sys
+import importlib.util
+import shutil
 import subprocess
+import sys
+import webbrowser
+from threading import Timer
 
 # 1. Đảm bảo các gói cần thiết
 def install_requirements():
-    packages = ["ultralytics", "tensorboard", "shutil", "webbrowser"]
+    packages = ["ultralytics", "tensorboard"]
     for pkg in packages:
-        try:
-            if pkg == "ultralytics":
-                import ultralytics
-            elif pkg == "tensorboard":
-                import tensorboard
-            else:
-                __import__(pkg)
-        except ImportError:
+        if importlib.util.find_spec(pkg) is None:
             print(f"Installing {pkg}...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
 
 install_requirements()
 
-from ultralytics import YOLO
-from ultralytics.utils import SETTINGS
-import shutil
-import webbrowser
-import time
-from threading import Timer
+from ultralytics import YOLO  # noqa: E402
+from ultralytics.utils import SETTINGS  # noqa: E402
 
 # Ép buộc bật TensorBoard trong cấu hình của YOLO
 try:
@@ -61,11 +54,11 @@ def launch_tensorboard():
     try:
         if os.name == 'nt': # Windows
             subprocess.run(["taskkill", "/F", "/IM", "tensorboard.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except:
+    except Exception:
         pass
     
     log_dir_clean = RUNS_DIR.replace("\\", "/")
-    print(f"🌍 Dang khoi dong TensorBoard Server...")
+    print("🌍 Dang khoi dong TensorBoard Server...")
     
     try:
         # Khoi chay TensorBoard
