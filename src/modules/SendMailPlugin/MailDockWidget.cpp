@@ -21,6 +21,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSplitter>
