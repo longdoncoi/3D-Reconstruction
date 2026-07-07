@@ -44,5 +44,10 @@ int main(int argc, char* argv[])
     QSurfaceFormat::setDefaultFormat(QSurfaceFormat::defaultFormat());
     MainWindow window;
     window.show();
+
+    // Force the window to paint immediately — deferred services and plugins
+    // will initialize on the next event loop iteration (via QTimer::singleShot).
+    QApplication::processEvents();
+
     return app.exec();
 }

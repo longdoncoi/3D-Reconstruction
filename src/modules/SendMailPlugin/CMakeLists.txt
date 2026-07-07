@@ -20,6 +20,8 @@ target_include_directories(SendMailPlugin PRIVATE
     ${VTK_INCLUDE_DIRS}
 )
 
+target_precompile_headers(SendMailPlugin PRIVATE ${PROJECT_SOURCE_DIR}/src/pch.h)
+
 target_link_libraries(SendMailPlugin
     PRIVATE
         Qt6::Core

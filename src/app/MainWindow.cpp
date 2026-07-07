@@ -75,8 +75,9 @@ MainWindow::MainWindow(QWidget *parent)
   connect(&LM, &LanguageManager::languageChanged, m_shell->signalBus(),
           &SignalBus::languageChanged);
 
-  // 10. Load plugins (sau khi shell + services sẵn sàng)
-  loadPlugins();
+  // 10. Load plugins DEFERRED — window shows first, plugins load after event loop starts
+  //     This dramatically improves perceived startup time.
+  QTimer::singleShot(0, this, &MainWindow::loadPlugins);
 }
 
 MainWindow::~MainWindow() { delete ui; }

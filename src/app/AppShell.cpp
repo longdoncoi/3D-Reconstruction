@@ -20,6 +20,7 @@
 #include <QMenuBar>
 #include <QMenu>
 #include <QWidget>
+#include <QTimer>
 #include <QVTKOpenGLNativeWidget.h>
 
 AppShell::AppShell(QMainWindow*           mainWindow,
@@ -37,23 +38,27 @@ AppShell::~AppShell() = default;
 
 // ─── initializeServices ───────────────────────────────────────────────────────
 void AppShell::initializeServices() {
-    // 1. Construct services
+    // ── Phase 1: Critical services (needed for UI immediately) ────────────────
     m_sceneService    = std::make_unique<SceneService>(this, m_vtkWidget, this);
     m_viewerService   = std::make_unique<ViewerService>(this, this);
     m_settingsService = std::make_unique<SettingsService>();
-    m_reconService    = std::make_unique<ReconstructionService>();
-    m_aiService       = std::make_unique<AIService>(this);
-    m_aiAssistant     = std::make_unique<AIAssistant>(this);
-    m_mailService     = std::make_unique<MailService>();
 
-    // 2. Register vào ServiceRegistry (plugin lookup bằng interface type)
     m_registry->registerService<ISceneService>(m_sceneService.get());
     m_registry->registerService<IViewerService>(m_viewerService.get());
     m_registry->registerService<ISettingsService>(m_settingsService.get());
-    m_registry->registerService<IReconstructionService>(m_reconService.get());
-    m_registry->registerService<IAIService>(m_aiService.get());
-    m_registry->registerService<IAIAssistantService>(m_aiAssistant.get());
-    m_registry->registerService<IMailService>(m_mailService.get());
+
+    // ── Phase 2: Non-critical services (deferred — init after UI is shown) ────
+    QTimer::singleShot(0, this, [this]() {
+        m_reconService = std::make_unique<ReconstructionService>();
+        m_aiService    = std::make_unique<AIService>(this);
+        m_aiAssistant  = std::make_unique<AIAssistant>(this);
+        m_mailService  = std::make_unique<MailService>();
+
+        m_registry->registerService<IReconstructionService>(m_reconService.get());
+        m_registry->registerService<IAIService>(m_aiService.get());
+        m_registry->registerService<IAIAssistantService>(m_aiAssistant.get());
+        m_registry->registerService<IMailService>(m_mailService.get());
+    });
 }
 
 // ─── IAppContext ──────────────────────────────────────────────────────────────

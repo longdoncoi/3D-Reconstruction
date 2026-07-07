@@ -24,6 +24,8 @@ target_include_directories(ReconstructionPlugin PRIVATE
     ${PCL_INCLUDE_DIRS}
 )
 
+target_precompile_headers(ReconstructionPlugin PRIVATE ${PROJECT_SOURCE_DIR}/src/pch.h)
+
 target_link_libraries(ReconstructionPlugin
     PRIVATE
         Qt6::Core

@@ -29,6 +29,8 @@ target_include_directories(AIAssistantPlugin PRIVATE
     ${OpenCV_INCLUDE_DIRS}
 )
 
+target_precompile_headers(AIAssistantPlugin PRIVATE ${PROJECT_SOURCE_DIR}/src/pch.h)
+
 target_link_libraries(AIAssistantPlugin
     PRIVATE
         Qt6::Core

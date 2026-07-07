@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.19)
 project(3D-Reconstruction LANGUAGES CXX)
 
+# ─── Build Performance Options ────────────────────────────────────────────────
+option(CMAKE_UNITY_BUILD "Enable Unity (Jumbo) build for faster compilation" ON)
+option(CLEAN_STALE_DLLS "Remove stale DLLs from Release directory at configure time" OFF)
+if(CMAKE_UNITY_BUILD)
+    set(CMAKE_UNITY_BUILD_BATCH_SIZE 8)
+endif()
+
 # Fix future timestamps that cause constant rebuilds in MSBuild
 if(WIN32)
     message(STATUS "🔍 Checking for files with future timestamps in source directory...")
@@ -179,6 +186,9 @@ qt_add_executable(3D-Reconstruction WIN32 MACOSX_BUNDLE
     src/utils/IconFactory.cpp
 )
 
+# ─── 7b. Precompiled Headers (PCH) — biggest build speed win ─────────────────
+target_precompile_headers(3D-Reconstruction PRIVATE src/pch.h)
+
 # ─── 8. Include directories ───────────────────────────────────────────────────
 target_include_directories(3D-Reconstruction PRIVATE
     # App shell
@@ -213,8 +223,8 @@ target_compile_definitions(3D-Reconstruction PRIVATE
     APP_LIBRARY
 )
 if(MSVC)
-    target_compile_options(3D-Reconstruction PRIVATE /utf-8 /FS)
-    add_compile_options(/FS)
+    target_compile_options(3D-Reconstruction PRIVATE /utf-8 /FS /MP)
+    add_compile_options(/FS /MP)
 endif()
 
 # ─── 10. Link libraries ───────────────────────────────────────────────────────
@@ -277,11 +287,10 @@ add_custom_command(TARGET 3D-Reconstruction POST_BUILD
 )
 
 # Copy missing PCL, VTK 9.4, and OpenNI2 DLLs required at runtime
+# Consolidated into a single PowerShell invocation to avoid repeated process startup overhead
 add_custom_command(TARGET 3D-Reconstruction POST_BUILD
-    COMMAND powershell -Command "$destDir = '$<TARGET_FILE_DIR:3D-Reconstruction>'; Get-ChildItem -Path 'C:\\Program Files\\PCL 1.15.1\\3rdParty\\VTK\\bin' -Filter vtk*.dll | ForEach-Object { $target = Join-Path $destDir $_.Name; if (-not (Test-Path $target) -or (Get-Item $target).Length -ne $_.Length) { Copy-Item $_.FullName -Destination $destDir -Force } }"
-    COMMAND powershell -Command "$destDir = '$<TARGET_FILE_DIR:3D-Reconstruction>'; Get-ChildItem -Path 'C:\\Program Files\\PCL 1.15.1\\bin' | Where-Object { $_.Name -like 'pcl*.dll' -or $_.Name -like 'boost*.dll' -or $_.Name -like 'flann*.dll' -or $_.Name -like 'qhull*.dll' } | ForEach-Object { $target = Join-Path $destDir $_.Name; if (-not (Test-Path $target) -or (Get-Item $target).Length -ne $_.Length) { Copy-Item $_.FullName -Destination $destDir -Force } }"
-    COMMAND powershell -Command "$destDir = '$<TARGET_FILE_DIR:3D-Reconstruction>'; Get-ChildItem -Path 'C:\\Program Files\\OpenNI2\\Tools' -Filter *.dll | ForEach-Object { $target = Join-Path $destDir $_.Name; if (-not (Test-Path $target) -or (Get-Item $target).Length -ne $_.Length) { Copy-Item $_.FullName -Destination $destDir -Force } }"
-    COMMENT "Copying PCL, VTK, and OpenNI dependencies safely (avoiding Qt/vcpkg DLL Hell)"
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command "$destDir = '$<TARGET_FILE_DIR:3D-Reconstruction>'; $sources = @(@{ Path='C:/Program Files/PCL 1.15.1/3rdParty/VTK/bin'; Filter='vtk*.dll'; Where=$null }, @{ Path='C:/Program Files/PCL 1.15.1/bin'; Filter=$null; Where={ $_.Name -like 'pcl*.dll' -or $_.Name -like 'boost*.dll' -or $_.Name -like 'flann*.dll' -or $_.Name -like 'qhull*.dll' } }, @{ Path='C:/Program Files/OpenNI2/Tools'; Filter='*.dll'; Where=$null }); foreach ($s in $sources) { if (Test-Path $s.Path) { $items = if ($s.Filter) { Get-ChildItem -Path $s.Path -Filter $s.Filter } else { Get-ChildItem -Path $s.Path }; if ($s.Where) { $items = $items | Where-Object $s.Where }; $items | ForEach-Object { $target = Join-Path $destDir $_.Name; if (-not (Test-Path $target) -or (Get-Item $target).Length -ne $_.Length) { Copy-Item $_.FullName -Destination $destDir -Force } } } }"
+    COMMENT "Copying PCL, VTK, and OpenNI dependencies (single PS invocation)"
 )
 
 # ─── Deploy Qt Plugins Manually (Bypassing windeployqt) ────────────────────
@@ -294,13 +303,10 @@ if(QWINDOWS_DLL_PATH)
     get_filename_component(PLATFORMS_DIR "${QWINDOWS_DLL_FIRST}" DIRECTORY)
     get_filename_component(PLUGINS_ROOT "${PLATFORMS_DIR}" DIRECTORY)
     
+    # Consolidated into single PowerShell invocation (was 5 separate invocations)
     add_custom_command(TARGET 3D-Reconstruction POST_BUILD
-        COMMAND powershell -Command "if (-not (Test-Path '$<TARGET_FILE_DIR:3D-Reconstruction>\\platforms')) { Copy-Item -Path '${PLATFORMS_DIR}' -Destination '$<TARGET_FILE_DIR:3D-Reconstruction>' -Recurse -Force }"
-        COMMAND powershell -Command "if (-not (Test-Path '$<TARGET_FILE_DIR:3D-Reconstruction>\\imageformats')) { Copy-Item -Path '${PLUGINS_ROOT}/imageformats' -Destination '$<TARGET_FILE_DIR:3D-Reconstruction>' -Recurse -Force }"
-        COMMAND powershell -Command "if (-not (Test-Path '$<TARGET_FILE_DIR:3D-Reconstruction>\\iconengines')) { Copy-Item -Path '${PLUGINS_ROOT}/iconengines' -Destination '$<TARGET_FILE_DIR:3D-Reconstruction>' -Recurse -Force }"
-        COMMAND powershell -Command "if (-not (Test-Path '$<TARGET_FILE_DIR:3D-Reconstruction>\\styles')) { Copy-Item -Path '${PLUGINS_ROOT}/styles' -Destination '$<TARGET_FILE_DIR:3D-Reconstruction>' -Recurse -Force }"
-        COMMAND powershell -Command "if (-not (Test-Path '$<TARGET_FILE_DIR:3D-Reconstruction>\\tls')) { Copy-Item -Path '${PLUGINS_ROOT}/tls' -Destination '$<TARGET_FILE_DIR:3D-Reconstruction>' -Recurse -Force }"
-        COMMENT "Manually copying Qt plugins from vcpkg (avoiding windeployqt ABI mismatch)"
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command "$dest = '$<TARGET_FILE_DIR:3D-Reconstruction>'; @('${PLATFORMS_DIR}','${PLUGINS_ROOT}/imageformats','${PLUGINS_ROOT}/iconengines','${PLUGINS_ROOT}/styles','${PLUGINS_ROOT}/tls') | ForEach-Object { $dirName = Split-Path $_ -Leaf; $targetDir = Join-Path $dest $dirName; if (-not (Test-Path $targetDir) -and (Test-Path $_)) { Copy-Item -Path $_ -Destination $dest -Recurse -Force } }"
+        COMMENT "Copying Qt plugins from vcpkg (single PS invocation)"
     )
 else()
     message(WARNING "qwindows.dll NOT FOUND in vcpkg_installed! GUI might not start.")
@@ -316,12 +322,14 @@ add_custom_command(TARGET 3D-Reconstruction POST_BUILD
 )
 
 # ─── 12. Prevent DLL Hell by wiping stale DLLs at Configure time ────────────
-# Because the user previously copied conflicting DLLs (freetype.dll, etc.) into Release,
-# we must forcefully delete them so windeployqt and vcpkg can deploy the correct ones.
-file(GLOB STALE_DLLS "${CMAKE_CURRENT_BINARY_DIR}/Release/*.dll")
-if(STALE_DLLS)
-    file(REMOVE ${STALE_DLLS})
-    message(STATUS "🧹 Wiped stale DLLs from Release directory to prevent DLL Hell conflicts.")
+# Only runs when -DCLEAN_STALE_DLLS=ON is passed (e.g., after DLL conflicts).
+# Disabled by default to avoid unnecessary re-copies on every configure.
+if(CLEAN_STALE_DLLS)
+    file(GLOB STALE_DLLS "${CMAKE_CURRENT_BINARY_DIR}/Release/*.dll")
+    if(STALE_DLLS)
+        file(REMOVE ${STALE_DLLS})
+        message(STATUS "🧹 Wiped stale DLLs from Release directory to prevent DLL Hell conflicts.")
+    endif()
 endif()
 
 # ─── 13. Plugins ─────────────────────────────────────────────────────────────
