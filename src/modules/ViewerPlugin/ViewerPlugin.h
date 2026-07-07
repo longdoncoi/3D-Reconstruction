@@ -14,6 +14,7 @@ class CustomProgressDialog;
 class ViewerRibbonUI;
 class ViewerNavigatorUI;
 class ViewerListUI;
+class ViewerViewModel;
 
 class ViewerPlugin : public QObject, public IPlugin {
     Q_OBJECT
@@ -49,6 +50,7 @@ private:
     ViewerRibbonUI *m_ribbonUI = nullptr;
     ViewerListUI *m_listUI = nullptr;
     CustomProgressDialog *m_progressDialog = nullptr;
+    ViewerViewModel *m_viewModel = nullptr;
 };
 
 #endif // VIEWER_PLUGIN_H

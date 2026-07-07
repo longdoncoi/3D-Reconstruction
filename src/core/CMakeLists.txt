@@ -1,0 +1,24 @@
+target_sources(3D-Reconstruction PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/Global.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AppConfig.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AppConfig.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/SignalBus.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/SignalBus.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/LanguageManager.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/LanguageManager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/UserManager.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/UserManager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/SmtpMailer.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/SmtpMailer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ServiceRegistry.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/IReconstructionService.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/IAIService.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/IMailService.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/IAppContext.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/IAIAssistantService.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ISceneService.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ISettingsService.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/IViewerService.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/IPlugin.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AIMode.h
+)

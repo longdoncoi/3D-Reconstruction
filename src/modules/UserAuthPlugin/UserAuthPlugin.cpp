@@ -252,6 +252,7 @@ void UserAuthPlugin::setupMenus() {
         cornerLayout->addWidget(m_langBtn);
         cornerLayout->addWidget(m_avatarBtn);
         menuBar->setCornerWidget(cornerWidget, Qt::TopRightCorner);
+        cornerWidget->show();
     }
 
     // ── Avatar dropdown menu ─────────────────────────────────────────────────

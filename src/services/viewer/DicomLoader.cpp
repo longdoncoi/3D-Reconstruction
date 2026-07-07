@@ -51,7 +51,7 @@ vtkSmartPointer<vtkImageData> DicomLoader::loadSeries(const QString &dirPath)
     if (QFile::exists(cachePath)) {
         qDebug() << "DicomLoader: Found cache at" << cachePath;
         auto cacheReader = vtkSmartPointer<vtkXMLImageDataReader>::New();
-        cacheReader->SetFileName(cachePath.toStdString().c_str());
+        cacheReader->SetFileName(cachePath.toLocal8Bit().constData());
         cacheReader->Update();
         if (cacheReader->GetOutput() && cacheReader->GetOutput()->GetNumberOfPoints() > 0) {
             return cacheReader->GetOutput();
@@ -90,7 +90,7 @@ vtkSmartPointer<vtkImageData> DicomLoader::loadSeries(const QString &dirPath)
         QString fullPath = dir.absoluteFilePath(fn);
 
         auto reader = vtkSmartPointer<vtkDICOMImageReader>::New();
-        reader->SetFileName(fullPath.toStdString().c_str());
+        reader->SetFileName(fullPath.toLocal8Bit().constData());
         reader->Update();
 
         if (!reader->GetOutput() ||
@@ -131,13 +131,30 @@ vtkSmartPointer<vtkImageData> DicomLoader::loadSeries(const QString &dirPath)
                      });
     qDebug() << "DicomLoader: Sorted by Z-position (ImagePositionPatient)";
 
-    // --- Bước 3: Ghép thành volume bằng vtkImageAppend ---
+    // --- Bước 3: Lọc các slice có cùng kích thước (dimension) và ghép thành volume ---
+    if (slices.empty()) return nullptr;
+
+    // Lấy kích thước của slice đầu tiên làm chuẩn
+    int baseDim[3];
+    slices[0].imageData->GetDimensions(baseDim);
+
     vtkNew<vtkImageAppend> appender;
     appender->SetAppendAxis(2); // ghép theo trục Z
 
+    int validSlices = 0;
     for (auto& si : slices) {
-        appender->AddInputData(si.imageData);
+        int dim[3];
+        si.imageData->GetDimensions(dim);
+        if (dim[0] == baseDim[0] && dim[1] == baseDim[1]) {
+            appender->AddInputData(si.imageData);
+            validSlices++;
+        } else {
+            qDebug() << "DicomLoader: Bỏ qua slice do khác kích thước" << si.path << "(" << dim[0] << "x" << dim[1] << ")";
+        }
     }
+
+    if (validSlices == 0) return nullptr;
+
     appender->Update();
 
     if (!appender->GetOutput() ||
@@ -175,7 +192,7 @@ vtkSmartPointer<vtkImageData> DicomLoader::loadSeries(const QString &dirPath)
     // Save to cache
     qDebug() << "DicomLoader: Saving cache to" << cachePath;
     auto writer = vtkSmartPointer<vtkXMLImageDataWriter>::New();
-    writer->SetFileName(cachePath.toStdString().c_str());
+    writer->SetFileName(cachePath.toLocal8Bit().constData());
     writer->SetInputData(volume);
     writer->Write();
 

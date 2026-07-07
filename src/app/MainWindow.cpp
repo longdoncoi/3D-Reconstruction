@@ -136,11 +136,14 @@ void MainWindow::setupTitleBar(QWidget * /*root*/,
     m_tabBarLayout->addWidget(btn);
   }
   titleLayout->addWidget(m_tabBarWidget);
-  titleLayout->addStretch(1);
 
   // Integrated MenuBar
   auto *menuBar = new QMenuBar(titleBar);
   menuBar->setObjectName("integratedMenuBar");
+  menuBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+  menuBar->setMinimumHeight(32);
+  QAction *dummyAct = menuBar->addAction("");
+  dummyAct->setVisible(false);
   menuBar->setStyleSheet("QMenuBar { background: transparent; border: none; "
                          "padding: 0; color: #f1f5f9; }"
                          "QMenuBar::item { padding: 4px 10px; border-radius: "
