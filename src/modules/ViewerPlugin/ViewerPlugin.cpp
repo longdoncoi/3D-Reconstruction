@@ -31,10 +31,38 @@
 #include "ViewerRibbonUI.h"
 #include "ViewerNavigatorUI.h"
 #include "ViewerListUI.h"
+#include "ViewerViewModel.h"
 
 void ViewerPlugin::initialize(IAppContext* context) {
     m_ctx = context;
     m_progressDialog = new CustomProgressDialog(m_ctx->mainWindow());
+    m_viewModel = new ViewerViewModel(m_ctx, this);
+    
+    connect(m_viewModel, &ViewerViewModel::loadingStarted, this, [this](const QString& msg){
+        if (m_progressDialog) {
+            m_progressDialog->setLabelText(msg);
+            m_progressDialog->setRange(0, 100);
+            m_progressDialog->setValue(0);
+            m_progressDialog->show();
+            m_progressDialog->centerOnWidget();
+            QApplication::processEvents();
+        }
+    });
+    connect(m_viewModel, &ViewerViewModel::progressUpdated, this, [this](int percent){
+        if (m_progressDialog) {
+            m_progressDialog->setValue(percent);
+            QApplication::processEvents();
+        }
+    });
+    connect(m_viewModel, &ViewerViewModel::loadingFinished, this, [this](){
+        if (m_progressDialog) m_progressDialog->hide();
+    });
+    connect(m_viewModel, &ViewerViewModel::showNavigationUI, this, [this](bool show){
+        if (m_navUI && m_navUI->widget()) {
+            if (show) m_navUI->widget()->show();
+            else m_navUI->widget()->hide();
+        }
+    });
     
     QMenu* viewerMenu = m_ctx->getMenu("viewer_menu");
     viewerMenu->clear();
@@ -74,143 +102,19 @@ void ViewerPlugin::cleanup() {
 void ViewerPlugin::onLoad2DImages() {
   QString lastUsedPath = m_ctx->settings()->getLastUsedPath("viewer_2d");
   QString fileName = QFileDialog::getOpenFileName(m_ctx->mainWindow(), m_ctx->translate("file.select_2d"), lastUsedPath, "Images (*.png *.jpg *.jpeg *.bmp)"); 
-  if (fileName.isEmpty()) return;
-  
-  if (m_progressDialog) {
-      m_progressDialog->setLabelText(m_ctx->translate("viewer.loading_2d"));
-      m_progressDialog->setRange(0, 100);
-      m_progressDialog->setValue(10);
-      m_progressDialog->show();
-      m_progressDialog->centerOnWidget();
-      QApplication::processEvents();
-  }
-  
-  m_ctx->settings()->setLastUsedPath("viewer_2d", QFileInfo(fileName).absolutePath()); 
-  m_ctx->viewer()->setCurrent2DImagePath(fileName);
-  m_ctx->scene()->resetToSingleRenderer(); 
-  m_ctx->scene()->clear3DModel(); 
-  m_ctx->scene()->clearPointCloud(); 
-  m_ctx->scene()->clear2DTexture(); 
-  m_ctx->viewer()->setAIMode(AIMode::None); 
-  
-  if (m_progressDialog) {
-      m_progressDialog->setValue(30);
-      QApplication::processEvents();
-  }
-
-  vtkSmartPointer<vtkActor> actor = Image2DLoader::load(fileName);
-  if (actor) {
-      m_ctx->scene()->setTextureActor(actor);
-      m_ctx->scene()->renderer()->ResetCamera(); 
-      m_ctx->scene()->vtkWidget()->renderWindow()->Render();
-      
-      QFileInfo fi(fileName); 
-      QDir dir = fi.dir();
-      QStringList imageFileList = dir.entryList(QStringList() << "*.png" << "*.jpg" << "*.jpeg" << "*.bmp", QDir::Files, QDir::Name);
-      int currentImageIndex = imageFileList.indexOf(fi.fileName());
-      m_ctx->viewer()->setImageList(imageFileList, currentImageIndex);
-
-      // Image list population is now handled automatically by ViewerListUI 
-      // listening to the imageListUpdated signal emitted by ViewerService::setImageList()
-  }
-  
-  if (m_navUI && m_navUI->widget()) {
-      m_navUI->widget()->show();
-  }
-  m_ctx->updateMenuStates();
-  
-  if (m_progressDialog) {
-      m_progressDialog->hide();
-  }
+  if (!fileName.isEmpty()) m_viewModel->load2DImage(fileName);
 }
 
 void ViewerPlugin::onLoad3DImages() {
   QString lastUsedPath = m_ctx->settings()->getLastUsedPath("viewer_3d");
   QString obj = QFileDialog::getOpenFileName(m_ctx->mainWindow(), m_ctx->translate("file.select_3d"), lastUsedPath, "OBJ Files (*.obj)"); 
-  if (obj.isEmpty()) return;
-  
-  if (m_progressDialog) {
-      m_progressDialog->setLabelText(m_ctx->translate("viewer.loading_3d"));
-      m_progressDialog->setRange(0, 100);
-      m_progressDialog->setValue(20);
-      m_progressDialog->show();
-      m_progressDialog->centerOnWidget();
-      QApplication::processEvents();
-  }
-
-  if (m_navUI && m_navUI->widget()) {
-      m_navUI->widget()->hide();
-  }
-  
-  QFileInfo fi(obj); 
-  m_ctx->settings()->setLastUsedPath("viewer_3d", fi.absolutePath()); 
-  m_ctx->viewer()->setCurrent2DImagePath("");
-  m_ctx->viewer()->setImageList(QStringList(), -1);
-  
-  if (m_progressDialog) {
-      m_progressDialog->setValue(50);
-      QApplication::processEvents();
-  }
-
-  m_ctx->scene()->clear3DModel(); 
-  m_ctx->scene()->clearPointCloud(); 
-  m_ctx->scene()->clear2DTexture(); 
-  m_ctx->scene()->resetToSingleRenderer(); 
-  
-  if (m_progressDialog) {
-      m_progressDialog->setValue(75);
-      QApplication::processEvents();
-  }
-
-  m_ctx->scene()->loadOBJwithMTL(obj, fi.path() + "/" + fi.completeBaseName() + ".mtl");
-
-  if (m_progressDialog) {
-      m_progressDialog->setValue(100);
-      QApplication::processEvents();
-  }
-
-  if (m_progressDialog) {
-      m_progressDialog->hide();
-  }
+  if (!obj.isEmpty()) m_viewModel->load3DModel(obj);
 }
 
 void ViewerPlugin::onLoadDicom() {
-    QString lastUsedPath = m_ctx->settings()->getLastUsedPath("viewer_dicom");
-    QString fn = QFileDialog::getOpenFileName(m_ctx->mainWindow(), m_ctx->translate("file.select_dicom"), lastUsedPath);
-    if (fn.isEmpty()) return;
-    
-    if (m_progressDialog) {
-        m_progressDialog->setLabelText(m_ctx->translate("viewer.loading_dicom"));
-        m_progressDialog->setRange(0, 100);
-        m_progressDialog->setValue(20);
-        m_progressDialog->show();
-        m_progressDialog->centerOnWidget();
-        QApplication::processEvents();
-    }
-
-  if (m_navUI && m_navUI->widget()) {
-      m_navUI->widget()->hide();
-  }
-    
-    m_ctx->settings()->setLastUsedPath("viewer_dicom", QFileInfo(fn).absolutePath());
-    m_ctx->viewer()->setCurrent2DImagePath("");
-    m_ctx->viewer()->setImageList(QStringList(), -1);
-    
-    if (m_progressDialog) {
-        m_progressDialog->setValue(50);
-        QApplication::processEvents();
-    }
-
-    m_ctx->scene()->onLoadDicom(fn); 
-
-    if (m_progressDialog) {
-        m_progressDialog->setValue(100);
-        QApplication::processEvents();
-    }
-
-    if (m_progressDialog) {
-        m_progressDialog->hide();
-    }
+  QString lastUsedPath = m_ctx->settings()->getLastUsedPath("viewer_dicom");
+  QString dir = QFileDialog::getExistingDirectory(m_ctx->mainWindow(), m_ctx->translate("file.select_dicom"), lastUsedPath, QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+  if (!dir.isEmpty()) m_viewModel->loadDicom(dir);
 }
 
 void ViewerPlugin::onPrevImage() {

@@ -317,13 +317,12 @@ void AIProcessorPlugin::onViewCharts() {
 
   // Shared countdown state via QTimer on heap to avoid dangling refs
   QTimer *timer = new QTimer(m_progressDialog);
-  int *remaining = new int(totalSeconds);
+  std::shared_ptr<int> remaining = std::make_shared<int>(totalSeconds);
 
   connect(m_progressDialog, &CustomProgressDialog::stopRequested, timer,
           [timer, remaining, this]() {
             timer->stop();
             timer->deleteLater();
-            delete remaining;
             if (m_progressDialog) m_progressDialog->hide();
             ModernMessageBox::information(
                 m_ctx->mainWindow(), m_ctx->translate("aiproc.tb_cancelled"),
@@ -341,7 +340,7 @@ void AIProcessorPlugin::onViewCharts() {
           if (*remaining <= 0) {
               timer->stop();
               timer->deleteLater();
-              delete remaining;
+
               m_progressDialog->hide();
               m_progressDialog->reset();
               QDesktopServices::openUrl(QUrl("http://localhost:6006/"));

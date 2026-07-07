@@ -29,6 +29,8 @@ if(WIN32)
 endif()
 
 # ─── 1. Qt6 ───────────────────────────────────────────────────────────────────
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Widgets OpenGL Network Concurrent OpenGLWidgets Svg SvgWidgets)
 qt_standard_project_setup()
 
@@ -80,111 +82,13 @@ set(TENSORRT_BIN_DIR "${TENSORRT_ROOT}/bin")
 set(CMAKE_AUTOUIC_SEARCH_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/src/app)
 
 # ─── 7. Executable ────────────────────────────────────────────────────────────
-qt_add_executable(3D-Reconstruction WIN32 MACOSX_BUNDLE
+qt_add_executable(3D-Reconstruction WIN32 MACOSX_BUNDLE)
 
-    # ── app/ (UI Shell) ──────────────────────────────────────────────────────
-    src/app/Main.cpp
-    src/app/MainWindow.h
-    src/app/MainWindow.cpp
-    src/app/MainWindow.ui
-    src/app/AppShell.h                          # NEW: IAppContext implementation
-    src/app/AppShell.cpp
-    src/app/AppConstants.h
-    src/app/StyleManager.h
-    src/app/StyleManager.cpp
-
-    # ── core/ (Interfaces + Kernel) ──────────────────────────────────────────
-    src/core/Global.h
-    src/core/AppConfig.h
-    src/core/AppConfig.cpp
-    src/core/SignalBus.h
-    src/core/SignalBus.cpp
-    src/core/LanguageManager.h
-    src/core/LanguageManager.cpp
-    src/core/UserManager.h
-    src/core/UserManager.cpp
-    src/core/SmtpMailer.h
-    src/core/SmtpMailer.cpp
-    src/core/ServiceRegistry.h                  # NEW: Type-safe service locator
-    src/core/IReconstructionService.h           # NEW: Reconstruction interface
-    src/core/IAIService.h                       # NEW: AI service interface
-    src/core/IMailService.h
-    src/core/IAppContext.h                      # Updated: added services()
-    src/core/IAIAssistantService.h
-    src/core/ISceneService.h
-    src/core/ISettingsService.h
-    src/core/IViewerService.h
-    src/core/IPlugin.h
-    src/core/AIMode.h
-
-    # ── services/scene/ ──────────────────────────────────────────────────────
-    src/services/scene/SceneService.h
-    src/services/scene/SceneService.cpp
-    src/services/scene/CrosshairManager.h
-    src/services/scene/CrosshairManager.cpp
-
-    # ── services/viewer/ ─────────────────────────────────────────────────────
-    src/services/viewer/ViewerService.h
-    src/services/viewer/ViewerService.cpp
-    src/services/viewer/Image2DLoader.h
-    src/services/viewer/Image2DLoader.cpp
-    src/services/viewer/Model3DLoader.h
-    src/services/viewer/Model3DLoader.cpp
-    src/services/viewer/DicomLoader.h
-    src/services/viewer/DicomLoader.cpp
-    src/services/viewer/ChatImageViewer.h
-    src/services/viewer/ChatImageViewer.cpp
-
-    # ── services/settings/ ───────────────────────────────────────────────────
-    src/services/settings/SettingsService.h
-    src/services/settings/SettingsService.cpp
-
-    # ── services/reconstruction/ ─────────────────────────────────────────────
-    src/services/reconstruction/ReconstructionPipeline.h
-    src/services/reconstruction/ReconstructionPipeline.cpp
-    src/services/reconstruction/ReconstructionConfig.h
-    src/services/reconstruction/ReconstructThread.h
-    src/services/reconstruction/ReconstructThread.cpp
-    src/services/reconstruction/ReconstructionService.h
-    src/services/reconstruction/ReconstructionService.cpp
-    src/services/reconstruction/FeatureExtractor.h        # Phase 4
-    src/services/reconstruction/FeatureExtractor.cpp
-    src/services/reconstruction/FeatureMatcher.h
-    src/services/reconstruction/FeatureMatcher.cpp
-    src/services/reconstruction/PoseEstimator.h
-    src/services/reconstruction/PoseEstimator.cpp
-    src/services/reconstruction/Triangulator.h
-    src/services/reconstruction/Triangulator.cpp
-    src/services/reconstruction/PointCloudFilter.h
-    src/services/reconstruction/PointCloudFilter.cpp
-
-    # ── services/ai/ ─────────────────────────────────────────────────────────
-    src/services/ai/AIProcessor.h
-    src/services/ai/AIProcessor.cpp
-    src/services/ai/AIAssistant.h
-    src/services/ai/AIAssistant.cpp
-    src/services/ai/AIService.h                 # NEW
-    src/services/ai/AIService.cpp               # NEW
-    src/services/mail/MailService.h
-    src/services/mail/MailService.cpp
-
-    # ── utils/ ───────────────────────────────────────────────────────────────
-    src/utils/PanStyle.h
-    src/utils/PanStyle.cpp
-    src/utils/Logger.h
-    src/utils/Logger.cpp
-    src/utils/CustomProgressDialog.h
-    src/utils/CustomProgressDialog.cpp
-    src/utils/ModernDialog.h
-    src/utils/ModernDialog.cpp
-    src/utils/ModernMessageBox.h
-    src/utils/HtmlUtilities.h
-    src/utils/HtmlUtilities.cpp
-    src/utils/FileUtilities.h
-    src/utils/FileUtilities.cpp
-    src/utils/IconFactory.h            # Phase 5
-    src/utils/IconFactory.cpp
-)
+# ─── Source subdirectories ───────────────────────────────────────────────────
+add_subdirectory(src/app)
+add_subdirectory(src/core)
+add_subdirectory(src/services)
+add_subdirectory(src/utils)
 
 # ─── 7b. Precompiled Headers (PCH) — biggest build speed win ─────────────────
 target_precompile_headers(3D-Reconstruction PRIVATE src/pch.h)

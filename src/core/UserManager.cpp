@@ -6,8 +6,8 @@
 #include <QDebug>
 
 UserManager *UserManager::instance() {
-    static UserManager* instance = new UserManager();
-    return instance;
+    static UserManager instance;
+    return &instance;
 }
 
 UserManager::UserManager(QObject *parent) : QObject(parent) {}
