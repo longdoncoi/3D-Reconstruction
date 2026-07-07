@@ -115,12 +115,12 @@ void SceneService::loadOBJwithMTL(const QString &objPath, const QString &mtlPath
 void SceneService::onLoadDicom(const QString &path) {
     QString fn = path;
     if (fn.isEmpty()) {
-        fn = QFileDialog::getOpenFileName(m_ctx->mainWindow(), m_ctx->translate("file.select_dicom"), m_ctx->settings()->getLastUsedPath("viewer_dicom"));
+        fn = QFileDialog::getExistingDirectory(m_ctx->mainWindow(), m_ctx->translate("file.select_dicom"), m_ctx->settings()->getLastUsedPath("viewer_dicom"), QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
     }
     if (fn.isEmpty()) return;
 
-    m_ctx->settings()->setLastUsedPath("viewer_dicom", QFileInfo(fn).absolutePath());
-    auto volume = DicomLoader::loadSeries(m_ctx->settings()->getLastUsedPath("viewer_dicom"));
+    m_ctx->settings()->setLastUsedPath("viewer_dicom", fn);
+    auto volume = DicomLoader::loadSeries(fn);
     if (!volume || volume->GetNumberOfPoints() < 1) {
         ModernMessageBox::warning(m_ctx->mainWindow(), m_ctx->translate("dicom.load_err_title"), m_ctx->translate("dicom.load_err_msg"));
         return;
