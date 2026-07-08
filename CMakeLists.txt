@@ -36,7 +36,10 @@ qt_standard_project_setup()
 
 # ─── 2. VTK ───────────────────────────────────────────────────────────────────
 set(VTK_MODULE_ENABLE_VTK_RenderingVulkan NO)
-set(VTK_DIR "C:/Program Files/VTK/lib/cmake/vtk-9.6" CACHE PATH "Path to VTK")
+# Only set a hardcoded VTK_DIR for local builds; vcpkg handles discovery in CI.
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    set(VTK_DIR "C:/Program Files/VTK/lib/cmake/vtk-9.6" CACHE PATH "Path to VTK")
+endif()
 find_package(VTK REQUIRED COMPONENTS
     CommonCore
     RenderingOpenGL2
@@ -51,6 +54,7 @@ find_package(VTK REQUIRED COMPONENTS
     ImagingCore
     RenderingVolume
     RenderingVolumeOpenGL2
+    RenderingAnnotation
 )
 
 # ─── 3. OpenCV ────────────────────────────────────────────────────────────────
@@ -149,53 +153,59 @@ target_link_libraries(3D-Reconstruction
 set_target_properties(3D-Reconstruction PROPERTIES ENABLE_EXPORTS ON)
 
 # ─── 11. Post-build: Copy DLLs ───────────────────────────────────────────────
-# Copy ONNX Runtime DLLs
-add_custom_command(TARGET 3D-Reconstruction POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${onnxruntime_SOURCE_DIR}/lib/onnxruntime.dll"
-        "${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_shared.dll"
-        "${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_cuda.dll"
-        "${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_tensorrt.dll"
-        "${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_shared.lib"
-        $<TARGET_FILE_DIR:3D-Reconstruction>
-)
+# These DLL copy commands reference local paths that don't exist on CI runners.
+# Skip them when building via vcpkg toolchain (CI); vcpkg AppLocal handles DLL deployment.
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    # Copy ONNX Runtime DLLs
+    add_custom_command(TARGET 3D-Reconstruction POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${onnxruntime_SOURCE_DIR}/lib/onnxruntime.dll"
+            "${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_shared.dll"
+            "${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_cuda.dll"
+            "${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_tensorrt.dll"
+            "${onnxruntime_SOURCE_DIR}/lib/onnxruntime_providers_shared.lib"
+            $<TARGET_FILE_DIR:3D-Reconstruction>
+    )
 
-# Copy TensorRT DLLs — required by onnxruntime_providers_tensorrt.dll at runtime.
-# Without these, the TRT provider crashes with access violation (0xc0000005).
-# Only the core runtime DLLs are needed; builder_resource DLLs are loaded lazily.
-add_custom_command(TARGET 3D-Reconstruction POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${TENSORRT_BIN_DIR}/nvinfer_10.dll"
-        "${TENSORRT_BIN_DIR}/nvinfer_dispatch_10.dll"
-        "${TENSORRT_BIN_DIR}/nvinfer_lean_10.dll"
-        "${TENSORRT_BIN_DIR}/nvinfer_plugin_10.dll"
-        "${TENSORRT_BIN_DIR}/nvinfer_vc_plugin_10.dll"
-        "${TENSORRT_BIN_DIR}/nvonnxparser_10.dll"
-        $<TARGET_FILE_DIR:3D-Reconstruction>
-    COMMENT "Copying TensorRT runtime DLLs to output directory"
-)
+    # Copy TensorRT DLLs — required by onnxruntime_providers_tensorrt.dll at runtime.
+    # Without these, the TRT provider crashes with access violation (0xc0000005).
+    # Only the core runtime DLLs are needed; builder_resource DLLs are loaded lazily.
+    add_custom_command(TARGET 3D-Reconstruction POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${TENSORRT_BIN_DIR}/nvinfer_10.dll"
+            "${TENSORRT_BIN_DIR}/nvinfer_dispatch_10.dll"
+            "${TENSORRT_BIN_DIR}/nvinfer_lean_10.dll"
+            "${TENSORRT_BIN_DIR}/nvinfer_plugin_10.dll"
+            "${TENSORRT_BIN_DIR}/nvinfer_vc_plugin_10.dll"
+            "${TENSORRT_BIN_DIR}/nvonnxparser_10.dll"
+            $<TARGET_FILE_DIR:3D-Reconstruction>
+        COMMENT "Copying TensorRT runtime DLLs to output directory"
+    )
 
-# Copy TensorRT builder-resource DLLs (needed when TRT builds/caches engines)
-add_custom_command(TARGET 3D-Reconstruction POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_ptx_10.dll"
-        "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm75_10.dll"
-        "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm80_10.dll"
-        "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm86_10.dll"
-        "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm89_10.dll"
-        "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm90_10.dll"
-        "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm100_10.dll"
-        "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm120_10.dll"
-        $<TARGET_FILE_DIR:3D-Reconstruction>
-    COMMENT "Copying TensorRT builder-resource DLLs to output directory"
-)
+    # Copy TensorRT builder-resource DLLs (needed when TRT builds/caches engines)
+    add_custom_command(TARGET 3D-Reconstruction POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_ptx_10.dll"
+            "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm75_10.dll"
+            "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm80_10.dll"
+            "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm86_10.dll"
+            "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm89_10.dll"
+            "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm90_10.dll"
+            "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm100_10.dll"
+            "${TENSORRT_BIN_DIR}/nvinfer_builder_resource_sm120_10.dll"
+            $<TARGET_FILE_DIR:3D-Reconstruction>
+        COMMENT "Copying TensorRT builder-resource DLLs to output directory"
+    )
 
-# Copy missing PCL, VTK 9.4, and OpenNI2 DLLs required at runtime
-# Consolidated into a single PowerShell invocation to avoid repeated process startup overhead
-add_custom_command(TARGET 3D-Reconstruction POST_BUILD
-    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command "$destDir = '$<TARGET_FILE_DIR:3D-Reconstruction>'; $sources = @(@{ Path='C:/Program Files/PCL 1.15.1/3rdParty/VTK/bin'; Filter='vtk*.dll'; Where=$null }, @{ Path='C:/Program Files/PCL 1.15.1/bin'; Filter=$null; Where={ $_.Name -like 'pcl*.dll' -or $_.Name -like 'boost*.dll' -or $_.Name -like 'flann*.dll' -or $_.Name -like 'qhull*.dll' } }, @{ Path='C:/Program Files/OpenNI2/Tools'; Filter='*.dll'; Where=$null }); foreach ($s in $sources) { if (Test-Path $s.Path) { $items = if ($s.Filter) { Get-ChildItem -Path $s.Path -Filter $s.Filter } else { Get-ChildItem -Path $s.Path }; if ($s.Where) { $items = $items | Where-Object $s.Where }; $items | ForEach-Object { $target = Join-Path $destDir $_.Name; if (-not (Test-Path $target) -or (Get-Item $target).Length -ne $_.Length) { Copy-Item $_.FullName -Destination $destDir -Force } } } }"
-    COMMENT "Copying PCL, VTK, and OpenNI dependencies (single PS invocation)"
-)
+    # Copy missing PCL, VTK 9.4, and OpenNI2 DLLs required at runtime
+    # Consolidated into a single PowerShell invocation to avoid repeated process startup overhead
+    add_custom_command(TARGET 3D-Reconstruction POST_BUILD
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command "$destDir = '$<TARGET_FILE_DIR:3D-Reconstruction>'; $sources = @(@{ Path='C:/Program Files/PCL 1.15.1/3rdParty/VTK/bin'; Filter='vtk*.dll'; Where=$null }, @{ Path='C:/Program Files/PCL 1.15.1/bin'; Filter=$null; Where={ $_.Name -like 'pcl*.dll' -or $_.Name -like 'boost*.dll' -or $_.Name -like 'flann*.dll' -or $_.Name -like 'qhull*.dll' } }, @{ Path='C:/Program Files/OpenNI2/Tools'; Filter='*.dll'; Where=$null }); foreach ($s in $sources) { if (Test-Path $s.Path) { $items = if ($s.Filter) { Get-ChildItem -Path $s.Path -Filter $s.Filter } else { Get-ChildItem -Path $s.Path }; if ($s.Where) { $items = $items | Where-Object $s.Where }; $items | ForEach-Object { $target = Join-Path $destDir $_.Name; if (-not (Test-Path $target) -or (Get-Item $target).Length -ne $_.Length) { Copy-Item $_.FullName -Destination $destDir -Force } } } }"
+        COMMENT "Copying PCL, VTK, and OpenNI dependencies (single PS invocation)"
+    )
+else()
+    message(STATUS "⏭️ Skipping local DLL copy commands (CI/vcpkg toolchain build detected)")
+endif()
 
 # ─── Deploy Qt Plugins Manually (Bypassing windeployqt) ────────────────────
 # vcpkg often does not build windeployqt.exe. Falling back to the system's windeployqt

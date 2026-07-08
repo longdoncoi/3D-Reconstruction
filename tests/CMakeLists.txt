@@ -15,7 +15,7 @@ target_compile_definitions(TestSignalBus PRIVATE APP_LIBRARY)
 add_test(NAME TestSignalBus COMMAND TestSignalBus)
 
 # Test AppConfig
-qt_add_executable(TestAppConfig WIN32 
+qt_add_executable(TestAppConfig 
     TestAppConfig.cpp 
     ../src/core/AppConfig.cpp 
     ../src/core/LanguageManager.cpp
@@ -28,7 +28,7 @@ target_compile_definitions(TestAppConfig PRIVATE APP_LIBRARY)
 add_test(NAME TestAppConfig COMMAND TestAppConfig)
 
 # Test LanguageManager
-qt_add_executable(TestLanguageManager WIN32 
+qt_add_executable(TestLanguageManager 
     TestLanguageManager.cpp 
     ../src/core/LanguageManager.cpp 
     ../src/core/AppConfig.cpp

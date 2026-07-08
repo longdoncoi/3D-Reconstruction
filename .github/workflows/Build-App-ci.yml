@@ -37,8 +37,9 @@ concurrency:
 
 env:
   VCPKG_INSTALLED_DIR: D:/v
-  VCPKG_MAX_CONCURRENCY: 2
-  VCPKG_BUILD_TYPE: release
+  VCPKG_MAX_CONCURRENCY: 4
+  # Enable vcpkg binary caching via GitHub Actions Cache
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
 
 jobs:
   build-and-test:
@@ -48,6 +49,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # ── Export GitHub Actions cache env for vcpkg binary caching ──────
+      - name: Export GitHub Actions cache env
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL',
+              process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN',
+              process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      # ── Create vcpkg triplet overlay (release-only) ─────────────────
+      - name: Create release-only triplet overlay
+        shell: pwsh
+        run: |
+          $tripletDir = "custom-triplets"
+          New-Item -ItemType Directory -Path $tripletDir -Force | Out-Null
+          @"
+          set(VCPKG_TARGET_ARCHITECTURE x64)
+          set(VCPKG_CRT_LINKAGE dynamic)
+          set(VCPKG_LIBRARY_LINKAGE dynamic)
+          set(VCPKG_BUILD_TYPE release)
+          "@ | Out-File -Encoding utf8 "$tripletDir/x64-windows.cmake"
+          Write-Host "Created release-only triplet at $tripletDir/x64-windows.cmake"
 
       # ── Qt6 (cached by install-qt-action) ─────────────────────────────
       - name: Install Qt 6
@@ -62,8 +87,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_INSTALLED_DIR }}
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
-          restore-keys: vcpkg-${{ runner.os }}-
+          key: vcpkg-${{ runner.os }}-rel-${{ hashFiles('vcpkg.json') }}-9432c416
+          restore-keys: |
+            vcpkg-${{ runner.os }}-rel-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-${{ runner.os }}-rel-
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
@@ -83,6 +110,8 @@ jobs:
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
             "-DVCPKG_INSTALLED_DIR=$env:VCPKG_INSTALLED_DIR" `
             "-DVCPKG_INSTALL_OPTIONS=--clean-after-build" `
+            "-DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/custom-triplets" `
+            "-DCMAKE_BUILD_TYPE=Release" `
             "-DBUILD_TESTING=ON"
 
       # ── Build ─────────────────────────────────────────────────────────
@@ -93,4 +122,13 @@ jobs:
       # ── Test ──────────────────────────────────────────────────────────
       - name: Run Tests
         shell: pwsh
-        run: ctest --test-dir build --config Release --output-on-failure --timeout 120
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          # Disable Windows Error Reporting UI which hangs CI on crash/missing DLLs
+          Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Windows Error Reporting" -Name "DontShowUI" -Value 1 -ErrorAction SilentlyContinue
+          
+          # Add vcpkg bin directory to PATH so tests can find DLLs (OpenCV, PCL, etc.)
+          $env:PATH = "$env:VCPKG_INSTALLED_DIR\x64-windows\bin;$env:PATH"
+          
+          ctest --test-dir build -C Release --output-on-failure --timeout 120
