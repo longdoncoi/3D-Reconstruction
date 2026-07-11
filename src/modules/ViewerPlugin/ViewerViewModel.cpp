@@ -7,6 +7,7 @@
 #include "DicomLoader.h"
 #include <QFileInfo>
 #include <QDir>
+#include <QVTKOpenGLNativeWidget.h>
 #include <vtkRenderer.h>
 #include <vtkRenderWindow.h>
 
