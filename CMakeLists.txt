@@ -361,6 +361,27 @@ if((NOT _qt_plugin_root_release OR NOT _qt_plugin_root_debug) AND QT_QMAKE_EXECU
     endif()
 endif()
 
+# Fallback for CI (e.g. jurplel/install-qt-action / aqtinstall): neither
+# vcpkg's Qt6 plugin tree nor QT_QMAKE_EXECUTABLE is set.  Derive the
+# plugin directory from the Qt6::Core imported target location instead.
+if((NOT _qt_plugin_root_release OR NOT _qt_plugin_root_debug) AND TARGET Qt6::Core)
+    get_target_property(_qt6_core_location Qt6::Core LOCATION)
+    if(_qt6_core_location)
+        get_filename_component(_qt6_bin_dir "${_qt6_core_location}" DIRECTORY)
+        get_filename_component(_qt6_prefix "${_qt6_bin_dir}" DIRECTORY)
+        set(_qt6_aqt_plugin_dir "${_qt6_prefix}/plugins")
+        if(EXISTS "${_qt6_aqt_plugin_dir}/platforms")
+            if(NOT _qt_plugin_root_release)
+                set(_qt_plugin_root_release "${_qt6_aqt_plugin_dir}")
+            endif()
+            if(NOT _qt_plugin_root_debug)
+                set(_qt_plugin_root_debug "${_qt6_aqt_plugin_dir}")
+            endif()
+            message(STATUS "Found Qt plugins via Qt6::Core target: ${_qt6_aqt_plugin_dir}")
+        endif()
+    endif()
+endif()
+
 if(_qt_plugin_root_release AND _qt_plugin_root_debug)
     foreach(_qt_plugin_dir IN ITEMS platforms imageformats iconengines styles tls)
         if(EXISTS "${_qt_plugin_root_release}/${_qt_plugin_dir}" OR
