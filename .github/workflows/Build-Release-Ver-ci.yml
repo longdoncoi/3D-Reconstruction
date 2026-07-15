@@ -1,7 +1,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Release — Full Build + MSI Installer
 # Triggers on version tags (v*) or manual dispatch.
-# Packages the application into an MSI installer using WiX v7.
+# Packages the application into an MSI installer using WiX v4.
 # ──────────────────────────────────────────────────────────────────────────────
 name: Release
 
@@ -19,32 +19,11 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-# softprops/action-gh-release needs contents:write to create a release,
-# generate release notes, and upload assets. GitHub's default GITHUB_TOKEN
-# permission for newly created repos/orgs is read-only unless a workflow
-# explicitly requests more — without this block you get exactly the 403
-# "Resource not accessible by integration" seen in the Create GitHub Release
-# step. An explicit permissions: block here overrides the repo/org default,
-# UNLESS the organization has capped write access at the org level (Settings
-# → Actions → General → Workflow permissions) — if this still 403s after
-# adding this, that repo/org setting needs "Read and write permissions".
-permissions:
-  contents: write
-
 env:
   VCPKG_INSTALLED_DIR: D:/v
-  VCPKG_ROOT: D:/vcpkg
   VCPKG_MAX_CONCURRENCY: 4
   # Enable vcpkg binary caching via GitHub Actions Cache
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
-  # Pin WiX explicitly. WiX v6 introduced the Open Source Maintenance Fee
-  # (OSMF) concept and v7 began ENFORCING EULA acceptance at the CLI level
-  # (error WIX7015). Pinning here means future WiX major versions can never
-  # silently break this pipeline again — bumping WIX_VERSION is a deliberate,
-  # reviewed change, and WIX_EULA_ID must be updated alongside it if it ever
-  # changes (currently "wix7" for the v7.x line).
-  WIX_VERSION: "7.0.0"
-  WIX_EULA_ID: "wix7"
 
 jobs:
   release-build:
@@ -53,11 +32,11 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       # ── Export GitHub Actions cache env for vcpkg binary caching ──────
       - name: Export GitHub Actions cache env
-        uses: actions/github-script@v8
+        uses: actions/github-script@v7
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL',
@@ -76,7 +55,6 @@ jobs:
           set(VCPKG_CRT_LINKAGE dynamic)
           set(VCPKG_LIBRARY_LINKAGE dynamic)
           set(VCPKG_BUILD_TYPE release)
-          set(VCPKG_DISABLE_COMPILER_TRACKING ON)
           "@ | Out-File -Encoding utf8 "$tripletDir/x64-windows.cmake"
           Write-Host "Created release-only triplet at $tripletDir/x64-windows.cmake"
 
@@ -103,7 +81,7 @@ jobs:
 
       # ── vcpkg ──────────────────────────────────────────────────────────
       - name: Restore vcpkg cache
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_INSTALLED_DIR }}
           key: vcpkg-${{ runner.os }}-rel-${{ hashFiles('vcpkg.json') }}-9432c416
@@ -111,46 +89,15 @@ jobs:
             vcpkg-${{ runner.os }}-rel-${{ hashFiles('vcpkg.json') }}-
             vcpkg-${{ runner.os }}-rel-
 
-      # Cache source downloads separately — some upstream servers
-      # (e.g. gitlab.dkrz.de for libaec) aggressively rate-limit
-      # GitHub runners (HTTP 429). Persisting downloads across runs
-      # avoids re-downloading entirely after the first success.
-      - name: Restore vcpkg downloads cache
-        uses: actions/cache@v5
-        with:
-          path: ${{ env.VCPKG_ROOT }}/downloads
-          key: vcpkg-downloads-${{ runner.os }}-9432c416-v2
-          restore-keys: |
-            vcpkg-downloads-${{ runner.os }}-9432c416-v2
-
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
-          vcpkgDirectory: ${{ env.VCPKG_ROOT }}
           vcpkgGitCommitId: "9432c416e5c543eded0b4df35a4d347b2e669208"
           vcpkgJsonGlob: "vcpkg.json"
 
       # ── MSVC ───────────────────────────────────────────────────────────
-      # ilammy/msvc-dev-cmd is abandoned and has no Node.js 24 support.
-      # Call vcvarsall.bat directly instead (approach adopted by major
-      # projects like Bitcoin Core).
       - name: Setup MSVC
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath  = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          $vcvars  = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
-          Write-Host "Using vcvarsall: $vcvars"
-          # Run vcvarsall in a child cmd and export its environment back to GitHub
-          cmd /c "`"$vcvars`" x64 && set" | ForEach-Object {
-            if ($_ -match '^([^=]+)=(.*)$') {
-              $name = $Matches[1]; $value = $Matches[2]
-              # Prevent vcvarsall from overwriting VCPKG_ROOT set by lukka/run-vcpkg
-              if ($name -ne "VCPKG_ROOT") {
-                "$name=$value" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
-              }
-            }
-          }
+        uses: ilammy/msvc-dev-cmd@v1
 
       # ── Build ──────────────────────────────────────────────────────────
       - name: Configure CMake
@@ -160,8 +107,7 @@ jobs:
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
             "-DVCPKG_INSTALLED_DIR=$env:VCPKG_INSTALLED_DIR" `
             "-DVCPKG_INSTALL_OPTIONS=--clean-after-build" `
-            "-DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/custom-triplets" `
-            "-DVCPKG_OVERLAY_PORTS=${{ github.workspace }}/custom-ports"
+            "-DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/custom-triplets"
 
       - name: Build Release
         shell: pwsh
@@ -194,15 +140,7 @@ jobs:
       # ── WiX MSI ────────────────────────────────────────────────────────
       - name: Install WiX Toolset
         shell: pwsh
-        run: |
-          # Pinned version (see env.WIX_VERSION above) instead of "latest" —
-          # this is what silently broke the pipeline when WiX auto-upgraded
-          # to v7 and started enforcing OSMF EULA acceptance (WIX7015).
-          dotnet tool install --global wix --version $env:WIX_VERSION
-
-          # Print the resolved version to the log for observability — this
-          # is the first thing to check if wix-related steps fail again.
-          wix --version
+        run: dotnet tool install --global wix
 
       - name: Create MSI installer
         shell: pwsh
@@ -213,13 +151,10 @@ jobs:
           while ($parts.Count -lt 3) { $parts += '0' }
           $msiVersion = ($parts[0..2]) -join '.'
 
-          # Create minimal WiX project.
-          # NOTE: <Files Include="..." Directory="INSTALLFOLDER" /> is the
-          # documented v4+ file-harvesting form and is placed directly under
-          # <Feature>. (The previous version nested <Files> under <Directory>
-          # and separately referenced a <ComponentGroupRef Id="Files" /> that
-          # was never actually defined anywhere — harmless only because the
-          # pipeline never got far enough to hit it.)
+          # Generate WiX source from directory
+          wix convert -o installer.wxs 2>$null; $true
+
+          # Create minimal WiX project
           @"
           <?xml version="1.0" encoding="UTF-8"?>
           <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
@@ -232,33 +167,23 @@ jobs:
               <MediaTemplate EmbedCab="yes" />
 
               <StandardDirectory Id="ProgramFiles6432Folder">
-                <Directory Id="INSTALLFOLDER" Name="3D-Reconstruction" />
+                <Directory Id="INSTALLFOLDER" Name="3D-Reconstruction">
+                  <Files Include="dist\3D-Reconstruction\**" />
+                </Directory>
               </StandardDirectory>
 
               <Feature Id="Main" Title="3D-Reconstruction" Level="1">
-                <Files Include="dist\3D-Reconstruction\**" Directory="INSTALLFOLDER" />
+                <ComponentGroupRef Id="Files" />
               </Feature>
             </Package>
           </Wix>
           "@ | Out-File -Encoding utf8 installer.wxs
 
-          # WiX v6+ requires explicit acceptance of the Open Source
-          # Maintenance Fee (OSMF) EULA before wix.exe will run any command
-          # (https://docs.firegiant.com/wix/osmf/). Accepting it here is
-          # only an acknowledgment of the terms — it does NOT by itself
-          # create a payment obligation. The maintenance fee only applies to
-          # organizations with >$10,000/yr revenue per the OSMF terms, so
-          # confirm separately whether that applies to this project.
-          wix build -acceptEula $env:WIX_EULA_ID installer.wxs -o "3D-Reconstruction-$version.msi" -arch x64
-
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "wix build failed with exit code $LASTEXITCODE"
-            exit $LASTEXITCODE
-          }
+          wix build installer.wxs -o "3D-Reconstruction-$version.msi" -arch x64
 
       # ── Upload ─────────────────────────────────────────────────────────
       - name: Upload MSI artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
           name: 3D-Reconstruction-${{ steps.version.outputs.VERSION }}-msi
           path: "*.msi"
@@ -266,7 +191,7 @@ jobs:
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2
         with:
           files: "*.msi"
           generate_release_notes: true
