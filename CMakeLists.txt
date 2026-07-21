@@ -163,6 +163,8 @@ set(OpenCV_DIR "C:/opencv/build")
 find_package(OpenCV REQUIRED)
 
 # ─── 4. PCL ───────────────────────────────────────────────────────────────────
+# Suppress MSVC-unsupported developer warning emitted by PCL's FindPCL.cmake
+set(PCL_DISABLE_MSVC_DEPRECATION_WARNINGS ON)
 set(PCL_DIR "C:/Program Files/PCL 1.15.1/cmake" CACHE PATH "Path to PCL CMake files")
 find_package(PCL REQUIRED COMPONENTS common filters io)
 
@@ -344,6 +346,13 @@ if(EXISTS "${_vcpkg_qt_plugin_root_release}/platforms/qwindows.dll")
 endif()
 if(EXISTS "${_vcpkg_qt_plugin_root_debug}/platforms/qwindowsd.dll")
     set(_qt_plugin_root_debug "${_vcpkg_qt_plugin_root_debug}")
+endif()
+
+# CI release-only triplet (VCPKG_BUILD_TYPE=release) does not produce a debug
+# Qt plugin tree. Reuse the release root so the "platform plugins not found"
+# warning is not emitted when the debug tree is legitimately absent.
+if(_external_vcpkg_toolchain AND _qt_plugin_root_release AND NOT _qt_plugin_root_debug)
+    set(_qt_plugin_root_debug "${_qt_plugin_root_release}")
 endif()
 
 # Fallback for configurations that do not deploy Qt through vcpkg: the Qt

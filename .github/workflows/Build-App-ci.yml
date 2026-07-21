@@ -18,6 +18,7 @@ on:
       - ".tasks/**"
       - "translations/**"
       - "LICENSE"
+      - ".github/workflows/Build-Release-Ver-ci.yml"
   pull_request:
     branches: [main]
     paths-ignore:
@@ -29,6 +30,7 @@ on:
       - ".review/**"
       - ".tasks/**"
       - "translations/**"
+      - ".github/workflows/Build-Release-Ver-ci.yml"
   workflow_dispatch:
 
 concurrency:
@@ -40,6 +42,8 @@ env:
   VCPKG_MAX_CONCURRENCY: 4
   # Enable vcpkg binary caching via GitHub Actions Cache
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  # libaec version pinned to match vcpkg baseline 9432c416
+  LIBAEC_VERSION: "1.1.6"
 
 jobs:
   build-and-test:
@@ -98,6 +102,71 @@ jobs:
           vcpkgGitCommitId: "9432c416e5c543eded0b4df35a4d347b2e669208"
           vcpkgJsonGlob: "vcpkg.json"
 
+      # ── Overlay port: redirect libaec from blocked GitLab → GitHub mirror ─
+      - name: Create libaec overlay port (GitHub mirror)
+        shell: pwsh
+        run: |
+          $ver = $env:LIBAEC_VERSION
+
+          # Download from GitHub — reliably accessible from Actions runners
+          $githubUrl = "https://github.com/MathisRosenhauer/libaec/archive/refs/tags/v$ver.tar.gz"
+          $tmpFile   = "$env:TEMP/libaec-github-v$ver.tar.gz"
+          Write-Host "Downloading libaec v$ver from GitHub mirror..."
+          Invoke-WebRequest -Uri $githubUrl -OutFile $tmpFile -UseBasicParsing -TimeoutSec 120
+
+          # Compute SHA512 so the portfile hash matches exactly
+          $sha512 = (Get-FileHash -Path $tmpFile -Algorithm SHA512).Hash.ToLower()
+          Write-Host "SHA512: $sha512"
+
+          # Place archive in vcpkg downloads directory (vcpkg will reuse it)
+          $dlDir = "$env:VCPKG_ROOT/downloads"
+          New-Item -ItemType Directory -Path $dlDir -Force | Out-Null
+          Copy-Item $tmpFile "$dlDir/MathisRosenhauer-libaec-v$ver.tar.gz" -Force
+
+          # Create overlay port directory
+          $portDir = "${{ github.workspace }}/custom-ports/libaec"
+          New-Item -ItemType Directory -Path $portDir -Force | Out-Null
+
+          # portfile.cmake — uses vcpkg_from_github instead of vcpkg_from_gitlab
+          @"
+          vcpkg_from_github(
+              OUT_SOURCE_PATH SOURCE_PATH
+              REPO MathisRosenhauer/libaec
+              REF "v$ver"
+              SHA512 $sha512
+              HEAD_REF master
+          )
+
+          vcpkg_cmake_configure(
+              SOURCE_PATH "`${SOURCE_PATH}"
+              OPTIONS
+                  -DBUILD_TESTING=OFF
+          )
+
+          vcpkg_cmake_install()
+          vcpkg_cmake_config_fixup(CONFIG_PATH lib/cmake/libaec)
+          vcpkg_fixup_pkgconfig()
+
+          file(REMOVE_RECURSE "`${CURRENT_PACKAGES_DIR}/debug/include")
+          vcpkg_install_copyright(FILE_LIST "`${SOURCE_PATH}/LICENSE.txt")
+          "@ | Out-File -Encoding utf8 "$portDir/portfile.cmake"
+
+          # vcpkg.json for the port
+          @"
+          {
+            "name": "libaec",
+            "version": "$ver",
+            "description": "Adaptive Entropy Coding library",
+            "homepage": "https://github.com/MathisRosenhauer/libaec",
+            "dependencies": [
+              { "name": "vcpkg-cmake", "host": true },
+              { "name": "vcpkg-cmake-config", "host": true }
+            ]
+          }
+          "@ | Out-File -Encoding utf8 "$portDir/vcpkg.json"
+
+          Write-Host "Overlay port created at: $portDir"
+
       # ── MSVC ──────────────────────────────────────────────────────────
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
@@ -111,6 +180,7 @@ jobs:
             "-DVCPKG_INSTALLED_DIR=$env:VCPKG_INSTALLED_DIR" `
             "-DVCPKG_INSTALL_OPTIONS=--clean-after-build" `
             "-DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/custom-triplets" `
+            "-DVCPKG_OVERLAY_PORTS=${{ github.workspace }}/custom-ports" `
             "-DCMAKE_BUILD_TYPE=Release" `
             "-DBUILD_TESTING=ON"
 

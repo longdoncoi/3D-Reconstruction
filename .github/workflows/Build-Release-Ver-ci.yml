@@ -24,6 +24,8 @@ env:
   VCPKG_MAX_CONCURRENCY: 4
   # Enable vcpkg binary caching via GitHub Actions Cache
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  # libaec version pinned to match vcpkg baseline 9432c416
+  LIBAEC_VERSION: "1.1.6"
 
 jobs:
   release-build:
@@ -33,10 +35,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # ── Export GitHub Actions cache env for vcpkg binary caching ──────
       - name: Export GitHub Actions cache env
-        uses: actions/github-script@v7
+        uses: actions/github-script@v7.0.1
         with:
           script: |
             core.exportVariable('ACTIONS_CACHE_URL',
@@ -81,7 +85,7 @@ jobs:
 
       # ── vcpkg ──────────────────────────────────────────────────────────
       - name: Restore vcpkg cache
-        uses: actions/cache@v4
+        uses: actions/cache@v4.2.3
         with:
           path: ${{ env.VCPKG_INSTALLED_DIR }}
           key: vcpkg-${{ runner.os }}-rel-${{ hashFiles('vcpkg.json') }}-9432c416
@@ -95,9 +99,74 @@ jobs:
           vcpkgGitCommitId: "9432c416e5c543eded0b4df35a4d347b2e669208"
           vcpkgJsonGlob: "vcpkg.json"
 
+      # ── Overlay port: redirect libaec from blocked GitLab → GitHub mirror ─
+      - name: Create libaec overlay port (GitHub mirror)
+        shell: pwsh
+        run: |
+          $ver = $env:LIBAEC_VERSION
+
+          # Download from GitHub — reliably accessible from Actions runners
+          $githubUrl = "https://github.com/MathisRosenhauer/libaec/archive/refs/tags/v$ver.tar.gz"
+          $tmpFile   = "$env:TEMP/libaec-github-v$ver.tar.gz"
+          Write-Host "Downloading libaec v$ver from GitHub mirror..."
+          Invoke-WebRequest -Uri $githubUrl -OutFile $tmpFile -UseBasicParsing -TimeoutSec 120
+
+          # Compute SHA512 so the portfile hash matches exactly
+          $sha512 = (Get-FileHash -Path $tmpFile -Algorithm SHA512).Hash.ToLower()
+          Write-Host "SHA512: $sha512"
+
+          # Place archive in vcpkg downloads directory (vcpkg will reuse it)
+          $dlDir = "$env:VCPKG_ROOT/downloads"
+          New-Item -ItemType Directory -Path $dlDir -Force | Out-Null
+          Copy-Item $tmpFile "$dlDir/MathisRosenhauer-libaec-v$ver.tar.gz" -Force
+
+          # Create overlay port directory
+          $portDir = "${{ github.workspace }}/custom-ports/libaec"
+          New-Item -ItemType Directory -Path $portDir -Force | Out-Null
+
+          # portfile.cmake — uses vcpkg_from_github instead of vcpkg_from_gitlab
+          @"
+          vcpkg_from_github(
+              OUT_SOURCE_PATH SOURCE_PATH
+              REPO MathisRosenhauer/libaec
+              REF "v$ver"
+              SHA512 $sha512
+              HEAD_REF master
+          )
+
+          vcpkg_cmake_configure(
+              SOURCE_PATH "`${SOURCE_PATH}"
+              OPTIONS
+                  -DBUILD_TESTING=OFF
+          )
+
+          vcpkg_cmake_install()
+          vcpkg_cmake_config_fixup(CONFIG_PATH lib/cmake/libaec)
+          vcpkg_fixup_pkgconfig()
+
+          file(REMOVE_RECURSE "`${CURRENT_PACKAGES_DIR}/debug/include")
+          vcpkg_install_copyright(FILE_LIST "`${SOURCE_PATH}/LICENSE.txt")
+          "@ | Out-File -Encoding utf8 "$portDir/portfile.cmake"
+
+          # vcpkg.json for the port
+          @"
+          {
+            "name": "libaec",
+            "version": "$ver",
+            "description": "Adaptive Entropy Coding library",
+            "homepage": "https://github.com/MathisRosenhauer/libaec",
+            "dependencies": [
+              { "name": "vcpkg-cmake", "host": true },
+              { "name": "vcpkg-cmake-config", "host": true }
+            ]
+          }
+          "@ | Out-File -Encoding utf8 "$portDir/vcpkg.json"
+
+          Write-Host "Overlay port created at: $portDir"
+
       # ── MSVC ───────────────────────────────────────────────────────────
       - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@v1.13.0
 
       # ── Build ──────────────────────────────────────────────────────────
       - name: Configure CMake
@@ -107,7 +176,9 @@ jobs:
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
             "-DVCPKG_INSTALLED_DIR=$env:VCPKG_INSTALLED_DIR" `
             "-DVCPKG_INSTALL_OPTIONS=--clean-after-build" `
-            "-DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/custom-triplets"
+            "-DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/custom-triplets" `
+            "-DVCPKG_OVERLAY_PORTS=${{ github.workspace }}/custom-ports" `
+            -Wno-dev
 
       - name: Build Release
         shell: pwsh
@@ -140,7 +211,9 @@ jobs:
       # ── WiX MSI ────────────────────────────────────────────────────────
       - name: Install WiX Toolset
         shell: pwsh
-        run: dotnet tool install --global wix
+        run: |
+          dotnet tool install --global wix --version 4.0.5
+          wix extension add -g WixToolset.UI.wixext/4.0.5
 
       - name: Create MSI installer
         shell: pwsh
@@ -151,13 +224,45 @@ jobs:
           while ($parts.Count -lt 3) { $parts += '0' }
           $msiVersion = ($parts[0..2]) -join '.'
 
-          # Generate WiX source from directory
-          wix convert -o installer.wxs 2>$null; $true
+          # Create a minimal license RTF file (required by WixUI_InstallDir)
+          "{\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang1033{\fonttbl{\f0\fnil\fcharset0 Calibri;}} \par \viewkind4\uc1 \pard\sa200\sl276\slmult1\f0\fs22\lang9 3D-Reconstruction License\par }" | Out-File -Encoding ascii license.rtf
 
-          # Create minimal WiX project
+          # Generate WiX Directory and Component XML dynamically
+          $distPath = Resolve-Path "dist/3D-Reconstruction" | Select-Object -ExpandProperty Path
+          $global:componentsXml = ""
+          
+          function Build-WixTree {
+              param([string]$path, [string]$parentId)
+              $xml = ""
+              $items = Get-ChildItem -Path $path
+              $files = $items | Where-Object { -not $_.PSIsContainer }
+              $dirs = $items | Where-Object { $_.PSIsContainer }
+              
+              if ($files.Count -gt 0) {
+                  foreach ($file in $files) {
+                      $id = "FILE_" + [guid]::NewGuid().ToString("N")
+                      $global:componentsXml += "      <Component Id=`"$id`" Directory=`"$parentId`">`n"
+                      $global:componentsXml += "        <File Source=`"$($file.FullName)`" KeyPath=`"yes`" />`n"
+                      $global:componentsXml += "      </Component>`n"
+                  }
+              }
+              
+              foreach ($dir in $dirs) {
+                  $dirId = "DIR_" + [guid]::NewGuid().ToString("N")
+                  $xml += "        <Directory Id=`"$dirId`" Name=`"$($dir.Name)`">`n"
+                  $xml += Build-WixTree -path $dir.FullName -parentId $dirId
+                  $xml += "        </Directory>`n"
+              }
+              return $xml
+          }
+          
+          $directoriesXml = Build-WixTree -path $distPath -parentId "INSTALLFOLDER"
+          $componentsXml = $global:componentsXml
+
+          # Create minimal WiX project with UI
           @"
           <?xml version="1.0" encoding="UTF-8"?>
-          <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+          <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
             <Package Name="3D-Reconstruction"
                      Manufacturer="3D-Reconstruction Team"
                      Version="$msiVersion"
@@ -168,22 +273,32 @@ jobs:
 
               <StandardDirectory Id="ProgramFiles6432Folder">
                 <Directory Id="INSTALLFOLDER" Name="3D-Reconstruction">
-                  <Files Include="dist\3D-Reconstruction\**" />
+          $directoriesXml
                 </Directory>
               </StandardDirectory>
+
+              <!-- UI Configuration -->
+              <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+              <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
 
               <Feature Id="Main" Title="3D-Reconstruction" Level="1">
                 <ComponentGroupRef Id="Files" />
               </Feature>
             </Package>
+
+            <Fragment>
+              <ComponentGroup Id="Files">
+          $componentsXml
+              </ComponentGroup>
+            </Fragment>
           </Wix>
           "@ | Out-File -Encoding utf8 installer.wxs
 
-          wix build installer.wxs -o "3D-Reconstruction-$version.msi" -arch x64
+          wix build installer.wxs -ext WixToolset.UI.wixext -out "3D-Reconstruction-$version.msi" -arch x64
 
       # ── Upload ─────────────────────────────────────────────────────────
       - name: Upload MSI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v4.6.2
         with:
           name: 3D-Reconstruction-${{ steps.version.outputs.VERSION }}-msi
           path: "*.msi"
@@ -191,7 +306,7 @@ jobs:
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.3.2
         with:
           files: "*.msi"
           generate_release_notes: true
