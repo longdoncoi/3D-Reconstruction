@@ -30,7 +30,19 @@ int main(int argc, char* argv[])
 #endif
 
     QApplication app(argc, argv);
-    app.setWindowIcon(QIcon("f:/PROJECTS/QT/3D-Reconstruction/src/app/app_icon.png"));
+    // Use a path relative to the executable so it works both in dev and production.
+    // In dev: exe is in build/Release/, icon is in src/app/ (not alongside exe, so skip if not found).
+    // In production: icon would need to be alongside exe or embedded as a resource.
+    {
+        QString iconPath = QApplication::applicationDirPath() + "/app_icon.png";
+        if (!QFileInfo::exists(iconPath)) {
+            // Fallback for dev builds where icon lives in source tree
+            iconPath = QDir::cleanPath(QApplication::applicationDirPath() + "/../../src/app/app_icon.png");
+        }
+        if (QFileInfo::exists(iconPath)) {
+            app.setWindowIcon(QIcon(iconPath));
+        }
+    }
     StyleManager::applyTheme(&app);
     
     // Initialize AppConfig

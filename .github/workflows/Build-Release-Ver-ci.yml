@@ -191,14 +191,23 @@ jobs:
           $dist = "dist/3D-Reconstruction"
           New-Item -ItemType Directory -Path $dist -Force | Out-Null
 
-          # Copy main executable and all DLLs
-          Copy-Item build/Release/*.exe $dist/ -Force
+          # Copy main executable only (exclude test executables)
+          Copy-Item "build/Release/3D-Reconstruction.exe" "$dist/" -Force
+
+          # Copy all runtime DLLs (from exe directory)
           Copy-Item build/Release/*.dll $dist/ -Force -ErrorAction SilentlyContinue
 
-          # Copy application plugins
+          # Copy application icon alongside exe (for portable icon loading)
+          if (Test-Path "src/app/app_icon.png") {
+            Copy-Item "src/app/app_icon.png" "$dist/" -Force
+          }
+
+          # Copy application plugins (only *Plugin.dll files, not Qt runtime DLLs)
           if (Test-Path "build/plugins/Release") {
             New-Item -ItemType Directory -Path "$dist/plugins" -Force | Out-Null
-            Copy-Item "build/plugins/Release/*.dll" "$dist/plugins/" -Force
+            Get-ChildItem "build/plugins/Release" -Filter "*Plugin.dll" | Copy-Item -Destination "$dist/plugins/" -Force
+            # Also copy supporting DLLs needed by plugins (non-Qt ones not in main dir)
+            Get-ChildItem "build/plugins/Release" -Filter "*.dll" | Where-Object { $_.Name -notlike "*Plugin.dll" } | Copy-Item -Destination "$dist/plugins/" -Force
           }
 
           # Copy Qt plugins if present
@@ -211,13 +220,27 @@ jobs:
           # Copy translations
           if (Test-Path "translations") { Copy-Item "translations" "$dist/" -Recurse -Force }
 
-          # Copy AI and configuration directories
-          if (Test-Path "AITraining") { Copy-Item "AITraining" "$dist/" -Recurse -Force }
+          # Copy AITraining directory (Python scripts and model weights, exclude Cache to reduce size)
+          if (Test-Path "AITraining") {
+            New-Item -ItemType Directory -Path "$dist/AITraining" -Force | Out-Null
+            Get-ChildItem "AITraining" -Exclude "Cache","__pycache__","logs","runs" | ForEach-Object {
+              if ($_.PSIsContainer) {
+                Copy-Item $_.FullName "$dist/AITraining/$($_.Name)" -Recurse -Force
+              } else {
+                Copy-Item $_.FullName "$dist/AITraining/" -Force
+              }
+            }
+          }
+
+          # Copy Config directory (app configuration files)
           if (Test-Path "Config") { Copy-Item "Config" "$dist/" -Recurse -Force }
+
+          # Copy Models directory (ONNX runtime models)
           if (Test-Path "Models") { Copy-Item "Models" "$dist/" -Recurse -Force }
 
           echo "📁 Distribution contents:"
           Get-ChildItem $dist -Recurse | Select-Object FullName, Length
+
 
       # ── WiX MSI ────────────────────────────────────────────────────────
       - name: Install WiX Toolset

@@ -11,13 +11,22 @@ AppConfig& AppConfig::instance() {
 void AppConfig::initialize(const QString& appDir) {
     std::unique_lock lock(m_mutex);
     m_appDir = appDir;
-    
-    // Find project root by looking for CMakeLists.txt
+
+    // Determine project root:
+    // - Dev build: exe lives in build/<Config>/, CMakeLists.txt is two levels up.
+    // - Production install: exe lives in the install folder itself; no CMakeLists.txt
+    //   exists so we stay in that folder (all data dirs are siblings of the exe).
     QDir dir(m_appDir);
-    while (!dir.isRoot() && !dir.exists("CMakeLists.txt")) {
+    int maxLevels = 4; // never climb more than 4 levels
+    while (maxLevels-- > 0 && !dir.isRoot() && !dir.exists("CMakeLists.txt")) {
         dir.cdUp();
     }
-    m_projectRoot = dir.absolutePath();
+    if (dir.exists("CMakeLists.txt")) {
+        m_projectRoot = dir.absolutePath();
+    } else {
+        // Production install: treat the app directory itself as the root.
+        m_projectRoot = m_appDir;
+    }
 
     QFileInfo configInfo(QDir::cleanPath(m_projectRoot + "/Config/Config.ini"));
     QDir configDir = configInfo.absoluteDir();
