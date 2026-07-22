@@ -36,7 +36,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          lfs: true
 
       # ── Export GitHub Actions cache env for vcpkg binary caching ──────
       - name: Export GitHub Actions cache env
@@ -207,7 +207,7 @@ jobs:
             New-Item -ItemType Directory -Path "$dist/plugins" -Force | Out-Null
             Get-ChildItem "build/plugins/Release" -Filter "*Plugin.dll" | Copy-Item -Destination "$dist/plugins/" -Force
             # Also copy supporting DLLs needed by plugins (non-Qt ones not in main dir)
-            Get-ChildItem "build/plugins/Release" -Filter "*.dll" | Where-Object { $_.Name -notlike "*Plugin.dll" } | Copy-Item -Destination "$dist/plugins/" -Force
+            Get-ChildItem "build/plugins/Release" -Filter "*.dll" | Where-Object { $_.Name -notlike "*Plugin.dll" } | Copy-Item -Destination "$dist/" -Force
           }
 
           # Copy Qt plugins if present

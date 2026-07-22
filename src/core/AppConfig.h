@@ -33,6 +33,7 @@ private:
     mutable std::shared_mutex m_mutex;
     QString m_appDir;
     QString m_projectRoot; // Cache project root for convenience if running from build dir
+    QString m_dataRoot;    // Writeable root directory (AppData in production)
 };
 
 #endif // APPCONFIG_H

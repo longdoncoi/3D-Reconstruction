@@ -80,14 +80,20 @@ warnings.filterwarnings("ignore", module="keras")
 # ─── 2. Đường dẫn ─────────────────────────────────────────────────────────────
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
+APP_DATA_DIR = os.environ.get("APP_DATA_DIR", PROJECT_DIR)
 DOCS_DIR    = os.path.join(PROJECT_DIR, "Docs")
-MODELS_DIR  = os.path.join(PROJECT_DIR, "Models")
-CACHE_DIR   = os.path.join(BASE_DIR, "Cache")
-LOGS_DIR    = os.path.join(BASE_DIR, "logs")
+MODELS_DIR  = os.path.join(APP_DATA_DIR, "AITraining", "Models")
+CACHE_DIR   = os.path.join(APP_DATA_DIR, "AITraining", "Cache")
+LOGS_DIR    = os.path.join(APP_DATA_DIR, "AITraining", "logs")
 EMBED_CACHE = os.path.join(CACHE_DIR, "embed_model")
 
-for _d in (MODELS_DIR, CACHE_DIR, LOGS_DIR, EMBED_CACHE, DOCS_DIR):
+for _d in (CACHE_DIR, LOGS_DIR, EMBED_CACHE, MODELS_DIR):
     os.makedirs(_d, exist_ok=True)
+if not os.path.exists(DOCS_DIR):
+    try:
+        os.makedirs(DOCS_DIR, exist_ok=True)
+    except PermissionError:
+        pass
 
 CACHE_INDEX    = os.path.join(CACHE_DIR, "faiss_index.bin")
 CACHE_CHUNKS   = os.path.join(CACHE_DIR, "chunks.pkl")
