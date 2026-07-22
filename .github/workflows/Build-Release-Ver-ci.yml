@@ -195,6 +195,12 @@ jobs:
           Copy-Item build/Release/*.exe $dist/ -Force
           Copy-Item build/Release/*.dll $dist/ -Force -ErrorAction SilentlyContinue
 
+          # Copy application plugins
+          if (Test-Path "build/plugins/Release") {
+            New-Item -ItemType Directory -Path "$dist/plugins" -Force | Out-Null
+            Copy-Item "build/plugins/Release/*.dll" "$dist/plugins/" -Force
+          }
+
           # Copy Qt plugins if present
           $qtPlugins = @("platforms", "imageformats", "iconengines", "styles", "tls")
           foreach ($p in $qtPlugins) {
@@ -204,6 +210,11 @@ jobs:
 
           # Copy translations
           if (Test-Path "translations") { Copy-Item "translations" "$dist/" -Recurse -Force }
+
+          # Copy AI and configuration directories
+          if (Test-Path "AITraining") { Copy-Item "AITraining" "$dist/" -Recurse -Force }
+          if (Test-Path "Config") { Copy-Item "Config" "$dist/" -Recurse -Force }
+          if (Test-Path "Models") { Copy-Item "Models" "$dist/" -Recurse -Force }
 
           echo "📁 Distribution contents:"
           Get-ChildItem $dist -Recurse | Select-Object FullName, Length
