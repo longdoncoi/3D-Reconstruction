@@ -194,11 +194,23 @@ jobs:
           $dist = "dist/3D-Reconstruction"
           New-Item -ItemType Directory -Path $dist -Force | Out-Null
 
-          # Copy main executable only (exclude test executables)
-          Copy-Item "build/Release/3D-Reconstruction.exe" "$dist/" -Force
+          # Find main executable — location varies by generator:
+          #   Multi-config (Visual Studio): build/Release/3D-Reconstruction.exe
+          #   Single-config (Ninja):        build/3D-Reconstruction.exe
+          $exe = Get-ChildItem -Path build -Filter "3D-Reconstruction.exe" -Recurse -ErrorAction SilentlyContinue |
+                 Where-Object { $_.DirectoryName -notmatch 'tests' } |
+                 Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "3D-Reconstruction.exe not found under build/"
+            Get-ChildItem build -Recurse -Filter "*.exe" | Select-Object FullName
+            exit 1
+          }
+          $exeDir = $exe.DirectoryName
+          Write-Host "Found executable at: $($exe.FullName)"
+          Copy-Item $exe.FullName "$dist/" -Force
 
           # Copy all runtime DLLs (from exe directory)
-          Copy-Item build/Release/*.dll $dist/ -Force -ErrorAction SilentlyContinue
+          Copy-Item "$exeDir/*.dll" $dist/ -Force -ErrorAction SilentlyContinue
 
           # Copy application icon alongside exe (for portable icon loading)
           if (Test-Path "src/app/app_icon.png") {
@@ -206,17 +218,19 @@ jobs:
           }
 
           # Copy application plugins (only *Plugin.dll files, not Qt runtime DLLs)
-          if (Test-Path "build/plugins/Release") {
+          # Multi-config: build/plugins/Release  |  Single-config: build/plugins
+          $pluginDir = @("build/plugins/Release", "build/plugins") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if ($pluginDir) {
             New-Item -ItemType Directory -Path "$dist/plugins" -Force | Out-Null
-            Get-ChildItem "build/plugins/Release" -Filter "*Plugin.dll" | Copy-Item -Destination "$dist/plugins/" -Force
+            Get-ChildItem $pluginDir -Filter "*Plugin.dll" | Copy-Item -Destination "$dist/plugins/" -Force
             # Also copy supporting DLLs needed by plugins (non-Qt ones not in main dir)
-            Get-ChildItem "build/plugins/Release" -Filter "*.dll" | Where-Object { $_.Name -notlike "*Plugin.dll" } | Copy-Item -Destination "$dist/" -Force
+            Get-ChildItem $pluginDir -Filter "*.dll" | Where-Object { $_.Name -notlike "*Plugin.dll" } | Copy-Item -Destination "$dist/" -Force
           }
 
-          # Copy Qt plugins if present
+          # Copy Qt plugins if present (check exe directory for deployed plugins)
           $qtPlugins = @("platforms", "imageformats", "iconengines", "styles", "tls")
           foreach ($p in $qtPlugins) {
-            $src = "build/Release/$p"
+            $src = "$exeDir/$p"
             if (Test-Path $src) { Copy-Item $src "$dist/" -Recurse -Force }
           }
 
