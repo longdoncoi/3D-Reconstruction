@@ -158,6 +158,17 @@ find_package(VTK REQUIRED COMPONENTS
     RenderingAnnotation
 )
 
+# ─── 5. Paths & Outputs ────────────────────────────────────────────────────────
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/Release)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/plugins/Release)
+
+# ─── 5b. Build Optimizations ───────────────────────────────────────────────────
+# Enable Unity Build (Jumbo Build) to drastically reduce compilation time
+# by merging multiple source files into a single translation unit.
+set(CMAKE_UNITY_BUILD ON)
+# Reduce the batch size if memory issues occur (default is 8)
+# set(CMAKE_UNITY_BUILD_BATCH_SIZE 8)
+
 # ─── 3. OpenCV ────────────────────────────────────────────────────────────────
 set(OpenCV_DIR "C:/opencv/build")
 find_package(OpenCV REQUIRED)
@@ -188,20 +199,57 @@ set(TENSORRT_BIN_DIR "${TENSORRT_ROOT}/bin")
 # ─── 6. AUTOUIC search paths ─────────────────────────────────────────────────
 set(CMAKE_AUTOUIC_SEARCH_PATHS ${CMAKE_CURRENT_SOURCE_DIR}/src/app)
 
-# ─── 7. Executable ────────────────────────────────────────────────────────────
-qt_add_executable(3D-Reconstruction WIN32 MACOSX_BUNDLE)
+# ─── 7b. Shared Precompiled Header (PCH) Target ────────────────────────────────
+# We create a clean STATIC library to build the PCH. This avoids baking in macros 
+# like APP_LIBRARY or _EXPORTS, so plugins can reuse it safely without link errors.
+add_library(SharedPCH STATIC src/pch_dummy.cpp)
+target_include_directories(SharedPCH PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/app
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/services/scene
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/services/viewer
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/services/settings
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/services/reconstruction
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/services/ai
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/services/mail
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/utils
+    ${VTK_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+    ${PCL_INCLUDE_DIRS}
+    ${onnxruntime_SOURCE_DIR}/include
+)
+target_compile_definitions(SharedPCH PUBLIC
+    ${VTK_DEFINITIONS}
+    ${PCL_DEFINITIONS}
+    PCL_SILENCE_MALLOC_WARNING=1
+)
+if(MSVC)
+    target_compile_options(SharedPCH PUBLIC /utf-8 /MP /FS)
+endif()
+target_precompile_headers(SharedPCH PUBLIC src/pch.h)
+target_link_libraries(SharedPCH PUBLIC
+    Qt6::Core
+    Qt6::Widgets
+    Qt6::OpenGL
+    Qt6::Network
+    Qt6::Concurrent
+    Qt6::OpenGLWidgets
+    ${VTK_LIBRARIES}
+    ${OpenCV_LIBS}
+    ${PCL_LIBRARIES}
+)
 
+# ─── 7c. Executable ────────────────────────────────────────────────────────────
+qt_add_executable(3D-Reconstruction WIN32 MACOSX_BUNDLE)
+target_precompile_headers(3D-Reconstruction REUSE_FROM SharedPCH)
 # ─── Source subdirectories ───────────────────────────────────────────────────
 add_subdirectory(src/app)
 add_subdirectory(src/core)
 add_subdirectory(src/services)
 add_subdirectory(src/utils)
 
-# ─── 7b. Precompiled Headers (PCH) — biggest build speed win ─────────────────
-target_precompile_headers(3D-Reconstruction PRIVATE src/pch.h)
-
 # ─── 8. Include directories ───────────────────────────────────────────────────
-target_include_directories(3D-Reconstruction PRIVATE
+target_include_directories(3D-Reconstruction PUBLIC
     # App shell
     ${CMAKE_CURRENT_SOURCE_DIR}/src/app
 
@@ -227,18 +275,18 @@ target_include_directories(3D-Reconstruction PRIVATE
 )
 
 # ─── 9. Compile definitions & options ─────────────────────────────────────────
-target_compile_definitions(3D-Reconstruction PRIVATE
+target_compile_definitions(3D-Reconstruction PUBLIC
     ${VTK_DEFINITIONS}
     ${PCL_DEFINITIONS}
     PCL_SILENCE_MALLOC_WARNING=1
+)
+target_compile_definitions(3D-Reconstruction PRIVATE
     APP_LIBRARY
 )
 if(MSVC)
-    # /MP creates additional cl.exe processes inside each MSBuild job.  With
-    # Qt, PCL, VTK and OpenCV headers this exhausts the compiler heap and can
-    # also race PDB creation.  Let the build tool control parallelism instead.
-    target_compile_options(3D-Reconstruction PRIVATE /utf-8 /FS)
-    add_compile_options(/FS)
+    # /MP enables multi-core compilation. Since heavy PCL/VTK headers are now in PCH,
+    # cl.exe uses much less memory per file, avoiding the previous heap exhaustion issues.
+    target_compile_options(3D-Reconstruction PRIVATE /utf-8 /MP /FS)
 endif()
 
 # ─── 10. Link libraries ───────────────────────────────────────────────────────

@@ -59,3 +59,18 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+// ─── OpenCV ──────────────────────────────────────────────────────────────────
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+
+// ─── PCL ─────────────────────────────────────────────────────────────────────
+// Note: Including core PCL headers here prevents the compiler from re-parsing 
+// massive Eigen/Boost templates for every single .cpp file.
+#include <pcl/point_types.h>
+#include <pcl/point_cloud.h>
+#include <pcl/common/common.h>
+
+// ─── VTK ─────────────────────────────────────────────────────────────────────
+#include <vtkSmartPointer.h>
+#include <vtkPolyData.h>

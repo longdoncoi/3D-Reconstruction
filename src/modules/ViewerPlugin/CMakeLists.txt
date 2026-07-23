@@ -27,7 +27,8 @@ target_include_directories(ViewerPlugin PRIVATE
     ${OpenCV_INCLUDE_DIRS}
 )
 
-target_precompile_headers(ViewerPlugin PRIVATE ${PROJECT_SOURCE_DIR}/src/pch.h)
+target_precompile_headers(ViewerPlugin REUSE_FROM SharedPCH)
+target_link_libraries(ViewerPlugin PRIVATE SharedPCH)
 
 target_link_libraries(ViewerPlugin
     PRIVATE

@@ -36,7 +36,8 @@ target_include_directories(UserAuthPlugin PRIVATE
     ${VTK_INCLUDE_DIRS}
 )
 
-target_precompile_headers(UserAuthPlugin PRIVATE ${PROJECT_SOURCE_DIR}/src/pch.h)
+target_precompile_headers(UserAuthPlugin REUSE_FROM SharedPCH)
+target_link_libraries(UserAuthPlugin PRIVATE SharedPCH)
 
 target_link_libraries(UserAuthPlugin
     PRIVATE
