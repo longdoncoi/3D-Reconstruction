@@ -15,7 +15,8 @@ huggingface_hub>=0.23.0
 
 # ── Embedding & RAG ────────────────────────────────────────────────────────────
 sentence-transformers>=2.7.0
-faiss-cpu>=1.8.0              # Đổi thành faiss-gpu nếu muốn encode nhanh hơn
+faiss-gpu>=1.8.0  
+#faiss-cpu>=1.8.0              # Đổi thành faiss-gpu nếu muốn encode nhanh hơn
 rank_bm25>=0.2.2
 numpy>=1.26.0
 

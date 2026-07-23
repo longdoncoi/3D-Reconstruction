@@ -118,6 +118,7 @@ RERANKER_TOP_K  = 8    # Tăng lên 8 để lấy thêm context
 # 1200 thay vì 1800: mỗi chunk mang một ý chính, không pha trộn nhiều chủ đề
 # LƯU Ý: thay đổi giá trị này buộc rebuild cache
 ENABLE_VISION_LLM = os.environ.get("AI_ENABLE_VISION_LLM", "1").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_RAG      = os.environ.get("AI_ENABLE_RAG", "1").strip().lower() in {"1", "true", "yes", "on"}
 CHUNK_CHARS     = 1200
 OVERLAP_CHARS   = 300  # Tăng lên 300 để giữ liên kết tiếng Việt
 
@@ -999,6 +1000,9 @@ def _format_context_block(chunks: list, section_title: str) -> str:
 
 
 def get_context(query: str, query_image_b64: str = None) -> tuple:
+    if not ENABLE_RAG:
+        return "", "", []
+
     # Bước 1: Hybrid retrieve
     candidates = hybrid_retrieve(query, query_image_b64=query_image_b64, k=14, final_k=10)
 
@@ -1483,44 +1487,53 @@ if __name__ == "__main__":
 
     _print_banner()
 
-    # Step 1: Embedding model (đa ngôn ngữ)
-    with startup_step(f"Loading embedding model ({EMBED_MODEL_NAME})"):
-        _embed = SentenceTransformer(EMBED_MODEL_NAME, cache_folder=EMBED_CACHE)
-        embed_model_ref = _embed
+    if ENABLE_RAG:
+        # Step 1: Embedding model (đa ngôn ngữ)
+        with startup_step(f"Loading embedding model ({EMBED_MODEL_NAME})"):
+            _embed = SentenceTransformer(EMBED_MODEL_NAME, cache_folder=EMBED_CACHE)
+            embed_model_ref = _embed
 
-    # Step 2: Cross-encoder reranker (optional)
-    if USE_RERANKER and not MODELS[MODEL_IDX].get("is_vision", False):
-        with startup_step(f"Loading reranker ({RERANKER_MODEL})"):
-            try:
-                from sentence_transformers import CrossEncoder
-                _reranker = CrossEncoder(
-                    RERANKER_MODEL,
-                    max_length   = 512,
-                    cache_folder = EMBED_CACHE,
-                )
-                logger.info("Reranker loaded: %s", RERANKER_MODEL)
-            except Exception as e:
-                logger.warning("Reranker load failed (%s) — continuing without", e)
-                _reranker = None
-    else:
-        print("  ⏭   Reranker disabled (USE_RERANKER=False)")
-
-    # Step 3: Scan documents
-    with startup_step("Scanning documents"):
-        raw_chunks = load_documents()
-        if not raw_chunks:
-            logger.warning("No documents found — RAG context will be empty")
-
-    # Step 4: RAG index
-    with startup_step("Loading/building RAG index"):
-        if raw_chunks:
-            knowledge_index, knowledge_chunks, bm25_index = \
-                load_or_build_index(raw_chunks, _embed)
+        # Step 2: Cross-encoder reranker (optional)
+        if USE_RERANKER and not MODELS[MODEL_IDX].get("is_vision", False):
+            with startup_step(f"Loading reranker ({RERANKER_MODEL})"):
+                try:
+                    from sentence_transformers import CrossEncoder
+                    _reranker = CrossEncoder(
+                        RERANKER_MODEL,
+                        max_length   = 512,
+                        cache_folder = EMBED_CACHE,
+                    )
+                    logger.info("Reranker loaded: %s", RERANKER_MODEL)
+                except Exception as e:
+                    logger.warning("Reranker load failed (%s) — continuing without", e)
+                    _reranker = None
         else:
-            knowledge_index  = None
-            knowledge_chunks = []
-            bm25_index       = None
-            print("       (skipped — no documents)")
+            print("  ⏭   Reranker disabled (USE_RERANKER=False)")
+
+        # Step 3: Scan documents
+        with startup_step("Scanning documents"):
+            raw_chunks = load_documents()
+            if not raw_chunks:
+                logger.warning("No documents found — RAG context will be empty")
+
+        # Step 4: RAG index
+        with startup_step("Loading/building RAG index"):
+            if raw_chunks:
+                knowledge_index, knowledge_chunks, bm25_index = \
+                    load_or_build_index(raw_chunks, _embed)
+            else:
+                knowledge_index  = None
+                knowledge_chunks = []
+                bm25_index       = None
+                print("       (skipped — no documents)")
+    else:
+        print("  ⏭   RAG disabled (ENABLE_RAG=False)")
+        _embed = None
+        embed_model_ref = None
+        _reranker = None
+        knowledge_index = None
+        knowledge_chunks = []
+        bm25_index = None
 
     if MODELS[MODEL_IDX].get("is_vision", False):
         logger.info("Releasing embedding model before LLM load; retrieval will use BM25 fallback")
