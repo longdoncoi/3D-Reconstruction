@@ -5,6 +5,9 @@
 # ──────────────────────────────────────────────────────────────────────────────
 name: Release
 
+permissions:
+  contents: write
+
 on:
   push:
     tags: ["v*"]
@@ -261,16 +264,9 @@ jobs:
           # Create a minimal license RTF file (required by WixUI_InstallDir)
           "{\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang1033{\fonttbl{\f0\fnil\fcharset0 Calibri;}} \par \viewkind4\uc1 \pard\sa200\sl276\slmult1\f0\fs22\lang9 3D-Reconstruction License\par }" | Out-File -Encoding ascii license.rtf
 
-          # Convert app_icon.png to ICO for installer shortcuts
-          pip install Pillow --quiet
-          python -c "
-          from PIL import Image
-          img = Image.open('src/app/app_icon.png')
-          sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
-          icons = [img.resize(s, Image.LANCZOS) for s in sizes]
-          icons[0].save('dist/3D-Reconstruction/app_icon.ico', format='ICO', sizes=sizes, append_images=icons[1:])
-          "
-          Write-Host "Created app_icon.ico for shortcuts"
+          # Copy the pre-generated app_icon.ico for installer shortcuts
+          Copy-Item "src/app/app_icon.ico" "dist/3D-Reconstruction/app_icon.ico" -Force
+          Write-Host "Copied app_icon.ico for shortcuts"
 
           # Generate WiX Directory and Component XML dynamically
           $distPath = Resolve-Path "dist/3D-Reconstruction" | Select-Object -ExpandProperty Path
