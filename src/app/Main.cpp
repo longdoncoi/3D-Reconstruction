@@ -30,17 +30,22 @@ int main(int argc, char* argv[])
 #endif
 
     QApplication app(argc, argv);
-    // Use a path relative to the executable so it works both in dev and production.
-    // In dev: exe is in build/Release/, icon is in src/app/ (not alongside exe, so skip if not found).
-    // In production: icon would need to be alongside exe or embedded as a resource.
+    // Set window icon — prefer embedded Qt resource, fall back to file on disk
     {
-        QString iconPath = QApplication::applicationDirPath() + "/app_icon.png";
-        if (!QFileInfo::exists(iconPath)) {
-            // Fallback for dev builds where icon lives in source tree
-            iconPath = QDir::cleanPath(QApplication::applicationDirPath() + "/../../src/app/app_icon.png");
+        QIcon appIcon(QStringLiteral(":/app_icon.png"));
+        if (appIcon.isNull()) {
+            // Fallback: icon beside executable (production portable)
+            QString iconPath = QApplication::applicationDirPath() + QStringLiteral("/app_icon.png");
+            if (!QFileInfo::exists(iconPath)) {
+                // Fallback for dev builds where icon lives in source tree
+                iconPath = QDir::cleanPath(QApplication::applicationDirPath() + QStringLiteral("/../../src/app/app_icon.png"));
+            }
+            if (QFileInfo::exists(iconPath)) {
+                appIcon = QIcon(iconPath);
+            }
         }
-        if (QFileInfo::exists(iconPath)) {
-            app.setWindowIcon(QIcon(iconPath));
+        if (!appIcon.isNull()) {
+            app.setWindowIcon(appIcon);
         }
     }
     StyleManager::applyTheme(&app);

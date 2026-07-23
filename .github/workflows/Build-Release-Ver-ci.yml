@@ -261,9 +261,22 @@ jobs:
           # Create a minimal license RTF file (required by WixUI_InstallDir)
           "{\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang1033{\fonttbl{\f0\fnil\fcharset0 Calibri;}} \par \viewkind4\uc1 \pard\sa200\sl276\slmult1\f0\fs22\lang9 3D-Reconstruction License\par }" | Out-File -Encoding ascii license.rtf
 
+          # Convert app_icon.png to ICO for installer shortcuts
+          pip install Pillow --quiet
+          python -c "
+          from PIL import Image
+          img = Image.open('src/app/app_icon.png')
+          sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
+          icons = [img.resize(s, Image.LANCZOS) for s in sizes]
+          icons[0].save('dist/3D-Reconstruction/app_icon.ico', format='ICO', sizes=sizes, append_images=icons[1:])
+          "
+          Write-Host "Created app_icon.ico for shortcuts"
+
           # Generate WiX Directory and Component XML dynamically
           $distPath = Resolve-Path "dist/3D-Reconstruction" | Select-Object -ExpandProperty Path
           $global:componentsXml = ""
+          $global:exeFileId = ""
+          $global:icoFileId = ""
           
           function Build-WixTree {
               param([string]$path, [string]$parentId)
@@ -275,8 +288,16 @@ jobs:
               if ($files.Count -gt 0) {
                   foreach ($file in $files) {
                       $id = "FILE_" + [guid]::NewGuid().ToString("N")
+                      # Track the EXE file ID for shortcuts
+                      if ($file.Name -eq "3D-Reconstruction.exe") {
+                          $global:exeFileId = $id
+                      }
+                      # Track the ICO file ID for shortcut icon
+                      if ($file.Name -eq "app_icon.ico") {
+                          $global:icoFileId = $id
+                      }
                       $global:componentsXml += "      <Component Id=`"$id`" Directory=`"$parentId`">`n"
-                      $global:componentsXml += "        <File Source=`"$($file.FullName)`" KeyPath=`"yes`" />`n"
+                      $global:componentsXml += "        <File Id=`"$id`" Source=`"$($file.FullName)`" KeyPath=`"yes`" />`n"
                       $global:componentsXml += "      </Component>`n"
                   }
               }
@@ -292,8 +313,10 @@ jobs:
           
           $directoriesXml = Build-WixTree -path $distPath -parentId "INSTALLFOLDER"
           $componentsXml = $global:componentsXml
+          $exeFileId = $global:exeFileId
+          $icoFileId = $global:icoFileId
 
-          # Create minimal WiX project with UI
+          # Create WiX project with UI, shortcuts, and uninstall
           @"
           <?xml version="1.0" encoding="UTF-8"?>
           <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
@@ -311,12 +334,67 @@ jobs:
                 </Directory>
               </StandardDirectory>
 
+              <!-- Desktop shortcut directory -->
+              <StandardDirectory Id="DesktopFolder" />
+
+              <!-- Start Menu shortcut directory -->
+              <StandardDirectory Id="ProgramMenuFolder">
+                <Directory Id="ProgramMenuSubfolder" Name="3D-Reconstruction" />
+              </StandardDirectory>
+
+              <!-- Desktop Shortcut -->
+              <Component Id="DesktopShortcut" Directory="DesktopFolder">
+                <Shortcut Id="DesktopShortcutLink"
+                          Name="3D-Reconstruction"
+                          Description="3D-Reconstruction Application"
+                          Target="[INSTALLFOLDER]3D-Reconstruction.exe"
+                          WorkingDirectory="INSTALLFOLDER"
+                          Icon="AppIcon" />
+                <RegistryValue Root="HKCU" Key="Software\3D-Reconstruction" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+              </Component>
+
+              <!-- Start Menu Shortcuts (App + Uninstall) -->
+              <Component Id="StartMenuShortcuts" Directory="ProgramMenuSubfolder">
+                <Shortcut Id="StartMenuShortcutLink"
+                          Name="3D-Reconstruction"
+                          Description="3D-Reconstruction Application"
+                          Target="[INSTALLFOLDER]3D-Reconstruction.exe"
+                          WorkingDirectory="INSTALLFOLDER"
+                          Icon="AppIcon" />
+                <Shortcut Id="StartMenuUninstallLink"
+                          Name="Uninstall 3D-Reconstruction"
+                          Description="Uninstall 3D-Reconstruction"
+                          Target="[SystemFolder]msiexec.exe"
+                          Arguments="/x [ProductCode]" />
+                <RemoveFolder Id="RemoveProgramMenuSubfolder" On="uninstall" />
+                <RegistryValue Root="HKCU" Key="Software\3D-Reconstruction" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+              </Component>
+
+              <!-- Uninstall shortcut in install directory -->
+              <Component Id="UninstallShortcutComponent" Directory="INSTALLFOLDER">
+                <Shortcut Id="UninstallShortcutLink"
+                          Name="Uninstall 3D-Reconstruction"
+                          Description="Uninstall 3D-Reconstruction"
+                          Target="[SystemFolder]msiexec.exe"
+                          Arguments="/x [ProductCode]" />
+                <RegistryValue Root="HKCU" Key="Software\3D-Reconstruction" Name="UninstallShortcut" Type="integer" Value="1" KeyPath="yes" />
+              </Component>
+
+              <!-- Icon definition for shortcuts -->
+              <Icon Id="AppIcon" SourceFile="dist\3D-Reconstruction\app_icon.ico" />
+
               <!-- UI Configuration -->
               <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
               <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
 
+              <!-- Add/Remove Programs icon -->
+              <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+
               <Feature Id="Main" Title="3D-Reconstruction" Level="1">
                 <ComponentGroupRef Id="Files" />
+                <ComponentRef Id="DesktopShortcut" />
+                <ComponentRef Id="StartMenuShortcuts" />
+                <ComponentRef Id="UninstallShortcutComponent" />
               </Feature>
             </Package>
 
