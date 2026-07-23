@@ -1,3 +1,4 @@
+# ruff: noqa: BLE001, S110, DTZ005, RUF012
 """
 StartChatbotServer.py — 3D-Reconstruction AI Server v2.2
 =========================================================
@@ -30,8 +31,6 @@ LƯU Ý: v2.2 đổi embedding model và chunk size → xóa Cache/ để rebuil
 """
 
 # ─── 0. Bootstrap ─────────────────────────────────────────────────────────────
-import os
-import sys
 import ast
 import base64
 import ctypes
@@ -41,8 +40,10 @@ import hashlib
 import json
 import logging
 import logging.handlers
+import os
 import pickle
 import re
+import sys
 import threading
 import time
 import unicodedata
@@ -51,7 +52,6 @@ from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -118,6 +118,7 @@ RERANKER_TOP_K  = 8    # Tăng lên 8 để lấy thêm context
 # 1200 thay vì 1800: mỗi chunk mang một ý chính, không pha trộn nhiều chủ đề
 # LƯU Ý: thay đổi giá trị này buộc rebuild cache
 ENABLE_VISION_LLM = os.environ.get("AI_ENABLE_VISION_LLM", "1").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_RAG      = os.environ.get("AI_ENABLE_RAG", "1").strip().lower() in {"1", "true", "yes", "on"}
 CHUNK_CHARS     = 1200
 OVERLAP_CHARS   = 300  # Tăng lên 300 để giữ liên kết tiếng Việt
 
@@ -253,7 +254,7 @@ class ChunkResult:
     source_path: str
     loader_type: str
     is_image:    bool = False
-    image_b64:   Optional[str] = None
+    image_b64:   str | None = None
     metadata:    dict = field(default_factory=dict)
 
 # ─── 8b. Vision helpers ──────────────────────────────────────────────────────
@@ -263,8 +264,9 @@ def _is_image_file(filepath: str) -> bool:
     return os.path.splitext(filepath)[1].lower() in _IMAGE_EXTS
 
 def _image_to_data_uri(filepath: str, max_dim: int = 512) -> str:
-    from PIL import Image
     import io
+
+    from PIL import Image
     ext = os.path.splitext(filepath)[1].lower()
     mime_map = {".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png",
                 ".bmp": "bmp", ".gif": "gif", ".webp": "webp"}
@@ -368,7 +370,7 @@ class BaseDocumentLoader(ABC):
 
         return results
 
-    def _read_text_file(self, filepath: str) -> Optional[str]:
+    def _read_text_file(self, filepath: str) -> str | None:
         for enc in ("utf-8", "utf-16", "cp1252", "latin-1"):
             try:
                 with open(filepath, "r", encoding=enc) as f:
@@ -569,7 +571,7 @@ class DocumentLoaderRegistry:
         self._loaders.append(loader)
         return self
 
-    def get_loader(self, fp: str) -> Optional[object]:
+    def get_loader(self, fp: str) -> object | None:
         for loader in self._loaders:
             if loader.can_handle(fp):
                 return loader
@@ -894,7 +896,7 @@ _reranker        = None   # Cross-encoder, load lúc startup nếu USE_RERANKER=
 is_vision_model  = False  # True khi chạy Qwen2.5-VL (vision model)
 
 
-def hybrid_retrieve(query: str, query_image_b64: str = None, k: int = 14, final_k: int = 10) -> list:
+def hybrid_retrieve(query: str, query_image_b64: str | None = None, k: int = 14, final_k: int = 10) -> list:
     """
     Hybrid semantic (text/image) + BM25 (text only) retrieval.
     """
@@ -914,8 +916,9 @@ def hybrid_retrieve(query: str, query_image_b64: str = None, k: int = 14, final_
 
     # Semantic search with query text or query image
     if query_image_b64:
-        from PIL import Image
         import io
+
+        from PIL import Image
         img_data = base64.b64decode(query_image_b64.split(",")[1])
         qv_input = [Image.open(io.BytesIO(img_data)).convert("RGB")]
     else:
@@ -998,7 +1001,10 @@ def _format_context_block(chunks: list, section_title: str) -> str:
     return "\n".join(lines)
 
 
-def get_context(query: str, query_image_b64: str = None) -> tuple:
+def get_context(query: str, query_image_b64: str | None = None) -> tuple:
+    if not ENABLE_RAG:
+        return "", "", []
+
     # Bước 1: Hybrid retrieve
     candidates = hybrid_retrieve(query, query_image_b64=query_image_b64, k=14, final_k=10)
 
@@ -1104,10 +1110,7 @@ def _is_character_query(query: str) -> bool:
     if has_project_cue and has_known_character:
         return True
 
-    if (has_project_cue or has_known_character) and re.search(_ROLE_QUERY_PATTERN, normalized):
-        return True
-
-    return False
+    return bool((has_project_cue or has_known_character) and re.search(_ROLE_QUERY_PATTERN, normalized))
 
 
 def _strip_reference_citations_for_character_answer(answer: str) -> str:
@@ -1188,7 +1191,7 @@ def _build_system_prompt(doc_ctx: str, code_ctx: str, suppress_citations: bool =
     return system_prompt
 
 
-def build_vision_messages(messages: list, doc_ctx: str, code_ctx: str, image_chunks: list = None, suppress_citations: bool = False) -> list:
+def build_vision_messages(messages: list, doc_ctx: str, code_ctx: str, image_chunks: list | None = None, suppress_citations: bool = False) -> list:
     """
     Build messages format cho create_chat_completion() — vision model.
     Ảnh đính kèm được encode thành base64 data URI theo OpenAI multimodal format.
@@ -1263,7 +1266,7 @@ def build_vision_messages(messages: list, doc_ctx: str, code_ctx: str, image_chu
 class ChatMessage(BaseModel):
     role:        str
     content:     str = Field(..., max_length=32000)
-    attachments: Optional[List[str]] = None
+    attachments: list[str] | None = None
 
     @field_validator("role")
     @classmethod
@@ -1273,7 +1276,7 @@ class ChatMessage(BaseModel):
         return v
 
 class ChatRequest(BaseModel):
-    messages:    List[ChatMessage] = Field(..., min_length=1)
+    messages:    list[ChatMessage] = Field(..., min_length=1)
     temperature: float = Field(0.7, ge=0.0, le=2.0)
     max_tokens:  int   = Field(2048, ge=1, le=4096)
 
@@ -1477,50 +1480,59 @@ def _print_banner():
 
 if __name__ == "__main__":
     import uvicorn
-    from sentence_transformers import SentenceTransformer
     from huggingface_hub import hf_hub_download
     from llama_cpp import Llama
+    from sentence_transformers import SentenceTransformer
 
     _print_banner()
 
-    # Step 1: Embedding model (đa ngôn ngữ)
-    with startup_step(f"Loading embedding model ({EMBED_MODEL_NAME})"):
-        _embed = SentenceTransformer(EMBED_MODEL_NAME, cache_folder=EMBED_CACHE)
-        embed_model_ref = _embed
+    if ENABLE_RAG:
+        # Step 1: Embedding model (đa ngôn ngữ)
+        with startup_step(f"Loading embedding model ({EMBED_MODEL_NAME})"):
+            _embed = SentenceTransformer(EMBED_MODEL_NAME, cache_folder=EMBED_CACHE)
+            embed_model_ref = _embed
 
-    # Step 2: Cross-encoder reranker (optional)
-    if USE_RERANKER and not MODELS[MODEL_IDX].get("is_vision", False):
-        with startup_step(f"Loading reranker ({RERANKER_MODEL})"):
-            try:
-                from sentence_transformers import CrossEncoder
-                _reranker = CrossEncoder(
-                    RERANKER_MODEL,
-                    max_length   = 512,
-                    cache_folder = EMBED_CACHE,
-                )
-                logger.info("Reranker loaded: %s", RERANKER_MODEL)
-            except Exception as e:
-                logger.warning("Reranker load failed (%s) — continuing without", e)
-                _reranker = None
-    else:
-        print("  ⏭   Reranker disabled (USE_RERANKER=False)")
-
-    # Step 3: Scan documents
-    with startup_step("Scanning documents"):
-        raw_chunks = load_documents()
-        if not raw_chunks:
-            logger.warning("No documents found — RAG context will be empty")
-
-    # Step 4: RAG index
-    with startup_step("Loading/building RAG index"):
-        if raw_chunks:
-            knowledge_index, knowledge_chunks, bm25_index = \
-                load_or_build_index(raw_chunks, _embed)
+        # Step 2: Cross-encoder reranker (optional)
+        if USE_RERANKER and not MODELS[MODEL_IDX].get("is_vision", False):
+            with startup_step(f"Loading reranker ({RERANKER_MODEL})"):
+                try:
+                    from sentence_transformers import CrossEncoder
+                    _reranker = CrossEncoder(
+                        RERANKER_MODEL,
+                        max_length   = 512,
+                        cache_folder = EMBED_CACHE,
+                    )
+                    logger.info("Reranker loaded: %s", RERANKER_MODEL)
+                except Exception as e:
+                    logger.warning("Reranker load failed (%s) — continuing without", e)
+                    _reranker = None
         else:
-            knowledge_index  = None
-            knowledge_chunks = []
-            bm25_index       = None
-            print("       (skipped — no documents)")
+            print("  ⏭   Reranker disabled (USE_RERANKER=False)")
+
+        # Step 3: Scan documents
+        with startup_step("Scanning documents"):
+            raw_chunks = load_documents()
+            if not raw_chunks:
+                logger.warning("No documents found — RAG context will be empty")
+
+        # Step 4: RAG index
+        with startup_step("Loading/building RAG index"):
+            if raw_chunks:
+                knowledge_index, knowledge_chunks, bm25_index = \
+                    load_or_build_index(raw_chunks, _embed)
+            else:
+                knowledge_index  = None
+                knowledge_chunks = []
+                bm25_index       = None
+                print("       (skipped — no documents)")
+    else:
+        print("  ⏭   RAG disabled (ENABLE_RAG=False)")
+        _embed = None
+        embed_model_ref = None
+        _reranker = None
+        knowledge_index = None
+        knowledge_chunks = []
+        bm25_index = None
 
     if MODELS[MODEL_IDX].get("is_vision", False):
         logger.info("Releasing embedding model before LLM load; retrieval will use BM25 fallback")

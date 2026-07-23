@@ -1,10 +1,12 @@
-import os
+# ruff: noqa: BLE001, S110, PLW1510
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
 import webbrowser
 from threading import Timer
+
 
 # 1. Đảm bảo các gói cần thiết
 def install_requirements():
@@ -16,8 +18,8 @@ def install_requirements():
 
 install_requirements()
 
-from ultralytics import YOLO  # noqa: E402
-from ultralytics.utils import SETTINGS  # noqa: E402
+from ultralytics import YOLO
+from ultralytics.utils import SETTINGS
 
 # Ép buộc bật TensorBoard trong cấu hình của YOLO
 try:
