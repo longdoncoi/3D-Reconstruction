@@ -26,7 +26,14 @@ void AIProcessor::tryInitGPUProvider() {
       else if (p == "CUDAExecutionProvider") cuda_available = true;
     }
 
-    if (trt_available) {
+    // TensorRT builds an engine for every model at startup. On systems with
+    // limited VRAM or page-file space this can exhaust memory before CUDA or
+    // the AI assistant has a chance to start. CUDA remains GPU-accelerated
+    // and is the safe default; TensorRT is an explicit opt-in.
+    const bool enableTensorRT =
+        qEnvironmentVariableIntValue("RECONSTRUCTION_ENABLE_TENSORRT") == 1;
+
+    if (trt_available && enableTensorRT) {
         // Use absolute path to avoid issues with relative paths in TRT cache
         QString cacheDir = QDir::currentPath() + "/models/cache";
         QDir().mkpath(cacheDir);
@@ -38,9 +45,9 @@ void AIProcessor::tryInitGPUProvider() {
         // fields contain garbage values causing read access violations inside TRT.
         OrtTensorRTProviderOptions trt_options{};
         trt_options.device_id = 0;
-        trt_options.trt_max_partition_iterations = 1000;
-        trt_options.trt_min_subgraph_size = 1;
-        trt_options.trt_max_workspace_size = 1ULL << 30; // 1 GB
+        trt_options.trt_max_partition_iterations = 100;
+        trt_options.trt_min_subgraph_size = 5;
+        trt_options.trt_max_workspace_size = 256ULL << 20; // 256 MB
         trt_options.trt_engine_cache_enable = 1;
         trt_options.trt_engine_cache_path = m_trtCachePathBytes.constData();
         trt_options.trt_fp16_enable = 1; // Enable FP16 for better performance
@@ -51,7 +58,13 @@ void AIProcessor::tryInitGPUProvider() {
         OrtCUDAProviderOptions cuda_options;
         cuda_options.device_id = 0;
         sessionOptions->AppendExecutionProvider_CUDA(cuda_options);
-        qDebug() << "ONNX Runtime: Using CUDA Execution Provider (GPU)";
+        if (trt_available) {
+            qDebug() << "ONNX Runtime: TensorRT is available but disabled by default "
+                        "to avoid startup memory exhaustion; using CUDA. "
+                        "Set RECONSTRUCTION_ENABLE_TENSORRT=1 to opt in.";
+        } else {
+            qDebug() << "ONNX Runtime: Using CUDA Execution Provider (GPU)";
+        }
     } else {
         qDebug() << "ONNX Runtime: GPU providers not found, using CPU fallback";
     }

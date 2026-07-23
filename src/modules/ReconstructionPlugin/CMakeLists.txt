@@ -1,6 +1,4 @@
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTOUIC ON)
-set(CMAKE_AUTORCC ON)
+
 
 add_library(ReconstructionPlugin SHARED
     ReconstructionPlugin.h
@@ -24,7 +22,8 @@ target_include_directories(ReconstructionPlugin PRIVATE
     ${PCL_INCLUDE_DIRS}
 )
 
-target_precompile_headers(ReconstructionPlugin PRIVATE ${PROJECT_SOURCE_DIR}/src/pch.h)
+target_precompile_headers(ReconstructionPlugin REUSE_FROM SharedPCH)
+target_link_libraries(ReconstructionPlugin PRIVATE SharedPCH)
 
 target_link_libraries(ReconstructionPlugin
     PRIVATE

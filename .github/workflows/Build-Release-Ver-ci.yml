@@ -1,0 +1,434 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Release — Full Build + MSI Installer
+# Triggers on version tags (v*) or manual dispatch.
+# Packages the application into an MSI installer using WiX v4.
+# ──────────────────────────────────────────────────────────────────────────────
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.0.0)"
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  VCPKG_INSTALLED_DIR: D:/v
+  VCPKG_MAX_CONCURRENCY: 4
+  # Enable vcpkg binary caching via GitHub Actions Cache
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+  # libaec version pinned to match vcpkg baseline 9432c416
+  LIBAEC_VERSION: "1.1.6"
+
+jobs:
+  release-build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      # ── Export GitHub Actions cache env for vcpkg binary caching ──────
+      - name: Export GitHub Actions cache env
+        uses: actions/github-script@v7.0.1
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL',
+              process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN',
+              process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      # ── Create vcpkg triplet overlay (release-only) ─────────────────
+      - name: Create release-only triplet overlay
+        shell: pwsh
+        run: |
+          $tripletDir = "custom-triplets"
+          New-Item -ItemType Directory -Path $tripletDir -Force | Out-Null
+          @"
+          set(VCPKG_TARGET_ARCHITECTURE x64)
+          set(VCPKG_CRT_LINKAGE dynamic)
+          set(VCPKG_LIBRARY_LINKAGE dynamic)
+          set(VCPKG_BUILD_TYPE release)
+          "@ | Out-File -Encoding utf8 "$tripletDir/x64-windows.cmake"
+          Write-Host "Created release-only triplet at $tripletDir/x64-windows.cmake"
+
+      # ── Determine version ─────────────────────────────────────────────
+      - name: Set version
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $ver = "${{ inputs.version }}"
+          } else {
+            $ver = "${{ github.ref_name }}" -replace '^v', ''
+          }
+          echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
+          echo "📦 Building version: $ver"
+
+      # ── Qt6 ────────────────────────────────────────────────────────────
+      - name: Install Qt 6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.5.*"
+          modules: "qtimageformats"
+          cache: true
+
+      # ── vcpkg ──────────────────────────────────────────────────────────
+      - name: Restore vcpkg cache
+        uses: actions/cache@v4.2.3
+        with:
+          path: ${{ env.VCPKG_INSTALLED_DIR }}
+          key: vcpkg-${{ runner.os }}-rel-${{ hashFiles('vcpkg.json') }}-9432c416
+          restore-keys: |
+            vcpkg-${{ runner.os }}-rel-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-${{ runner.os }}-rel-
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: "9432c416e5c543eded0b4df35a4d347b2e669208"
+          vcpkgJsonGlob: "vcpkg.json"
+
+      # ── Overlay port: redirect libaec from blocked GitLab → GitHub mirror ─
+      - name: Create libaec overlay port (GitHub mirror)
+        shell: pwsh
+        run: |
+          $ver = $env:LIBAEC_VERSION
+
+          # Download from GitHub — reliably accessible from Actions runners
+          $githubUrl = "https://github.com/MathisRosenhauer/libaec/archive/refs/tags/v$ver.tar.gz"
+          $tmpFile   = "$env:TEMP/libaec-github-v$ver.tar.gz"
+          Write-Host "Downloading libaec v$ver from GitHub mirror..."
+          Invoke-WebRequest -Uri $githubUrl -OutFile $tmpFile -UseBasicParsing -TimeoutSec 120
+
+          # Compute SHA512 so the portfile hash matches exactly
+          $sha512 = (Get-FileHash -Path $tmpFile -Algorithm SHA512).Hash.ToLower()
+          Write-Host "SHA512: $sha512"
+
+          # Place archive in vcpkg downloads directory (vcpkg will reuse it)
+          $dlDir = "$env:VCPKG_ROOT/downloads"
+          New-Item -ItemType Directory -Path $dlDir -Force | Out-Null
+          Copy-Item $tmpFile "$dlDir/MathisRosenhauer-libaec-v$ver.tar.gz" -Force
+
+          # Create overlay port directory
+          $portDir = "${{ github.workspace }}/custom-ports/libaec"
+          New-Item -ItemType Directory -Path $portDir -Force | Out-Null
+
+          # portfile.cmake — uses vcpkg_from_github instead of vcpkg_from_gitlab
+          @"
+          vcpkg_from_github(
+              OUT_SOURCE_PATH SOURCE_PATH
+              REPO MathisRosenhauer/libaec
+              REF "v$ver"
+              SHA512 $sha512
+              HEAD_REF master
+          )
+
+          vcpkg_cmake_configure(
+              SOURCE_PATH "`${SOURCE_PATH}"
+              OPTIONS
+                  -DBUILD_TESTING=OFF
+          )
+
+          vcpkg_cmake_install()
+          vcpkg_cmake_config_fixup(CONFIG_PATH lib/cmake/libaec)
+          vcpkg_fixup_pkgconfig()
+
+          file(REMOVE_RECURSE "`${CURRENT_PACKAGES_DIR}/debug/include")
+          vcpkg_install_copyright(FILE_LIST "`${SOURCE_PATH}/LICENSE.txt")
+          "@ | Out-File -Encoding utf8 "$portDir/portfile.cmake"
+
+          # vcpkg.json for the port
+          @"
+          {
+            "name": "libaec",
+            "version": "$ver",
+            "description": "Adaptive Entropy Coding library",
+            "homepage": "https://github.com/MathisRosenhauer/libaec",
+            "dependencies": [
+              { "name": "vcpkg-cmake", "host": true },
+              { "name": "vcpkg-cmake-config", "host": true }
+            ]
+          }
+          "@ | Out-File -Encoding utf8 "$portDir/vcpkg.json"
+
+          Write-Host "Overlay port created at: $portDir"
+
+      # ── MSVC ───────────────────────────────────────────────────────────
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+
+      # ── Build ──────────────────────────────────────────────────────────
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          cmake -B build -S . `
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            "-DVCPKG_INSTALLED_DIR=$env:VCPKG_INSTALLED_DIR" `
+            "-DVCPKG_INSTALL_OPTIONS=--clean-after-build" `
+            "-DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/custom-triplets" `
+            "-DVCPKG_OVERLAY_PORTS=${{ github.workspace }}/custom-ports" `
+            -Wno-dev
+
+      - name: Build Release
+        shell: pwsh
+        run: cmake --build build --config Release --parallel
+
+      # ── Package ────────────────────────────────────────────────────────
+      - name: Collect release files
+        shell: pwsh
+        run: |
+          $dist = "dist/3D-Reconstruction"
+          New-Item -ItemType Directory -Path $dist -Force | Out-Null
+
+          # Find main executable — location varies by generator:
+          #   Multi-config (Visual Studio): build/Release/3D-Reconstruction.exe
+          #   Single-config (Ninja):        build/3D-Reconstruction.exe
+          $exe = Get-ChildItem -Path build -Filter "3D-Reconstruction.exe" -Recurse -ErrorAction SilentlyContinue |
+                 Where-Object { $_.DirectoryName -notmatch 'tests' } |
+                 Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "3D-Reconstruction.exe not found under build/"
+            Get-ChildItem build -Recurse -Filter "*.exe" | Select-Object FullName
+            exit 1
+          }
+          $exeDir = $exe.DirectoryName
+          Write-Host "Found executable at: $($exe.FullName)"
+          Copy-Item $exe.FullName "$dist/" -Force
+
+          # Copy all runtime DLLs (from exe directory)
+          Copy-Item "$exeDir/*.dll" $dist/ -Force -ErrorAction SilentlyContinue
+
+          # Copy application icon alongside exe (for portable icon loading)
+          if (Test-Path "src/app/app_icon.png") {
+            Copy-Item "src/app/app_icon.png" "$dist/" -Force
+          }
+
+          # Copy application plugins (only *Plugin.dll files, not Qt runtime DLLs)
+          # Multi-config: build/plugins/Release  |  Single-config: build/plugins
+          $pluginDir = @("build/plugins/Release", "build/plugins") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if ($pluginDir) {
+            New-Item -ItemType Directory -Path "$dist/plugins" -Force | Out-Null
+            Get-ChildItem $pluginDir -Filter "*Plugin.dll" | Copy-Item -Destination "$dist/plugins/" -Force
+            # Also copy supporting DLLs needed by plugins (non-Qt ones not in main dir)
+            Get-ChildItem $pluginDir -Filter "*.dll" | Where-Object { $_.Name -notlike "*Plugin.dll" } | Copy-Item -Destination "$dist/" -Force
+          }
+
+          # Copy Qt plugins if present (check exe directory for deployed plugins)
+          $qtPlugins = @("platforms", "imageformats", "iconengines", "styles", "tls")
+          foreach ($p in $qtPlugins) {
+            $src = "$exeDir/$p"
+            if (Test-Path $src) { Copy-Item $src "$dist/" -Recurse -Force }
+          }
+
+          # Copy translations
+          if (Test-Path "translations") { Copy-Item "translations" "$dist/" -Recurse -Force }
+
+          # Copy AITraining directory (Python scripts and model weights, exclude Cache to reduce size)
+          if (Test-Path "AITraining") {
+            New-Item -ItemType Directory -Path "$dist/AITraining" -Force | Out-Null
+            Get-ChildItem "AITraining" -Exclude "Cache","__pycache__","logs","runs" | ForEach-Object {
+              if ($_.PSIsContainer) {
+                Copy-Item $_.FullName "$dist/AITraining/$($_.Name)" -Recurse -Force
+              } else {
+                Copy-Item $_.FullName "$dist/AITraining/" -Force
+              }
+            }
+          }
+
+          # Copy Config directory (app configuration files)
+          if (Test-Path "Config") { Copy-Item "Config" "$dist/" -Recurse -Force }
+
+          # Copy Models directory (ONNX runtime models)
+          if (Test-Path "Models") { Copy-Item "Models" "$dist/" -Recurse -Force }
+
+          echo "📁 Distribution contents:"
+          Get-ChildItem $dist -Recurse | Select-Object FullName, Length
+
+
+      # ── WiX MSI ────────────────────────────────────────────────────────
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 4.0.5
+          wix extension add -g WixToolset.UI.wixext/4.0.5
+
+      - name: Create MSI installer
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.VERSION }}"
+          # Ensure version is valid for MSI (x.y.z.w format)
+          $parts = $version.Split('.')
+          while ($parts.Count -lt 3) { $parts += '0' }
+          $msiVersion = ($parts[0..2]) -join '.'
+
+          # Create a minimal license RTF file (required by WixUI_InstallDir)
+          "{\rtf1\ansi\ansicpg1252\deff0\nouicompat\deflang1033{\fonttbl{\f0\fnil\fcharset0 Calibri;}} \par \viewkind4\uc1 \pard\sa200\sl276\slmult1\f0\fs22\lang9 3D-Reconstruction License\par }" | Out-File -Encoding ascii license.rtf
+
+          # Copy the pre-generated app_icon.ico for installer shortcuts
+          Copy-Item "src/app/app_icon.ico" "dist/3D-Reconstruction/app_icon.ico" -Force
+          Write-Host "Copied app_icon.ico for shortcuts"
+
+          # Generate WiX Directory and Component XML dynamically
+          $distPath = Resolve-Path "dist/3D-Reconstruction" | Select-Object -ExpandProperty Path
+          $global:componentsXml = ""
+          $global:exeFileId = ""
+          $global:icoFileId = ""
+          
+          function Build-WixTree {
+              param([string]$path, [string]$parentId)
+              $xml = ""
+              $items = Get-ChildItem -Path $path
+              $files = $items | Where-Object { -not $_.PSIsContainer }
+              $dirs = $items | Where-Object { $_.PSIsContainer }
+              
+              if ($files.Count -gt 0) {
+                  foreach ($file in $files) {
+                      $id = "FILE_" + [guid]::NewGuid().ToString("N")
+                      # Track the EXE file ID for shortcuts
+                      if ($file.Name -eq "3D-Reconstruction.exe") {
+                          $global:exeFileId = $id
+                      }
+                      # Track the ICO file ID for shortcut icon
+                      if ($file.Name -eq "app_icon.ico") {
+                          $global:icoFileId = $id
+                      }
+                      $global:componentsXml += "      <Component Id=`"$id`" Directory=`"$parentId`">`n"
+                      $global:componentsXml += "        <File Id=`"$id`" Source=`"$($file.FullName)`" KeyPath=`"yes`" />`n"
+                      $global:componentsXml += "      </Component>`n"
+                  }
+              }
+              
+              foreach ($dir in $dirs) {
+                  $dirId = "DIR_" + [guid]::NewGuid().ToString("N")
+                  $xml += "        <Directory Id=`"$dirId`" Name=`"$($dir.Name)`">`n"
+                  $xml += Build-WixTree -path $dir.FullName -parentId $dirId
+                  $xml += "        </Directory>`n"
+              }
+              return $xml
+          }
+          
+          $directoriesXml = Build-WixTree -path $distPath -parentId "INSTALLFOLDER"
+          $componentsXml = $global:componentsXml
+          $exeFileId = $global:exeFileId
+          $icoFileId = $global:icoFileId
+
+          # Create WiX project with UI, shortcuts, and uninstall
+          @"
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+            <Package Name="3D-Reconstruction"
+                     Manufacturer="3D-Reconstruction Team"
+                     Version="$msiVersion"
+                     UpgradeCode="E8A3B02D-7F4C-4A1E-9B5D-6C8F0A2E1D3B">
+
+              <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+              <MediaTemplate EmbedCab="yes" />
+
+              <StandardDirectory Id="ProgramFiles6432Folder">
+                <Directory Id="INSTALLFOLDER" Name="3D-Reconstruction">
+          $directoriesXml
+                </Directory>
+              </StandardDirectory>
+
+              <!-- Desktop shortcut directory -->
+              <StandardDirectory Id="DesktopFolder" />
+
+              <!-- Start Menu shortcut directory -->
+              <StandardDirectory Id="ProgramMenuFolder">
+                <Directory Id="ProgramMenuSubfolder" Name="3D-Reconstruction" />
+              </StandardDirectory>
+
+              <!-- Desktop Shortcut -->
+              <Component Id="DesktopShortcut" Directory="DesktopFolder">
+                <Shortcut Id="DesktopShortcutLink"
+                          Name="3D-Reconstruction"
+                          Description="3D-Reconstruction Application"
+                          Target="[INSTALLFOLDER]3D-Reconstruction.exe"
+                          WorkingDirectory="INSTALLFOLDER"
+                          Icon="AppIcon" />
+                <RegistryValue Root="HKCU" Key="Software\3D-Reconstruction" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+              </Component>
+
+              <!-- Start Menu Shortcuts (App + Uninstall) -->
+              <Component Id="StartMenuShortcuts" Directory="ProgramMenuSubfolder">
+                <Shortcut Id="StartMenuShortcutLink"
+                          Name="3D-Reconstruction"
+                          Description="3D-Reconstruction Application"
+                          Target="[INSTALLFOLDER]3D-Reconstruction.exe"
+                          WorkingDirectory="INSTALLFOLDER"
+                          Icon="AppIcon" />
+                <Shortcut Id="StartMenuUninstallLink"
+                          Name="Uninstall 3D-Reconstruction"
+                          Description="Uninstall 3D-Reconstruction"
+                          Target="[SystemFolder]msiexec.exe"
+                          Arguments="/x [ProductCode]" />
+                <RemoveFolder Id="RemoveProgramMenuSubfolder" On="uninstall" />
+                <RegistryValue Root="HKCU" Key="Software\3D-Reconstruction" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+              </Component>
+
+              <!-- Uninstall shortcut in install directory -->
+              <Component Id="UninstallShortcutComponent" Directory="INSTALLFOLDER">
+                <Shortcut Id="UninstallShortcutLink"
+                          Name="Uninstall 3D-Reconstruction"
+                          Description="Uninstall 3D-Reconstruction"
+                          Target="[SystemFolder]msiexec.exe"
+                          Arguments="/x [ProductCode]" />
+                <RegistryValue Root="HKCU" Key="Software\3D-Reconstruction" Name="UninstallShortcut" Type="integer" Value="1" KeyPath="yes" />
+              </Component>
+
+              <!-- Icon definition for shortcuts -->
+              <Icon Id="AppIcon" SourceFile="dist\3D-Reconstruction\app_icon.ico" />
+
+              <!-- UI Configuration -->
+              <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+              <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+
+              <!-- Add/Remove Programs icon -->
+              <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+
+              <Feature Id="Main" Title="3D-Reconstruction" Level="1">
+                <ComponentGroupRef Id="Files" />
+                <ComponentRef Id="DesktopShortcut" />
+                <ComponentRef Id="StartMenuShortcuts" />
+                <ComponentRef Id="UninstallShortcutComponent" />
+              </Feature>
+            </Package>
+
+            <Fragment>
+              <ComponentGroup Id="Files">
+          $componentsXml
+              </ComponentGroup>
+            </Fragment>
+          </Wix>
+          "@ | Out-File -Encoding utf8 installer.wxs
+
+          wix build installer.wxs -ext WixToolset.UI.wixext -out "3D-Reconstruction-$version.msi" -arch x64
+
+      # ── Upload ─────────────────────────────────────────────────────────
+      - name: Upload MSI artifact
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: 3D-Reconstruction-${{ steps.version.outputs.VERSION }}-msi
+          path: "*.msi"
+          retention-days: 30
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2.3.2
+        with:
+          files: "*.msi"
+          generate_release_notes: true

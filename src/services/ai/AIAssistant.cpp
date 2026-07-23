@@ -1,4 +1,5 @@
 #include "AIAssistant.h"
+#include <QStandardPaths>
 #include "AppConfig.h"
 #include "AppConstants.h"
 #include "UserManager.h"
@@ -59,8 +60,10 @@ void AIAssistant::startServerProcess(int modelIndex) {
         
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         env.insert("PYTHONUNBUFFERED", "1");
+        env.insert("APP_DATA_DIR", QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/3D-Reconstruction");
         aiServerProcess->setProcessEnvironment(env);
         
+        aiServerProcess->setWorkingDirectory(AppConfig::instance().aiTrainingDir());
         aiServerProcess->start("python", QStringList() << "-u" << sp << QString::number(modelIndex));
     } else {
         emit errorOccurred(LM_TR("ai.missing_script"));

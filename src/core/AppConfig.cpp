@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QApplication>
 #include <QDebug>
+#include <QStandardPaths>
 
 AppConfig& AppConfig::instance() {
     static AppConfig instance;
@@ -11,15 +12,26 @@ AppConfig& AppConfig::instance() {
 void AppConfig::initialize(const QString& appDir) {
     std::unique_lock lock(m_mutex);
     m_appDir = appDir;
-    
-    // Find project root by looking for CMakeLists.txt
+
+    // Determine project root:
+    // - Dev build: exe lives in build/<Config>/, CMakeLists.txt is two levels up.
+    // - Production install: exe lives in the install folder itself; no CMakeLists.txt
+    //   exists so we stay in that folder (all data dirs are siblings of the exe).
     QDir dir(m_appDir);
-    while (!dir.isRoot() && !dir.exists("CMakeLists.txt")) {
+    int maxLevels = 4; // never climb more than 4 levels
+    while (maxLevels-- > 0 && !dir.isRoot() && !dir.exists("CMakeLists.txt")) {
         dir.cdUp();
     }
-    m_projectRoot = dir.absolutePath();
+    if (dir.exists("CMakeLists.txt")) {
+        m_projectRoot = dir.absolutePath();
+        m_dataRoot = m_projectRoot;
+    } else {
+        // Production install: treat the app directory itself as the root.
+        m_projectRoot = m_appDir;
+        m_dataRoot = QDir::cleanPath(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/3D-Reconstruction");
+    }
 
-    QFileInfo configInfo(QDir::cleanPath(m_projectRoot + "/Config/Config.ini"));
+    QFileInfo configInfo(QDir::cleanPath(m_dataRoot + "/Config/Config.ini"));
     QDir configDir = configInfo.absoluteDir();
     if (!configDir.exists() && !configDir.mkpath(".")) {
         qCritical() << "AppConfig: Failed to create config directory:" << configDir.absolutePath();
@@ -33,12 +45,12 @@ QString AppConfig::appDir() const {
 
 QString AppConfig::configPath() const {
     std::shared_lock lock(m_mutex);
-    return QDir::cleanPath(m_projectRoot + "/Config/Config.ini");
+    return QDir::cleanPath(m_dataRoot + "/Config/Config.ini");
 }
 
 QString AppConfig::logsDir() const {
     std::shared_lock lock(m_mutex);
-    return QDir::cleanPath(m_projectRoot + "/Logs");
+    return QDir::cleanPath(m_dataRoot + "/Logs");
 }
 
 QString AppConfig::modelsDir() const {
@@ -48,7 +60,7 @@ QString AppConfig::modelsDir() const {
 
 QString AppConfig::predictDir(const QString& type) const {
     std::shared_lock lock(m_mutex);
-    return QDir::cleanPath(m_projectRoot + "/Predict/" + type);
+    return QDir::cleanPath(m_dataRoot + "/Predict/" + type);
 }
 
 QString AppConfig::aiTrainingDir() const {
@@ -58,7 +70,7 @@ QString AppConfig::aiTrainingDir() const {
 
 QString AppConfig::uploadDir() const {
     std::shared_lock lock(m_mutex);
-    return QDir::cleanPath(m_projectRoot + "/Upload");
+    return QDir::cleanPath(m_dataRoot + "/Upload");
 }
 
 QString AppConfig::pluginsDir() const {

@@ -1,6 +1,4 @@
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTOUIC ON)
-set(CMAKE_AUTORCC ON)
+
 
 add_library(AIAssistantPlugin SHARED
     AIAssistantPlugin.h
@@ -29,7 +27,8 @@ target_include_directories(AIAssistantPlugin PRIVATE
     ${OpenCV_INCLUDE_DIRS}
 )
 
-target_precompile_headers(AIAssistantPlugin PRIVATE ${PROJECT_SOURCE_DIR}/src/pch.h)
+target_precompile_headers(AIAssistantPlugin REUSE_FROM SharedPCH)
+target_link_libraries(AIAssistantPlugin PRIVATE SharedPCH)
 
 target_link_libraries(AIAssistantPlugin
     PRIVATE

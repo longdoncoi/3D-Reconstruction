@@ -1,6 +1,4 @@
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTOUIC ON)
-set(CMAKE_AUTORCC ON)
+
 
 add_library(AIProcessorPlugin SHARED
     AIProcessorPlugin.h
@@ -28,7 +26,8 @@ target_include_directories(AIProcessorPlugin PRIVATE
     ${onnxruntime_SOURCE_DIR}/include
 )
 
-target_precompile_headers(AIProcessorPlugin PRIVATE ${PROJECT_SOURCE_DIR}/src/pch.h)
+target_precompile_headers(AIProcessorPlugin REUSE_FROM SharedPCH)
+target_link_libraries(AIProcessorPlugin PRIVATE SharedPCH)
 
 target_link_libraries(AIProcessorPlugin
     PRIVATE

@@ -1,29 +1,30 @@
-#include <QtTest>
 #include "ReconstructionPipeline.h"
+#include <QtTest>
+
 
 class TestReconstructionPipeline : public QObject {
-    Q_OBJECT
+  Q_OBJECT
 
 private slots:
-    void testInitialState() {
-        ReconstructionPipeline pipeline;
-        QCOMPARE(pipeline.getImages().size(), 0);
-        QCOMPARE(pipeline.getPointCloud().size(), 0);
-        QCOMPARE(pipeline.getPointColors().size(), 0);
-    }
+  void testInitialState() {
+    ReconstructionPipeline pipeline;
+    QCOMPARE(pipeline.getImages().size(), 0);
+    QCOMPARE(pipeline.getPointCloud().size(), 0);
+    QCOMPARE(pipeline.getPointColors().size(), 0);
+  }
 
-    void testSetConfig() {
-        ReconstructionPipeline pipeline;
-        ReconstructionConfig config;
-        config.sift.nfeatures = 1000;
-        config.filter.sorMeanK = 40;
+  void testSetConfig() {
+    ReconstructionPipeline pipeline;
+    ReconstructionConfig config;
+    config.sift.nfeatures = 1000;
+    config.filter.sorMeanK = 40;
 
-        pipeline.setConfig(config);
+    pipeline.setConfig(config);
 
-        QCOMPARE(pipeline.config().sift.nfeatures, 1000);
-        QCOMPARE(pipeline.config().filter.sorMeanK, 40);
-    }
+    QCOMPARE(pipeline.config().sift.nfeatures, 1000);
+    QCOMPARE(pipeline.config().filter.sorMeanK, 40);
+  }
 };
 
-QTEST_MAIN(TestReconstructionPipeline)
+QTEST_GUILESS_MAIN(TestReconstructionPipeline)
 #include "TestReconstructionPipeline.moc"

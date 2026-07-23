@@ -1,6 +1,4 @@
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTOUIC ON)
-set(CMAKE_AUTORCC ON)
+
 
 add_library(SendMailPlugin SHARED
     SendMailPlugin.h
@@ -20,7 +18,8 @@ target_include_directories(SendMailPlugin PRIVATE
     ${VTK_INCLUDE_DIRS}
 )
 
-target_precompile_headers(SendMailPlugin PRIVATE ${PROJECT_SOURCE_DIR}/src/pch.h)
+target_precompile_headers(SendMailPlugin REUSE_FROM SharedPCH)
+target_link_libraries(SendMailPlugin PRIVATE SharedPCH)
 
 target_link_libraries(SendMailPlugin
     PRIVATE
