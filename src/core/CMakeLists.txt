@@ -2,6 +2,8 @@ target_sources(3D-Reconstruction PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Global.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AppConfig.h
     ${CMAKE_CURRENT_SOURCE_DIR}/AppConfig.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/AgentActionManifest.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/AgentActionManifest.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/SignalBus.h
     ${CMAKE_CURRENT_SOURCE_DIR}/SignalBus.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LanguageManager.h

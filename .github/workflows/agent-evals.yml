@@ -1,0 +1,32 @@
+name: Agent tool-call evals
+
+on:
+  push:
+    branches: [main]
+    paths: ["AIAssistant/**", "Config/agent_action_manifest.json"]
+  pull_request:
+    branches: [main]
+    paths: ["AIAssistant/**", "Config/agent_action_manifest.json"]
+  schedule:
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install "pydantic>=2.7"
+      - run: python AIAssistant/evals/run_tool_eval.py
+      - name: Publish result summary
+        run: |
+          echo "## Agent tool-call evaluation" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat AIAssistant/evals/latest_tool_call_report.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-tool-call-trend
+          path: AIAssistant/evals/latest_tool_call_report.json

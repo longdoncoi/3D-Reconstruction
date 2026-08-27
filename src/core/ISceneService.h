@@ -23,6 +23,12 @@ public:
     virtual void onLoadDicom(const QString &path = "") = 0;
     virtual bool isPointCloudVisible() const = 0;
     virtual void setPointCloudVisible(bool visible) = 0;
+
+    /**
+     * Áp dụng các thiết lập hiển thị từ UserManager (màu nền, trục toạ độ, lưới nền).
+     * Gọi khi user nhấn "Áp dụng" trong Settings Dialog.
+     */
+    virtual void applyViewSettings(const QString& username) = 0;
 };
 
 #endif // ISCENESERVICE_H

@@ -5,10 +5,14 @@
   "dependencies": [
     {
       "name": "vtk",
-      "features": ["qt", "opengl"]
+      "features": [
+        "qt",
+        "opengl"
+      ]
     },
     "pcl",
     "opencv4",
-    "openssl"
+    "openssl",
+    "eigen3"
   ]
 }

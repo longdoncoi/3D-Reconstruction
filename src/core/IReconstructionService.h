@@ -27,6 +27,9 @@ public:
     /** Tải camera parameters từ file. Trả về true nếu thành công. */
     virtual bool loadCameraParams(const QString& filePath) = 0;
 
+    /** Cấu hình các tham số tái tạo từ Settings (mật độ, tính năng, lọc nhiễu). */
+    virtual void configure(int densityLevel, int maxFeatures, bool autoClean) = 0;
+
     // --- Execution ---
     /** Bắt đầu quá trình tái tạo (blocking hoặc async tùy impl). */
     virtual bool reconstruct() = 0;

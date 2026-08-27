@@ -1,5 +1,7 @@
 #ifdef _WIN32
 #include <windows.h>
+#include <fcntl.h>
+#include <io.h>
 #endif
 #include <QApplication>
 #include <QSurfaceFormat>
@@ -53,6 +55,18 @@ int main(int argc, char* argv[])
     // Initialize AppConfig
     AppConfig::instance().initialize(QApplication::applicationDirPath());
     
+    // ── Fix UTF-8 output cho Qt Creator Application Output ────────────────
+    // stdout mặc định trên Windows dùng hệ thống codepage (CP1252/CP1258)
+    // gây ra ký tự tiếng Việt bị mã hóa sai khi Qt Creator đọc.
+    // _setmode(_O_BINARY) + SetConsoleOutputCP(CP_UTF8) đảm bảo bytes UTF-8
+    // thuần túy được gửi ra stdout mà không bị Windows API chuyển đổi.
+#ifdef Q_OS_WIN
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+#endif
+
     Logger::initialize();
     
     // Tắt multisampling để tránh xung đột với Qt

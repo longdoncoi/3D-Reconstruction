@@ -19,6 +19,8 @@ typedef pcl::PointCloud<PointT> PointCloudT;
 #include "Global.h"
 #include "ReconstructionConfig.h"
 #include "AppConstants.h"
+#include "FeatureTrack.h"
+#include "MultiViewTriangulator.h"
 
 class APP_EXPORT ReconstructionPipeline {
 public:
@@ -63,6 +65,7 @@ private:
     // Ground truth params
     std::vector<CameraParams> camParams;
     bool hasGroundTruthParams = false;
+    bool m_usedTrackBasedGroundTruth = false;
 
     // Kết quả
     std::vector<cv::Point3f> points3D;
@@ -80,7 +83,6 @@ private:
                        std::vector<cv::Point3f> &outPts);
     double computeReprojectionError(const cv::Mat &P, const cv::Point3f &pt3d,
                                     const cv::Point2f &pt2d);
-    void filterOutliersByDensity(float radius, int minNeighbors);
 
     // Hai phương thức reconstruct riêng
     bool reconstructWithGroundTruth();

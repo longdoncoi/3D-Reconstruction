@@ -31,6 +31,13 @@ signals:
     void aiInferenceStarted(const QString &type);
     void aiInferenceFinished(const QString &type);
 
+    // --- AI Assistant application-control bridge ---
+    // The local AI server selects an action, while the Qt plugin that owns the
+    // feature executes it on the GUI thread.  Keeping the signal in the core
+    // avoids coupling the assistant plugin to every optional feature plugin.
+    void agentUiActionRequested(const QString &action, const QVariantMap &parameters);
+    void agentUiActionCompleted(const QString &requestId, bool success, const QVariantMap &result);
+
     // --- Scene events ---
     void sceneContentChanged();
     void sceneRendered();

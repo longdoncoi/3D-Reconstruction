@@ -80,6 +80,7 @@ QString StyleManager::getGlobalStyleSheet() {
         "  background-color: transparent; color: #e2e8f0; border: none;"
         "  font-size: 16px; min-width: 32px; min-height: 32px; padding: 0; }"
         "#modernControlBtn:hover { background-color: %4; color: white; }"
+        "#modernControlBtn:checked { background-color: %5; color: white; border-radius: 6px; }"
         "#modernCloseBtn:hover   { background-color: #ef4444; color: white; border-radius: 0px; }"
 
         // Dock widgets

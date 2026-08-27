@@ -7,6 +7,7 @@
 #include <QUrl>
 #include <QToolButton>
 #include <QGroupBox>
+#include <QSet>
 #include "IPlugin.h"
 
 #include "IAppContext.h"
@@ -51,10 +52,10 @@ private:
     CustomProgressDialog* m_progressDialog = nullptr;
     void setupChatbotUI();
     
-    QString buildMessageHtml(const QString &role, const QString &content, const QJsonArray &attachments);
     void addAttachmentPreview(const QString &filePath, bool isImage);
 
     QStringList pendingAttachments;
+    QSet<QString> m_submittedAgentActions;
 
     IAppContext* m_ctx = nullptr;
     IAIAssistantService* m_aiAssistant = nullptr;

@@ -12,7 +12,8 @@ on:
       - "**.md"
       - "Docs/**"
       - "Doxygen/**"
-      - "AITraining/**"
+      - "AIAssistant/**"
+      - "AIComputerVision/**"
       - ".prompts/**"
       - ".review/**"
       - ".tasks/**"
@@ -25,7 +26,8 @@ on:
       - "**.md"
       - "Docs/**"
       - "Doxygen/**"
-      - "AITraining/**"
+      - "AIAssistant/**"
+      - "AIComputerVision/**"
       - ".prompts/**"
       - ".review/**"
       - ".tasks/**"
@@ -35,7 +37,9 @@ on:
 
 concurrency:
   group: cpp-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # VTK/PCL bootstrap can take hours on a cold runner.  Do not throw away a
+  # nearly-complete cache build when another commit is pushed.
+  cancel-in-progress: false
 
 env:
   VCPKG_INSTALLED_DIR: D:/v
@@ -90,17 +94,26 @@ jobs:
       - name: Restore vcpkg cache
         uses: actions/cache@v4
         with:
+          # The install root is stable. vcpkg's x-gha binary source caches
+          # package archives independently, so do not depend on an action
+          # implementation-specific VCPKG_ROOT here.
           path: ${{ env.VCPKG_INSTALLED_DIR }}
-          key: vcpkg-${{ runner.os }}-rel-${{ hashFiles('vcpkg.json') }}-9432c416
+          key: vcpkg-${{ runner.os }}-x64-windows-release-${{ hashFiles('vcpkg.json') }}-9432c416
           restore-keys: |
-            vcpkg-${{ runner.os }}-rel-${{ hashFiles('vcpkg.json') }}-
-            vcpkg-${{ runner.os }}-rel-
+            vcpkg-${{ runner.os }}-x64-windows-release-${{ hashFiles('vcpkg.json') }}-
 
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: "9432c416e5c543eded0b4df35a4d347b2e669208"
           vcpkgJsonGlob: "vcpkg.json"
+
+      - name: Report restored dependency cache
+        shell: pwsh
+        run: |
+          $installed = Join-Path $env:VCPKG_INSTALLED_DIR "x64-windows"
+          Write-Host "vcpkg installed tree exists: $(Test-Path $installed)"
+          if (Test-Path $installed) { Get-ChildItem $installed | Select-Object -First 20 Name }
 
       # ── Overlay port: redirect libaec from blocked GitLab → GitHub mirror ─
       - name: Create libaec overlay port (GitHub mirror)
@@ -184,10 +197,22 @@ jobs:
             "-DCMAKE_BUILD_TYPE=Release" `
             "-DBUILD_TESTING=ON"
 
+      - name: Dependency cache summary
+        if: always()
+        shell: pwsh
+        run: |
+          $installed = Join-Path $env:VCPKG_INSTALLED_DIR "x64-windows"
+          if (Test-Path $installed) {
+            $size = (Get-ChildItem -LiteralPath $installed -Recurse -File | Measure-Object Length -Sum).Sum / 1GB
+            Write-Host "::notice::vcpkg installed tree: $([math]::Round($size, 2)) GB"
+          } else {
+            Write-Host "::warning::vcpkg installed tree was not created; CMake configuration failed before dependencies were restored."
+          }
+
       # ── Build ─────────────────────────────────────────────────────────
       - name: Build
         shell: pwsh
-        run: cmake --build build --config Release --parallel
+        run: cmake --build build --config Release --parallel 2
 
       # ── Test ──────────────────────────────────────────────────────────
       - name: Run Tests

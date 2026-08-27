@@ -10,6 +10,7 @@
 #include "LanguageManager.h"
 #include "../../utils/CustomProgressDialog.h"
 #include "../../utils/ModernMessageBox.h"
+#include <QMessageBox>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QApplication>
@@ -38,6 +39,8 @@
 #include <QListWidgetItem>
 #include <QStyle>
 #include "ReconstructionRibbonUI.h"
+#include "AppConfig.h"
+#include "UserManager.h"
 
 void ReconstructionPlugin::initialize(IAppContext* context) {
     m_ctx = context;
@@ -55,8 +58,8 @@ void ReconstructionPlugin::initialize(IAppContext* context) {
     QMenu* reconMenu = m_ctx->getMenu("recon_menu");
     reconMenu->clear();
 
-    QAction *loadAct = reconMenu->addAction(m_ctx->translate("recon.load_images"), this, &ReconstructionPlugin::onLoadMultipleImages);
-    QAction *runAct  = reconMenu->addAction(m_ctx->translate("recon.start"), this, &ReconstructionPlugin::onRunReconstruction);
+    reconMenu->addAction(m_ctx->translate("recon.load_images"), this, &ReconstructionPlugin::onLoadMultipleImages);
+    reconMenu->addAction(m_ctx->translate("recon.start"), this, &ReconstructionPlugin::onRunReconstruction);
     reconMenu->addSeparator();
     m_toggleCloudAct = reconMenu->addAction(m_ctx->translate("recon.view_model"), this, &ReconstructionPlugin::onTogglePointCloud);
 
@@ -69,6 +72,34 @@ void ReconstructionPlugin::initialize(IAppContext* context) {
 
     connect(m_ctx->signalBus(), &SignalBus::stateChanged, this, &ReconstructionPlugin::updateActions);
     connect(m_ctx->signalBus(), &SignalBus::languageChanged, this, &ReconstructionPlugin::updateActions);
+    connect(m_ctx->signalBus(), &SignalBus::agentUiActionRequested, this,
+            [this](const QString &action, const QVariantMap &parameters) {
+        const QString sampleFolder = QDir(AppConfig::instance().projectRootDir())
+                                         .filePath("3DRecontruction/templeRing");
+        bool handled = false;
+        if (action == "reconstruction.load_images") {
+            m_agentImageFolder = sampleFolder;
+            onLoadMultipleImages();
+            handled = true;
+        } else if (action == "reconstruction.start_reconstruction") {
+            // A workflow start follows reconstruction.load_images.  Suppress
+            // the interactive/default load fallback so the success dialog is
+            // not shown again for the same input set.
+            m_skipImageLoadForAgentRun = parameters.contains("workflow_id");
+            onRunReconstruction();
+            handled = m_reconSvc && !m_reconSvc->getImageList().isEmpty();
+        } else if (action == "reconstruction.view_3d_model") {
+            onTogglePointCloud(true);
+            handled = true;
+        } else if (action == "reconstruction.close_3d_model") {
+            onHidePointCloud();
+            handled = true;
+        }
+        const QString requestId = parameters.value("request_id").toString();
+        if (!requestId.isEmpty() && action.startsWith("reconstruction."))
+            emit m_ctx->signalBus()->agentUiActionCompleted(requestId, handled,
+                QVariantMap{{"action", action}, {"error", handled ? "" : "Action was not handled"}});
+    });
 
     updateActions();
 }
@@ -80,8 +111,13 @@ void ReconstructionPlugin::cleanup() {
     }
 }
 void ReconstructionPlugin::onLoadMultipleImages() {
-    QString lastUsedPath = m_ctx->settings()->getLastUsedPath("recon");
-    QString folderPath = QFileDialog::getExistingDirectory(m_ctx->mainWindow(), m_ctx->translate("file.select_recon"), lastUsedPath);
+    QString folderPath = m_agentImageFolder;
+    const bool useAgentFolder = !folderPath.isEmpty();
+    m_agentImageFolder.clear();
+    if (!useAgentFolder) {
+        const QString lastUsedPath = m_ctx->settings()->getLastUsedPath("recon");
+        folderPath = QFileDialog::getExistingDirectory(m_ctx->mainWindow(), m_ctx->translate("file.select_recon"), lastUsedPath);
+    }
     
     if (folderPath.isEmpty()) {
         return;
@@ -108,11 +144,11 @@ void ReconstructionPlugin::onLoadMultipleImages() {
 
     m_ctx->settings()->setLastUsedPath("recon", QFileInfo(fileNames.first()).absolutePath());
     QStringList stdFiles;
-    for (const QString& f : fileNames) {
+    for (const QString& f : qAsConst(fileNames)) {
         stdFiles.push_back(QDir::toNativeSeparators(f));
     }
     std::vector<QString> paths;
-    for (const auto &f : stdFiles) paths.push_back(f);
+    for (const auto &f : qAsConst(stdFiles)) paths.push_back(f);
 
     // Dùng IReconstructionService interface — không biết ReconstructionPipeline
     if (m_reconSvc) m_reconSvc->setImages(stdFiles);
@@ -125,7 +161,7 @@ void ReconstructionPlugin::onLoadMultipleImages() {
     
     // Push file list to viewer service. ViewerPlugin will automatically show the thumbnail list.
     QStringList filenamesOnly;
-    for (const QString& f : fileNames) {
+    for (const QString& f : qAsConst(fileNames)) {
         filenamesOnly.append(QFileInfo(f).fileName());
     }
     m_ctx->viewer()->setCurrent2DImagePath(fileNames.first());
@@ -162,7 +198,7 @@ void ReconstructionPlugin::onLoadMultipleImages() {
     }
 
     // 2. If not found, ask user
-    if (paramsPath.isEmpty()) {
+    if (paramsPath.isEmpty() && !useAgentFolder) {
         paramsPath = QFileDialog::getOpenFileName(m_ctx->mainWindow(), m_ctx->translate("file.select_camera"), folder, "Text Files (*.txt)");
     }
 
@@ -187,8 +223,10 @@ void ReconstructionPlugin::onLoadMultipleImages() {
 }
 
 void ReconstructionPlugin::onRunReconstruction() {
+    const bool skipImageLoad = m_skipImageLoadForAgentRun;
+    m_skipImageLoadForAgentRun = false;
     if (!m_reconSvc || m_reconSvc->getImageList().isEmpty()) {
-        onLoadMultipleImages();
+        if (!skipImageLoad) onLoadMultipleImages();
     }
     if (!m_reconSvc || m_reconSvc->getImageList().isEmpty()) return;
 
@@ -211,6 +249,16 @@ void ReconstructionPlugin::onRunReconstruction() {
 
     // Lấy IReconstructionService interface thay vì pipeline cụ thể
     if (!m_reconSvc) return;
+
+    // Apply configuration from Settings
+    auto* um = UserManager::instance();
+    if (um) {
+        QString username = um->currentUsername();
+        int density = um->getUserPref(username, "recon_density", "1").toInt();
+        bool autoClean = um->getUserPref(username, "recon_auto_clean", "true") == "true";
+        int maxFeatures = um->getUserPref(username, "recon_max_features", "10000").toInt();
+        m_reconSvc->configure(density, maxFeatures, autoClean);
+    }
 
     m_currentReconstructThread = new ReconstructThread(m_reconSvc, this);
     QPointer<CustomProgressDialog> progressPtr(m_progressDialog);
@@ -254,7 +302,12 @@ void ReconstructionPlugin::onShowPointCloud() {
     if (!m_reconSvc) return;
     auto pts    = m_reconSvc->getPointCloud();
     auto colors = m_reconSvc->getPointColors();
-    if (pts.empty()) return;
+    if (pts.empty()) {
+        QMessageBox::warning(m_ctx->mainWindow(), 
+                             m_ctx->translate("recon.failed_title"), 
+                             m_ctx->translate("recon.no_model_error"));
+        return;
+    }
 
     m_ctx->scene()->clear3DModel();
     m_ctx->scene()->clearPointCloud();

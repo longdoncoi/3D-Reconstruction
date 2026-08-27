@@ -3,6 +3,8 @@
 add_library(AIProcessorPlugin SHARED
     AIProcessorPlugin.h
     AIProcessorPlugin.cpp
+    AIPredictionLogger.h
+    AIPredictionLogger.cpp
     AITrainDockWidget.h
     AITrainDockWidget.cpp
     AIProcessorRibbonUI.h

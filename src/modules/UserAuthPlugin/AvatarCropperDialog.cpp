@@ -124,12 +124,7 @@ void AvatarCropperDialog::accept() {
     // 2. Save Cropped Thumbnail
     QPixmap cropped = getCroppedAvatar();
     
-    // derive project root: AppConfig::instance().configPath() is root/Config/Config.ini
-    QString configPath = AppConfig::instance().configPath();
-    QDir projectDir = QFileInfo(configPath).dir();
-    projectDir.cdUp(); // Now at project root
-    
-    QString thumbDir = projectDir.absolutePath() + "/Thumbnails/Avatars";
+    QString thumbDir = AppConfig::instance().thumbnailsDir() + "/Avatars";
     QDir().mkpath(thumbDir);
     QString thumbFile = thumbDir + "/" + m_username + ".png";
 

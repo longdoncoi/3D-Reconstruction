@@ -24,8 +24,11 @@ private slots:
 
     // This will verify that the paths are not empty
     QVERIFY(!config.appDir().isEmpty());
+    QVERIFY(!config.projectRootDir().isEmpty());
+    QVERIFY(!config.dataRootDir().isEmpty());
     QVERIFY(!config.configPath().isEmpty());
     QVERIFY(!config.logsDir().isEmpty());
+    QVERIFY(!config.thumbnailsDir().isEmpty());
     QVERIFY(!config.pluginsDir().isEmpty());
   }
 };

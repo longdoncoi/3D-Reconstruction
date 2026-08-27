@@ -80,6 +80,54 @@ void UserAuthPlugin::initialize(IAppContext* context) {
     // Connect SignalBus so we retranslate whenever language changes
     connect(m_context->signalBus(), &SignalBus::languageChanged,
             this, &UserAuthPlugin::onLanguageChanged);
+    connect(m_context->signalBus(), &SignalBus::agentUiActionRequested, this,
+            [this](const QString &action, const QVariantMap &parameters) {
+        bool handled = false;
+        if (action == "language.change") {
+            const QString language = parameters.value("language").toString();
+            if (language == "vi" || language == "en") {
+                m_context->setLanguage(language);
+                saveUserPref("language", language);
+                handled = true;
+            }
+        } else if (action == "admin.settings") {
+            onOpenSettings();
+            handled = true;
+        } else if (action == "admin.change_avatar") {
+            onChangeAvatar();
+            handled = true;
+        } else if (action == "admin.change_password") {
+            onChangePassword();
+            handled = true;
+        } else if (action == "admin.logout") {
+            onLogout();
+            handled = true;
+        } else if (action == "admin.login") {
+            QString errorMsg;
+            UserManager::instance()->logout();
+            if (UserManager::instance()->login(parameters.value("username", "Admin").toString(), parameters.value("password", "1").toString(), errorMsg)) {
+                m_currentUser = UserManager::instance()->currentUsername();
+                loadUserSettings();
+                checkLicense();
+                setupMenus();
+                handled = true;
+            }
+        } else if (action == "help.about") {
+            onAbout();
+            handled = true;
+        }
+        const QString requestId = parameters.value("request_id").toString();
+        const bool ownsAction = action == "language.change" ||
+                                 action.startsWith("admin.") ||
+                                 action == "help.about";
+        // This plugin shares the global action bus.  It must only acknowledge
+        // actions it owns; otherwise an unrelated action (for example
+        // reconstruction.load_images) is prematurely reported as failed before
+        // its actual plugin can send the successful ACK.
+        if (!requestId.isEmpty() && ownsAction)
+            emit m_context->signalBus()->agentUiActionCompleted(
+                requestId, handled, QVariantMap{{"action", action}, {"error", handled ? "" : "Desktop action was not handled"}});
+    });
 }
 
 void UserAuthPlugin::cleanup() {

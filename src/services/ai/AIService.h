@@ -33,6 +33,8 @@ public:
     cv::Mat runSegmentation(const cv::Mat& inputImage) override;
     cv::Mat runTracking(const cv::Mat& inputImage) override;
     void resetTrackingState() override;
+    void setConfidenceThreshold(float threshold) override;
+    float confidenceThreshold() const override;
 
     // IAIService methods...
 private:

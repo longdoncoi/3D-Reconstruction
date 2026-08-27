@@ -32,8 +32,6 @@ private:
     QString imapHost() const;
     bool openImap(QString &errorMsg, class QSslSocket &sock) const;
     bool sendImap(class QSslSocket &sock, const QString &tag, const QString &command, QString &response) const;
-    QString decodeMimeWords(const QString &value) const;
-    MailMessage parseFetchedMessage(const QString &uid, const QString &raw) const;
 
     mutable std::shared_mutex m_mutex;
     QString m_email;

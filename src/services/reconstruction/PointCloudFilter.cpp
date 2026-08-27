@@ -2,16 +2,52 @@
 #include <QDebug>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 #include <pcl/filters/radius_outlier_removal.h>
 #include <pcl/filters/statistical_outlier_removal.h>
-#include <pcl/filters/voxel_grid.h>
+#include <pcl/kdtree/kdtree_flann.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
 typedef pcl::PointXYZRGB PointT;
 typedef pcl::PointCloud<PointT> PointCloudT;
+
+struct VoxelKey {
+    int x;
+    int y;
+    int z;
+
+    bool operator==(const VoxelKey &other) const
+    {
+        return x == other.x && y == other.y && z == other.z;
+    }
+};
+
+struct VoxelKeyHash {
+    std::size_t operator()(const VoxelKey &key) const
+    {
+        const std::uint64_t x = static_cast<std::uint32_t>(key.x);
+        const std::uint64_t y = static_cast<std::uint32_t>(key.y);
+        const std::uint64_t z = static_cast<std::uint32_t>(key.z);
+        std::uint64_t hash = x * 73856093u;
+        hash ^= y * 19349663u;
+        hash ^= z * 83492791u;
+        return static_cast<std::size_t>(hash);
+    }
+};
+
+struct VoxelAccumulator {
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    double blue = 0.0;
+    double green = 0.0;
+    double red = 0.0;
+    int count = 0;
+};
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -84,12 +120,43 @@ void PointCloudFilter::radiusOutlier(std::vector<cv::Point3f> &pts,
     qDebug() << "ROR: kept" << pts.size() << "/" << n;
 }
 
+void PointCloudFilter::adaptiveRadiusOutlier(std::vector<cv::Point3f> &pts,
+                                              std::vector<cv::Vec3b> &cols,
+                                              float radiusMultiplier,
+                                              int minNeighbors)
+{
+    if (pts.size() < 16 || radiusMultiplier <= 0.f || minNeighbors < 1) return;
+    auto cloud = buildXYZCloud(pts);
+    pcl::KdTreeFLANN<pcl::PointXYZ> tree;
+    tree.setInputCloud(cloud);
+    std::vector<float> distances;
+    distances.reserve(pts.size());
+    std::vector<int> indices(2);
+    std::vector<float> squaredDistances(2);
+    for (const auto &point : cloud->points) {
+        if (tree.nearestKSearch(point, 2, indices, squaredDistances) == 2 && squaredDistances[1] > 0.f)
+            distances.push_back(std::sqrt(squaredDistances[1]));
+    }
+    if (distances.empty()) return;
+    const auto middle = distances.begin() + static_cast<std::ptrdiff_t>(distances.size() / 2);
+    std::nth_element(distances.begin(), middle, distances.end());
+    const float radius = *middle * radiusMultiplier;
+    if (!std::isfinite(radius) || radius <= 0.f) return;
+    qDebug() << "Adaptive ROR radius:" << radius;
+    radiusOutlier(pts, cols, radius, minNeighbors);
+}
+
 void PointCloudFilter::voxelGrid(std::vector<cv::Point3f> &pts,
                                   std::vector<cv::Vec3b>   &cols,
                                   float leafSize)
 {
     if (pts.empty() || leafSize <= 0.f) return;
     size_t n = pts.size();
+    if (cols.size() != pts.size()) {
+        qWarning() << "VoxelGrid: color count mismatch; filling missing colors."
+                   << cols.size() << "/" << pts.size();
+        cols.resize(pts.size(), cv::Vec3b(128, 128, 128));
+    }
 
     // Compute bbox to avoid PCL integer overflow
     float xmin = pts[0].x, xmax = xmin;
@@ -105,26 +172,44 @@ void PointCloudFilter::voxelGrid(std::vector<cv::Point3f> &pts,
     if (leaf != leafSize)
         qDebug() << "VoxelGrid: leaf adjusted to" << leaf << "to prevent overflow.";
 
-    PointCloudT::Ptr cloud(new PointCloudT);
-    cloud->resize(n);
-    for (size_t i = 0; i < n; ++i) {
-        auto &p = cloud->points[i];
-        p.x = pts[i].x; p.y = pts[i].y; p.z = pts[i].z;
-        p.b = cols[i][0]; p.g = cols[i][1]; p.r = cols[i][2];
-    }
-    cloud->width = (uint32_t)n; cloud->height = 1; cloud->is_dense = false;
+    std::unordered_map<VoxelKey, VoxelAccumulator, VoxelKeyHash> voxels;
+    voxels.reserve(n);
+    for (size_t index = 0; index < n; ++index) {
+        const cv::Point3f &point = pts[index];
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z))
+            continue;
 
-    pcl::VoxelGrid<PointT> vg;
-    vg.setInputCloud(cloud);
-    vg.setLeafSize(leaf, leaf, leaf);
-    PointCloudT::Ptr filtered(new PointCloudT);
-    vg.filter(*filtered);
+        VoxelKey key{
+            static_cast<int>(std::floor((point.x - xmin) / leaf)),
+            static_cast<int>(std::floor((point.y - ymin) / leaf)),
+            static_cast<int>(std::floor((point.z - zmin) / leaf))
+        };
+
+        VoxelAccumulator &accumulator = voxels[key];
+        accumulator.x += point.x;
+        accumulator.y += point.y;
+        accumulator.z += point.z;
+        accumulator.blue += cols[index][0];
+        accumulator.green += cols[index][1];
+        accumulator.red += cols[index][2];
+        ++accumulator.count;
+    }
 
     pts.clear(); cols.clear();
-    pts.reserve(filtered->size()); cols.reserve(filtered->size());
-    for (const auto &p : filtered->points) {
-        pts.push_back(cv::Point3f(p.x, p.y, p.z));
-        cols.push_back(cv::Vec3b(p.b, p.g, p.r));
+    pts.reserve(voxels.size()); cols.reserve(voxels.size());
+    for (const auto &entry : voxels) {
+        const VoxelAccumulator &accumulator = entry.second;
+        if (accumulator.count <= 0)
+            continue;
+
+        const double invCount = 1.0 / accumulator.count;
+        pts.push_back(cv::Point3f(static_cast<float>(accumulator.x * invCount),
+                                  static_cast<float>(accumulator.y * invCount),
+                                  static_cast<float>(accumulator.z * invCount)));
+        cols.push_back(cv::Vec3b(
+            static_cast<uchar>(std::clamp(std::lround(accumulator.blue * invCount), 0l, 255l)),
+            static_cast<uchar>(std::clamp(std::lround(accumulator.green * invCount), 0l, 255l)),
+            static_cast<uchar>(std::clamp(std::lround(accumulator.red * invCount), 0l, 255l))));
     }
     qDebug() << "VoxelGrid: kept" << pts.size() << "/" << n;
 }

@@ -3,6 +3,8 @@
 add_library(AIAssistantPlugin SHARED
     AIAssistantPlugin.h
     AIAssistantPlugin.cpp
+    AIAttachmentPreviewFactory.h
+    AIAttachmentPreviewFactory.cpp
     AIAssistantRibbonUI.h
     AIAssistantRibbonUI.cpp
     ChatBotDockWidget.h

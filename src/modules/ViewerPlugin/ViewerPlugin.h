@@ -40,6 +40,10 @@ private slots:
     void onAutoNavigationChanged(bool active, bool isNext);
 
 private:
+    void load2DImageFromPath(const QString &filePath);
+    void load3DModelFromPath(const QString &filePath);
+    void loadDicomFromDirectory(const QString &directory);
+
     IAppContext* m_ctx = nullptr;
     
     QAction *m_load2DAct = nullptr;

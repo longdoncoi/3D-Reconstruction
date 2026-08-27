@@ -1,8 +1,7 @@
 #include "AIProcessor.h"
+#include "AIYoloPostProcessor.h"
 #include <QDebug>
 #include <QDir>
-#include <algorithm>
-#include <numeric>
 #include <opencv2/imgproc.hpp>
 
 AIProcessor::AIProcessor() : isDetModelLoaded(false), isSegModelLoaded(false), isTrackingLoaded(false) {
@@ -127,7 +126,7 @@ cv::Mat AIProcessor::runObjectDetection(const cv::Mat &inputImage) {
     return inputImage;
   }
 
-  const float SCORE_THRESHOLD = 0.5f;
+  const float SCORE_THRESHOLD = m_confidenceThreshold;
   const float NMS_THRESHOLD = 0.45f;
   const int INPUT_WIDTH = 640;
   const int INPUT_HEIGHT = 640;
@@ -152,56 +151,19 @@ cv::Mat AIProcessor::runObjectDetection(const cv::Mat &inputImage) {
   cv::Mat outMat(dims[1], dims[2], CV_32F, outputData);
   outMat = outMat.t();
 
-  int num_preds = outMat.rows;
-  int num_classes = outMat.cols - 4;
-
-  std::vector<int> classIds;
-  std::vector<float> confidences;
-  std::vector<cv::Rect> boxes;
-
-  float x_factor = inputImage.cols / (float)INPUT_WIDTH;
-  float y_factor = inputImage.rows / (float)INPUT_HEIGHT;
-
-  for (int i = 0; i < num_preds; ++i) {
-    float *data = outMat.ptr<float>(i);
-
-    float max_score = -1.f;
-    int class_id = -1;
-    for (int j = 0; j < num_classes; ++j) {
-      if (data[4 + j] > max_score) {
-        max_score = data[4 + j];
-        class_id = j;
-      }
-    }
-
-    if (max_score >= SCORE_THRESHOLD) {
-      float cx = data[0];
-      float cy = data[1];
-      float w = data[2];
-      float h = data[3];
-
-      int left = int((cx - 0.5f * w) * x_factor);
-      int top = int((cy - 0.5f * h) * y_factor);
-      int width = int(w * x_factor);
-      int height = int(h * y_factor);
-
-      classIds.push_back(class_id);
-      confidences.push_back(max_score);
-      boxes.push_back(cv::Rect(left, top, width, height));
-    }
-  }
-
-  std::vector<int> indices;
-  applyNMS(boxes, confidences, SCORE_THRESHOLD, NMS_THRESHOLD, indices);
+  const YoloDetections detections = AIYoloPostProcessor::parsePredictions(
+      outMat, inputImage.size(), cv::Size(INPUT_WIDTH, INPUT_HEIGHT), SCORE_THRESHOLD);
+  const std::vector<int> indices =
+      AIYoloPostProcessor::applyNms(detections.boxes, detections.confidences, NMS_THRESHOLD);
 
   cv::Mat resultImage = inputImage.clone();
   for (int idx : indices) {
-    cv::Rect box = boxes[idx];
+    cv::Rect box = detections.boxes[idx];
     cv::rectangle(resultImage, box, cv::Scalar(0, 255, 0), 2);
 
     QString label = QString("ID %1: %2%")
-                        .arg(classIds[idx])
-                        .arg(int(confidences[idx] * 100));
+                        .arg(detections.classIds[idx])
+                        .arg(int(detections.confidences[idx] * 100));
     int baseLine;
     cv::Size labelSize = cv::getTextSize(
         label.toStdString(), cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseLine);
@@ -263,53 +225,11 @@ cv::Mat AIProcessor::runSegmentation(const cv::Mat &inputImage) {
 
   boxes_mat = boxes_mat.t();
 
-  int num_preds = boxes_mat.rows;
   int mask_coeffs_count = proto_mat.size[1];
-  int num_classes = boxes_mat.cols - 4 - mask_coeffs_count;
-
-  std::vector<int> classIds;
-  std::vector<float> confidences;
-  std::vector<cv::Rect> boxes;
-  std::vector<std::vector<float>> masks_coeffs_list;
-
-  float x_factor = inputImage.cols / (float)INPUT_WIDTH;
-  float y_factor = inputImage.rows / (float)INPUT_HEIGHT;
-
-  for (int i = 0; i < num_preds; ++i) {
-    float *data = boxes_mat.ptr<float>(i);
-
-    float max_score = -1.f;
-    int class_id = -1;
-    for (int j = 0; j < num_classes; ++j) {
-      if (data[4 + j] > max_score) {
-        max_score = data[4 + j];
-        class_id = j;
-      }
-    }
-
-    if (max_score >= SCORE_THRESHOLD) {
-      float cx = data[0];
-      float cy = data[1];
-      float w = data[2];
-      float h = data[3];
-
-      int left = int((cx - 0.5f * w) * x_factor);
-      int top = int((cy - 0.5f * h) * y_factor);
-      int width = int(w * x_factor);
-      int height = int(h * y_factor);
-
-      classIds.push_back(class_id);
-      confidences.push_back(max_score);
-      boxes.push_back(cv::Rect(left, top, width, height));
-
-      std::vector<float> coeffs(data + 4 + num_classes,
-                                data + 4 + num_classes + mask_coeffs_count);
-      masks_coeffs_list.push_back(coeffs);
-    }
-  }
-
-  std::vector<int> indices;
-  applyNMS(boxes, confidences, SCORE_THRESHOLD, NMS_THRESHOLD, indices);
+  YoloDetections detections = AIYoloPostProcessor::parsePredictions(
+      boxes_mat, inputImage.size(), cv::Size(INPUT_WIDTH, INPUT_HEIGHT), SCORE_THRESHOLD, mask_coeffs_count);
+  const std::vector<int> indices =
+      AIYoloPostProcessor::applyNms(detections.boxes, detections.confidences, NMS_THRESHOLD);
 
   cv::Mat resultImage = inputImage.clone();
   cv::Mat color_mask = cv::Mat::zeros(resultImage.size(), CV_8UC3);
@@ -320,10 +240,10 @@ cv::Mat AIProcessor::runSegmentation(const cv::Mat &inputImage) {
                 proto_mat.ptr<float>());
 
   for (int idx : indices) {
-    cv::Rect box = boxes[idx];
+    cv::Rect box = detections.boxes[idx];
 
     cv::Mat coeffs_mat(1, mask_coeffs_count, CV_32F,
-                       masks_coeffs_list[idx].data());
+                       detections.maskCoefficients[idx].data());
     cv::Mat mask_mat = coeffs_mat * proto;
     mask_mat = mask_mat.reshape(1, proto_h);
 
@@ -395,51 +315,14 @@ cv::Mat AIProcessor::runTracking(const cv::Mat &inputImage) {
   cv::Mat outMat(dims[1], dims[2], CV_32F, outputData);
   outMat = outMat.t();
 
-  int num_preds = outMat.rows;
-  int num_classes = outMat.cols - 4;
-
-  std::vector<int> classIds;
-  std::vector<float> confidences;
-  std::vector<cv::Rect> boxes;
-
-  float x_factor = inputImage.cols / (float)INPUT_WIDTH;
-  float y_factor = inputImage.rows / (float)INPUT_HEIGHT;
-
-  for (int i = 0; i < num_preds; ++i) {
-    float *data = outMat.ptr<float>(i);
-
-    float max_score = -1.f;
-    int class_id = -1;
-    for (int j = 0; j < num_classes; ++j) {
-      if (data[4 + j] > max_score) {
-        max_score = data[4 + j];
-        class_id = j;
-      }
-    }
-
-    if (max_score >= SCORE_THRESHOLD) {
-      float cx = data[0];
-      float cy = data[1];
-      float w = data[2];
-      float h = data[3];
-
-      int left = int((cx - 0.5f * w) * x_factor);
-      int top = int((cy - 0.5f * h) * y_factor);
-      int width = int(w * x_factor);
-      int height = int(h * y_factor);
-
-      classIds.push_back(class_id);
-      confidences.push_back(max_score);
-      boxes.push_back(cv::Rect(left, top, width, height));
-    }
-  }
-
-  std::vector<int> indices;
-  applyNMS(boxes, confidences, SCORE_THRESHOLD, NMS_THRESHOLD, indices);
+  const YoloDetections detections = AIYoloPostProcessor::parsePredictions(
+      outMat, inputImage.size(), cv::Size(INPUT_WIDTH, INPUT_HEIGHT), SCORE_THRESHOLD);
+  const std::vector<int> indices =
+      AIYoloPostProcessor::applyNms(detections.boxes, detections.confidences, NMS_THRESHOLD);
 
   std::vector<cv::Rect> current_frame_boxes;
   for (int idx : indices) {
-      current_frame_boxes.push_back(boxes[idx]);
+      current_frame_boxes.push_back(detections.boxes[idx]);
   }
 
   std::lock_guard<std::mutex> lock(m_trackingMutex);
@@ -526,44 +409,4 @@ Ort::Value AIProcessor::prepareInputTensor(const cv::Mat& img, int width, int he
   return Ort::Value::CreateTensor<float>(
       memoryInfo, tensorValues.data(), tensorValues.size(),
       inputDims.data(), inputDims.size());
-}
-
-void AIProcessor::applyNMS(const std::vector<cv::Rect> &boxes,
-                           const std::vector<float> &confidences,
-                           float scoreThreshold, float nmsThreshold,
-                           std::vector<int> &indices) {
-  indices.clear();
-  if (boxes.empty())
-    return;
-
-  std::vector<int> sorted_indices(boxes.size());
-  std::iota(sorted_indices.begin(), sorted_indices.end(), 0);
-  std::sort(sorted_indices.begin(), sorted_indices.end(),
-            [&](int i, int j) { return confidences[i] > confidences[j]; });
-
-  std::vector<bool> is_suppressed(boxes.size(), false);
-
-  for (size_t i = 0; i < sorted_indices.size(); ++i) {
-    int idx1 = sorted_indices[i];
-    if (is_suppressed[idx1])
-      continue;
-
-    indices.push_back(idx1);
-
-    for (size_t j = i + 1; j < sorted_indices.size(); ++j) {
-      int idx2 = sorted_indices[j];
-      if (is_suppressed[idx2])
-        continue;
-
-      cv::Rect inter = boxes[idx1] & boxes[idx2];
-      float inter_area = (float)inter.area();
-      float union_area =
-          (float)(boxes[idx1].area() + boxes[idx2].area()) - inter_area;
-      float iou = inter_area / union_area;
-
-      if (iou > nmsThreshold) {
-        is_suppressed[idx2] = true;
-      }
-    }
-  }
 }

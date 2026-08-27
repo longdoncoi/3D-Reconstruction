@@ -1,4 +1,6 @@
 #include "AIAssistant.h"
+#include "AgentActionManifest.h"
+#include "ChatSessionStore.h"
 #include <QStandardPaths>
 #include "AppConfig.h"
 #include "AppConstants.h"
@@ -9,8 +11,6 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QDateTime>
-#include <QDir>
-#include <QUuid>
 
 AIAssistant::AIAssistant(QObject *parent)
     : IAIAssistantService(parent),
@@ -54,16 +54,17 @@ void AIAssistant::startServerProcess(int modelIndex) {
     connect(aiServerProcess, &QProcess::readyReadStandardError, this, &AIAssistant::onProcessError);
     connect(aiServerProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &AIAssistant::onProcessFinished);
 
-    QString sp = AppConfig::instance().aiTrainingDir() + "/" + AppConstants::AIServer::chatbotScript();
+    QString sp = AppConfig::instance().aiAssistantDir() + "/" + AppConstants::AIServer::chatbotScript();
     if (QFileInfo::exists(sp)) {
         emit serverStatusChanged(LM_TR("ai.starting_server"));
         
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         env.insert("PYTHONUNBUFFERED", "1");
-        env.insert("APP_DATA_DIR", QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/3D-Reconstruction");
+        env.insert("PYTHONIOENCODING", "utf-8");
+        env.insert("APP_DATA_DIR", QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
         aiServerProcess->setProcessEnvironment(env);
         
-        aiServerProcess->setWorkingDirectory(AppConfig::instance().aiTrainingDir());
+        aiServerProcess->setWorkingDirectory(AppConfig::instance().aiAssistantDir());
         aiServerProcess->start("python", QStringList() << "-u" << sp << QString::number(modelIndex));
     } else {
         emit errorOccurred(LM_TR("ai.missing_script"));
@@ -85,57 +86,139 @@ void AIAssistant::stopServer() {
     disconnect(aiServerProcess, nullptr, this, nullptr);
 
     if (aiServerProcess->state() != QProcess::NotRunning) {
-#ifdef Q_OS_WIN
-        QProcess::execute("taskkill", QStringList() << "/F" << "/T" << "/PID"
-                          << QString::number(aiServerProcess->processId()));
-#else
-        aiServerProcess->kill();
-#endif
-        aiServerProcess->waitForFinished(AppConstants::AIServer::STOP_SERVER_TIMEOUT_MS);
+        // Keep the detached StartChatbotServer.py process running after Qt exits.
+        aiServerProcess->terminate();
+        if (!aiServerProcess->waitForFinished(1000)) {
+            aiServerProcess->kill();
+            aiServerProcess->waitForFinished(AppConstants::AIServer::STOP_SERVER_TIMEOUT_MS);
+        }
     }
 
-    // Tiêu diệt triệt để bất kỳ tiến trình nào đang chiếm dụng cổng 8080 để tránh lỗi bind port
-#ifdef Q_OS_WIN
-    QProcess netstat;
-    netstat.start("cmd", QStringList() << "/c" << QString("netstat -ano | findstr :%1").arg(AppConstants::AIServer::SERVER_PORT));
-    if (netstat.waitForFinished(2000)) {
-        QString output = QString::fromUtf8(netstat.readAllStandardOutput());
-        QStringList lines = output.split('\n');
-        for (const QString &line : lines) {
-            if (line.contains("LISTENING")) {
-                QStringList parts = line.simplified().split(' ');
-                if (parts.size() >= 5) {
-                    QString pid = parts.last();
-                    bool ok;
-                    int pidVal = pid.toInt(&ok);
-                    if (ok && pidVal > 0) {
-                        QProcess::execute("taskkill", QStringList() << "/F" << "/PID" << pid);
-                    }
-                }
-            }
-        }
-    }
-#else
-    QProcess lsof;
-    lsof.start("sh", QStringList() << "-c" << QString("lsof -t -i:%1").arg(AppConstants::AIServer::SERVER_PORT));
-    if (lsof.waitForFinished(2000)) {
-        QString output = QString::fromUtf8(lsof.readAllStandardOutput()).trimmed();
-        if (!output.isEmpty()) {
-            QProcess::execute("kill", QStringList() << "-9" << output);
-        }
-    }
-#endif
 }
 
 void AIAssistant::switchModel(int index) {
     startServer(index);
 }
 
+void AIAssistant::restartModel() {
+    if (!isServerRunning()) {
+        emit errorOccurred(LM_TR("ai.server_not_running"));
+        return;
+    }
+    emit serverStatusChanged(tr("Đang tải lại Model..."));
+    QNetworkRequest req{QUrl(AppConstants::AIServer::adminEndpoint("reload-model"))};
+    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    req.setTransferTimeout(600000); // 10 min (model load có thể lâu)
+    QNetworkReply *reply = networkManager->post(req, QByteArray("{}"));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError) {
+            const auto doc = QJsonDocument::fromJson(reply->readAll());
+            const QString msg = doc.object().value("message").toString("Model reloaded");
+            emit serverStatusChanged(tr("✅ ") + msg);
+        } else {
+            emit errorOccurred(tr("Restart Model thất bại: ") + reply->errorString());
+        }
+    });
+}
+
+void AIAssistant::restartRAG() {
+    if (!isServerRunning()) {
+        emit errorOccurred(LM_TR("ai.server_not_running"));
+        return;
+    }
+    emit serverStatusChanged(tr("Đang tải lại RAG index..."));
+    QNetworkRequest req{QUrl(AppConstants::AIServer::adminEndpoint("reload-rag"))};
+    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    req.setTransferTimeout(600000); // RAG rebuild can take several minutes on a large project.
+    QNetworkReply *reply = networkManager->post(req, QByteArray("{}"));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError) {
+            const auto doc = QJsonDocument::fromJson(reply->readAll());
+            const QString msg = doc.object().value("message").toString("RAG reloaded");
+            emit serverStatusChanged(tr("✅ ") + msg);
+        } else {
+            emit errorOccurred(tr("Restart RAG thất bại: ") + reply->errorString());
+        }
+    });
+}
+
+void AIAssistant::restartAgent() {
+    if (!isServerRunning()) {
+        emit errorOccurred(LM_TR("ai.server_not_running"));
+        return;
+    }
+    emit serverStatusChanged(tr("Đang reset Agent..."));
+    QNetworkRequest req{QUrl(AppConstants::AIServer::adminEndpoint("reload-agent"))};
+    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    req.setTransferTimeout(15000);
+    QNetworkReply *reply = networkManager->post(req, QByteArray("{}"));
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        if (reply->error() == QNetworkReply::NoError) {
+            const auto doc = QJsonDocument::fromJson(reply->readAll());
+            const QString msg = doc.object().value("message").toString("Agent reset");
+            emit serverStatusChanged(tr("✅ ") + msg);
+        } else {
+            emit errorOccurred(tr("Restart Agent thất bại: ") + reply->errorString());
+        }
+    });
+}
+
+void AIAssistant::restartServer() {
+    emit serverStatusChanged(tr("Đang khởi động lại AI Server..."));
+
+    auto killManagerAndRestart = [this]() {
+        // Discard anything in flight — the backend behind it is gone/going.
+        m_queuedRequests.clear();
+        const auto activeReplies = m_pendingRequests.keys();
+        m_pendingRequests.clear();
+        for (QNetworkReply *reply : activeReplies) {
+            if (reply) reply->abort();
+        }
+        m_isThinking = false;
+        m_serverReadyEmitted = false;
+        m_serverRecoveryAttempts = 0;
+
+        // Kill aiServerProcess — the ServerManager wrapper (server_manager.py).
+        disconnect(aiServerProcess, nullptr, this, nullptr);
+        if (aiServerProcess->state() != QProcess::NotRunning) {
+            aiServerProcess->terminate();
+            if (!aiServerProcess->waitForFinished(1000)) {
+                aiServerProcess->kill();
+                aiServerProcess->waitForFinished(AppConstants::AIServer::STOP_SERVER_TIMEOUT_MS);
+            }
+        }
+
+        // Give the OS a moment to free port 8080 before the new ServerManager
+        // instance probes /health and (re)spawns a fresh AI Server.
+        QTimer::singleShot(800, this, [this]() {
+            startServerProcess(m_currentModelIndex);
+        });
+    };
+
+    if (isServerRunning()) {
+        // Ask the AI Server that ServerManager spawned (detached, so we
+        // don't otherwise hold a handle to it) to terminate itself first.
+        QNetworkRequest req{QUrl(AppConstants::AIServer::adminEndpoint("shutdown"))};
+        req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+        req.setTransferTimeout(5000);
+        QNetworkReply *reply = networkManager->post(req, QByteArray("{}"));
+        connect(reply, &QNetworkReply::finished, this, [reply, killManagerAndRestart]() {
+            reply->deleteLater();
+            killManagerAndRestart();   // run regardless of success/failure
+        });
+    } else {
+        killManagerAndRestart();
+    }
+}
+
 // ── Session management ────────────────────────────────────────────────────────
 
 void AIAssistant::newChat() {
     ChatSession session;
-    session.id        = generateSessionId();
+    session.id        = ChatSessionStore::generateSessionId();
     session.title     = LM_TR("ai.new_session") + " " + QDateTime::currentDateTime().toString(AppConstants::Format::sessionDateTime());
     session.createdAt = QDateTime::currentDateTime();
     m_sessions.append(session);
@@ -213,6 +296,20 @@ bool AIAssistant::isSessionThinking(const QString &sessionId) const {
     return hasPendingRequestForSession(sessionId);
 }
 
+int AIAssistant::sessionThinkingInsertIndex(const QString &sessionId) const {
+    for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end(); ++it) {
+        if (it.value().sessionId == sessionId) {
+            return it.value().insertAfterIndex;
+        }
+    }
+    for (const auto &req : m_queuedRequests) {
+        if (req.sessionId == sessionId) {
+            return req.insertAfterIndex;
+        }
+    }
+    return -1;
+}
+
 ChatSession* AIAssistant::currentSession() {
     for (auto &s : m_sessions) {
         if (s.id == m_currentSessionId) return &s;
@@ -245,13 +342,55 @@ bool AIAssistant::hasPendingRequestForSession(const QString &sessionId) const {
 
 QJsonObject AIAssistant::buildCompletionPayload(const QList<QJsonObject> &messages) const {
     QJsonArray msgs;
-    for (const auto &m : messages) msgs.append(m);
+    for (const auto &m : messages) {
+        // ``assistant_agent`` is UI-only state and is not a valid chat role.
+        // Sending it to FastAPI was the source of HTTP 422 after changing mode.
+        const QString role = m.value("role").toString();
+        if (role == "user" || role == "assistant" || role == "system") msgs.append(m);
+    }
 
     QJsonObject js;
     js["messages"]    = msgs;
-    js["temperature"] = AppConstants::AIServer::DEFAULT_TEMPERATURE;
+
+    auto *userManager = UserManager::instance();
+    double temp = userManager ? userManager->getUserPref(userManager->currentUsername(), "ai_temperature", QString::number(AppConstants::AIServer::DEFAULT_TEMPERATURE)).toDouble() : AppConstants::AIServer::DEFAULT_TEMPERATURE;
+    js["temperature"] = temp;
     js["max_tokens"]  = AppConstants::AIServer::DEFAULT_MAX_TOKENS;
+    js["language"] = LanguageManager::instance().currentLanguage();
     return js;
+}
+
+QJsonObject AIAssistant::buildAgentPayload(const QList<QJsonObject> &messages, const QString &task,
+                                            const QStringList &attachments) const {
+    QJsonArray history;
+    // The current user message is passed as ``task``. Keep only the portable
+    // conversational roles so Agent step JSON never contaminates model input.
+    for (int index = 0; index < messages.size() - 1; ++index) {
+        const QJsonObject &message = messages.at(index);
+        const QString role = message.value("role").toString();
+        if (role != "user" && role != "assistant") continue;
+        QJsonObject item;
+        item["role"] = role;
+        item["content"] = message.value("content").toString();
+        if (message.contains("attachments")) item["attachments"] = message.value("attachments");
+        history.append(item);
+    }
+
+    auto *userManager = UserManager::instance();
+    const double temperature = userManager
+        ? userManager->getUserPref(userManager->currentUsername(), "ai_temperature", "0.3").toDouble()
+        : 0.3;
+    QJsonObject payload;
+    payload["task"] = task;
+    payload["history"] = history;
+    payload["temperature"] = temperature;
+    payload["language"] = LanguageManager::instance().currentLanguage();
+    if (!attachments.isEmpty()) {
+        QJsonArray values;
+        for (const QString &attachment : attachments) values.append(attachment);
+        payload["attachments"] = values;
+    }
+    return payload;
 }
 
 bool AIAssistant::isRecoverableConnectionError(QNetworkReply::NetworkError error) const {
@@ -260,7 +399,7 @@ bool AIAssistant::isRecoverableConnectionError(QNetworkReply::NetworkError error
            error == QNetworkReply::NetworkSessionFailedError;
 }
 
-void AIAssistant::appendAssistantMessage(const QString &sessionId, const QString &content) {
+void AIAssistant::appendAssistantMessage(const QString &sessionId, const QString &content, int insertAfterIndex) {
     QJsonObject am;
     am["role"]      = "assistant";
     am["content"]   = content;
@@ -268,15 +407,20 @@ void AIAssistant::appendAssistantMessage(const QString &sessionId, const QString
 
     ChatSession *sess = getSession(sessionId);
     if (sess) {
-        sess->messages.append(am);
+        if (insertAfterIndex >= 0 && insertAfterIndex < sess->messages.size()) {
+            sess->messages.insert(insertAfterIndex + 1, am);
+        } else {
+            sess->messages.append(am);
+        }
         saveAllSessions();
     }
 }
 
-void AIAssistant::enqueueCompletionRequest(const QString &sessionId, const QJsonObject &payload) {
+void AIAssistant::enqueueCompletionRequest(const QString &sessionId, const QJsonObject &payload, int insertAfterIndex) {
     QueuedCompletionRequest request;
     request.sessionId = sessionId;
     request.payload = payload;
+    request.insertAfterIndex = insertAfterIndex;
     m_queuedRequests.append(request);
     m_isThinking = true;
     processNextQueuedRequest();
@@ -298,7 +442,17 @@ void AIAssistant::processNextQueuedRequest() {
 
     const QueuedCompletionRequest request = m_queuedRequests.takeFirst();
 
-    QNetworkRequest req{QUrl(AppConstants::AIServer::apiEndpoint())};
+    QString urlStr = AppConstants::AIServer::apiEndpoint();
+    if (request.isAgent) {
+        if (request.isUiActionAck) {
+            urlStr = urlStr.replace("/chat/completions", "/agent/ui-action-result");
+        } else if (request.isApproval) {
+            urlStr = urlStr.replace("/chat/completions", "/agent/approve");
+        } else {
+            urlStr = urlStr.replace("/chat/completions", "/agent/execute");
+        }
+    }
+    QNetworkRequest req{QUrl(urlStr)};
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     const int timeoutMs = (m_currentModelIndex == AppConstants::AIAssistant::VISION_MODEL_INDEX)
         ? AppConstants::AIServer::VISION_INFERENCE_TIMEOUT_MS
@@ -364,18 +518,62 @@ void AIAssistant::retryMessage(const QString &sessionId, int msgIndex) {
     if (!sess) return;
     if (msgIndex < 0 || msgIndex >= sess->messages.size()) return;
 
-    // Discard any messages after the target message
-    while (sess->messages.size() > msgIndex + 1) {
-        sess->messages.removeLast();
-    }
-    
     // Update timestamp of the message to reflect when retry occurred
     QJsonObject msg = sess->messages[msgIndex];
     msg["timestamp"] = QDateTime::currentDateTime().toString(AppConstants::Format::chatTimestamp());
     sess->messages[msgIndex] = msg;
 
+    // Remove old response(s) immediately following the retried message
+    while (sess->messages.size() > msgIndex + 1) {
+        const QString nextRole = sess->messages[msgIndex + 1]["role"].toString();
+        if (nextRole == "assistant" || nextRole == "assistant_agent") {
+            sess->messages.removeAt(msgIndex + 1);
+        } else {
+            break;
+        }
+    }
+
     saveAllSessions();
-    enqueueCompletionRequest(sessionId, buildCompletionPayload(sess->messages));
+    enqueueCompletionRequest(sessionId, buildCompletionPayload(sess->messages), msgIndex);
+    emit historyChanged();
+}
+
+void AIAssistant::retryAgentTask(const QString &sessionId, int msgIndex) {
+    if (hasPendingRequestForSession(sessionId)) return;
+
+    ChatSession *sess = getSession(sessionId);
+    if (!sess || msgIndex < 0 || msgIndex >= sess->messages.size()) return;
+
+    const QJsonObject target = sess->messages[msgIndex];
+    if (target["role"].toString() != "user" || target["content"].toString().trimmed().isEmpty()) return;
+
+    QJsonObject msg = sess->messages[msgIndex];
+    msg["timestamp"] = QDateTime::currentDateTime().toString(AppConstants::Format::chatTimestamp());
+    sess->messages[msgIndex] = msg;
+
+    // Remove old response(s) immediately following the retried message
+    while (sess->messages.size() > msgIndex + 1) {
+        const QString nextRole = sess->messages[msgIndex + 1]["role"].toString();
+        if (nextRole == "assistant" || nextRole == "assistant_agent") {
+            sess->messages.removeAt(msgIndex + 1);
+        } else {
+            break;
+        }
+    }
+
+    saveAllSessions();
+
+    QueuedCompletionRequest request;
+    request.sessionId = sessionId;
+    request.isAgent = true;
+    request.insertAfterIndex = msgIndex;
+    QList<QJsonObject> conversation;
+    for (int index = 0; index <= msgIndex; ++index) conversation.append(sess->messages.at(index));
+    request.payload = buildAgentPayload(conversation, msg["content"].toString(), {});
+    request.payload["session_id"] = sessionId;
+    m_queuedRequests.append(request);
+    m_isThinking = true;
+    processNextQueuedRequest();
     emit historyChanged();
 }
 
@@ -391,11 +589,115 @@ void AIAssistant::editMessage(const QString &sessionId, int msgIndex, const QStr
     retryMessage(sessionId, msgIndex);
 }
 
+// ── Agent mode ────────────────────────────────────────────────────────────────
+
+void AIAssistant::executeAgentTask(const QString &sessionId, const QString &task,
+                                   const QStringList &attachments) {
+    if (task.isEmpty() && attachments.isEmpty()) return;
+    const QString effectiveTask = task.isEmpty()
+        ? QStringLiteral("Please analyze the attached files.")
+        : task;
+    
+    QString targetSessionId = sessionId;
+    ChatSession *sess = getSession(targetSessionId);
+    if (!sess) {
+        newChat();
+        sess = currentSession();
+        if (!sess) return;
+        targetSessionId = sess->id;
+    }
+
+    if (hasPendingRequestForSession(targetSessionId)) return;
+
+    QJsonObject um;
+    um["role"]      = "user";
+    um["content"]   = effectiveTask;
+    um["timestamp"] = QDateTime::currentDateTime().toString(AppConstants::Format::chatTimestamp());
+    
+    if (!attachments.isEmpty()) {
+        QJsonArray values;
+        for (const QString &attachment : attachments) values.append(attachment);
+        um["attachments"] = values;
+    }
+    sess->messages.append(um);
+
+    if (sess->messages.size() == 1) {
+        sess->title = effectiveTask.left(AppConstants::Chat::SESSION_TITLE_MAX_LENGTH) + (effectiveTask.length() > AppConstants::Chat::SESSION_TITLE_MAX_LENGTH ? "..." : "");
+        emit sessionsChanged();
+    }
+    
+    saveAllSessions();
+    emit historyChanged();
+
+    QJsonObject payload = buildAgentPayload(sess->messages, effectiveTask, attachments);
+    payload["session_id"] = targetSessionId;
+
+    QueuedCompletionRequest request;
+    request.sessionId = targetSessionId;
+    request.payload = payload;
+    request.isAgent = true;
+    request.isApproval = false;
+
+    m_queuedRequests.append(request);
+    m_isThinking = true;
+    processNextQueuedRequest();
+}
+
+void AIAssistant::approveAgentAction(const QString &sessionId, const QString &actionId) {
+    QJsonObject payload;
+    payload["action_id"] = actionId;
+    payload["approved"] = true;
+    payload["session_id"] = sessionId;
+
+    QueuedCompletionRequest request;
+    request.sessionId = sessionId;
+    request.payload = payload;
+    request.isAgent = true;
+    request.isApproval = true;
+
+    m_queuedRequests.append(request);
+    m_isThinking = true;
+    processNextQueuedRequest();
+}
+
+void AIAssistant::rejectAgentAction(const QString &sessionId, const QString &actionId) {
+    QJsonObject payload;
+    payload["action_id"] = actionId;
+    payload["approved"] = false;
+    payload["session_id"] = sessionId;
+
+    QueuedCompletionRequest request;
+    request.sessionId = sessionId;
+    request.payload = payload;
+    request.isAgent = true;
+    request.isApproval = true;
+
+    m_queuedRequests.append(request);
+    m_isThinking = true;
+    processNextQueuedRequest();
+}
+
+void AIAssistant::reportUiActionResult(const QString &requestId, bool success, const QVariantMap &result) {
+    if (requestId.isEmpty()) return;
+    QueuedCompletionRequest request;
+    const auto entry = m_pendingUiActionSessions.take(requestId);
+    request.sessionId = entry.first.isEmpty() ? m_currentSessionId : entry.first;
+    request.insertAfterIndex = entry.second;  // -1 when not a retry (normal append)
+    request.isAgent = true;
+    request.isUiActionAck = true;
+    request.payload["request_id"] = requestId;
+    request.payload["success"] = success;
+    request.payload["result"] = QJsonObject::fromVariantMap(result);
+    m_queuedRequests.append(request);
+    m_isThinking = true;
+    processNextQueuedRequest();
+}
+
 // ── Process callbacks ─────────────────────────────────────────────────────────
 
 void AIAssistant::onProcessReadyRead() {
-    QString out = aiServerProcess->readAllStandardOutput();
-    qDebug() << "[AIAssistant Server]" << out;
+    QString out = QString::fromUtf8(aiServerProcess->readAllStandardOutput());
+    qDebug().noquote() << "[AIAssistant Server]" << out;
     
     QStringList lines = out.split('\n');
     for (const QString &line : lines) {
@@ -416,8 +718,8 @@ void AIAssistant::onProcessReadyRead() {
 }
 
 void AIAssistant::onProcessError() {
-    QString err = aiServerProcess->readAllStandardError();
-    qDebug() << "[AIAssistant Server]" << err;
+    QString err = QString::fromUtf8(aiServerProcess->readAllStandardError());
+    qDebug().noquote() << "[AIAssistant Server]" << err;
     
     QStringList lines = err.split('\n');
     for (const QString &line : lines) {
@@ -498,11 +800,74 @@ void AIAssistant::onReplyFinished(QNetworkReply* reply) {
     QString sessionId = request.sessionId;  // Remove from pending and get sessionId
     
     if (reply->error() == QNetworkReply::NoError) {
-        QJsonObject m = QJsonDocument::fromJson(reply->readAll())
-                            .object()["choices"].toArray()[0]
-                            .toObject()["message"].toObject();
-        appendAssistantMessage(sessionId, m["content"].toString());
-        emit responseReceived();
+        if (request.isAgent) {
+            QJsonObject res = QJsonDocument::fromJson(reply->readAll()).object();
+
+            // application_action is deliberately executed by the desktop app,
+            // not by the Python server. A successful ACK may carry one new,
+            // sequential workflow action; dispatch only the request_id named
+            // by this response, never an earlier step included in its history.
+            const QString responseRequestId = res.value("request_id").toString();
+            const bool hasFollowUpUiAction = request.isUiActionAck &&
+                res.value("status").toString() == "pending_ui_action" &&
+                !responseRequestId.isEmpty() &&
+                responseRequestId != request.payload.value("request_id").toString();
+            if (!request.isUiActionAck || hasFollowUpUiAction) {
+                const QJsonArray steps = res.value("steps").toArray();
+                for (const QJsonValue &value : steps) {
+                    const QJsonObject step = value.toObject();
+                    if (step.value("type").toString() != "tool_call" ||
+                        step.value("tool").toString() != "application_action") {
+                        continue;
+                    }
+                    QJsonObject params = step.value("params").toObject();
+                    QString action = params.value("action").toString();
+                    if (action.isEmpty()) continue;
+                    const QString requestId = params.value("request_id").toString();
+                    if (!responseRequestId.isEmpty() && requestId != responseRequestId) {
+                        continue;
+                    }
+                    if (!requestId.isEmpty())
+                        m_pendingUiActionSessions.insert(requestId, {sessionId, request.insertAfterIndex});
+                    QString manifestError;
+                    QVariantMap actionParams = params.toVariantMap();
+                    if (!AgentActionManifest::canonicalize(action, actionParams, &manifestError)) {
+                        reportUiActionResult(requestId, false, QVariantMap{{"error", manifestError}});
+                        continue;
+                    }
+                    emit agentUiActionRequested(action, actionParams);
+                }
+            }
+            
+            // Append agent step message to history to keep it
+            QJsonObject am;
+            am["role"] = "assistant_agent";
+            am["content"] = QString::fromUtf8(QJsonDocument(res).toJson(QJsonDocument::Compact));
+            am["timestamp"] = QDateTime::currentDateTime().toString(AppConstants::Format::chatTimestamp());
+            
+            ChatSession *sess = getSession(sessionId);
+            if (sess) {
+                if (request.insertAfterIndex >= 0 && request.insertAfterIndex < sess->messages.size()) {
+                    sess->messages.insert(request.insertAfterIndex + 1, am);
+                } else {
+                    sess->messages.append(am);
+                }
+                saveAllSessions();
+            }
+            
+            if (res.value("status").toString() == "pending_approval") {
+                emit agentApprovalRequired(sessionId, res);
+            } else if (res.value("status").toString() != "pending_ui_action") {
+                emit agentTaskCompleted(sessionId, "");
+            }
+            emit agentStepReceived(sessionId, res);
+        } else {
+            QJsonObject m = QJsonDocument::fromJson(reply->readAll())
+                                .object()["choices"].toArray()[0]
+                                .toObject()["message"].toObject();
+            appendAssistantMessage(sessionId, m["content"].toString(), request.insertAfterIndex);
+            emit responseReceived();
+        }
     } else {
         const QByteArray responseBody = reply->readAll();
         qWarning() << "[AIAssistant] Request failed:" << reply->errorString();
@@ -536,7 +901,7 @@ void AIAssistant::onReplyFinished(QNetworkReply* reply) {
             }
         }
 
-        appendAssistantMessage(sessionId, errorMessage);
+        appendAssistantMessage(sessionId, errorMessage, request.insertAfterIndex);
     }
     
     processNextQueuedRequest();
@@ -549,48 +914,11 @@ void AIAssistant::onReplyFinished(QNetworkReply* reply) {
 // ── Persistence ───────────────────────────────────────────────────────────────
 
 void AIAssistant::saveAllSessions() {
-    QJsonArray arr;
-    for (const auto &s : m_sessions) {
-        QJsonObject sObj;
-        sObj["id"]        = s.id;
-        sObj["title"]     = s.title;
-        sObj["createdAt"] = s.createdAt.toString(Qt::ISODate);
-        QJsonArray msgs;
-        for (const auto &m : s.messages) msgs.append(m);
-        sObj["messages"] = msgs;
-        arr.append(sObj);
-    }
-    QFile f(getSessionsPath());
-    if (f.open(QIODevice::WriteOnly)) {
-        f.write(QJsonDocument(arr).toJson());
-        f.close();
-    }
+    ChatSessionStore::save(m_sessions);
 }
 
 void AIAssistant::loadAllSessions() {
-    m_sessions.clear();
-    QFile f(getSessionsPath());
-    if (!f.open(QIODevice::ReadOnly)) return;
-    QJsonArray arr = QJsonDocument::fromJson(f.readAll()).array();
-    f.close();
-    for (const auto &v : arr) {
-        QJsonObject sObj = v.toObject();
-        ChatSession s;
-        s.id        = sObj["id"].toString();
-        s.title     = sObj["title"].toString();
-        s.createdAt = QDateTime::fromString(sObj["createdAt"].toString(), Qt::ISODate);
-        for (const auto &m : sObj["messages"].toArray())
-            s.messages.append(m.toObject());
-        m_sessions.append(s);
-    }
-}
-
-QString AIAssistant::getSessionsPath() {
-    QString currentUser = UserManager::instance()->currentUsername();
-    if (currentUser.isEmpty()) currentUser = "default";
-    QString dir = QFileInfo(AppConfig::instance().configPath()).absolutePath() + "/";
-    QDir().mkpath(dir);
-    return dir + "chat_sessions_" + currentUser + ".json";
+    m_sessions = ChatSessionStore::load();
 }
 
 void AIAssistant::reloadSessions() {
@@ -602,8 +930,4 @@ void AIAssistant::reloadSessions() {
     }
     emit sessionsChanged();
     emit historyChanged();
-}
-
-QString AIAssistant::generateSessionId() {
-    return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }

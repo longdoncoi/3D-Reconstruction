@@ -1,5 +1,9 @@
 #include "MailDockWidget.h"
 
+#include "MailFilterDialog.h"
+#include "MailInboxItemFactory.h"
+#include "MailMessageFormatter.h"
+#include "MailSettingsDialog.h"
 #include "IAppContext.h"
 #include "CustomProgressDialog.h"
 #include "ModernMessageBox.h"
@@ -10,24 +14,19 @@
 #include <QByteArray>
 #include <QColorDialog>
 #include <QComboBox>
-#include <QDialog>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QFormLayout>
 #include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QInputDialog>
-#include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QProgressDialog>
 #include <QPushButton>
-#include <QRegularExpression>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTextBrowser>
-#include <QTextDocument>
 #include <QTextEdit>
 #include <QTextList>
 #include <QToolButton>
@@ -294,219 +293,6 @@ void MailDockWidget::sendCurrentMail()
     }));
 }
 
-// Decode quoted-printable encoding (handles UTF-8 multi-byte and soft line breaks)
-static QString decodeQuotedPrintable(const QString &input)
-{
-    QByteArray bytes;
-    for (int i = 0; i < input.length(); ++i) {
-        // Handle soft line breaks: = followed by \r\n or \n
-        if (input[i] == '=' && i + 1 < input.length()) {
-            if ((input[i + 1] == '\r' && i + 2 < input.length() && input[i + 2] == '\n') ||
-                input[i + 1] == '\n') {
-                // Skip the soft line break
-                i += (input[i + 1] == '\r') ? 2 : 1;
-                continue;
-            }
-            
-            // Handle hex-encoded characters
-            if (i + 2 < input.length()) {
-                const QString hexStr = input.mid(i + 1, 2);
-                bool ok = false;
-                const int byte = hexStr.toInt(&ok, 16);
-                if (ok && byte >= 0 && byte <= 255) {
-                    bytes.append(static_cast<char>(byte));
-                    i += 2;
-                    continue;
-                }
-            }
-        }
-        bytes.append(input[i].toLatin1());
-    }
-    return QString::fromUtf8(bytes);
-}
-
-static bool looksLikeHtml(const QString &body)
-{
-    static const QRegularExpression htmlTagRe(
-        "<\\s*/?\\s*(html|body|div|p|br|pre|span|table|tr|td|th|blockquote|b|strong|i|em|a)\\b",
-        QRegularExpression::CaseInsensitiveOption);
-    return htmlTagRe.match(body).hasMatch();
-}
-
-// Extract a clean display name from email From header
-// "John Doe <john@example.com>" → "John Doe"
-// "john@example.com" → "john@example.com"
-static QString extractSenderName(const QString &from)
-{
-    const QString trimmed = from.trimmed();
-    const int angleBracket = trimmed.indexOf('<');
-    if (angleBracket > 0) {
-        QString name = trimmed.left(angleBracket).trimmed();
-        // Remove surrounding quotes
-        if (name.startsWith('"') && name.endsWith('"'))
-            name = name.mid(1, name.length() - 2).trimmed();
-        if (!name.isEmpty()) return name;
-    }
-    // Fallback: return the email part or full string
-    static const QRegularExpression emailRe("<([^>]+)>");
-    const auto match = emailRe.match(trimmed);
-    return match.hasMatch() ? match.captured(1) : trimmed;
-}
-
-static QString normalizeMailText(QString body)
-{
-    body = decodeQuotedPrintable(body);
-
-    if (looksLikeHtml(body)) {
-        QTextDocument doc;
-        doc.setHtml(body);
-        body = doc.toPlainText();
-    }
-
-    body.replace("\r\n", "\n");
-    body.replace('\r', '\n');
-
-    body.replace(QRegularExpression("\\s+(Vào\\s+[^\\n]{0,180}(?:đã\\s+)?viết\\s*:)",
-                                    QRegularExpression::CaseInsensitiveOption),
-                 "\n\n\\1\n");
-    body.replace(QRegularExpression("\\s+(On\\s+[^\\n]{0,180}wrote\\s*:)",
-                                    QRegularExpression::CaseInsensitiveOption),
-                 "\n\n\\1\n");
-    body.replace(QRegularExpression("\\s+((?:>\\s*)+)"), "\n\\1");
-
-    return body;
-}
-
-static QString withoutQuoteMarkers(QString line)
-{
-    line = line.trimmed();
-    while (line.startsWith('>')) {
-        line = line.mid(1).trimmed();
-    }
-    return line;
-}
-
-static bool isMimeArtifactLine(const QString &line)
-{
-    const QString trimmed = withoutQuoteMarkers(line);
-    return trimmed.startsWith("Content-", Qt::CaseInsensitive) ||
-           trimmed.startsWith("MIME-", Qt::CaseInsensitive) ||
-           trimmed.startsWith("This is a multi-part message", Qt::CaseInsensitive) ||
-           trimmed.startsWith("--") ||
-           trimmed.contains(QRegularExpression("--[A-Za-z0-9_=-]{12,}\\s+Content-",
-                                               QRegularExpression::CaseInsensitiveOption)) ||
-           trimmed.contains(QRegularExpression("\\bContent-(Type|Transfer-Encoding|Disposition):",
-                                               QRegularExpression::CaseInsensitiveOption)) ||
-           trimmed == "=";
-}
-
-// Clean email body: remove MIME headers and quoted-printable
-static QString cleanEmailBody(const QString &body)
-{
-    QString cleanBody = normalizeMailText(body);
-    
-    // Remove MIME boundaries and structure
-    cleanBody.remove(QRegularExpression("^--[a-f0-9]{24,}.*?$", QRegularExpression::MultilineOption));
-    cleanBody.remove(QRegularExpression("--[a-f0-9]{24,}--", QRegularExpression::MultilineOption));
-    
-    // Remove IMAP response artifacts
-    cleanBody.remove(QRegularExpression("^\\)\\s*$", QRegularExpression::MultilineOption));
-    cleanBody.remove(QRegularExpression("BODY\\[HEADER\\.FIELDS[^\\)]*\\]", QRegularExpression::CaseInsensitiveOption));
-    cleanBody.remove(QRegularExpression("\\{\\d+\\}", QRegularExpression::CaseInsensitiveOption));
-    
-    // Filter out header lines and metadata
-    QStringList resultLines;
-    for (const QString &line : cleanBody.split('\n')) {
-        const QString trimmed = line.trimmed();
-        
-        if (isMimeArtifactLine(trimmed)) {
-            if (!resultLines.isEmpty()) {
-                break;
-            }
-            continue;
-        }
-
-        if (trimmed.startsWith("Date:", Qt::CaseInsensitive) ||
-            trimmed.startsWith("Subject:", Qt::CaseInsensitive) ||
-            trimmed.startsWith("To:", Qt::CaseInsensitive) ||
-            trimmed.startsWith("From:", Qt::CaseInsensitive) ||
-            trimmed.startsWith("Cc:", Qt::CaseInsensitive) ||
-            trimmed.startsWith("Bcc:", Qt::CaseInsensitive) ||
-            trimmed.isEmpty()) {
-            continue;
-        }
-        resultLines.append(line);
-    }
-    
-    return resultLines.join('\n').trimmed();
-}
-
-static QString renderMailBodyHtml(const QString &body)
-{
-    QString html;
-    bool inQuote = false;
-    bool quoteAfterReplyHeader = false;
-
-    auto closeQuote = [&]() {
-        if (inQuote) {
-            html += "</div>";
-            inQuote = false;
-        }
-    };
-
-    for (QString line : body.split('\n')) {
-        line = line.trimmed();
-        if (line.isEmpty()) {
-            closeQuote();
-            continue;
-        }
-
-        int quoteDepth = 0;
-        while (line.startsWith('>')) {
-            ++quoteDepth;
-            line = line.mid(1).trimmed();
-        }
-        if (line.isEmpty()) continue;
-
-        const bool replyHeader =
-            line.startsWith("Vào ", Qt::CaseInsensitive) ||
-            line.startsWith("On ", Qt::CaseInsensitive);
-
-        if (replyHeader) {
-            closeQuote();
-            html += QString("<div class='reply-header'>%1</div>").arg(line.toHtmlEscaped());
-            quoteAfterReplyHeader = true;
-            continue;
-        }
-
-        if (quoteAfterReplyHeader && quoteDepth == 0) {
-            quoteDepth = 1;
-        }
-
-        if (quoteDepth > 0) {
-            if (!inQuote) {
-                html += "<div class='quoted-mail'>";
-                inQuote = true;
-            }
-            const bool quoteMeta =
-                line.startsWith("From:", Qt::CaseInsensitive) ||
-                line.startsWith("To:", Qt::CaseInsensitive) ||
-                line.startsWith("Date:", Qt::CaseInsensitive) ||
-                line.startsWith("Subject:", Qt::CaseInsensitive);
-            html += QString("<div class='%1'>%2</div>")
-                        .arg(quoteMeta ? "quote-meta" : "quote-line",
-                             line.toHtmlEscaped());
-            continue;
-        }
-
-        closeQuote();
-        html += QString("<p>%1</p>").arg(line.toHtmlEscaped());
-    }
-
-    closeQuote();
-    return html.isEmpty() ? QString("<p></p>") : html;
-}
-
 void MailDockWidget::refreshInbox()
 {
     if (!m_mail) return;
@@ -560,57 +346,13 @@ void MailDockWidget::refreshInbox()
             m_messages = fullMessages;
         }
 
-        // Populate UI list with rich item widgets (Subject + Sender + Date)
         m_inboxList->clear();
         for (int i = 0; i < m_messages.size(); ++i) {
-            const MailMessage &msg = m_messages[i];
-
-            // Build a custom widget for each inbox item
-            auto *itemWidget = new QWidget();
-            auto *itemLayout = new QVBoxLayout(itemWidget);
-            itemLayout->setContentsMargins(12, 8, 12, 8);
-            itemLayout->setSpacing(3);
-
-            // Row 1: Subject (with unread dot indicator)
-            const QString subjectText = msg.subject.isEmpty()
-                ? m_ctx->translate("mail.no_subject") : msg.subject;
-            const QString unreadDot = msg.isRead ? "" : "● ";
-            auto *subjectLabel = new QLabel(unreadDot + subjectText, itemWidget);
-            subjectLabel->setStyleSheet(
-                msg.isRead
-                    ? "color: #e2e8f0; font-size: 13px;"
-                    : "color: #f1f5f9; font-size: 13px; font-weight: bold;"
-            );
-            subjectLabel->setWordWrap(false);
-            subjectLabel->setTextFormat(Qt::PlainText);
-            itemLayout->addWidget(subjectLabel);
-
-            // Row 2: Sender name
-            const QString senderName = extractSenderName(msg.from);
-            auto *senderLabel = new QLabel(senderName, itemWidget);
-            senderLabel->setStyleSheet("color: #94a3b8; font-size: 11px;");
-            senderLabel->setTextFormat(Qt::PlainText);
-            itemLayout->addWidget(senderLabel);
-
-            // Row 3: Date
-            const QString dateStr = msg.date.isValid()
-                ? msg.date.toString("dd/MM/yyyy  hh:mm") : QString();
-            if (!dateStr.isEmpty()) {
-                auto *dateLabel = new QLabel(dateStr, itemWidget);
-                dateLabel->setStyleSheet("color: #64748b; font-size: 10px;");
-                itemLayout->addWidget(dateLabel);
-            }
-
-            itemWidget->setLayout(itemLayout);
-
-            // Create list item and attach the custom widget
-            auto *item = new QListWidgetItem();
-            item->setData(Qt::UserRole, msg.uid);
-            item->setData(Qt::UserRole + 1, i);
-            item->setToolTip(msg.from);
-            item->setSizeHint(itemWidget->sizeHint());
-            m_inboxList->addItem(item);
-            m_inboxList->setItemWidget(item, itemWidget);
+            MailInboxItemFactory::addMessageItem(
+                m_inboxList,
+                m_messages[i],
+                i,
+                m_ctx->translate("mail.no_subject"));
         }
     });
     watcher->setFuture(QtConcurrent::run([this]() {
@@ -633,71 +375,10 @@ void MailDockWidget::onInboxSelectionChanged()
 
     const MailMessage &msg = m_messages[row];
 
-    // Build clean header — dark mode compatible to match app theme
-    const QString header = QString(
-        "<style>"
-        "body { font-family: 'Segoe UI', Arial, sans-serif; color: #e2e8f0; font-size: 14px; line-height: 1.7; "
-        "       background-color: #0f172a; }"
-        "h3 { font-size: 18px; font-weight: 600; margin: 0 0 14px 0; color: #f1f5f9; }"
-        ".mail-header { background-color: #1e293b; padding: 18px 20px; border-radius: 10px; "
-        "               margin-bottom: 20px; border: 1px solid #334155; }"
-        ".mail-header-row { margin: 6px 0; font-size: 13px; }"
-        ".mail-header-label { font-weight: 600; color: #94a3b8; display: inline-block; "
-        "                     min-width: 55px; }"
-        ".mail-header-value { color: #cbd5e1; }"
-        ".mail-body { margin-top: 20px; word-wrap: break-word; color: #e2e8f0; }"
-        ".mail-body p { margin: 8px 0; }"
-        ".reply-header { margin: 20px 0 8px 0; padding: 8px 12px; color: #94a3b8; "
-        "                font-weight: 600; font-size: 12px; background: #1e293b; "
-        "                border-radius: 6px; }"
-        ".quoted-mail { margin: 4px 0 0 0; padding: 10px 0 10px 14px; "
-        "               border-left: 3px solid #3b82f6; color: #94a3b8; }"
-        ".quote-line { margin: 3px 0; }"
-        ".quote-meta { margin: 3px 0; color: #60a5fa; font-weight: 600; }"
-        "a { color: #60a5fa; text-decoration: none; }"
-        "a:hover { text-decoration: underline; color: #93c5fd; }"
-        "table { border-collapse: collapse; width: 100%%; margin: 12px 0; }"
-        "td, th { padding: 8px 12px; border: 1px solid #334155; color: #e2e8f0; }"
-        "th { background-color: #1e293b; color: #f1f5f9; }"
-        "pre { background-color: #1e293b; color: #e2e8f0; padding: 14px; "
-        "      border-radius: 6px; overflow-x: auto; border: 1px solid #334155; }"
-        "code { background-color: #1e293b; padding: 2px 6px; border-radius: 3px; "
-        "       font-size: 13px; color: #f472b6; }"
-        "img { max-width: 100%%; height: auto; border-radius: 6px; }"
-        "hr { border: none; border-top: 1px solid #334155; margin: 16px 0; }"
-        "</style>"
-    );
+    m_preview->setHtml(MailMessageFormatter::previewHtml(
+        msg,
+        QString::fromUtf8("Kh\303\264ng c\303\263 n\341\273\231i dung")));
 
-    const QString mailHeader = QString(
-        "<div class='mail-header'>"
-        "<h3>%1</h3>"
-        "<div class='mail-header-row'>"
-        "  <span class='mail-header-label'>From:</span> "
-        "  <span class='mail-header-value'>%2</span>"
-        "</div>"
-        "<div class='mail-header-row'>"
-        "  <span class='mail-header-label'>To:</span> "
-        "  <span class='mail-header-value'>%3</span>"
-        "</div>"
-        "<div class='mail-header-row'>"
-        "  <span class='mail-header-label'>Date:</span> "
-        "  <span class='mail-header-value'>%4</span>"
-        "</div>"
-        "</div>"
-    ).arg(msg.subject.toHtmlEscaped(),
-          msg.from.toHtmlEscaped(),
-          msg.to.toHtmlEscaped(),
-          msg.date.isValid() ? msg.date.toString("ddd, dd MMM yyyy  hh:mm") : QString());
-
-    QString bodyHtml = msg.htmlBody.trimmed();
-    if (bodyHtml.isEmpty()) {
-        bodyHtml = "<p style='color:#64748b;font-style:italic;'>(Không có nội dung)</p>";
-    } else if (!looksLikeHtml(bodyHtml)) {
-        bodyHtml = renderMailBodyHtml(normalizeMailText(bodyHtml));
-    }
-
-    const QString html = header + mailHeader + "<div class='mail-body'>" + bodyHtml + "</div>";
-    m_preview->setHtml(html);
 }
 
 void MailDockWidget::addAttachments()
@@ -779,63 +460,7 @@ void MailDockWidget::insertLink()
 
 void MailDockWidget::showSettingsDialog()
 {
-    QDialog dlg(m_dock);
-    dlg.setWindowTitle(m_ctx->translate("mail.settings"));
-    dlg.setMinimumWidth(460);
-    auto *layout = new QVBoxLayout(&dlg);
-    auto *form = new QFormLayout();
-
-    auto *email = new QLineEdit(m_mail ? m_mail->senderEmail() : QString(), &dlg);
-    auto *password = new QLineEdit(&dlg);
-    password->setEchoMode(QLineEdit::Password);
-    auto *displayName = new QLineEdit(UserManager::instance()->currentUsername(), &dlg);
-    auto *signature = new QTextEdit(&dlg);
-    signature->setAcceptRichText(true);
-    signature->setMinimumHeight(110);
-
-    const QString username = UserManager::instance()->currentUsername();
-    password->setText(UserManager::instance()->getUserPref(username, "mail_password"));
-    displayName->setText(UserManager::instance()->getUserPref(username, "mail_display_name", username));
-    signature->setHtml(UserManager::instance()->getUserPref(username, "mail_signature",
-                                                            QString("<b>%1</b><br>3D-Reconstruction").arg(username)));
-
-    form->addRow(m_ctx->translate("mail.account"), email);
-    form->addRow(m_ctx->translate("mail.password"), password);
-    form->addRow(m_ctx->translate("mail.display_name"), displayName);
-    form->addRow(m_ctx->translate("mail.signature"), signature);
-    layout->addLayout(form);
-
-    auto *buttons = new QHBoxLayout();
-    auto *testBtn = new QPushButton(m_ctx->translate("mail.test"), &dlg);
-    auto *cancelBtn = new QPushButton(m_ctx->translate("common.cancel"), &dlg);
-    auto *saveBtn = new QPushButton(m_ctx->translate("common.save"), &dlg);
-    saveBtn->setObjectName("primary");
-    buttons->addWidget(testBtn);
-    buttons->addStretch();
-    buttons->addWidget(cancelBtn);
-    buttons->addWidget(saveBtn);
-    layout->addLayout(buttons);
-
-    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
-    connect(saveBtn, &QPushButton::clicked, &dlg, [&]() {
-        if (m_mail) {
-            m_mail->setCredentials(email->text().trimmed(), password->text(), displayName->text().trimmed());
-            UserManager::instance()->setUserPref(username, "mail_signature", signature->toHtml());
-        }
-        dlg.accept();
-    });
-    connect(testBtn, &QPushButton::clicked, &dlg, [&]() {
-        if (!m_mail) return;
-        m_mail->setCredentials(email->text().trimmed(), password->text(), displayName->text().trimmed());
-        QString error;
-        if (m_mail->testConnection(error)) {
-            ModernMessageBox::information(&dlg, m_ctx->translate("common.success"), m_ctx->translate("mail.test_ok"));
-        } else {
-            ModernMessageBox::warning(&dlg, m_ctx->translate("common.error"), error);
-        }
-    });
-
-    dlg.exec();
+    MailSettingsDialog::show(m_dock, m_ctx, m_mail);
 }
 
 void MailDockWidget::loadFilterSettings()
@@ -877,78 +502,10 @@ void MailDockWidget::saveFilterSettings()
 
 void MailDockWidget::showFilterDialog()
 {
-    QDialog dlg(m_dock);
-    dlg.setWindowTitle(m_ctx->translate("mail.filter"));
-    dlg.setMinimumWidth(500);
-    dlg.setMinimumHeight(400);
-    auto *layout = new QVBoxLayout(&dlg);
-
-    // Instructions
-    auto *instruction = new QLabel(m_ctx->translate("mail.filter_hint"), &dlg);
-    instruction->setStyleSheet("color: #888; font-size: 11px;");
-    layout->addWidget(instruction);
-
-    // Filter list
-    auto *listLabel = new QLabel(m_ctx->translate("mail.filter_list"), &dlg);
-    auto *filterList = new QListWidget(&dlg);
-    for (const QString &kw : m_filterKeywords) {
-        filterList->addItem(kw);
-    }
-    layout->addWidget(listLabel);
-    layout->addWidget(filterList, 1);
-
-    // Add/Remove buttons
-    auto *btnRow = new QHBoxLayout();
-    auto *addBtn = new QPushButton(m_ctx->translate("mail.add_filter"), &dlg);
-    auto *removeBtn = new QPushButton(m_ctx->translate("mail.remove_filter"), &dlg);
-    btnRow->addWidget(addBtn);
-    btnRow->addWidget(removeBtn);
-    btnRow->addStretch();
-    layout->addLayout(btnRow);
-
-    // Connect add button
-    connect(addBtn, &QPushButton::clicked, &dlg, [this, &dlg, filterList]() {
-        bool ok = false;
-        QString keyword = QInputDialog::getText(&dlg,
-            m_ctx->translate("mail.add_filter"),
-            m_ctx->translate("mail.filter_input_hint"),
-            QLineEdit::Normal, "", &ok);
-        if (ok && !keyword.trimmed().isEmpty()) {
-            keyword = keyword.trimmed();
-            if (!m_filterKeywords.contains(keyword, Qt::CaseInsensitive)) {
-                m_filterKeywords << keyword;
-                filterList->addItem(keyword);
-            }
-        }
-    });
-
-    // Connect remove button
-    connect(removeBtn, &QPushButton::clicked, &dlg, [this, filterList]() {
-        int row = filterList->currentRow();
-        if (row >= 0 && row < m_filterKeywords.size()) {
-            m_filterKeywords.removeAt(row);
-            delete filterList->takeItem(row);
-        }
-    });
-
-    // Dialog buttons
-    auto *buttons = new QHBoxLayout();
-    auto *cancelBtn = new QPushButton(m_ctx->translate("common.cancel"), &dlg);
-    auto *applyBtn = new QPushButton(m_ctx->translate("common.save"), &dlg);
-    applyBtn->setObjectName("primary");
-    buttons->addStretch();
-    buttons->addWidget(cancelBtn);
-    buttons->addWidget(applyBtn);
-    layout->addLayout(buttons);
-
-    connect(cancelBtn, &QPushButton::clicked, &dlg, &QDialog::reject);
-    connect(applyBtn, &QPushButton::clicked, &dlg, [this, &dlg]() {
+    if (MailFilterDialog::edit(m_dock, m_ctx, m_filterKeywords)) {
         saveFilterSettings();
         refreshInbox();
-        dlg.accept();
-    });
-
-    dlg.exec();
+    }
 }
 
 void MailDockWidget::retranslate()

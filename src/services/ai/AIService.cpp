@@ -45,3 +45,11 @@ cv::Mat AIService::runTracking(const cv::Mat& inputImage) {
 void AIService::resetTrackingState() {
     m_processor->resetTrackingState();
 }
+
+void AIService::setConfidenceThreshold(float threshold) {
+    m_processor->setConfidenceThreshold(threshold);
+}
+
+float AIService::confidenceThreshold() const {
+    return m_processor->confidenceThreshold();
+}

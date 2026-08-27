@@ -2,6 +2,7 @@
 // CrosshairManager.cpp
 // ============================================================
 #include "CrosshairManager.h"
+#include "CrosshairGeometry.h"
 
 #include <vtkProperty.h>
 #include <vtkProperty2D.h>
@@ -22,102 +23,6 @@ vtkStandardNewMacro(CrosshairInteractorStyle);
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Constants
-// ─────────────────────────────────────────────────────────────────────────────
-
-// MPR reslice axes (same convention as DicomLoader::createSlice)
-static const double kAxes[3][16] = {
-    // Sagittal (0): screen-U=PatY, screen-V=PatZ
-    { 0, 0, 1, 0,
-     1, 0, 0, 0,
-     0, 1, 0, 0,
-     0, 0, 0, 1 },
-    // Coronal (1): screen-U=PatX, screen-V=PatZ
-    { 1, 0, 0, 0,
-     0, 0, 1, 0,
-     0, 1, 0, 0,
-     0, 0, 0, 1 },
-    // Axial (2): screen-U=PatX, screen-V=-PatY
-    { 1,  0, 0, 0,
-     0, -1, 0, 0,
-     0,  0, 1, 0,
-     0,  0, 0, 1 }
-};
-
-// Anatomical labels per view: [negH, posH, posV, negV]
-static const char* kLabels[3][4] = {
-    /* Sagittal */ { "P", "A", "S", "I" },
-    /* Coronal  */ { "R", "L", "S", "I" },
-    /* Axial    */ { "R", "L", "A", "P" }
-};
-
-// Crosshair colours
-static const double kLineColor[3][3] = {
-    { 1.0, 1.0, 0.0 },   // Sagittal – yellow
-    { 0.0, 1.0, 1.0 },   // Coronal  – cyan
-    { 1.0, 0.5, 0.0 }    // Axial    – orange
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Coordinate helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-static void worldToNorm(int vi, const double world[3],
-                        const double bounds[6],
-                        double &nx, double &ny)
-{
-    double bx0=bounds[0], bx1=bounds[1];
-    double by0=bounds[2], by1=bounds[3];
-    double bz0=bounds[4], bz1=bounds[5];
-
-    switch (vi) {
-    case ORI_SAGITTAL:
-        nx = (world[1]-by0) / (by1-by0+1e-9);
-        ny = (world[2]-bz0) / (bz1-bz0+1e-9);
-        break;
-    case ORI_CORONAL:
-        nx = (world[0]-bx0) / (bx1-bx0+1e-9);
-        ny = (world[2]-bz0) / (bz1-bz0+1e-9);
-        break;
-    case ORI_AXIAL:
-        nx = (world[0]-bx0)  / (bx1-bx0+1e-9);
-        ny = ((-world[1]) - (-by1)) / ((-by0)-(-by1)+1e-9);
-        break;
-    }
-    nx = std::max(0.0, std::min(1.0, nx));
-    ny = std::max(0.0, std::min(1.0, ny));
-}
-
-static void normToWorld(int vi, double nx, double ny,
-                        const double bounds[6],
-                        const double oldWorld[3],
-                        double newWorld[3])
-{
-    newWorld[0] = oldWorld[0];
-    newWorld[1] = oldWorld[1];
-    newWorld[2] = oldWorld[2];
-
-    double bx0=bounds[0], bx1=bounds[1];
-    double by0=bounds[2], by1=bounds[3];
-    double bz0=bounds[4], bz1=bounds[5];
-
-    switch (vi) {
-    case ORI_SAGITTAL:
-        newWorld[1] = by0 + nx*(by1-by0);
-        newWorld[2] = bz0 + ny*(bz1-bz0);
-        break;
-    case ORI_CORONAL:
-        newWorld[0] = bx0 + nx*(bx1-bx0);
-        newWorld[2] = bz0 + ny*(bz1-bz0);
-        break;
-    case ORI_AXIAL:
-        newWorld[0] =  bx0 + nx*(bx1-bx0);
-        newWorld[1] = by1 - ny*(by1-by0);
-        break;
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  CrosshairManager – lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
 
 CrosshairManager::CrosshairManager(QObject *parent) : QObject(parent) {}
@@ -193,7 +98,7 @@ void CrosshairManager::buildOverlay(int vi)
 {
     CrosshairOverlay &v   = m_views[vi];
     vtkRenderer      *ren = m_renderers[vi];
-    const double     *col = kLineColor[vi];
+    const double     *col = CrosshairGeometry::lineColor(vi);
 
     // ── 1. Reslice pipeline ──────────────────────────────────────────────────
     //    This is the ONLY imageActor added to this renderer.
@@ -204,7 +109,7 @@ void CrosshairManager::buildOverlay(int vi)
         v.reslice->SetInterpolationModeToLinear();
 
         vtkNew<vtkMatrix4x4> mat;
-        mat->DeepCopy(kAxes[vi]);
+        mat->DeepCopy(CrosshairGeometry::resliceAxes(vi));
         mat->SetElement(0, 3, m_center[0]);
         mat->SetElement(1, 3, m_center[1]);
         mat->SetElement(2, 3, m_center[2]);
@@ -307,7 +212,7 @@ void CrosshairManager::updateOverlay(int vi)
     m_volume->GetBounds(bounds);
 
     double nx = 0.5, ny = 0.5;
-    worldToNorm(vi, m_center, bounds, nx, ny);
+    CrosshairGeometry::worldToNormalized(vi, m_center, bounds, nx, ny);
 
     // Lines
     v.hLine->SetPoint1(0.0, ny, 0.0);  v.hLine->SetPoint2(1.0, ny, 0.0);
@@ -342,7 +247,7 @@ void CrosshairManager::updateOverlay(int vi)
 
 void CrosshairManager::getLabels(int vi, const char* out[4])
 {
-    for (int k = 0; k < 4; ++k) out[k] = kLabels[vi][k];
+    CrosshairGeometry::labels(vi, out);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -356,7 +261,7 @@ bool CrosshairManager::isNearAnchor(int vi, int x, int y)
 
     double bounds[6]; m_volume->GetBounds(bounds);
     double nx, ny;
-    worldToNorm(vi, m_center, bounds, nx, ny);
+    CrosshairGeometry::worldToNormalized(vi, m_center, bounds, nx, ny);
 
     double vp[4]; ren->GetViewport(vp);
     int *ws = m_renderWindow->GetSize();
@@ -379,7 +284,7 @@ bool CrosshairManager::displayToWorld(int vi, int x, int y, double worldPt[3])
     ny = std::max(0.0,std::min(1.0,ny));
 
     double bounds[6]; m_volume->GetBounds(bounds);
-    normToWorld(vi, nx, ny, bounds, m_center, worldPt);
+    CrosshairGeometry::normalizedToWorld(vi, nx, ny, bounds, m_center, worldPt);
     return true;
 }
 

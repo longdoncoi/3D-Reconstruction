@@ -5,6 +5,14 @@ add_library(SendMailPlugin SHARED
     SendMailPlugin.cpp
     SendMailRibbonUI.h
     SendMailRibbonUI.cpp
+    MailFilterDialog.h
+    MailFilterDialog.cpp
+    MailInboxItemFactory.h
+    MailInboxItemFactory.cpp
+    MailMessageFormatter.h
+    MailMessageFormatter.cpp
+    MailSettingsDialog.h
+    MailSettingsDialog.cpp
     MailDockWidget.h
     MailDockWidget.cpp
 )

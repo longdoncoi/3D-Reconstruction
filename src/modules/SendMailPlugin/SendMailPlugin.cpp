@@ -52,6 +52,25 @@ void SendMailPlugin::initialize(IAppContext *context)
             label->setText(m_ctx->translate("mail.menu"));
         }
     });
+    connect(m_ctx->signalBus(), &SignalBus::agentUiActionRequested, this,
+            [this](const QString &action, const QVariantMap &parameters) {
+        if (!m_dockUI) return;
+        bool handled = false;
+        if (action == "mail.open") {
+            m_dockUI->showInbox();
+            handled = true;
+        } else if (action == "mail.close" && !m_dockUI->dockWidget()->isHidden()) {
+            m_dockUI->dockWidget()->hide();
+            handled = true;
+        } else if (action == "mail.settings") {
+            m_dockUI->showSettingsDialog();
+            handled = true;
+        }
+        const QString requestId = parameters.value("request_id").toString();
+        if (!requestId.isEmpty() && action.startsWith("mail."))
+            emit m_ctx->signalBus()->agentUiActionCompleted(requestId, handled,
+                QVariantMap{{"action", action}, {"error", handled ? "" : "Mail UI is unavailable"}});
+    });
 }
 
 void SendMailPlugin::cleanup()

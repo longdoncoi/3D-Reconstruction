@@ -15,7 +15,7 @@ public:
     explicit AITrainDockWidget(IAppContext* ctx, QWidget* parent = nullptr);
     ~AITrainDockWidget();
 
-    void startTraining();
+    void startTraining(bool autoConfirm = false);
 
 private slots:
     void closeTrainDock();

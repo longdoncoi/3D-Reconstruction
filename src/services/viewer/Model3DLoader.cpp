@@ -1,22 +1,29 @@
 #include "Model3DLoader.h"
 #include <QFileInfo>
 #include <QDebug>
+#include <vtkPLYReader.h>
+#include <vtkAlgorithm.h>
+#include <vtkPolyData.h>
+#include <vtkPolyDataReader.h>
+#include <vtkSTLReader.h>
+#include <vtkXMLPolyDataReader.h>
 
-std::vector<vtkSmartPointer<vtkActor>> Model3DLoader::load(const QString& objPath, const QString& mtlPath) {
+std::vector<vtkSmartPointer<vtkActor>> Model3DLoader::load(const QString& modelPath, const QString& materialPath) {
     std::vector<vtkSmartPointer<vtkActor>> actorsList;
-    QFileInfo objFile(objPath);
-    QFileInfo mtlFile(mtlPath);
+    QFileInfo modelFile(modelPath);
+    QFileInfo materialFile(materialPath);
 
-    if (!objFile.exists()) {
-        qWarning() << "OBJ file not found:" << objPath;
+    if (!modelFile.exists()) {
+        qWarning() << "3D model file not found:" << modelPath;
         return actorsList;
     }
 
+    const QString suffix = modelFile.suffix().toLower();
     bool imported = false;
-    if (mtlFile.exists()) {
+    if (suffix == "obj" && materialFile.exists()) {
         vtkNew<vtkOBJImporter> importer;
-        importer->SetFileName(objPath.toStdString().c_str());
-        importer->SetFileNameMTL(mtlPath.toStdString().c_str());
+        importer->SetFileName(modelPath.toStdString().c_str());
+        importer->SetFileNameMTL(materialPath.toStdString().c_str());
         importer->Update();
 
         vtkRenderer *importerRenderer = importer->GetRenderer();
@@ -36,9 +43,38 @@ std::vector<vtkSmartPointer<vtkActor>> Model3DLoader::load(const QString& objPat
     }
 
     if (!imported) {
-        vtkNew<vtkOBJReader> reader;
-        reader->SetFileName(objPath.toStdString().c_str());
+        vtkSmartPointer<vtkAlgorithm> reader;
+        if (suffix == "obj") {
+            auto concreteReader = vtkSmartPointer<vtkOBJReader>::New();
+            concreteReader->SetFileName(modelPath.toStdString().c_str());
+            reader = concreteReader;
+        } else if (suffix == "stl") {
+            auto concreteReader = vtkSmartPointer<vtkSTLReader>::New();
+            concreteReader->SetFileName(modelPath.toStdString().c_str());
+            reader = concreteReader;
+        } else if (suffix == "ply") {
+            auto concreteReader = vtkSmartPointer<vtkPLYReader>::New();
+            concreteReader->SetFileName(modelPath.toStdString().c_str());
+            reader = concreteReader;
+        } else if (suffix == "vtk") {
+            auto concreteReader = vtkSmartPointer<vtkPolyDataReader>::New();
+            concreteReader->SetFileName(modelPath.toStdString().c_str());
+            reader = concreteReader;
+        } else if (suffix == "vtp") {
+            auto concreteReader = vtkSmartPointer<vtkXMLPolyDataReader>::New();
+            concreteReader->SetFileName(modelPath.toStdString().c_str());
+            reader = concreteReader;
+        }
+        else {
+            qWarning() << "Unsupported 3D model format:" << suffix;
+            return actorsList;
+        }
         reader->Update();
+        auto* polyData = vtkPolyData::SafeDownCast(reader->GetOutputDataObject(0));
+        if (!polyData || polyData->GetNumberOfPoints() == 0) {
+            qWarning() << "3D model contains no mesh data:" << modelPath;
+            return actorsList;
+        }
         
         vtkNew<vtkPolyDataMapper> mapper;
         mapper->SetInputConnection(reader->GetOutputPort());
@@ -46,6 +82,7 @@ std::vector<vtkSmartPointer<vtkActor>> Model3DLoader::load(const QString& objPat
         vtkSmartPointer<vtkActor> fallbackActor = vtkSmartPointer<vtkActor>::New();
         fallbackActor->SetMapper(mapper);
         fallbackActor->GetProperty()->SetColor(0.7, 0.7, 0.7);
+        fallbackActor->GetProperty()->SetInterpolationToPhong();
         actorsList.push_back(fallbackActor);
     }
 

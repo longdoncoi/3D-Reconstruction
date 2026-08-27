@@ -258,10 +258,13 @@ vtkSmartPointer<vtkVolume> DicomLoader::createVolume(
 
     vtkNew<vtkFixedPointVolumeRayCastMapper> mapper;
     mapper->SetInputData(data);
-    mapper->SetAutoAdjustSampleDistances(0.5);
-    mapper->SetInteractiveSampleDistance(0.5); // Khi xoay: nhanh, hơi nhòe chút
-    mapper->SetSampleDistance(0.5);            // Khi dừng: rất nét
-    mapper->SetBlendModeToMaximumIntensity(); 
+    double spacing[3];
+    data->GetSpacing(spacing);
+    const double sampleDistance = std::max(0.1, std::min({spacing[0], spacing[1], spacing[2]}) * 0.5);
+    mapper->SetAutoAdjustSampleDistances(false);
+    mapper->SetInteractiveSampleDistance(sampleDistance * 1.5);
+    mapper->SetSampleDistance(sampleDistance);
+    mapper->SetBlendModeToComposite();
 
     // Màu: đen → nâu (mô mềm) → kem (não) → trắng
     vtkNew<vtkColorTransferFunction> color;
@@ -286,6 +289,7 @@ vtkSmartPointer<vtkVolume> DicomLoader::createVolume(
     prop->SetAmbient(0.3);
     prop->SetDiffuse(0.7);
     prop->SetSpecular(0.2);
+    prop->SetSpecularPower(12.0);
 
     auto vol = vtkSmartPointer<vtkVolume>::New();
     vol->SetMapper(mapper);

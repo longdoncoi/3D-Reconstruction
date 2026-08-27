@@ -63,6 +63,13 @@ public:
      * Reset trạng thái tracking (ví dụ khi chuyển video mới).
      */
     virtual void resetTrackingState() = 0;
+
+    /**
+     * Đặt ngưỡng tin cậy (confidence threshold) cho detection/segmentation.
+     * Giá trị từ 0.0 đến 1.0, mặc định 0.5.
+     */
+    virtual void setConfidenceThreshold(float threshold) = 0;
+    virtual float confidenceThreshold() const = 0;
 };
 
 #endif // IAISERVICE_H

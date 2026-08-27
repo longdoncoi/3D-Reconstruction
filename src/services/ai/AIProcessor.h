@@ -2,12 +2,14 @@
 #define AIPROCESSOR_H
 
 #include <QString>
-#include <QString>
 #include <opencv2/opencv.hpp>
 #include <onnxruntime_cxx_api.h>
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <map>
+
+#include "Global.h"
 
 struct AIResult {
     int class_id;
@@ -15,8 +17,6 @@ struct AIResult {
     cv::Rect box;
     std::vector<float> mask_coeffs;
 };
-
-#include "Global.h"
 
 class APP_EXPORT AIProcessor {
 public:
@@ -31,9 +31,13 @@ public:
     bool isSegmentationModelLoaded() const { return isSegModelLoaded; }
     bool isTrackingModelLoaded() const { return isTrackingLoaded; }
 
+    /** Set confidence threshold [0.0, 1.0] used in detection & segmentation. */
+    void setConfidenceThreshold(float threshold) { m_confidenceThreshold = threshold; }
+    float confidenceThreshold() const { return m_confidenceThreshold; }
+
     // Returns image with drawn bounding boxes
     cv::Mat runObjectDetection(const cv::Mat& inputImage);
-    
+
     // Returns image with drawn segmentation masks
     cv::Mat runSegmentation(const cv::Mat& inputImage);
 
@@ -42,12 +46,9 @@ public:
     void resetTrackingState();
 
 private:
-    void applyNMS(const std::vector<cv::Rect>& boxes, const std::vector<float>& confidences, 
-                  float scoreThreshold, float nmsThreshold, std::vector<int>& indices);
-    
     void tryInitGPUProvider();
     Ort::Value prepareInputTensor(const cv::Mat& img, int width, int height, std::vector<float>& tensorValues);
-    
+
     std::unique_ptr<Ort::Env> env;
     std::unique_ptr<Ort::SessionOptions> sessionOptions;
     std::unique_ptr<Ort::Session> detSession;
@@ -57,6 +58,7 @@ private:
     bool isDetModelLoaded;
     bool isSegModelLoaded;
     bool isTrackingLoaded;
+    float m_confidenceThreshold = 0.5f;
 
     // Tracking state
     std::mutex m_trackingMutex;

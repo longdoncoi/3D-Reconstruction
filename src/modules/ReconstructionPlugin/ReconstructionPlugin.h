@@ -44,6 +44,8 @@ private:
     
     QAction *m_toggleCloudAct = nullptr;
     ReconstructionRibbonUI* m_ribbonUI = nullptr;
+    QString m_agentImageFolder;
+    bool m_skipImageLoadForAgentRun = false;
 };
 
 #endif // RECONSTRUCTION_PLUGIN_H

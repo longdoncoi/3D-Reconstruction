@@ -6,12 +6,15 @@
 #include <QPainter>
 #include <QDebug>
 
-FileUtilities::AttachmentResult FileUtilities::processAttachment(const QString &filePath, bool isImage, const QString &projectRoot) {
+FileUtilities::AttachmentResult FileUtilities::processAttachment(const QString &filePath,
+                                                                 bool isImage,
+                                                                 const QString &uploadRoot,
+                                                                 const QString &thumbnailRoot) {
     AttachmentResult result;
     result.success = false;
 
-    QString uploadDir = projectRoot + "/Upload/" + (isImage ? "Images" : "Files");
-    QString thumbDir = projectRoot + "/Thumbnails/" + (isImage ? "Images" : "Files");
+    QString uploadDir = QDir::cleanPath(uploadRoot + "/" + (isImage ? "Images" : "Files"));
+    QString thumbDir = QDir::cleanPath(thumbnailRoot + "/" + (isImage ? "Images" : "Files"));
     
     QDir().mkpath(uploadDir);
     QDir().mkpath(thumbDir);

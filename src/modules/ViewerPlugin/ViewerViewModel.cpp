@@ -68,7 +68,7 @@ void ViewerViewModel::load3DModel(const QString& filePath) {
     m_ctx->scene()->resetToSingleRenderer();
 
     emit progressUpdated(75);
-    // Use the scene's OBJ+MTL loader which owns the VTK pipeline
+    // The scene loader selects the reader from the file extension.
     QString mtlPath = fi.path() + "/" + fi.completeBaseName() + ".mtl";
     m_ctx->scene()->loadOBJwithMTL(filePath, mtlPath);
 

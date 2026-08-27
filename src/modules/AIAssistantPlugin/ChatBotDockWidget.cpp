@@ -159,9 +159,27 @@ QWidget* ChatBotDockWidget::createInputRow(QWidget* parent) {
     m_btnSendChat->setObjectName("primary");
     m_btnSendChat->setFixedSize(40, 40);
 
+    m_btnToggleAgentMode = new QPushButton("🤖", inputRow);
+    m_btnToggleAgentMode->setObjectName("modernControlBtn");
+    m_btnToggleAgentMode->setFixedSize(40, 40);
+    m_btnToggleAgentMode->setCheckable(true);
+    m_btnToggleAgentMode->setChecked(true);
+    m_btnToggleAgentMode->setToolTip(m_ctx->translate("ai.agent_mode"));
+
     il->addWidget(m_btnAttach);
+    il->addWidget(m_btnToggleAgentMode);
+    // Compatibility object only: Chat and Agent are now one unified mode.
+    m_btnToggleAgentMode->hide();
     il->addWidget(m_chatInput);
     il->addWidget(m_btnSendChat);
     
     return inputRow;
+}
+
+void ChatBotDockWidget::setAgentModeActive(bool active) {
+    if (!m_chatInput || !m_btnToggleAgentMode) return;
+    m_chatInput->setPlaceholderText(active ? m_ctx->translate("ai.agent_input_hint")
+                                           : m_ctx->translate("ai.input_hint"));
+    m_btnToggleAgentMode->setToolTip(active ? m_ctx->translate("ai.agent_active_tooltip")
+                                            : m_ctx->translate("ai.agent_mode"));
 }

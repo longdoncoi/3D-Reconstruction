@@ -23,6 +23,33 @@ bool ReconstructionService::loadCameraParams(const QString& filePath) {
     return m_pipeline->loadCameraParams(filePath);
 }
 
+void ReconstructionService::configure(int densityLevel, int maxFeatures, bool autoClean) {
+    if (m_running) return;
+    std::unique_lock lock(m_mutex);
+    
+    ReconstructionConfig cfg = m_pipeline->config();
+    cfg.sift.nfeatures = maxFeatures;
+    
+    // Map density Level (0: Thấp, 1: TB, 2: Cao, 3: Rất cao) to leafSize
+    switch (densityLevel) {
+        case 0: cfg.filter.voxelLeafSizeTrack = 0.005f; break; // Thấp
+        case 1: cfg.filter.voxelLeafSizeTrack = 0.001f; break; // TB
+        case 2: cfg.filter.voxelLeafSizeTrack = 0.0005f; break;// Cao
+        case 3: cfg.filter.voxelLeafSizeTrack = 0.0001f; break;// Rất cao
+        default: cfg.filter.voxelLeafSizeTrack = 0.001f; break;
+    }
+    
+    if (!autoClean) {
+        cfg.filter.sorMeanKTrack = 0; // Disable SOR
+        cfg.filter.rorMinNeighborsTrack = 0; // Disable ROR
+    } else {
+        cfg.filter.sorMeanKTrack = 15;
+        cfg.filter.rorMinNeighborsTrack = 2;
+    }
+    
+    m_pipeline->setConfig(cfg);
+}
+
 bool ReconstructionService::reconstruct() {
     if (m_running.exchange(true)) return false; // Already running
     

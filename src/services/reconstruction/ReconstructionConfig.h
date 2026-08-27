@@ -15,27 +15,35 @@ struct CameraParams {
 struct SiftConfig {
     int nfeatures = 20000;
     int nOctaveLayers = 3;
-    double contrastThreshold = 0.01;
-    double edgeThreshold = 10.0;
+    double contrastThreshold = 0.005;
+    double edgeThreshold = 12.0;
     double sigma = 1.6;
 };
 
 struct MatchingConfig {
-    float ratioThreshold = 0.8f;
+    float ratioThreshold = 0.78f;
     bool crossCheck = true;
 };
 
 struct FilterConfig {
     // Statistical Outlier Removal
     int sorMeanK = 50;
-    float sorStdDevMul = 0.8f; // More aggressive
+    float sorStdDevMul = 1.4f;
 
     // Radius Outlier Removal
-    float rorRadius = 0.005f; // Much smaller, proportional to voxel size
-    int rorMinNeighbors = 6;  // More neighbors required
+    float rorRadius = 0.006f;
+    int rorMinNeighbors = 2;
 
     // Voxel Grid
-    float voxelLeafSize = 0.0005f;
+    float voxelLeafSize = 0.00025f;
+
+    // ★ MỚI — Profile "track-based / ground-truth" — cloud đã dedup + validate đa-view,
+    // không cần lọc mật độ gắt vì mỗi điểm đã qua kiểm tra reprojection + parallax angle
+    int   sorMeanKTrack        = 15;
+    float sorStdDevMulTrack    = 2.5f;
+    float rorRadiusTrack       = 0.015f;
+    int   rorMinNeighborsTrack = 2;
+    float voxelLeafSizeTrack   = 0.0002f;
 };
 
 struct ReconstructionConfig {
@@ -44,9 +52,11 @@ struct ReconstructionConfig {
     FilterConfig filter;
     
     // Global limits
-    double reprojectionErrorMax = 1.2;
+    double reprojectionErrorMax = 1.5;
     int minMatches = 20;
     int searchWindow = 15;
+    int minTrackObservations = 2;
+    double pairFundamentalRansacThreshold = 1.5;
 };
 
 #endif // RECONSTRUCTION_CONFIG_H

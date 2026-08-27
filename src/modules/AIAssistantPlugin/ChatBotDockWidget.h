@@ -37,6 +37,8 @@ public:
     QLabel* sessLabel() const { return m_sessLabel; }
     QAction* actAttachImage() const { return m_actAttachImage; }
     QAction* actAttachFile() const { return m_actAttachFile; }
+    QPushButton* btnToggleAgentMode() const { return m_btnToggleAgentMode; }
+    void setAgentModeActive(bool active);
 
 private:
     QWidget* createTopBar(QWidget* parent);
@@ -63,6 +65,7 @@ private:
     QLabel*        m_sessLabel = nullptr;
     QAction*       m_actAttachImage = nullptr;
     QAction*       m_actAttachFile = nullptr;
+    QPushButton*   m_btnToggleAgentMode = nullptr;
 };
 
 #endif // CHAT_BOT_DOCK_WIDGET_H

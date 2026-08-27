@@ -1,5 +1,5 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# Python CI — Lint & Validate AITraining
+# Python CI — Lint & Validate AIAssistant
 # Lightweight (~30s), only triggers on Python changes.
 # ──────────────────────────────────────────────────────────────────────────────
 name: Python CI
@@ -7,15 +7,17 @@ name: Python CI
 on:
   push:
     branches: [main]
-    paths: ["AITraining/**"]
+    paths: ["AIAssistant/**"]
   pull_request:
     branches: [main]
-    paths: ["AITraining/**"]
+    paths: ["AIAssistant/**"]
   workflow_dispatch:
 
 concurrency:
   group: python-ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Keep a running validation job: canceling a 30-second job buys little and
+  # makes a failed commit harder to diagnose.
+  cancel-in-progress: false
 
 jobs:
   lint:
@@ -31,7 +33,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: AITraining/requirements.txt
+          cache-dependency-path: AIAssistant/requirements.txt
 
       - name: Install dependencies
         run: |
@@ -39,7 +41,9 @@ jobs:
           pip install ruff
 
       - name: Ruff lint
-        run: ruff check AITraining/ --output-format=github
+        working-directory: AIAssistant
+        run: ruff check . --output-format=github
 
       - name: Syntax check
-        run: python -m py_compile AITraining/TrainModel.py && python -m py_compile AITraining/StartChatbotServer.py
+        working-directory: AIAssistant
+        run: python -m compileall -q StartChatbotServer.py modules evals

@@ -1,6 +1,8 @@
 target_sources(3D-Reconstruction PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/scene/SceneService.h
     ${CMAKE_CURRENT_SOURCE_DIR}/scene/SceneService.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/scene/CrosshairGeometry.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/scene/CrosshairGeometry.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/scene/CrosshairManager.h
     ${CMAKE_CURRENT_SOURCE_DIR}/scene/CrosshairManager.cpp
     
@@ -21,6 +23,8 @@ target_sources(3D-Reconstruction PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/ReconstructionPipeline.h
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/ReconstructionPipeline.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/ReconstructionConfig.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/CameraParamsParser.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/CameraParamsParser.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/ReconstructThread.h
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/ReconstructThread.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/ReconstructionService.h
@@ -35,14 +39,25 @@ target_sources(3D-Reconstruction PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/Triangulator.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/PointCloudFilter.h
     ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/PointCloudFilter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/FeatureTrack.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/MultiViewTriangulator.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/reconstruction/MultiViewTriangulator.cpp
     
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIProcessor.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIProcessor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIYoloPostProcessor.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIYoloPostProcessor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIAssistant.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIAssistant.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai/ChatSessionStore.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai/ChatSessionStore.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIService.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIService.cpp
     
     ${CMAKE_CURRENT_SOURCE_DIR}/mail/MailService.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mail/MailService.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/mail/MailMimeParser.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/mail/MailMimeParser.cpp
+
+    
 )

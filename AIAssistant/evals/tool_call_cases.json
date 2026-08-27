@@ -1,0 +1,7 @@
+[
+  {"name":"canonical action","response":"{\"kind\":\"tool\",\"tool\":\"application_action\",\"params\":{\"action\":\"mail.open\"}}","tool":"application_action","action":"mail.open"},
+  {"name":"alias is canonicalised","response":"{\"kind\":\"tool\",\"tool\":\"application_action\",\"params\":{\"action\":\"mail.inbox\"}}","tool":"application_action","action":"mail.open"},
+  {"name":"language parameters","response":"{\"kind\":\"tool\",\"tool\":\"application_action\",\"params\":{\"action\":\"language.change\",\"language\":\"vi\"}}","tool":"application_action","action":"language.change"},
+  {"name":"read file","response":"{\"kind\":\"tool\",\"tool\":\"read_file\",\"params\":{\"path\":\"README.md\"}}","tool":"read_file"},
+  {"name":"final answer","response":"{\"kind\":\"final\",\"content\":\"Done\"}","tool":null}
+]

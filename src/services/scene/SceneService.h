@@ -29,6 +29,7 @@ public:
     
     bool isPointCloudVisible() const override { return m_pointCloudVisible; }
     void setPointCloudVisible(bool visible) override { m_pointCloudVisible = visible; }
+    void applyViewSettings(const QString& username) override;
 
 private:
     void setupDicomRenderers(vtkSmartPointer<vtkImageData> volume);
@@ -44,7 +45,11 @@ private:
     vtkSmartPointer<vtkActor> m_texturePlaneActor;
     
     bool m_pointCloudVisible = false;
-    
+
+    // View settings actors
+    vtkSmartPointer<vtkActor> m_gridActor;
+    class vtkOrientationMarkerWidget* m_axesWidget = nullptr;
+
     CrosshairManager* m_crosshair = nullptr;
     vtkSmartPointer<CrosshairInteractorStyle> m_crosshairStyle;
 };

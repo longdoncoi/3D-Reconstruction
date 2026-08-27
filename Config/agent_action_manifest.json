@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "description": "Canonical desktop-agent action contract shared by Python and Qt.",
+  "workflows": [
+    {
+      "id": "reconstruction.load_and_start",
+      "phrases": ["load images and reconstruct 3d", "tai anh chup va tai tao 3d", "tai anh va tai tao 3d"],
+      "actions": ["reconstruction.load_images", "reconstruction.start_reconstruction"]
+    }
+  ],
+  "actions": [
+    {"id":"viewer.load_2d","aliases":["reconstruction.load_2d_image","viewer.load_2d_image"],"phrases":["load 2d","tai 2d","hinh anh 2d","anh 2d"],"parameters":{}},
+    {"id":"viewer.load_3d","aliases":["reconstruction.load_3d_model","viewer.load_3d_model","reconstruction.load_model"],"phrases":["load 3d","load 3d model","load model 3d","tai 3d","tai mo hinh 3d","mo hinh 3d","hinh anh 3d","anh 3d","mo file 3d"],"parameters":{}},
+    {"id":"viewer.load_dicom","aliases":["viewer.load_dicom_series","reconstruction.load_dicom_series","reconstruction.load_dicom_images"],"phrases":["load dicom","dicom series","tai dicom","anh dicom"],"parameters":{}},
+    {"id":"reconstruction.load_images","aliases":[],"phrases":["load images","tai anh tai tao","anh tai tao"],"parameters":{"workflow_id":{"type":"string","required":false}}},
+    {"id":"reconstruction.start_reconstruction","aliases":["reconstruction.run","reconstruction.start"],"phrases":["start reconstruction","run reconstruction","bat dau tai tao"],"parameters":{"workflow_id":{"type":"string","required":false}}},
+    {"id":"reconstruction.view_3d_model","aliases":["reconstruction.toggle_3d_model"],"phrases":["view 3d model","show point cloud","xem 3d model","xem mo hinh tai tao"],"parameters":{}},
+    {"id":"reconstruction.close_3d_model","aliases":[],"phrases":["close view 3d model","close 3d model","dong 3d model"],"parameters":{}},
+    {"id":"ai.run_detection","aliases":["ai.detection"],"phrases":["run detection","detection","nhan dien"],"parameters":{}},
+    {"id":"ai.run_segmentation","aliases":["ai.segmentation"],"phrases":["run segmentation","segmentation","phan doan"],"parameters":{}},
+    {"id":"ai.video_tracking","aliases":["ai.tracking"],"phrases":["video tracking","theo doi video"],"parameters":{}},
+    {"id":"ai.hide_results","aliases":[],"phrases":["hide results","an ket qua"],"parameters":{}},
+    {"id":"ai.training_model","aliases":[],"phrases":["training model","train model","huan luyen model"],"parameters":{}},
+    {"id":"ai.view_training_charts","aliases":[],"phrases":["view training charts","training charts","bieu do training"],"parameters":{}},
+    {"id":"assistant.open","aliases":[],"phrases":["open ai assistant","mo ai assistant"],"parameters":{}},
+    {"id":"assistant.close","aliases":[],"phrases":["close ai assistant","dong ai assistant"],"parameters":{}},
+    {"id":"assistant.reload_model","aliases":[],"phrases":["tai lai model","reload model"],"parameters":{}},
+    {"id":"assistant.reload_rag","aliases":[],"phrases":["tai lai rag","reload rag"],"parameters":{}},
+    {"id":"assistant.reload_agent","aliases":[],"phrases":["tai lai agent","reload agent"],"parameters":{}},
+    {"id":"assistant.reload_server","aliases":[],"phrases":["tai lai server","reload server"],"parameters":{}},
+    {"id":"mail.open","aliases":["mail.inbox","mail.open_inbox"],"phrases":["open mail","open email","mo mail","mo email","open inbox","mo inbox","hop thu","mo hop thu"],"parameters":{}},
+    {"id":"mail.close","aliases":[],"phrases":["close mail","dong mail"],"parameters":{}},
+    {"id":"mail.settings","aliases":[],"phrases":["mail settings","cai dat mail"],"parameters":{}},
+    {"id":"help.about","aliases":[],"phrases":["about","gioi thieu"],"parameters":{}},
+    {"id":"language.change","aliases":["language.set","language.changed"],"phrases":["doi sang english","change to english","switch to english","doi sang tieng viet","change to vietnamese","switch to vietnamese"],"parameters":{"language":{"type":"string","enum":["vi","en"],"required":true}}},
+    {"id":"admin.settings","aliases":[],"phrases":["admin settings","settings","cai dat"],"parameters":{}},
+    {"id":"admin.change_avatar","aliases":[],"phrases":["change avatar","doi anh dai dien","doi avatar"],"parameters":{}},
+    {"id":"admin.change_password","aliases":[],"phrases":["change password","doi mat khau"],"parameters":{}},
+    {"id":"admin.logout","aliases":[],"phrases":["logout","dang xuat"],"parameters":{}},
+    {"id":"admin.login","aliases":[],"phrases":["login","dang nhap"],"parameters":{"username":{"type":"string","required":false},"password":{"type":"string","required":false}}}
+  ]
+}

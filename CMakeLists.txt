@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.19)
 
+if(POLICY CMP0144)
+    cmake_policy(SET CMP0144 NEW)
+endif()
+
 # ─── vcpkg toolchain selection ─────────────────────────────────────────────
 # Two distinct scenarios share this file:
 #
@@ -16,11 +20,35 @@ cmake_minimum_required(VERSION 3.19)
 #    "shared tree" settings below may apply in this case, or CI loses its
 #    cache directory and silently stops installing vtk/pcl/opencv4/openssl.
 #
-# A caller-supplied CMAKE_TOOLCHAIN_FILE (i.e. anything other than the stale
-# Qt Creator one) is the signal that we're in the CI/external case.
-if(DEFINED CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_TOOLCHAIN_FILE MATCHES "vcpkg-dependencies")
+# A caller-supplied toolchain other than the shared local toolchain (or Qt
+# Creator's stale project-local helper) signals the CI/external case. The
+# explicit local comparison is important on the second configure, when the
+# local toolchain is already present in CMakeCache.txt.
+if(NOT DEFINED PROJECT_VCPKG_ROOT)
+    if(DEFINED ENV{PROJECT_VCPKG_ROOT})
+        file(TO_CMAKE_PATH "$ENV{PROJECT_VCPKG_ROOT}" _project_vcpkg_root_default)
+    elseif(DEFINED ENV{VCPKG_ROOT})
+        file(TO_CMAKE_PATH "$ENV{VCPKG_ROOT}" _project_vcpkg_root_default)
+    elseif(EXISTS "F:/PROJECTS/QT/vcpkg")
+        set(_project_vcpkg_root_default "F:/PROJECTS/QT/vcpkg")
+    else()
+        set(_project_vcpkg_root_default "")
+    endif()
+    set(PROJECT_VCPKG_ROOT "${_project_vcpkg_root_default}" CACHE PATH
+        "Shared vcpkg root used by this project")
+endif()
+set(_project_vcpkg_toolchain
+    "${PROJECT_VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
+file(TO_CMAKE_PATH "${CMAKE_TOOLCHAIN_FILE}" _supplied_vcpkg_toolchain)
+file(TO_CMAKE_PATH "${_project_vcpkg_toolchain}" _local_vcpkg_toolchain)
+if(DEFINED CMAKE_TOOLCHAIN_FILE
+   AND NOT _supplied_vcpkg_toolchain MATCHES "vcpkg-dependencies"
+   AND NOT _supplied_vcpkg_toolchain STREQUAL _local_vcpkg_toolchain)
     set(_external_vcpkg_toolchain TRUE)
     message(STATUS "Using externally supplied vcpkg toolchain: ${CMAKE_TOOLCHAIN_FILE}")
+elseif(DEFINED ENV{CI} OR DEFINED ENV{GITHUB_ACTIONS})
+    set(_external_vcpkg_toolchain TRUE)
+    message(STATUS "CI environment detected. Treating toolchain as external.")
 else()
     set(_external_vcpkg_toolchain FALSE)
 endif()
@@ -29,11 +57,6 @@ if(NOT _external_vcpkg_toolchain)
     # Qt Creator's package-manager helper is disabled in
     # QtCreatorPackageManager.cmake so it cannot replace this toolchain with a
     # project-local copy and trigger a second manifest installation.
-    set(PROJECT_VCPKG_ROOT "F:/PROJECTS/QT/vcpkg" CACHE PATH
-        "Shared vcpkg root used by this project")
-    set(_project_vcpkg_toolchain
-        "${PROJECT_VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
-
     if(NOT EXISTS "${_project_vcpkg_toolchain}")
         message(FATAL_ERROR
             "Shared vcpkg toolchain was not found: ${_project_vcpkg_toolchain}")
@@ -48,6 +71,15 @@ if(NOT _external_vcpkg_toolchain)
     # install` during every CMake configure.
     set(VCPKG_MANIFEST_INSTALL OFF CACHE BOOL
         "Install vcpkg manifest dependencies during CMake configure" FORCE)
+
+    # AppLocal starts a PowerShell dependency scan after every executable and
+    # DLL. With the application, plugins, and tests this dominated even no-op
+    # local builds. Runtime deployment remains opt-in for dependency refreshes.
+    option(DEV_AUTO_DEPLOY_VCPKG_RUNTIME
+        "Run vcpkg AppLocal after every local binary target" OFF)
+    set(VCPKG_APPLOCAL_DEPS ${DEV_AUTO_DEPLOY_VCPKG_RUNTIME} CACHE BOOL
+        "Automatically copy vcpkg runtime dependencies after each target"
+        FORCE)
 endif()
 
 # Needed by both scenarios (plugin deployment further below also relies on
@@ -71,13 +103,17 @@ endif()
 project(3D-Reconstruction LANGUAGES CXX)
 
 # ─── Build Performance Options ────────────────────────────────────────────────
-option(CMAKE_UNITY_BUILD "Enable Unity (Jumbo) build for faster compilation" OFF)
+option(ENABLE_UNITY_BUILD "Enable Unity (Jumbo) build for faster compilation" ON)
+option(BUILD_TESTING "Build unit-test executables as part of the default build" OFF)
 option(CLEAN_STALE_DLLS "Remove stale DLLs from Release directory at configure time" OFF)
-if(CMAKE_UNITY_BUILD)
-    # Large unity batches exhaust cl.exe's heap with the Qt/PCL/VTK/OpenCV
-    # headers used here.  A batch of one is still opt-in but remains safe.
-    set(CMAKE_UNITY_BUILD_BATCH_SIZE 1)
+set(CMAKE_UNITY_BUILD ${ENABLE_UNITY_BUILD})
+if(ENABLE_UNITY_BUILD)
+    # PCH keeps the heavy Qt/PCL/VTK/OpenCV headers out of each source parse.
+    # Eight retains enough independent compiler work for /MP without creating
+    # translation units so large that MSVC loses parallelism.
+    set(CMAKE_UNITY_BUILD_BATCH_SIZE 8)
 endif()
+set(CMAKE_AUTOGEN_PARALLEL 8)
 
 # Fix future timestamps that cause constant rebuilds in MSBuild.  Restrict the
 # scan to project sources: walking build/, .git/, or vcpkg/ is slow and those
@@ -137,9 +173,11 @@ qt_standard_project_setup()
 
 # ─── 2. VTK ───────────────────────────────────────────────────────────────────
 set(VTK_MODULE_ENABLE_VTK_RenderingVulkan NO)
-# Only set a hardcoded VTK_DIR for local builds; vcpkg handles discovery in CI.
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-    set(VTK_DIR "C:/Program Files/VTK/lib/cmake/vtk-9.6" CACHE PATH "Path to VTK")
+# Prefer caller-provided package locations. Local defaults are applied only
+# when the conventional install path exists, so fresh machines can rely on
+# CMAKE_PREFIX_PATH, vcpkg, or explicit -D*_DIR values without editing this file.
+if(NOT VTK_DIR AND EXISTS "C:/Program Files/VTK/lib/cmake/vtk-9.6")
+    set(VTK_DIR "C:/Program Files/VTK/lib/cmake/vtk-9.6" CACHE PATH "Path to VTK" FORCE)
 endif()
 find_package(VTK REQUIRED COMPONENTS
     CommonCore
@@ -148,6 +186,7 @@ find_package(VTK REQUIRED COMPONENTS
     ViewsQt
     IOGeometry
     IOImport
+    IOPLY
     FiltersCore
     IOImage
     IOXML
@@ -159,41 +198,55 @@ find_package(VTK REQUIRED COMPONENTS
 )
 
 # ─── 5. Paths & Outputs ────────────────────────────────────────────────────────
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/Release)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/plugins/Release)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/plugins)
 
 # ─── 5b. Build Optimizations ───────────────────────────────────────────────────
-# Enable Unity Build (Jumbo Build) to drastically reduce compilation time
-# by merging multiple source files into a single translation unit.
-set(CMAKE_UNITY_BUILD ON)
-# Reduce the batch size if memory issues occur (default is 8)
-# set(CMAKE_UNITY_BUILD_BATCH_SIZE 8)
-
 # ─── 3. OpenCV ────────────────────────────────────────────────────────────────
-set(OpenCV_DIR "C:/opencv/build")
+if(NOT OpenCV_DIR AND EXISTS "C:/opencv/build")
+    set(OpenCV_DIR "C:/opencv/build" CACHE PATH "Path to OpenCV CMake files" FORCE)
+endif()
 find_package(OpenCV REQUIRED)
 
 # ─── 4. PCL ───────────────────────────────────────────────────────────────────
 # Suppress MSVC-unsupported developer warning emitted by PCL's FindPCL.cmake
 set(PCL_DISABLE_MSVC_DEPRECATION_WARNINGS ON)
-set(PCL_DIR "C:/Program Files/PCL 1.15.1/cmake" CACHE PATH "Path to PCL CMake files")
+if(NOT PCL_DIR AND EXISTS "C:/Program Files/PCL 1.15.1/cmake")
+    set(PCL_DIR "C:/Program Files/PCL 1.15.1/cmake" CACHE PATH "Path to PCL CMake files" FORCE)
+endif()
 find_package(PCL REQUIRED COMPONENTS common filters io)
+
+# ─── 4b. Eigen (dùng cho MultiViewTriangulator) ──────────────────────────────
+if(NOT Eigen3_DIR AND EXISTS "C:/Program Files/PCL 1.15.1/3rdParty/Eigen3/share/eigen3/cmake")
+    set(Eigen3_DIR "C:/Program Files/PCL 1.15.1/3rdParty/Eigen3/share/eigen3/cmake" CACHE PATH "Path to Eigen3 CMake files" FORCE)
+endif()
+find_package(Eigen3 CONFIG REQUIRED)
 
 # ─── 5. ONNX Runtime ─────────────────────────────────────────────────────────
 include(FetchContent)
 set(ONNXRUNTIME_VERSION "1.20.1")
 set(ONNXRUNTIME_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-win-x64-gpu-${ONNXRUNTIME_VERSION}.zip")
 # set(ONNXRUNTIME_URL "F:/onnxruntime-win-x64-gpu-1.20.1.zip")
-FetchContent_Declare(onnxruntime URL ${ONNXRUNTIME_URL})
-FetchContent_GetProperties(onnxruntime)
-if(NOT onnxruntime_POPULATED)
-  FetchContent_Populate(onnxruntime)
-endif()
+FetchContent_Declare(
+    onnxruntime
+    URL ${ONNXRUNTIME_URL}
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(onnxruntime)
 
 # ─── 5b. TensorRT ────────────────────────────────────────────────────────────
 # onnxruntime_providers_tensorrt.dll loads TRT DLLs dynamically at runtime.
 # They MUST be present in the executable directory or on PATH.
-set(TENSORRT_ROOT "C:/TensorRT-10.16.1.11" CACHE PATH "Path to TensorRT installation")
+if(NOT DEFINED TENSORRT_ROOT)
+    if(DEFINED ENV{TENSORRT_ROOT})
+        file(TO_CMAKE_PATH "$ENV{TENSORRT_ROOT}" _tensorrt_root_default)
+    elseif(EXISTS "C:/TensorRT-10.16.1.11")
+        set(_tensorrt_root_default "C:/TensorRT-10.16.1.11")
+    else()
+        set(_tensorrt_root_default "")
+    endif()
+    set(TENSORRT_ROOT "${_tensorrt_root_default}" CACHE PATH "Path to TensorRT installation")
+endif()
 set(TENSORRT_BIN_DIR "${TENSORRT_ROOT}/bin")
 
 # ─── 6. AUTOUIC search paths ─────────────────────────────────────────────────
@@ -237,6 +290,7 @@ target_link_libraries(SharedPCH PUBLIC
     ${VTK_LIBRARIES}
     ${OpenCV_LIBS}
     ${PCL_LIBRARIES}
+    Eigen3::Eigen
 )
 
 # ─── 7c. Executable ────────────────────────────────────────────────────────────
@@ -301,6 +355,7 @@ target_link_libraries(3D-Reconstruction
         ${VTK_LIBRARIES}
         ${OpenCV_LIBS}
         ${PCL_LIBRARIES}
+        Eigen3::Eigen
         ${onnxruntime_SOURCE_DIR}/lib/onnxruntime.lib
 )
 
@@ -320,12 +375,27 @@ add_custom_command(TARGET 3D-Reconstruction POST_BUILD
     COMMENT "Copying ONNX Runtime DLLs"
 )
 
-# The remaining DLL copy commands reference local paths that don't exist on
-# CI runners. vcpkg AppLocal deploys their vcpkg dependencies.
-if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+# The remaining DLL copy commands reference optional local SDK installs that
+# don't exist on CI runners. vcpkg AppLocal deploys vcpkg dependencies.
+option(ENABLE_LOCAL_RUNTIME_DLL_COPY
+    "Copy runtime DLLs from locally installed TensorRT/PCL/OpenNI folders" ON)
+if(ENABLE_LOCAL_RUNTIME_DLL_COPY AND NOT _external_vcpkg_toolchain)
+    if(NOT DEFINED PCL_VTK_RUNTIME_BIN_DIR AND EXISTS "C:/Program Files/PCL 1.15.1/3rdParty/VTK/bin")
+        set(PCL_VTK_RUNTIME_BIN_DIR "C:/Program Files/PCL 1.15.1/3rdParty/VTK/bin"
+            CACHE PATH "Directory containing VTK runtime DLLs bundled with PCL")
+    endif()
+    if(NOT DEFINED PCL_RUNTIME_BIN_DIR AND EXISTS "C:/Program Files/PCL 1.15.1/bin")
+        set(PCL_RUNTIME_BIN_DIR "C:/Program Files/PCL 1.15.1/bin"
+            CACHE PATH "Directory containing PCL runtime DLLs")
+    endif()
+    if(NOT DEFINED OPENNI2_TOOLS_DIR AND EXISTS "C:/Program Files/OpenNI2/Tools")
+        set(OPENNI2_TOOLS_DIR "C:/Program Files/OpenNI2/Tools"
+            CACHE PATH "Directory containing OpenNI2 runtime DLLs")
+    endif()
     # Copy TensorRT DLLs — required by onnxruntime_providers_tensorrt.dll at runtime.
     # Without these, the TRT provider crashes with access violation (0xc0000005).
     # Only the core runtime DLLs are needed; builder_resource DLLs are loaded lazily.
+    if(EXISTS "${TENSORRT_BIN_DIR}")
     add_custom_command(TARGET 3D-Reconstruction POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${TENSORRT_BIN_DIR}/nvinfer_10.dll"
@@ -353,12 +423,16 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
         COMMENT "Copying TensorRT builder-resource DLLs to output directory"
     )
 
+    endif()
+
     # Copy missing PCL, VTK 9.4, and OpenNI2 DLLs required at runtime
     # Consolidated into a single PowerShell invocation to avoid repeated process startup overhead
-    add_custom_command(TARGET 3D-Reconstruction POST_BUILD
-        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command "$destDir = '$<TARGET_FILE_DIR:3D-Reconstruction>'; $sources = @(@{ Path='C:/Program Files/PCL 1.15.1/3rdParty/VTK/bin'; Filter='vtk*.dll'; Where=$null }, @{ Path='C:/Program Files/PCL 1.15.1/bin'; Filter=$null; Where={ $_.Name -like 'pcl*.dll' -or $_.Name -like 'boost*.dll' -or $_.Name -like 'flann*.dll' -or $_.Name -like 'qhull*.dll' } }, @{ Path='C:/Program Files/OpenNI2/Tools'; Filter='*.dll'; Where=$null }); foreach ($s in $sources) { if (Test-Path $s.Path) { $items = if ($s.Filter) { Get-ChildItem -Path $s.Path -Filter $s.Filter } else { Get-ChildItem -Path $s.Path }; if ($s.Where) { $items = $items | Where-Object $s.Where }; $items | ForEach-Object { $target = Join-Path $destDir $_.Name; if (-not (Test-Path $target) -or (Get-Item $target).Length -ne $_.Length) { Copy-Item $_.FullName -Destination $destDir -Force } } } }"
-        COMMENT "Copying PCL, VTK, and OpenNI dependencies (single PS invocation)"
-    )
+    if(EXISTS "${PCL_VTK_RUNTIME_BIN_DIR}" OR EXISTS "${PCL_RUNTIME_BIN_DIR}" OR EXISTS "${OPENNI2_TOOLS_DIR}")
+        add_custom_command(TARGET 3D-Reconstruction POST_BUILD
+            COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command "$destDir = '$<TARGET_FILE_DIR:3D-Reconstruction>'; $sources = @(@{ Path='${PCL_VTK_RUNTIME_BIN_DIR}'; Filter='vtk*.dll'; Where=$null }, @{ Path='${PCL_RUNTIME_BIN_DIR}'; Filter=$null; Where={ $_.Name -like 'pcl*.dll' -or $_.Name -like 'boost*.dll' -or $_.Name -like 'flann*.dll' -or $_.Name -like 'qhull*.dll' } }, @{ Path='${OPENNI2_TOOLS_DIR}'; Filter='*.dll'; Where=$null }); foreach ($s in $sources) { if ($s.Path -and (Test-Path $s.Path)) { $items = if ($s.Filter) { Get-ChildItem -Path $s.Path -Filter $s.Filter } else { Get-ChildItem -Path $s.Path }; if ($s.Where) { $items = $items | Where-Object $s.Where }; $items | ForEach-Object { $target = Join-Path $destDir $_.Name; if (-not (Test-Path $target) -or (Get-Item $target).Length -ne $_.Length) { Copy-Item $_.FullName -Destination $destDir -Force } } } }"
+            COMMENT "Copying PCL, VTK, and OpenNI dependencies (single PS invocation)"
+        )
+    endif()
 else()
     message(STATUS "⏭️ Skipping local DLL copy commands (CI/vcpkg toolchain build detected)")
 endif()
@@ -459,5 +533,7 @@ endif()
 add_subdirectory(src/modules)
 
 # ─── 13. Testing ─────────────────────────────────────────────────────────────
-enable_testing()
-add_subdirectory(tests)
+if(BUILD_TESTING)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

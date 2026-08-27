@@ -8,6 +8,9 @@ namespace AppConstants {
 
     // ── Reconstruction Pipeline ──────────────────────────────────────────────
     namespace Reconstruction {
+        constexpr int    MIN_POINTS_FOR_PNP        = 15;   // số correspondence 3D-2D tối thiểu để resection
+        constexpr double PNP_REPROJECTION_ERROR_PX = 4.0;  // ngưỡng RANSAC cho solvePnPRansac
+
         constexpr int    SIFT_MAX_FEATURES              = 20000;
         constexpr int    SIFT_OCTAVE_LAYERS             = 3;
         constexpr double SIFT_CONTRAST_THRESHOLD        = 0.01;
@@ -38,6 +41,7 @@ namespace AppConstants {
         // AI model selector options
         inline QStringList modelNames() {
             return {
+                QStringLiteral("Qwen3-8B (Q4_K_M) — Text / Agent / Coder"),
                 QStringLiteral("Qwen2.5-7B (Q4_K_M) — Text"),
                 QStringLiteral("Qwen2.5-coder-7B (Q4_K_M) — Coder"),
                 QStringLiteral("Qwen2.5-VL-7B (Q4_K_M) — Vision 👁️")
@@ -59,8 +63,13 @@ namespace AppConstants {
             return QStringLiteral("http://127.0.0.1:%1/v1/chat/completions").arg(SERVER_PORT);
         }
 
+        inline QString adminEndpoint(const QString &path) {
+            return QStringLiteral("http://127.0.0.1:%1/admin/%2").arg(SERVER_PORT).arg(path);
+        }
+
         inline QString chatbotScript() {
-            return QStringLiteral("StartChatbotServer.py");
+            return QStringLiteral("server_manager.py");
+            // return QStringLiteral("StartChatbotServer.py");
         }
     }
 
@@ -71,7 +80,9 @@ namespace AppConstants {
         inline QString trainScript()            { return QStringLiteral("TrainModel.py"); }
 
         constexpr int    TENSORBOARD_PORT           = 6006;
-        constexpr int    TENSORBOARD_WAIT_SECONDS   = 12;
+        // Large training-log folders can take noticeably longer than a few
+        // seconds to index before TensorBoard begins listening on its port.
+        constexpr int    TENSORBOARD_WAIT_SECONDS   = 30;
 
         inline QString tensorboardUrl() {
             return QStringLiteral("http://localhost:%1/").arg(TENSORBOARD_PORT);
@@ -114,7 +125,7 @@ namespace AppConstants {
     // ── File Filters ─────────────────────────────────────────────────────────
     namespace FileFilter {
         inline QString images()     { return QStringLiteral("Images (*.png *.jpg *.jpeg *.bmp)"); }
-        inline QString objFiles()   { return QStringLiteral("OBJ Files (*.obj)"); }
+        inline QString objFiles()   { return QStringLiteral("3D Models (*.obj *.stl *.ply *.vtk *.vtp)"); }
         inline QString allFiles()   { return QStringLiteral("All Files (*.*)"); }
     }
 

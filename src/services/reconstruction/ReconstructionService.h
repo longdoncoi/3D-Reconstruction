@@ -22,6 +22,7 @@ public:
     // IReconstructionService
     void setImages(const QStringList& paths) override;
     bool loadCameraParams(const QString& filePath) override;
+    void configure(int densityLevel, int maxFeatures, bool autoClean) override;
     bool reconstruct() override;
     bool isRunning() const override;
     void stopReconstruction() override;

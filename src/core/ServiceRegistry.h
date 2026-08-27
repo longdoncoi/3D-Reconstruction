@@ -2,7 +2,7 @@
 #define SERVICEREGISTRY_H
 
 #include <QHash>
-#include <typeindex>
+#include <QString>
 #include <typeinfo>
 #include <shared_mutex>
 
@@ -36,7 +36,7 @@ public:
     template<typename Interface>
     void registerService(Interface* impl) {
         std::unique_lock lock(m_mutex);
-        m_services[std::type_index(typeid(Interface))] =
+        m_services[QString(typeid(Interface).name())] =
             static_cast<void*>(impl);
     }
 
@@ -48,7 +48,7 @@ public:
     template<typename Interface>
     Interface* get() const {
         std::shared_lock lock(m_mutex);
-        auto it = m_services.find(std::type_index(typeid(Interface)));
+        auto it = m_services.find(QString(typeid(Interface).name()));
         if (it == m_services.end()) return nullptr;
         return static_cast<Interface*>(it.value());
     }
@@ -59,7 +59,7 @@ public:
     template<typename Interface>
     bool has() const {
         std::shared_lock lock(m_mutex);
-        return m_services.contains(std::type_index(typeid(Interface)));
+        return m_services.contains(QString(typeid(Interface).name()));
     }
 
     /**
@@ -68,7 +68,7 @@ public:
     template<typename Interface>
     void unregister() {
         std::unique_lock lock(m_mutex);
-        m_services.remove(std::type_index(typeid(Interface)));
+        m_services.remove(QString(typeid(Interface).name()));
     }
 
     /** @brief Xóa toàn bộ registrations. */
@@ -79,7 +79,7 @@ public:
 
 private:
     mutable std::shared_mutex m_mutex;
-    QHash<std::type_index, void*> m_services;
+    QHash<QString, void*> m_services;
 };
 
 #endif // SERVICEREGISTRY_H

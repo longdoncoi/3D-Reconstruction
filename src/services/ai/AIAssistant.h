@@ -25,8 +25,21 @@ public:
     void sendMessage(const QString &text, const QStringList &attachments = QStringList()) override;
     void sendMessageToSession(const QString &sessionId, const QString &text, const QStringList &attachments = QStringList()) override;
     void retryMessage(const QString &sessionId, int msgIndex) override;
+    void retryAgentTask(const QString &sessionId, int msgIndex) override;
     void editMessage(const QString &sessionId, int msgIndex, const QString &newText) override;
     void switchModel(int index) override;
+    void restartModel() override;
+    void restartRAG() override;
+    void restartAgent() override;
+    void restartServer() override;
+
+    // Agent mode
+    void executeAgentTask(const QString &sessionId, const QString &task,
+                          const QStringList &attachments = QStringList()) override;
+    void approveAgentAction(const QString &sessionId, const QString &actionId) override;
+    void rejectAgentAction(const QString &sessionId, const QString &actionId) override;
+    void reportUiActionResult(const QString &requestId, bool success,
+                              const QVariantMap &result = QVariantMap()) override;
 
     // Session management
     void newChat() override;                              // Create new session (keep old)
@@ -40,7 +53,8 @@ public:
     QList<QJsonObject> getHistory() const override;
     bool isThinking() const override { return m_isThinking; }
     bool isSessionThinking(const QString &sessionId) const override;
-    bool isServerRunning() const override { return aiServerProcess->state() != QProcess::NotRunning; }
+    int sessionThinkingInsertIndex(const QString &sessionId) const override;
+    bool isServerRunning() const override { return m_serverReadyEmitted; }
 
 // Signals are declared in IAIAssistantService
 
@@ -55,6 +69,10 @@ private:
         QString sessionId;
         QJsonObject payload;
         int retryCount = 0;
+        bool isAgent = false;
+        bool isApproval = false;
+        bool isUiActionAck = false;
+        int insertAfterIndex = -1;
     };
 
     QProcess *aiServerProcess;
@@ -63,6 +81,10 @@ private:
     QString m_currentSessionId;
     QMap<QNetworkReply*, QueuedCompletionRequest> m_pendingRequests;
     QList<QueuedCompletionRequest> m_queuedRequests;
+    // Maps requestId → {sessionId, insertAfterIndex} so that the
+    // ui-action ACK response is inserted at the correct position
+    // instead of being appended to the end of the conversation.
+    QMap<QString, QPair<QString, int>> m_pendingUiActionSessions;
     bool m_isThinking = false;
     bool m_serverReadyEmitted = false;
     int m_currentModelIndex = 0;
@@ -73,15 +95,15 @@ private:
     bool hasPendingWork() const;
     bool hasPendingRequestForSession(const QString &sessionId) const;
     QJsonObject buildCompletionPayload(const QList<QJsonObject> &messages) const;
+    QJsonObject buildAgentPayload(const QList<QJsonObject> &messages, const QString &task,
+                                  const QStringList &attachments) const;
     bool isRecoverableConnectionError(QNetworkReply::NetworkError error) const;
-    void appendAssistantMessage(const QString &sessionId, const QString &content);
+    void appendAssistantMessage(const QString &sessionId, const QString &content, int insertAfterIndex = -1);
     void startServerProcess(int modelIndex);
-    void enqueueCompletionRequest(const QString &sessionId, const QJsonObject &payload);
+    void enqueueCompletionRequest(const QString &sessionId, const QJsonObject &payload, int insertAfterIndex = -1);
     void processNextQueuedRequest();
     void saveAllSessions();
     void loadAllSessions();
-    QString getSessionsPath();
-    QString generateSessionId();
 };
 
 #endif // AIASSISTANT_H

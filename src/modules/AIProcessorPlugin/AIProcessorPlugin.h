@@ -19,6 +19,7 @@
 class AITrainDockWidget;
 class AIProcessorRibbonUI;
 class VideoTrackerThread;
+class QTimer;
 
 class AIProcessorPlugin : public QObject, public IPlugin {
     Q_OBJECT
@@ -54,6 +55,8 @@ private:
     IAppContext*   m_ctx         = nullptr;
     IAIService*    m_aiSvc       = nullptr;  ///< Looked up from ServiceRegistry
     CustomProgressDialog *m_progressDialog = nullptr;
+    QProcess *m_tensorboardProcess = nullptr;
+    QTimer *m_tensorboardWaitTimer = nullptr;
 
     // Viewport and renderers;
     
@@ -79,6 +82,7 @@ private:
 
     VideoTrackerThread* m_trackerThread = nullptr;
     bool m_trackingPaused = false;
+    QString m_agentVideoPath;
 };
 
 #endif // AI_PROCESSOR_PLUGIN_H

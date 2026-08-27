@@ -237,17 +237,18 @@ jobs:
           # Copy translations
           if (Test-Path "translations") { Copy-Item "translations" "$dist/" -Recurse -Force }
 
-          # Copy AITraining directory (Python scripts and model weights, exclude Cache to reduce size)
-          if (Test-Path "AITraining") {
-            New-Item -ItemType Directory -Path "$dist/AITraining" -Force | Out-Null
-            Get-ChildItem "AITraining" -Exclude "Cache","__pycache__","logs","runs" | ForEach-Object {
+          # Copy AI Assistant runtime (exclude rebuildable cache/logs) and CV assets.
+          if (Test-Path "AIAssistant") {
+            New-Item -ItemType Directory -Path "$dist/AIAssistant" -Force | Out-Null
+            Get-ChildItem "AIAssistant" -Exclude "Cache","__pycache__","logs","runs" | ForEach-Object {
               if ($_.PSIsContainer) {
-                Copy-Item $_.FullName "$dist/AITraining/$($_.Name)" -Recurse -Force
+                Copy-Item $_.FullName "$dist/AIAssistant/$($_.Name)" -Recurse -Force
               } else {
-                Copy-Item $_.FullName "$dist/AITraining/" -Force
+                Copy-Item $_.FullName "$dist/AIAssistant/" -Force
               }
             }
           }
+          if (Test-Path "AIComputerVision") { Copy-Item "AIComputerVision" "$dist/AIComputerVision" -Recurse -Force }
 
           # Copy Config directory (app configuration files)
           if (Test-Path "Config") { Copy-Item "Config" "$dist/" -Recurse -Force }

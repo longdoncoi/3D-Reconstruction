@@ -1,6 +1,5 @@
 # This file is used to ignore files which are generated
 # ----------------------------------------------------------------------------
-*.gitignore
 *.rag_cache.pkl
 *.onnx
 *.csv
@@ -88,6 +87,12 @@ CMakeLists.txt.user*
 .uic/
 /build*/
 /AITraining/runs/
+/.ruff_cache/
+/.vs/
+/AIAssistant/Cache/
+/AIAssistant/Docs/
+/AIAssistant/logs/
+/AIComputerVision/runs/
 
 # Custom App Ignores
 /Predict/
@@ -95,10 +100,19 @@ CMakeLists.txt.user*
 /Dataset/
 /Dicom/
 /3DModels/
+/Thumbnails/
+/VideoTracking/
 /Doxygen/html/
 /Doxygen/latex/
+/AITraining/Cache/
+/AITraining/logs/
+/AITraining/pending_agent_actions.json
+/AITraining/Docs/
 /AITraining/Models/*.onnx
 /Config/chat_sessions*.json
 /Config/config*.ini
+/Config/Config*.ini
+/Config/Config_User.ini
 /Logs/
 /Upload/
+/3DRecontruction/**/recon_cache*.ply

@@ -15,7 +15,10 @@ public:
         bool success;
     };
 
-    static AttachmentResult processAttachment(const QString &filePath, bool isImage, const QString &projectRoot);
+    static AttachmentResult processAttachment(const QString &filePath,
+                                              bool isImage,
+                                              const QString &uploadRoot,
+                                              const QString &thumbnailRoot);
     static bool deleteAttachment(const QString &filePath);
     static QString getUniqueFileName(const QString &originalName);
 };

@@ -8,6 +8,11 @@
 #include <mutex>
 #include "AppConfig.h"
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
+
 namespace Logger {
 
 static std::mutex s_logMutex;
@@ -21,6 +26,10 @@ QString getLogFilePath() {
 
 void customMessageHandler(QtMsgType type, const QMessageLogContext &context,
                           const QString &msg) {
+  if (type == QtWarningMsg && msg.contains("Unable to open monitor interface")) {
+    return;
+  }
+
   QString txt;
   QString timestamp =
       QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
@@ -45,8 +54,8 @@ void customMessageHandler(QtMsgType type, const QMessageLogContext &context,
 
   std::lock_guard<std::mutex> lock(s_logMutex);
 
-  // Print to terminal
-  std::cout << txt.toLocal8Bit().constData() << std::endl;
+  // Print to terminal (UTF-8 để hiển thị đúng tiếng Việt trong Qt Creator)
+  std::cout << txt.toUtf8().constData() << std::endl;
 
   // Write to log file
   QFile outFile(getLogFilePath());
@@ -62,5 +71,12 @@ void customMessageHandler(QtMsgType type, const QMessageLogContext &context,
   }
 }
 
-void initialize() { qInstallMessageHandler(customMessageHandler); }
+void initialize() {
+#ifdef Q_OS_WIN
+  // Bật UTF-8 output cho console Windows (ảnh hưởng cả Qt Creator Application Output)
+  SetConsoleOutputCP(CP_UTF8);
+  SetConsoleCP(CP_UTF8);
+#endif
+  qInstallMessageHandler(customMessageHandler);
+}
 } // namespace Logger

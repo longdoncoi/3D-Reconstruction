@@ -6,6 +6,7 @@
 #include "IAIAssistantService.h"
 #include "LanguageManager.h"
 #include "UserManager.h"
+#include "AIAttachmentPreviewFactory.h"
 #include "../../utils/FileUtilities.h"
 #include <QDockWidget>
 #include <QVBoxLayout>
@@ -20,24 +21,17 @@
 #include <QLineEdit>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QMessageBox>
 #include <QInputDialog>
-#include <QSettings>
 #include <QApplication>
 #include <QDesktopServices>
-#include <QJsonArray>
-#include <QRegularExpression>
 #include <QMenu>
-#include <QMenuBar>
+#include <QTimer>
 #include <qclipboard.h>
-#include <QPainter>
-#include <QLinearGradient>
 
 #include "AIAssistantRibbonUI.h"
 #include "ChatBotDockWidget.h"
 #include "AppConfig.h"
 #include "AppConstants.h"
-#include "ChatTemplates.h"
 #include "ChatMessageRenderer.h"
 #include "../../utils/CustomProgressDialog.h"
 #include "../../utils/ModernMessageBox.h"
@@ -52,6 +46,9 @@ void AIAssistantPlugin::initialize(IAppContext* context) {
     }
     
     setupChatbotUI();
+    connect(m_dockUI->btnToggleAgentMode(), &QPushButton::toggled, this, [this](bool active) {
+        m_dockUI->setAgentModeActive(active);
+    });
     
     // Connect AIAssistant signals
     if (m_aiAssistant) {
@@ -60,12 +57,88 @@ void AIAssistantPlugin::initialize(IAppContext* context) {
         connect(m_aiAssistant, &IAIAssistantService::serverStatusChanged,this, &AIAssistantPlugin::onAssistantStatusChanged);
         connect(m_aiAssistant, &IAIAssistantService::errorOccurred,      this, &AIAssistantPlugin::onAssistantError);
         connect(m_aiAssistant, &IAIAssistantService::responseReceived,   this, &AIAssistantPlugin::updateChatUI);
+        connect(m_aiAssistant, &IAIAssistantService::agentStepReceived,  this, [this](const QString &, const QJsonObject &) {
+            m_submittedAgentActions.clear();
+            updateChatUI();
+        });
+        connect(m_aiAssistant, &IAIAssistantService::agentApprovalRequired, this, [this](const QString &, const QJsonObject &){
+            updateChatUI();
+        });
+        connect(m_aiAssistant, &IAIAssistantService::agentUiActionRequested, this,
+                [this](const QString &action, const QVariantMap &parameters) {
+            emit m_ctx->signalBus()->agentUiActionRequested(action, parameters);
+        });
+        connect(m_ctx->signalBus(), &SignalBus::agentUiActionCompleted, this,
+                [this](const QString &requestId, bool success, const QVariantMap &result) {
+            m_aiAssistant->reportUiActionResult(requestId, success, result);
+        });
     }
     
     // Inject AI Assistant button into tab.ai_assistant panel
     if (QWidget* panel = m_ctx->getTabPanel("tab.ai_assistant")) {
         m_ribbonUI = new AIAssistantRibbonUI(m_ctx, panel, this);
         connect(m_ribbonUI->btnToggleAssistant(), &QToolButton::clicked, this, &AIAssistantPlugin::onToggleChatbot);
+        connect(m_ribbonUI->btnRestartModel(), &QToolButton::clicked, this, [this]() {
+            if (!m_aiAssistant) return;
+            auto *btn = m_ribbonUI->btnRestartModel();
+            btn->setEnabled(false);
+            btn->setText(m_ctx->translate("ai.reloading"));
+            if (m_progressDialog) {
+                m_progressDialog->setLabelText(m_ctx->translate("ai.restarting_model"));
+                m_progressDialog->setRange(0, 0);
+                m_progressDialog->show();
+                m_progressDialog->centerOnWidget(m_dockUI && !m_dockUI->dockWidget()->isHidden() ? static_cast<QWidget*>(m_dockUI->dockWidget()) : static_cast<QWidget*>(m_ctx->mainWindow()));
+            }
+            m_aiAssistant->restartModel();
+            QTimer::singleShot(5000, btn, [this, btn]() {
+                btn->setEnabled(true);
+                btn->setText(m_ctx->translate("ai.restart_model"));
+            });
+        });
+        connect(m_ribbonUI->btnRestartRAG(), &QToolButton::clicked, this, [this]() {
+            if (!m_aiAssistant) return;
+            auto *btn = m_ribbonUI->btnRestartRAG();
+            btn->setEnabled(false);
+            btn->setText(m_ctx->translate("ai.reloading"));
+            if (m_progressDialog) {
+                m_progressDialog->setLabelText(m_ctx->translate("ai.restarting_rag"));
+                m_progressDialog->setRange(0, 0);
+                m_progressDialog->show();
+                m_progressDialog->centerOnWidget(m_dockUI && !m_dockUI->dockWidget()->isHidden() ? static_cast<QWidget*>(m_dockUI->dockWidget()) : static_cast<QWidget*>(m_ctx->mainWindow()));
+            }
+            m_aiAssistant->restartRAG();
+            QTimer::singleShot(5000, btn, [this, btn]() {
+                btn->setEnabled(true);
+                btn->setText(m_ctx->translate("ai.restart_rag"));
+            });
+        });
+        connect(m_ribbonUI->btnRestartAgent(), &QToolButton::clicked, this, [this]() {
+            if (!m_aiAssistant) return;
+            if (m_progressDialog) {
+                m_progressDialog->setLabelText(m_ctx->translate("ai.restarting_agent"));
+                m_progressDialog->setRange(0, 0);
+                m_progressDialog->show();
+                m_progressDialog->centerOnWidget(m_dockUI && !m_dockUI->dockWidget()->isHidden() ? static_cast<QWidget*>(m_dockUI->dockWidget()) : static_cast<QWidget*>(m_ctx->mainWindow()));
+            }
+            m_aiAssistant->restartAgent();
+        });
+        connect(m_ribbonUI->btnRestartServer(), &QToolButton::clicked, this, [this]() {
+            if (!m_aiAssistant) return;
+            auto *btn = m_ribbonUI->btnRestartServer();
+            btn->setEnabled(false);
+            btn->setText(m_ctx->translate("ai.reloading"));
+            if (m_progressDialog) {
+                m_progressDialog->setLabelText(m_ctx->translate("ai.restarting_server"));
+                m_progressDialog->setRange(0, 0);
+                m_progressDialog->show();
+                m_progressDialog->centerOnWidget(m_dockUI && !m_dockUI->dockWidget()->isHidden() ? static_cast<QWidget*>(m_dockUI->dockWidget()) : static_cast<QWidget*>(m_ctx->mainWindow()));
+            }
+            m_aiAssistant->restartServer();
+            QTimer::singleShot(5000, btn, [this, btn]() {
+                btn->setEnabled(true);
+                btn->setText(m_ctx->translate("ai.restart_server"));
+            });
+        });
     }
     
     // Connect SignalBus for retranslation
@@ -79,18 +152,56 @@ void AIAssistantPlugin::initialize(IAppContext* context) {
             m_dockUI->btnAttach()->setToolTip(m_ctx->translate("ai.attach"));
             m_dockUI->actAttachImage()->setText(m_ctx->translate("ai.attach_image"));
             m_dockUI->actAttachFile()->setText(m_ctx->translate("ai.attach_file"));
+            m_dockUI->setAgentModeActive(m_dockUI->btnToggleAgentMode()->isChecked());
         }
 
         // Update Ribbon UI button and Groupbox
         if (m_ribbonUI) {
             bool visible = m_dockUI && m_dockUI->dockWidget()->isVisible();
             m_ribbonUI->btnToggleAssistant()->setText(visible ? m_ctx->translate("ai.close_assistant") : m_ctx->translate("ai.open_assistant"));
+            m_ribbonUI->btnRestartModel()->setText(m_ctx->translate("ai.restart_model"));
+            m_ribbonUI->btnRestartRAG()->setText(m_ctx->translate("ai.restart_rag"));
+            m_ribbonUI->btnRestartAgent()->setText(m_ctx->translate("ai.restart_agent"));
+            m_ribbonUI->btnRestartServer()->setText(m_ctx->translate("ai.restart_server"));
             if (QLabel *lbl = m_ribbonUI->groupAI()->findChild<QLabel*>("groupTitleLabel")) {
                 lbl->setText(m_ctx->translate("menu.ai_assistant"));
             }
         }
         updateSessionListUI();
         updateChatUI();
+    });
+    connect(m_ctx->signalBus(), &SignalBus::agentUiActionRequested, this,
+            [this](const QString &action, const QVariantMap &parameters) {
+        if (!m_dockUI) {
+            const QString requestId = parameters.value("request_id").toString();
+            if (!requestId.isEmpty() && action.startsWith("assistant."))
+                emit m_ctx->signalBus()->agentUiActionCompleted(requestId, false, QVariantMap{{"error", "Assistant UI is unavailable"}});
+            return;
+        }
+        bool handled = false;
+        if (action == "assistant.open" && m_dockUI->dockWidget()->isHidden()) {
+            onToggleChatbot();
+            handled = true;
+        } else if (action == "assistant.close" && !m_dockUI->dockWidget()->isHidden()) {
+            onToggleChatbot();
+            handled = true;
+        } else if (action == "assistant.reload_model") {
+            m_aiAssistant->restartModel();
+            handled = true;
+        } else if (action == "assistant.reload_rag") {
+            m_aiAssistant->restartRAG();
+            handled = true;
+        } else if (action == "assistant.reload_agent") {
+            m_aiAssistant->restartAgent();
+            handled = true;
+        } else if (action == "assistant.reload_server") {
+            m_aiAssistant->restartServer();
+            handled = true;
+        }
+        const QString requestId = parameters.value("request_id").toString();
+        if (!requestId.isEmpty() && action.startsWith("assistant."))
+            emit m_ctx->signalBus()->agentUiActionCompleted(requestId, handled,
+                QVariantMap{{"action", action}, {"error", handled ? "" : "Action was not handled"}});
     });
     
     m_progressDialog = new CustomProgressDialog(m_ctx->mainWindow());
@@ -209,21 +320,24 @@ void AIAssistantPlugin::onSendChatMessage() {
         delete child;
     }
     m_dockUI->attachmentPreviewArea()->hide();
+    constexpr bool isAgentMode = true;
     
+    qDebug() << "[AIAssistantPlugin] Mode đang sử dụng:" << (isAgentMode ? "Agent Model" : "Chat Model") << "| Nội dung:" << tx;
+
     // Get selected sessions (allow multi-select)
     QList<QListWidgetItem*> selectedItems = m_dockUI->sessionListWidget()->selectedItems();
     if (selectedItems.isEmpty()) {
         // If no selection, send to current session
-        m_aiAssistant->sendMessage(tx, atts);
+        m_aiAssistant->executeAgentTask(m_aiAssistant->currentSessionId(), tx, atts);
     } else if (selectedItems.size() == 1) {
         // Single selection - send to that session
         QString sessionId = selectedItems[0]->data(Qt::UserRole).toString();
-        m_aiAssistant->sendMessageToSession(sessionId, tx, atts);
+        m_aiAssistant->executeAgentTask(sessionId, tx, atts);
     } else {
         // Multiple selections - send the same message to all selected sessions
         for (QListWidgetItem* item : selectedItems) {
             QString sessionId = item->data(Qt::UserRole).toString();
-            m_aiAssistant->sendMessageToSession(sessionId, tx, atts);
+            m_aiAssistant->executeAgentTask(sessionId, tx, atts);
         }
     }
     
@@ -254,7 +368,7 @@ void AIAssistantPlugin::onChatLinkClicked(const QUrl &url) {
         QString path = url.path();
         if (path.startsWith("retry:")) {
             int msgIndex = path.mid(6).toInt();
-            m_aiAssistant->retryMessage(m_aiAssistant->currentSessionId(), msgIndex);
+            m_aiAssistant->retryAgentTask(m_aiAssistant->currentSessionId(), msgIndex);
         } else if (path.startsWith("edit:")) {
             int msgIndex = path.mid(5).toInt();
             auto history = m_aiAssistant->getHistory();
@@ -273,6 +387,26 @@ void AIAssistantPlugin::onChatLinkClicked(const QUrl &url) {
         return;
     }
 
+    if (url.scheme() == "agent") {
+        QString path = url.path();
+        if (path.startsWith("approve:")) {
+            QString actionId = path.mid(8);
+            if (m_submittedAgentActions.contains(actionId)) return;
+            if (!ModernMessageBox::question(m_ctx->mainWindow(), m_ctx->translate("ai.agent_approve_title"),
+                                            m_ctx->translate("ai.agent_approve_confirm"))) return;
+            m_submittedAgentActions.insert(actionId);
+            m_aiAssistant->approveAgentAction(m_aiAssistant->currentSessionId(), actionId);
+        } else if (path.startsWith("reject:")) {
+            QString actionId = path.mid(7);
+            if (m_submittedAgentActions.contains(actionId)) return;
+            if (!ModernMessageBox::question(m_ctx->mainWindow(), m_ctx->translate("ai.agent_reject_title"),
+                                            m_ctx->translate("ai.agent_reject_confirm"))) return;
+            m_submittedAgentActions.insert(actionId);
+            m_aiAssistant->rejectAgentAction(m_aiAssistant->currentSessionId(), actionId);
+        }
+        return;
+    }
+
     if (url.scheme() == "img") {
         QString path = url.path();
 #ifdef Q_OS_WIN
@@ -285,9 +419,8 @@ void AIAssistantPlugin::onChatLinkClicked(const QUrl &url) {
         // Remove leading slash if it exists (for file:///path)
         if (path.startsWith("/")) path.remove(0, 1);
         
-        // Resolve relative path against project root
-        QString projectRoot = QDir::cleanPath(QApplication::applicationDirPath() + "/../../");
-        QString absPath = QDir(projectRoot).absoluteFilePath(path);
+        // Resolve relative path against the configured project root.
+        QString absPath = QDir(AppConfig::instance().projectRootDir()).absoluteFilePath(path);
         
         if (QFileInfo::exists(absPath)) {
             QDesktopServices::openUrl(QUrl::fromLocalFile(absPath));
@@ -369,7 +502,7 @@ void AIAssistantPlugin::onAssistantStatusChanged(const QString &status) {
     if (!m_dockUI) return;
     if (status == m_ctx->translate("ai.starting_server")) return;
     
-    if (status == m_ctx->translate("ai.server_ready")) {
+    if (status == m_ctx->translate("ai.server_ready") || status.startsWith(QString::fromUtf8("✅ "))) {
         m_isStartingServer = false;
         if (m_progressDialog) m_progressDialog->hide();
         m_dockUI->chatHistory()->append("<font color='#00A36C'><b>" + status + "</b></font>");
@@ -387,10 +520,8 @@ void AIAssistantPlugin::onAssistantError(const QString &error) {
     if (!m_dockUI) return;
     m_dockUI->chatHistory()->append("<font color='red'>" + error + "</font>");
     m_dockUI->chatHistory()->moveCursor(QTextCursor::End);
-    if (m_isStartingServer) {
-        m_isStartingServer = false;
-        if (m_progressDialog) m_progressDialog->hide();
-    }
+    m_isStartingServer = false;
+    if (m_progressDialog) m_progressDialog->hide();
 }
 
 void AIAssistantPlugin::onAttachImage() {
@@ -433,31 +564,22 @@ void AIAssistantPlugin::onAttachFile() {
 
 void AIAssistantPlugin::addAttachmentPreview(const QString &filePath, bool isImage) {
     if (!m_dockUI) return;
-    QString projectRoot = QDir::cleanPath(QApplication::applicationDirPath() + "/../../");
-    FileUtilities::AttachmentResult result = FileUtilities::processAttachment(filePath, isImage, projectRoot);
+    FileUtilities::AttachmentResult result = FileUtilities::processAttachment(
+        filePath,
+        isImage,
+        AppConfig::instance().uploadDir(),
+        AppConfig::instance().thumbnailsDir());
 
     if (!result.success) return;
 
     pendingAttachments.append(result.destPath);
-    // We don't append thumbPath to pendingAttachments to avoid double display in chat history.
 
-    QWidget *previewWidget = new QWidget(m_dockUI->attachmentPreviewArea());
-    previewWidget->setFixedSize(84, 84);
-    previewWidget->setStyleSheet("background:#2a2a35; border-radius:6px; border:1px solid #3a3a4a;");
-    
-    QLabel *imgLabel = new QLabel(previewWidget);
-    imgLabel->setGeometry(2, 2, 80, 80);
-    imgLabel->setPixmap(result.thumbnail);
-    imgLabel->setAlignment(Qt::AlignCenter);
-
-    QPushButton *btnRemove = new QPushButton("×", previewWidget);
-    btnRemove->setGeometry(64, 2, 18, 18);
-    btnRemove->setStyleSheet("QPushButton { background:rgba(0,0,0,150); color:white; border-radius:9px; font-weight:bold; font-size:12px; padding-bottom:2px; }"
-                             "QPushButton:hover { background:rgba(255,50,50,200); }");
-    
-    connect(btnRemove, &QPushButton::clicked, this, [this, result, previewWidget]() {
-        removeAttachment(result.destPath, previewWidget);
-    });
+    QWidget *previewWidget = AIAttachmentPreviewFactory::create(
+        m_dockUI->attachmentPreviewArea(),
+        result,
+        [this, result](QWidget *widget) {
+            removeAttachment(result.destPath, widget);
+        });
 
     m_dockUI->attachmentLayout()->addWidget(previewWidget);
     m_dockUI->attachmentPreviewArea()->show();
@@ -484,8 +606,6 @@ void AIAssistantPlugin::removeAttachment(const QString &filePath, QWidget *previ
     }
 }
 
-#include "../../utils/HtmlUtilities.h"
-
 void AIAssistantPlugin::updateChatUI() {
     if (!m_dockUI || !m_dockUI->chatHistory()) return;
     
@@ -502,7 +622,8 @@ void AIAssistantPlugin::updateChatUI() {
     m_dockUI->chatHistory()->clear(); 
     
     auto history = m_aiAssistant->getHistory();
-    ChatMessageRenderer::renderChatHistory(m_dockUI->chatHistory(), m_ctx, history, currentSessionThinking);
+    const int thinkingInsertIndex = m_aiAssistant->sessionThinkingInsertIndex(m_aiAssistant->currentSessionId());
+    ChatMessageRenderer::renderChatHistory(m_dockUI->chatHistory(), m_ctx, history, currentSessionThinking, thinkingInsertIndex);
 }
 
 void AIAssistantPlugin::onProgressStopped() {

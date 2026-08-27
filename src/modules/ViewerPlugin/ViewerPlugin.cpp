@@ -8,6 +8,7 @@
 #include "Image2DLoader.h"
 #include "Model3DLoader.h"
 #include "DicomLoader.h"
+#include "AppConstants.h"
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QMessageBox>
@@ -21,6 +22,7 @@
 #include <QPainter>
 #include <QLinearGradient>
 #include "LanguageManager.h"
+#include "AppConfig.h"
 #include "../../utils/CustomProgressDialog.h"
 #include <QApplication>
 #include <vtkRenderWindow.h>
@@ -92,6 +94,27 @@ void ViewerPlugin::initialize(IAppContext* context) {
     connect(m_ctx->signalBus(), &SignalBus::autoNavigationChanged, this, &ViewerPlugin::onAutoNavigationChanged);
     connect(m_ctx->signalBus(), &SignalBus::stateChanged, this, &ViewerPlugin::updateActions);
     connect(m_ctx->signalBus(), &SignalBus::languageChanged, this, &ViewerPlugin::updateActions);
+    connect(m_ctx->signalBus(), &SignalBus::agentUiActionRequested, this,
+            [this](const QString &action, const QVariantMap &parameters) {
+        const QDir root(AppConfig::instance().projectRootDir());
+        bool handled = false;
+        if (action == "viewer.load_2d") {
+            const QDir images(root.filePath("3DRecontruction/templeRing"));
+            const QStringList files = images.entryList({"*.png", "*.jpg", "*.jpeg", "*.bmp"},
+                                                       QDir::Files, QDir::Name);
+            if (!files.isEmpty()) { load2DImageFromPath(images.absoluteFilePath(files.first())); handled = true; }
+        } else if (action == "viewer.load_3d") {
+            load3DModelFromPath(root.filePath("3DModels/FinalBaseMesh.obj"));
+            handled = true;
+        } else if (action == "viewer.load_dicom") {
+            loadDicomFromDirectory(root.filePath("Dicom/HippocampalMRISlices/01"));
+            handled = true;
+        }
+        const QString requestId = parameters.value("request_id").toString();
+        if (!requestId.isEmpty() && action.startsWith("viewer."))
+            emit m_ctx->signalBus()->agentUiActionCompleted(requestId, handled,
+                QVariantMap{{"action", action}, {"error", handled ? "" : "No matching input data"}});
+    });
     
     updateActions();
 }
@@ -102,19 +125,40 @@ void ViewerPlugin::cleanup() {
 void ViewerPlugin::onLoad2DImages() {
   QString lastUsedPath = m_ctx->settings()->getLastUsedPath("viewer_2d");
   QString fileName = QFileDialog::getOpenFileName(m_ctx->mainWindow(), m_ctx->translate("file.select_2d"), lastUsedPath, "Images (*.png *.jpg *.jpeg *.bmp)"); 
-  if (!fileName.isEmpty()) m_viewModel->load2DImage(fileName);
+  if (!fileName.isEmpty()) load2DImageFromPath(fileName);
 }
 
 void ViewerPlugin::onLoad3DImages() {
   QString lastUsedPath = m_ctx->settings()->getLastUsedPath("viewer_3d");
-  QString obj = QFileDialog::getOpenFileName(m_ctx->mainWindow(), m_ctx->translate("file.select_3d"), lastUsedPath, "OBJ Files (*.obj)"); 
-  if (!obj.isEmpty()) m_viewModel->load3DModel(obj);
+  QString obj = QFileDialog::getOpenFileName(m_ctx->mainWindow(), m_ctx->translate("file.select_3d"), lastUsedPath,
+                                              AppConstants::FileFilter::objFiles());
+  if (!obj.isEmpty()) load3DModelFromPath(obj);
 }
 
 void ViewerPlugin::onLoadDicom() {
   QString lastUsedPath = m_ctx->settings()->getLastUsedPath("viewer_dicom");
   QString dir = QFileDialog::getExistingDirectory(m_ctx->mainWindow(), m_ctx->translate("file.select_dicom"), lastUsedPath, QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
-  if (!dir.isEmpty()) m_viewModel->loadDicom(dir);
+  if (!dir.isEmpty()) loadDicomFromDirectory(dir);
+}
+
+void ViewerPlugin::load2DImageFromPath(const QString &filePath) {
+    const QFileInfo info(filePath);
+    if (!info.isFile()) return;
+    m_ctx->settings()->setLastUsedPath("viewer_2d", info.absolutePath());
+    m_viewModel->load2DImage(filePath);
+}
+
+void ViewerPlugin::load3DModelFromPath(const QString &filePath) {
+    const QFileInfo info(filePath);
+    if (!info.isFile()) return;
+    m_ctx->settings()->setLastUsedPath("viewer_3d", info.absolutePath());
+    m_viewModel->load3DModel(filePath);
+}
+
+void ViewerPlugin::loadDicomFromDirectory(const QString &directory) {
+    if (!QDir(directory).exists()) return;
+    m_ctx->settings()->setLastUsedPath("viewer_dicom", directory);
+    m_viewModel->loadDicom(directory);
 }
 
 void ViewerPlugin::onPrevImage() {

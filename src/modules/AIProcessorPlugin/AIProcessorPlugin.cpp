@@ -8,6 +8,8 @@
 #include "Image2DLoader.h"
 #include "AITrainDockWidget.h"
 #include "AIProcessorRibbonUI.h"
+#include "AIPredictionLogger.h"
+#include "AppConstants.h"
 #include "LanguageManager.h"
 #include "VideoTrackerThread.h"
 #include "IconFactory.h"
@@ -19,7 +21,6 @@
 #include <QMenu>
 #include <QProcess>
 #include <QUrl>
-#include <QDateTime>
 #include <QFile>
 #include <QDockWidget>
 #include <QVBoxLayout>
@@ -31,8 +32,8 @@
 #include <QApplication>
 #include <QVTKOpenGLNativeWidget.h>
 #include <QTimer>
+#include <QTcpSocket>
 #include <QtConcurrent>
-#include <QThreadPool>
 #include <QGroupBox>
 #include <QStyle>
 #include "AppConfig.h"
@@ -190,9 +191,55 @@ void AIProcessorPlugin::setupConnections() {
   connect(m_ctx->signalBus(), &SignalBus::stateChanged, this, &AIProcessorPlugin::updateActions);
   connect(m_ctx->signalBus(), &SignalBus::languageChanged, this, &AIProcessorPlugin::updateActions);
   connect(m_ctx->signalBus(), &SignalBus::imageIndexChanged, this, &AIProcessorPlugin::onImageChanged);
+  connect(m_ctx->signalBus(), &SignalBus::agentUiActionRequested, this,
+          [this](const QString &action, const QVariantMap &parameters) {
+      const QDir root(AppConfig::instance().projectRootDir());
+      bool handled = false;
+      if (action == "ai.run_detection" || action == "ai.run_segmentation") {
+          const QDir images(root.filePath("3DRecontruction/templeRing"));
+          const QStringList files = images.entryList({"*.png", "*.jpg", "*.jpeg", "*.bmp"},
+                                                     QDir::Files, QDir::Name);
+          if (files.isEmpty()) return;
+          m_ctx->viewer()->setCurrent2DImagePath(images.absoluteFilePath(files.first()));
+          if (action == "ai.run_detection") onObjectDetection();
+          else onSegmentation();
+          handled = true;
+      } else if (action == "ai.video_tracking") {
+          const QDir videos(root.filePath("VideoTracking"));
+          const QStringList files = videos.entryList({"*.mp4", "*.avi", "*.mkv"},
+                                                     QDir::Files, QDir::Name);
+          if (!files.isEmpty()) {
+              m_agentVideoPath = videos.absoluteFilePath(files.first());
+              onObjectTracking();
+              handled = true;
+          }
+      } else if (action == "ai.hide_results") {
+          onHideAIResults();
+          handled = true;
+      } else if (action == "ai.training_model") {
+          if (m_trainDock) m_trainDock->startTraining(true);
+          handled = m_trainDock != nullptr;
+      } else if (action == "ai.view_training_charts") {
+          onViewCharts();
+          handled = true;
+      }
+      const QString requestId = parameters.value("request_id").toString();
+      if (!requestId.isEmpty() && action.startsWith("ai."))
+          emit m_ctx->signalBus()->agentUiActionCompleted(requestId, handled,
+              QVariantMap{{"action", action}, {"error", handled ? "" : "Required AI input is unavailable"}});
+  });
 }
 
 void AIProcessorPlugin::cleanup() {
+    if (m_tensorboardWaitTimer) {
+        m_tensorboardWaitTimer->stop();
+    }
+    if (m_tensorboardProcess && m_tensorboardProcess->state() != QProcess::NotRunning) {
+        m_tensorboardProcess->terminate();
+        if (!m_tensorboardProcess->waitForFinished(2000)) {
+            m_tensorboardProcess->kill();
+        }
+    }
     if (m_trackerThread) {
         m_trackerThread->stop();
         m_trackerThread->wait();
@@ -232,16 +279,7 @@ void AIProcessorPlugin::onObjectDetection() {
   m_ctx->scene()->vtkWidget()->renderWindow()->Render();
   m_ctx->updateMenuStates();
 
-  // Log prediction image asynchronously
-  QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd");
-  QString predictDir = AppConfig::instance().predictDir("detection") + "/" + currentDate;
-  QDir().mkpath(predictDir);
-  QString logPath = predictDir + "/" + QFileInfo(currentImg).baseName() + "_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".png";
-  
-  cv::Mat resClone = res.clone();
-  QThreadPool::globalInstance()->start([logPath, resClone]() {
-      cv::imwrite(logPath.toStdString(), resClone);
-  });
+  AIPredictionLogger::logAsync("detection", currentImg, res);
 }
 
 void AIProcessorPlugin::onSegmentation() {
@@ -269,16 +307,7 @@ void AIProcessorPlugin::onSegmentation() {
   m_ctx->scene()->vtkWidget()->renderWindow()->Render();
   m_ctx->updateMenuStates();
 
-  // Log prediction image asynchronously
-  QString currentDate = QDateTime::currentDateTime().toString("yyyy-MM-dd");
-  QString predictDir = AppConfig::instance().predictDir("segmentation") + "/" + currentDate;
-  QDir().mkpath(predictDir);
-  QString logPath = predictDir + "/" + QFileInfo(currentImg).baseName() + "_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".png";
-  
-  cv::Mat resClone = res.clone();
-  QThreadPool::globalInstance()->start([logPath, resClone]() {
-      cv::imwrite(logPath.toStdString(), resClone);
-  });
+  AIPredictionLogger::logAsync("segmentation", currentImg, res);
 }
 
 void AIProcessorPlugin::onHideAIResults() {
@@ -294,65 +323,92 @@ void AIProcessorPlugin::onHideAIResults() {
 }
 
 void AIProcessorPlugin::onViewCharts() {
-  QProcess::execute("taskkill", QStringList() << "/F" << "/IM" << "tensorboard.exe");
-  QString aiTrainingDir = AppConfig::instance().aiTrainingDir();
-  QString runsDir = QDir::cleanPath(aiTrainingDir + "/runs");
-  runsDir = QDir::toNativeSeparators(runsDir);
+  QString aiComputerVisionDir = AppConfig::instance().aiComputerVisionDir();
+  QString runsDir = QDir::cleanPath(aiComputerVisionDir + "/runs");
+  if (!QDir(runsDir).exists()) {
+      ModernMessageBox::warning(m_ctx->mainWindow(), m_ctx->translate("common.error"),
+                                "TensorBoard log directory does not exist: " + runsDir);
+      return;
+  }
 
-  QProcess::startDetached("python",
-                          QStringList() << "-m" << "tensorboard.main"
-                                        << "--logdir" << runsDir << "--port" << "6006",
-                          QDir::cleanPath(aiTrainingDir));
+  // TensorBoard is launched with `python -m ...`, so killing tensorboard.exe did
+  // not stop prior instances.  Reuse an already listening local server instead.
+  QTcpSocket socket;
+  socket.connectToHost(QHostAddress::LocalHost, AppConstants::AIProcessor::TENSORBOARD_PORT);
+  if (socket.waitForConnected(250)) {
+      QDesktopServices::openUrl(QUrl(AppConstants::AIProcessor::tensorboardUrl()));
+      return;
+  }
 
-  const int totalSeconds = 12;
+  if (m_tensorboardProcess && m_tensorboardProcess->state() != QProcess::NotRunning) {
+      return;
+  }
+
+  if (m_tensorboardWaitTimer) {
+      m_tensorboardWaitTimer->stop();
+      m_tensorboardWaitTimer->deleteLater();
+      m_tensorboardWaitTimer = nullptr;
+  }
+
+  m_tensorboardProcess = new QProcess(this);
+  m_tensorboardProcess->setWorkingDirectory(aiComputerVisionDir);
+  m_tensorboardProcess->setProcessChannelMode(QProcess::MergedChannels);
+  m_tensorboardProcess->start("python", {"-m", "tensorboard.main", "--logdir", runsDir,
+                                            "--port", QString::number(AppConstants::AIProcessor::TENSORBOARD_PORT)});
 
   if (!m_progressDialog) return;
-
-  m_progressDialog->setLabelText(
-      m_ctx->translate("aiproc.tb_seconds").arg(totalSeconds));
+  const int totalSeconds = AppConstants::AIProcessor::TENSORBOARD_WAIT_SECONDS;
+  m_progressDialog->setLabelText(m_ctx->translate("aiproc.tb_seconds").arg(totalSeconds));
   m_progressDialog->setValue(0);
   m_progressDialog->show();
-  m_progressDialog->centerOnWidget(); // Centers on MainWindow by default
-  QApplication::processEvents();
+  m_progressDialog->centerOnWidget();
 
-  // Shared countdown state via QTimer on heap to avoid dangling refs
-  QTimer *timer = new QTimer(m_progressDialog);
-  std::shared_ptr<int> remaining = std::make_shared<int>(totalSeconds);
-
-  connect(m_progressDialog, &CustomProgressDialog::stopRequested, timer,
-          [timer, remaining, this]() {
-            timer->stop();
-            timer->deleteLater();
-            if (m_progressDialog) m_progressDialog->hide();
-            ModernMessageBox::information(
-                m_ctx->mainWindow(), m_ctx->translate("aiproc.tb_cancelled"),
-                m_ctx->translate("aiproc.tb_cancelled_desc"));
-          });
-
-  timer->setInterval(1000);
-  connect(timer, &QTimer::timeout, this,
-      [this, timer, remaining, totalSeconds]() {
-          (*remaining)--;
-          if (m_progressDialog) {
-              int progressValue = ((totalSeconds - *remaining) * 100) / totalSeconds;
-              m_progressDialog->setValue(progressValue);
-          }
-          if (*remaining <= 0) {
-              timer->stop();
-              timer->deleteLater();
-
-              m_progressDialog->hide();
-              m_progressDialog->reset();
-              QDesktopServices::openUrl(QUrl("http://localhost:6006/"));
-          } else {
-              if (m_progressDialog) {
-                  m_progressDialog->setLabelText(
-                      m_ctx->translate("aiproc.tb_seconds").arg(*remaining));
-              }
-          }
-      });
-
-  timer->start();
+  QProcess *process = m_tensorboardProcess;
+  QTimer *waitTimer = new QTimer(this);
+  m_tensorboardWaitTimer = waitTimer;
+  waitTimer->setInterval(250);
+  auto elapsedMs = std::make_shared<int>(0);
+  connect(waitTimer, &QTimer::timeout, this, [this, process, waitTimer, elapsedMs, totalSeconds]() {
+      *elapsedMs += 250;
+      QTcpSocket check;
+      check.connectToHost(QHostAddress::LocalHost, AppConstants::AIProcessor::TENSORBOARD_PORT);
+      if (check.waitForConnected(100)) {
+          waitTimer->stop();
+          waitTimer->deleteLater();
+          if (m_tensorboardWaitTimer == waitTimer) m_tensorboardWaitTimer = nullptr;
+          m_progressDialog->hide();
+          m_progressDialog->reset();
+          QDesktopServices::openUrl(QUrl(AppConstants::AIProcessor::tensorboardUrl()));
+      } else if (*elapsedMs >= totalSeconds * 1000) {
+          waitTimer->stop();
+          waitTimer->deleteLater();
+          if (m_tensorboardWaitTimer == waitTimer) m_tensorboardWaitTimer = nullptr;
+          const QString output = QString::fromLocal8Bit(process->readAll());
+          m_progressDialog->hide();
+          ModernMessageBox::warning(m_ctx->mainWindow(), m_ctx->translate("common.error"),
+              "TensorBoard could not start. Make sure it is installed in the Python environment.\n" + output);
+      } else if (m_progressDialog) {
+          m_progressDialog->setValue((*elapsedMs * 100) / (totalSeconds * 1000));
+      }
+  });
+  connect(m_progressDialog, &CustomProgressDialog::stopRequested, waitTimer, [this, waitTimer]() {
+      waitTimer->stop();
+      waitTimer->deleteLater();
+      if (m_tensorboardWaitTimer == waitTimer) m_tensorboardWaitTimer = nullptr;
+      m_progressDialog->hide();
+  });
+  connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+          [this, process, waitTimer](int, QProcess::ExitStatus) {
+      if (m_tensorboardWaitTimer != waitTimer) return;
+      waitTimer->stop();
+      waitTimer->deleteLater();
+      if (m_tensorboardWaitTimer == waitTimer) m_tensorboardWaitTimer = nullptr;
+      m_progressDialog->hide();
+      ModernMessageBox::warning(m_ctx->mainWindow(), m_ctx->translate("common.error"),
+          "TensorBoard could not start. Make sure it is installed in the Python environment.\n" +
+          QString::fromLocal8Bit(process->readAll()));
+  });
+  waitTimer->start();
 }
 
 void AIProcessorPlugin::onImageChanged(int index, int total) {
@@ -370,8 +426,12 @@ void AIProcessorPlugin::onObjectTracking() {
         return;
     }
 
-    QString lastUsedPath = m_ctx->settings()->getLastUsedPath("ai_video_tracking");
-    QString videoPath = QFileDialog::getOpenFileName(m_ctx->mainWindow(), m_ctx->translate("aiproc.select_video_tracking"), lastUsedPath, "Video Files (*.mp4 *.avi *.mkv)");
+    QString videoPath = m_agentVideoPath;
+    m_agentVideoPath.clear();
+    if (videoPath.isEmpty()) {
+        QString lastUsedPath = m_ctx->settings()->getLastUsedPath("ai_video_tracking");
+        videoPath = QFileDialog::getOpenFileName(m_ctx->mainWindow(), m_ctx->translate("aiproc.select_video_tracking"), lastUsedPath, "Video Files (*.mp4 *.avi *.mkv)");
+    }
     if (videoPath.isEmpty()) return;
     
     m_ctx->settings()->setLastUsedPath("ai_video_tracking", QFileInfo(videoPath).absolutePath());

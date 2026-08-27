@@ -16,6 +16,11 @@ public:
                               float radius = 0.02f,
                               int minNeighbors = 3);
 
+    static void adaptiveRadiusOutlier(std::vector<cv::Point3f> &pts,
+                                      std::vector<cv::Vec3b> &cols,
+                                      float radiusMultiplier = 3.0f,
+                                      int minNeighbors = 2);
+
     // VoxelGrid downsampling (preserves color by nearest-point selection)
     static void voxelGrid(std::vector<cv::Point3f> &pts,
                           std::vector<cv::Vec3b> &cols,

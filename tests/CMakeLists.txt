@@ -40,6 +40,25 @@ target_link_libraries(TestLanguageManager PRIVATE Qt6::Test Qt6::Core Qt6::Widge
 target_compile_definitions(TestLanguageManager PRIVATE APP_LIBRARY)
 add_test(NAME TestLanguageManager COMMAND TestLanguageManager)
 
+# Test Mail MIME parser
+qt_add_executable(TestMailMimeParser
+    TestMailMimeParser.cpp
+    ../src/services/mail/MailMimeParser.cpp
+)
+target_include_directories(TestMailMimeParser PRIVATE ../src/core ../src/services/mail)
+target_link_libraries(TestMailMimeParser PRIVATE Qt6::Test Qt6::Core)
+add_test(NAME TestMailMimeParser COMMAND TestMailMimeParser)
+
+# Test Camera Params Parser
+find_package(OpenCV REQUIRED COMPONENTS core)
+qt_add_executable(TestCameraParamsParser
+    TestCameraParamsParser.cpp
+    ../src/services/reconstruction/CameraParamsParser.cpp
+)
+target_include_directories(TestCameraParamsParser PRIVATE ../src/services/reconstruction)
+target_link_libraries(TestCameraParamsParser PRIVATE Qt6::Test Qt6::Core ${OpenCV_LIBS})
+add_test(NAME TestCameraParamsParser COMMAND TestCameraParamsParser)
+
 # Test PointCloudFilter
 find_package(PCL REQUIRED COMPONENTS common filters io)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d calib3d)
@@ -60,11 +79,14 @@ add_test(NAME TestPointCloudFilter COMMAND TestPointCloudFilter)
 # Test ReconstructionPipeline
 qt_add_executable(TestReconstructionPipeline TestReconstructionPipeline.cpp 
     ../src/services/reconstruction/ReconstructionPipeline.cpp
+    ../src/services/reconstruction/CameraParamsParser.cpp
     ../src/services/reconstruction/FeatureExtractor.cpp
     ../src/services/reconstruction/FeatureMatcher.cpp
     ../src/services/reconstruction/PoseEstimator.cpp
     ../src/services/reconstruction/Triangulator.cpp
     ../src/services/reconstruction/PointCloudFilter.cpp
+    ../src/services/reconstruction/FeatureTrack.h
+    ../src/services/reconstruction/MultiViewTriangulator.cpp
 )
 target_include_directories(TestReconstructionPipeline PRIVATE 
     ../src/services/reconstruction
@@ -80,3 +102,10 @@ target_link_libraries(TestReconstructionPipeline PRIVATE
 )
 target_compile_definitions(TestReconstructionPipeline PRIVATE APP_LIBRARY)
 add_test(NAME TestReconstructionPipeline COMMAND TestReconstructionPipeline)
+
+# Test Agent Actions
+qt_add_executable(TestAgentActions TestAgentActions.cpp ../src/core/SignalBus.cpp)
+target_include_directories(TestAgentActions PRIVATE ../src/core ../src/utils)
+target_link_libraries(TestAgentActions PRIVATE Qt6::Test Qt6::Core)
+target_compile_definitions(TestAgentActions PRIVATE APP_LIBRARY)
+add_test(NAME TestAgentActions COMMAND TestAgentActions)
