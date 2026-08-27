@@ -658,13 +658,13 @@ def tool_rag_search(params: dict) -> dict:
 # MCP boundary: the agent invokes the public MCP endpoint rather than these
 # functions directly.
 MCP_LOCAL_EXECUTORS = {
-    "read_file":         tool_read_file,
+    "read_file":                tool_read_file,
     "list_directory":    tool_list_directory,
     "search_text":       tool_search_text,
     "analyze_code":      tool_analyze_code,
     "get_project_status": tool_get_project_status,
-    "validate_file":             tool_validate_file,
-    "application_action":         tool_application_action,
+"validate_file":                tool_validate_file,
+"application_action":             tool_application_action,
     "app_action_viewer":         tool_application_action,
     "app_action_reconstruction": tool_application_action,
     "app_action_ai":             tool_application_action,
@@ -783,7 +783,7 @@ answer use {{"kind":"final","content":"your concise answer"}}.
 8. Sử dụng Markdown formatting cho câu trả lời cuối cùng.
 9. Nếu task quá lớn hoặc nguy hiểm, hãy giải thích và hỏi lại trước khi thực hiện.
 10. Scope: chỉ làm việc trong thư mục project — không truy cập file ngoài project.
-11. For application UI requests (loading data, reconstruction, AI tools, mail, language, help, or account actions), you may call application_action. If your plan has multiple steps, call them sequentially. Provide a short confirmation message only when all steps are completed.
+11. For application UI requests (loading data, reconstruction, AI tools, mail, language, help, or account actions), you MUST call application_action directly. Do NOT call rag_search, search_text, read_file, or another research tool to discover a UI action. If your plan has multiple steps, call the canonical UI actions sequentially. Provide a short confirmation message only when all steps are completed.
 12. Dùng rag_search TRƯỚC khi dùng read_file khi chưa biết file nào chứa thông tin cần tìm.
 13. DỪNG NGAY khi task đã hoàn thành — KHÔNG gọi thêm tool nếu kết quả đã rõ ràng.
 14. Với câu trả lời về project, chỉ khẳng định điều có bằng chứng từ RAG/tool. Nếu kết quả không đủ bằng chứng, nói rõ không tìm thấy thay vì suy đoán. Khi cần chi tiết chính xác, dùng read_file để xác minh đoạn nguồn trước khi kết luận.
@@ -932,12 +932,63 @@ def _constrained_agent_completion(messages: list[dict], max_tokens: int, tempera
     raise RuntimeError("Constrained decoder returned an unsupported envelope")
 
 
+_PLANNER_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "requires_plan": {"type": "boolean"},
+        "plan": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["requires_plan", "plan"],
+    "additionalProperties": False,
+}
+_CRITIC_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "passed": {"type": "boolean"},
+        "decision": {"type": "string", "enum": ["continue", "revise"]},
+        "reason": {"type": "string"},
+    },
+    "required": ["passed", "decision", "reason"],
+    "additionalProperties": False,
+}
+
+
+def _structured_agent_completion(messages: list[dict], max_tokens: int,
+                                 temperature: float, schema: dict) -> str:
+    """Generate internal planner/critic JSON without the ReAct tool schema."""
+    try:
+        if backend_mode() != "llama_cpp":
+            response = openai_compatible_completion(
+                messages, max_tokens=max_tokens, temperature=temperature,
+                response_format={"type": "json_object"},
+            )
+        else:
+            from llama_cpp import LlamaGrammar  # imported lazily for testability
+            with llm_runtime.llm_lock:
+                response = llm_runtime.llm.create_chat_completion(
+                    messages=messages, max_tokens=max_tokens, temperature=temperature,
+                    repeat_penalty=1.1, stream=False,
+                    # llama-cpp-python expects a serialized JSON Schema here;
+                    # passing the Python dict raises ``JSON object must be str``.
+                    grammar=LlamaGrammar.from_json_schema(json.dumps(schema)),
+                )
+    except Exception as error:  # noqa: BLE001
+        raise RuntimeError(f"Structured JSON decoding failed: {error}") from error
+
+    content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+    if not isinstance(content, str):
+        raise RuntimeError("Structured decoder returned no text content")
+    logger.info("Structured LLM response: %s", content)
+    return content
+
+
 def _run_langgraph_agent(system_prompt: str, task: str, session_id: str,
                          temperature: float, language: str, request_started: float,
                          initial_messages: list[dict[str, str]] | None = None,
-                         initial_steps: list[dict] | None = None,
-                         initial_iteration: int = 0,
-                         event_sink: Callable[[dict], None] | None = None) -> dict:
+                          initial_steps: list[dict] | None = None,
+                          initial_iteration: int = 0,
+                          resume_with_reflection: bool = False,
+                          event_sink: Callable[[dict], None] | None = None) -> dict:
     """Run the tool loop through LangGraph while preserving the Qt API response."""
     if not LANGGRAPH_AVAILABLE or LocalAgentGraph is None:
         raise HTTPException(
@@ -1035,9 +1086,8 @@ def _run_langgraph_agent(system_prompt: str, task: str, session_id: str,
         audit_agent("tool_verified", delegation, **verification)
         return verification
 
-    def reflect_tool_result(tool_name: str, params: dict, result: dict, verification: dict) -> dict:
-        if tool_name == "_validation_error":
-            return {"passed": False, "decision": "continue", "reason": "Hãy thử dùng công cụ khác hoặc kiểm tra lại tên công cụ."}
+    def deterministic_reflection(tool_name: str, params: dict, result: dict,
+                                 verification: dict) -> dict:
         delegation = delegate(task, session_id, tool_name, params)
         reflection = reflect_result(delegation, result, verification)
         audit_agent("tool_reflected", delegation, **reflection)
@@ -1054,13 +1104,26 @@ def _run_langgraph_agent(system_prompt: str, task: str, session_id: str,
         emit=event_sink,
         select_specialist=select_specialist,
         verify_result=verify_tool_result,
-        reflect_result=reflect_tool_result,
+        reflect_result=deterministic_reflection,
+        plan_complete=lambda messages, temp: _structured_agent_completion(
+            messages, 512, temp, _PLANNER_JSON_SCHEMA),
+        reflect_complete=lambda messages, temp: _structured_agent_completion(
+            messages, 512, temp, _CRITIC_JSON_SCHEMA),
     )
     messages = initial_messages or [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": task},
     ]
-    state = graph.run(messages, session_id, temperature, initial_steps, initial_iteration)
+    # Normal UI requests use the deterministic fast-path. When LangGraph is
+    # explicitly forced, preserve the same canonical routing constraint so the
+    # LLM cannot substitute repository research for a desktop command.
+    matched_ui_actions = _match_desktop_action_sequence(_normalise_agent_task(task))
+    if not matched_ui_actions:
+        matched_ui_action = _match_desktop_action(_normalise_agent_task(task))
+        matched_ui_actions = [matched_ui_action] if matched_ui_action else []
+    state = graph.run(messages, session_id, temperature, initial_steps, initial_iteration,
+                      resume_with_reflection=resume_with_reflection,
+                      required_ui_actions=matched_ui_actions)
     pending_state = state.get("pending_tool") or {}
     pending_status = ("pending_ui_action" if pending_state.get("ui_ack")
                       else "pending_approval" if pending_state else "completed")
@@ -1520,6 +1583,14 @@ def agent_ui_action_result(request: AgentUiActionResultRequest):
     steps = []
     steps.append({"type": "tool_result", "tool": "application_action", "request_id": request.request_id,
                   "result": result, "iteration": action.get("iteration", 0)})
+    # The initial dispatch only proves that Qt received the request.  Verify the
+    # actual ACK separately so reflect evaluates the desktop outcome, including
+    # a failure reported by the client.
+    delegation = delegate(action["task"], action["session_id"], "application_action", params)
+    verification = verify_result(delegation, result)
+    audit_agent("tool_verified", delegation, **verification)
+    steps.append({"type": "verification", "tool": "application_action", "result": verification,
+                  "iteration": action.get("iteration", 0)})
 
     # A workflow advances only after the desktop has positively acknowledged
     # the preceding action.  Each continuation has a fresh request_id, so the
@@ -1568,6 +1639,7 @@ def agent_ui_action_result(request: AgentUiActionResultRequest):
             initial_messages=messages,
             initial_steps=action.get("steps", []) + steps,
             initial_iteration=action.get("iteration", 0),
+            resume_with_reflection=True,
         )
 
     content = (f"Đã thực thi {params['action']}." if request.success
@@ -1639,6 +1711,13 @@ def agent_approve(request: AgentApproveRequest, http_req: Request):
         "result": tool_result,
         "iteration": action["iteration"],
     })
+    delegation = delegate(action["task"], action["session_id"], tool_name, tool_params)
+    verification = verify_result(delegation, tool_result)
+    audit_agent("tool_verified", delegation, **verification)
+    steps.append({
+        "type": "verification", "tool": tool_name, "result": verification,
+        "iteration": action["iteration"],
+    })
 
     # Resume agent loop with remaining context
     messages = action["messages"]
@@ -1666,6 +1745,7 @@ def agent_approve(request: AgentApproveRequest, http_req: Request):
             initial_messages=messages,
             initial_steps=steps,
             initial_iteration=action["iteration"],
+            resume_with_reflection=True,
         )
 
     # Continue the agent loop

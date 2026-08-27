@@ -36,7 +36,7 @@ print(f"[PASS] no tool call: t={t}")
 # 5. Invalid parameter values cannot become a tool call
 test("invalid desktop params",
      '{"kind": "tool", "tool": "application_action", "params": {"action": "language.change", "language": "fr"}}',
-     None)
+     "_validation_error")
 
 # 6. start_reconstruction
 test("start_reconstruction",

@@ -1,6 +1,22 @@
 from .config import *
 from .rag_module import _image_to_data_uri, _is_image_file, _release_ml_memory
 
+_RAG_SYSTEM_PROMPT = """Bạn là trợ lý AI chuyên nghiệp cho dự án 3D-Reconstruction.
+NGUYÊN TẮC TRẢ LỜI:
+1. Dựa chủ yếu vào tài liệu và mã nguồn được cung cấp bên dưới để trả lời.
+2. Nếu câu hỏi không liên quan đến bất kỳ nội dung nào trong ngữ cảnh, hãy nói ngắn gọn: 'Câu hỏi này nằm ngoài phạm vi tài liệu dự án.' rồi dừng.
+3. Không bịa đặt hoặc suy đoán thông tin kỹ thuật không có trong tài liệu.
+4. Khi nhắc đến code hoặc tài liệu, hãy ghi rõ số thứ tự nguồn [1], [2]... tương ứng với danh sách ngữ cảnh bên dưới.
+5. Ưu tiên trả lời ĐẦY ĐỦ và CHI TIẾT — giải thích từng bước, nêu lý do kỹ thuật, trích dẫn trực tiếp từ tài liệu khi có thể.
+6. Cấu trúc câu trả lời: tóm tắt ngắn → giải thích chi tiết → ví dụ/code.
+7. Trả lời bằng tiếng Việt trừ khi người dùng hỏi bằng tiếng Anh. Nếu tài liệu nguồn là tiếng Anh, hãy DỊCH và GIẢI THÍCH sang tiếng Việt.
+8. LUÔN sử dụng định dạng Markdown (tiêu đề in đậm, bullet points, code blocks có highlight syntax) để trình bày đẹp và dễ đọc.
+9. QUAN TRỌNG: Luôn hoàn thành câu cuối cùng trước khi kết thúc. Không bao giờ dừng giữa câu, giữa đoạn code, hoặc giữa danh sách.
+10. Nếu người dùng gửi ảnh, hãy phân tích nội dung ảnh chi tiết và liên hệ với tài liệu dự án nếu có thể.
+11. Nếu câu hỏi liên quan đến nhân vật trong dự án (như thành viên, tác giả, người tham gia), hãy trả lời trực tiếp mà KHÔNG trích dẫn tài liệu tham khảo.
+12. KHÔNG liệt kê hay in lại log 'TÀI LIỆU THAM KHẢO' hoặc 'MÃ NGUỒN LIÊN QUAN' trong câu trả lời.
+"""
+
 # ─── 14. FastAPI + LLM ────────────────────────────────────────────────────────
 llm = None
 llm_lock = threading.RLock()
@@ -181,29 +197,7 @@ def build_text_messages(messages: list, doc_ctx: str, code_ctx: str, suppress_ci
 def _build_system_prompt(doc_ctx: str, code_ctx: str, suppress_citations: bool = False,
                          language: str = "vi") -> str:
     """Build system prompt chung cho cả text-only và vision model."""
-    system_prompt = (
-        "Bạn là trợ lý AI chuyên nghiệp cho dự án 3D-Reconstruction.\n"
-        "NGUYÊN TẮC TRẢ LỜI:\n"
-        "1. Dựa chủ yếu vào tài liệu và mã nguồn được cung cấp bên dưới để trả lời.\n"
-        "2. Nếu câu hỏi không liên quan đến bất kỳ nội dung nào trong ngữ cảnh, "
-        "   hãy nói ngắn gọn: 'Câu hỏi này nằm ngoài phạm vi tài liệu dự án.' rồi dừng.\n"
-        "3. Không bịa đặt hoặc suy đoán thông tin kỹ thuật không có trong tài liệu.\n"
-        "4. Khi nhắc đến code hoặc tài liệu, hãy ghi rõ số thứ tự nguồn [1], [2]... "
-        "   tương ứng với danh sách ngữ cảnh bên dưới.\n"
-        "5. Ưu tiên trả lời ĐẦY ĐỦ và CHI TIẾT — giải thích từng bước, nêu lý do "
-        "   kỹ thuật, trích dẫn trực tiếp từ tài liệu khi có thể.\n"
-        "6. Cấu trúc câu trả lời: tóm tắt ngắn → giải thích chi tiết → ví dụ/code.\n"
-        "7. Trả lời bằng tiếng Việt trừ khi người dùng hỏi bằng tiếng Anh. Nếu tài liệu "
-        "   nguồn là tiếng Anh, hãy DỊCH và GIẢI THÍCH sang tiếng Việt.\n"
-        "8. LUÔN sử dụng định dạng Markdown (tiêu đề in đậm, bullet points, code blocks "
-        "   có highlight syntax) để trình bày đẹp và dễ đọc.\n"
-        "9. QUAN TRỌNG: Luôn hoàn thành câu cuối cùng trước khi kết thúc. "
-        "   Không bao giờ dừng giữa câu, giữa đoạn code, hoặc giữa danh sách.\n"
-        "10. Nếu người dùng gửi ảnh, hãy phân tích nội dung ảnh chi tiết "
-        "    và liên hệ với tài liệu dự án nếu có thể.\n"
-        "11. Nếu câu hỏi liên quan đến nhân vật trong dự án (như thành viên, tác giả, người tham gia), hãy trả lời trực tiếp mà KHÔNG trích dẫn tài liệu tham khảo.\n"
-        "12. KHÔNG liệt kê hay in lại log 'TÀI LIỆU THAM KHẢO' hoặc 'MÃ NGUỒN LIÊN QUAN' trong câu trả lời.\n"
-    )
+    system_prompt = _RAG_SYSTEM_PROMPT
     response_language = "Vietnamese" if language == "vi" else "English"
     system_prompt += (
         f"\n13. Respond exclusively in {response_language}, matching the current application language. "
