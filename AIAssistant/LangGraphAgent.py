@@ -55,7 +55,7 @@ _OBSERVATION_KEEP_LAST = 2           # giu lai N tool-result messages gan nhat
 _CONTEXT_SYSTEM_LIMIT = 6000
 _CONTEXT_MESSAGE_LIMIT = 1800
 _CONTEXT_TOTAL_LIMIT = 14000
-_SEMANTIC_REFLECTION_TOOLS = {"run_command", "write_file", "patch_file", "create_directory", "application_action"}
+_SEMANTIC_REFLECTION_TOOLS = {"run_command", "write_file", "patch_file", "replace_file_content", "multi_replace_file_content", "create_directory", "application_action"}
 
 _PLANNER_PROMPT = """Bạn là Planner (Người lập kế hoạch) của hệ thống AI Assistant.
 Nhiệm vụ của bạn là phân tích yêu cầu của người dùng và lập ra một kế hoạch ngắn gọn, từng bước một.

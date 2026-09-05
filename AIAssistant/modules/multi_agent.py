@@ -65,10 +65,11 @@ def route_task(task: str, channel: str = "agent") -> Specialist:
 
 _RESEARCH_TOOLS = {"read_file", "list_directory", "find_files", "search_text", "analyze_code", "git_diff", "rag_search"}
 _VERIFICATION_TOOLS = {"validate_file", "get_project_status"}
-_CODE_TOOLS = {"write_file", "patch_file", "create_directory", "run_command"}
+_CODE_TOOLS = {"write_file", "patch_file", "replace_file_content", "multi_replace_file_content", "create_directory", "run_command"}
 CODE_AGENT_TOOLS = frozenset({
     "find_files", "list_directory", "search_text", "read_file", "analyze_code", "git_diff",
-    "get_project_status", "validate_file", "write_file", "patch_file", "create_directory", "run_command",
+    "get_project_status", "validate_file", "write_file", "patch_file",
+    "replace_file_content", "multi_replace_file_content", "create_directory", "run_command",
 })
 _WORKFLOW_TOOLS = {"application_action"}
 _AUDIT_LOCK = threading.Lock()

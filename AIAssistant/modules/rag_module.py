@@ -68,6 +68,13 @@ class ChunkResult:
     is_image:    bool = False
     image_b64:   str | None = None
     metadata:    dict = field(default_factory=dict)
+    # ── Hierarchical Chunking fields ──────────────────────────────────────────
+    # parent_text: the broader context that contains this chunk (e.g. the
+    # enclosing class body for a method chunk, or the H1 section for a
+    # sub-heading chunk).  Set at build time; appended to prompt context at
+    # retrieval time only when the parent adds non-redundant signal.
+    parent_text:     str | None = None
+    hierarchy_level: int = 0   # 0 = flat/root, 1 = class/H1, 2 = method/H2+
 
 # ─── 8b. Vision helpers ──────────────────────────────────────────────────────
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
@@ -284,6 +291,7 @@ class MarkdownLoader(BaseDocumentLoader):
 
         results    = []
         boundaries = [m.start() for m in matches] + [len(content)]
+        h1_parent_text: str | None = None  # tracks the current H1 parent
 
         for i, match in enumerate(matches):
             level   = len(match.group(1))
@@ -295,17 +303,27 @@ class MarkdownLoader(BaseDocumentLoader):
 
             prefix = f"[Source MD: {rel}] {'#'*level} {heading}\n"
 
+            # ── Hierarchical: track the most recent H1 as parent ───────────
+            if level == 1:
+                h1_parent_text = prefix + section[:self.MAX_CHUNK_CHARS]
+            parent_text_for_chunk = h1_parent_text if level > 1 else None
+            h_level = level  # use markdown heading level directly
+
             if len(section) <= self.MAX_CHUNK_CHARS:
                 results.append(ChunkResult(
-                    text        = prefix + section,
-                    source_path = fp,
-                    loader_type = "md",
-                    metadata    = {"heading": heading, "level": level},
+                    text             = prefix + section,
+                    source_path      = fp,
+                    loader_type      = "md",
+                    metadata         = {"heading": heading, "level": level},
+                    parent_text      = parent_text_for_chunk,
+                    hierarchy_level  = h_level,
                 ))
             else:
                 for sc in self._sliding_window_chunks(section, fp, label="Source MD"):
-                    sc.text     = prefix + sc.text.split("\n", 1)[-1]
-                    sc.metadata = {"heading": heading, "level": level}
+                    sc.text            = prefix + sc.text.split("\n", 1)[-1]
+                    sc.metadata        = {"heading": heading, "level": level}
+                    sc.parent_text     = parent_text_for_chunk
+                    sc.hierarchy_level = h_level
                     results.append(sc)
 
         return results
@@ -375,13 +393,46 @@ class CppHeaderLoader(BaseDocumentLoader):
             block = "\n".join(lines[start:end]).strip()
             if not self._is_quality_chunk(block):
                 continue
-            scope = "Class" if isinstance(node, ast.ClassDef) else "Function"
-            results.append(ChunkResult(
-                text        = f"[Source: {rel}] {scope}: {node.name}\n{block[:self.MAX_CHUNK_CHARS]}",
-                source_path = fp,
-                loader_type = "source",
-                metadata    = {"symbol": node.name, "scope": scope},
-            ))
+
+            is_class = isinstance(node, ast.ClassDef)
+            scope    = "Class" if is_class else "Function"
+
+            if is_class:
+                # ── Parent chunk: entire class body ────────────────────────
+                class_text = f"[Source: {rel}] Class: {node.name}\n{block[:self.MAX_CHUNK_CHARS]}"
+                class_chunk = ChunkResult(
+                    text            = class_text,
+                    source_path     = fp,
+                    loader_type     = "source",
+                    metadata        = {"symbol": node.name, "scope": "Class"},
+                    hierarchy_level = 1,
+                )
+                results.append(class_chunk)
+
+                # ── Child chunks: individual methods ───────────────────────
+                for method in ast.iter_child_nodes(node):
+                    if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    ms = method.lineno - 1
+                    me = getattr(method, "end_lineno", ms + 20)
+                    mblock = "\n".join(lines[ms:me]).strip()
+                    if not self._is_quality_chunk(mblock):
+                        continue
+                    results.append(ChunkResult(
+                        text            = f"[Source: {rel}] Method: {node.name}.{method.name}\n{mblock[:self.MAX_CHUNK_CHARS]}",
+                        source_path     = fp,
+                        loader_type     = "source",
+                        metadata        = {"symbol": method.name, "scope": "Method", "class": node.name},
+                        parent_text     = class_text,
+                        hierarchy_level = 2,
+                    ))
+            else:
+                results.append(ChunkResult(
+                    text        = f"[Source: {rel}] {scope}: {node.name}\n{block[:self.MAX_CHUNK_CHARS]}",
+                    source_path = fp,
+                    loader_type = "source",
+                    metadata    = {"symbol": node.name, "scope": scope},
+                ))
 
         return results or self._sliding_window_chunks(content, fp, label="Source")
 
@@ -921,6 +972,12 @@ def get_context(query: str, query_image_b64: str | None = None, result_k: int = 
     candidates = _dedup_by_source(candidates, max_per_source=2)
     candidates = candidates[:max(1, min(result_k, RERANKER_TOP_K))]
 
+    # Bước 3b: Hierarchical parent expansion — inject parent context for child
+    # chunks (e.g. the class body when a method was retrieved, or the H1 section
+    # when an H2/H3 chunk matched).  Budget is capped at half of MAX_CONTEXT_CHARS
+    # so child chunks always dominate the prompt.
+    candidates = _expand_with_parent(candidates, budget_chars=MAX_CONTEXT_CHARS // 2)
+
     # Bước 4: Phân loại + cắt theo ngân sách context
     doc_chunks   = []
     code_chunks  = []
@@ -948,7 +1005,7 @@ def get_context(query: str, query_image_b64: str | None = None, result_k: int = 
         if hasattr(trimmed_chunk, "text"):
             trimmed_chunk.text = trimmed_text
 
-        if text_content.startswith("[Tai lieu"):
+        if text_content.startswith("[Tai lieu") or text_content.startswith("[Parent context]\n[Tai lieu"):
             doc_chunks.append(trimmed_chunk)
         else:
             code_chunks.append(trimmed_chunk)
@@ -959,3 +1016,39 @@ def get_context(query: str, query_image_b64: str | None = None, result_k: int = 
     return doc_ctx, code_ctx, image_chunks
 
 
+def _expand_with_parent(chunks: list, budget_chars: int) -> list:
+    """Hierarchical context expansion: append parent_text snippets when a
+    child chunk was retrieved and the parent adds new information.
+
+    The parent is appended as a synthetic chunk AFTER the child so the model
+    sees the specific evidence first and the broader scope second.
+    Deduplication avoids re-injecting a parent that was already retrieved as
+    its own top-k result.
+    """
+    seen_texts: set[str] = {getattr(c, "text", "")[:80] for c in chunks}
+    expanded   : list    = []
+    used_chars           = sum(len(getattr(c, "text", "")) for c in chunks)
+
+    for chunk in chunks:
+        expanded.append(chunk)
+        parent = getattr(chunk, "parent_text", None)
+        if not parent:
+            continue
+        key = parent[:80]
+        if key in seen_texts:
+            continue
+        remaining = budget_chars - used_chars
+        if remaining < 200:
+            break
+        # Inject a truncated parent for broad scope without blowing the budget
+        parent_snippet = parent[:min(len(parent), remaining, 1200)]
+        from copy import copy
+        parent_chunk = copy(chunk)
+        parent_chunk.text            = f"[Parent context]\n{parent_snippet}"
+        parent_chunk.parent_text     = None   # avoid infinite nesting
+        parent_chunk.hierarchy_level = getattr(chunk, "hierarchy_level", 0) - 1
+        expanded.append(parent_chunk)
+        seen_texts.add(key)
+        used_chars += len(parent_snippet)
+
+    return expanded

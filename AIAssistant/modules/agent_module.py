@@ -36,10 +36,12 @@ from .mcp_client import call_tool as call_mcp_tool
 from .coding_agent import CodingTaskContext, instruction as coding_instruction, is_coding_task
 from .toolapp_agent import ToolAppAgent
 from .agent_tools import ToolRegistry
+from . import lsp_client as _lsp_client
 from .approval_manager import PendingActionStore
 from .ui_action_manager import prepare_next_action
 from .task_coordinator import coordinator as task_coordinator
 from .multi_agent import (
+    Specialist,
     audit as audit_agent,
     authorise as authorise_delegation,
     delegate,
@@ -162,6 +164,36 @@ AGENT_TOOLS = [
         },
     },
     {
+        "name": "replace_file_content",
+        "description": "Replace a single contiguous block of code in an existing file. THIS REQUIRES USER APPROVAL. Read the file first and provide EXACT original text.",
+        "parameters": {
+            "path": {"type": "string", "description": "Relative path from project root", "required": True},
+            "targetContent": {"type": "string", "description": "Exact existing text to replace, including whitespaces", "required": True},
+            "replacementContent": {"type": "string", "description": "Replacement text", "required": True},
+            "description": {"type": "string", "description": "Brief description of the change", "required": True},
+        },
+    },
+    {
+        "name": "multi_replace_file_content",
+        "description": "Edit an existing file by replacing multiple non-contiguous blocks of code. THIS REQUIRES USER APPROVAL. Read the file first.",
+        "parameters": {
+            "path": {"type": "string", "description": "Relative path from project root", "required": True},
+            "replacements": {
+                "type": "array", 
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "targetContent": {"type": "string", "description": "Exact text to replace", "required": True},
+                        "replacementContent": {"type": "string", "description": "Replacement text", "required": True}
+                    }
+                },
+                "description": "List of replacements", 
+                "required": True
+            },
+            "description": {"type": "string", "description": "Brief description of the change", "required": True},
+        },
+    },
+    {
         "name": "create_directory",
         "description": "Create a directory inside the project. THIS REQUIRES USER APPROVAL.",
         "parameters": {
@@ -219,6 +251,32 @@ AGENT_TOOLS = [
         },
     },
 ]
+
+# ── LSP tools (go_to_definition, find_references) ─────────────────────────────
+AGENT_TOOLS.extend([
+    {
+        "name": "go_to_definition",
+        "description": "Jump to the definition of a C++ or Python symbol using the language server (clangd/pylsp). "
+                       "Use when you need to find where a function, class, or variable is defined. "
+                       "Requires clangd to be installed for C++ files, pylsp for Python files.",
+        "parameters": {
+            "path":      {"type": "string",  "description": "Relative path to source file", "required": True},
+            "line":      {"type": "integer", "description": "1-based line number of the symbol", "required": True},
+            "character": {"type": "integer", "description": "0-based character offset in the line", "required": True},
+        },
+    },
+    {
+        "name": "find_references",
+        "description": "Find all usages/references of a C++ or Python symbol using the language server (clangd/pylsp). "
+                       "Use when you need to understand the full impact of a change before editing. "
+                       "Requires clangd to be installed for C++ files, pylsp for Python files.",
+        "parameters": {
+            "path":      {"type": "string",  "description": "Relative path to source file", "required": True},
+            "line":      {"type": "integer", "description": "1-based line number of the symbol", "required": True},
+            "character": {"type": "integer", "description": "0-based character offset in the line", "required": True},
+        },
+    },
+])
 
 # ``application_action`` is the sole public UI tool.  The former category
 # names remain parser aliases for old conversations, but are not model tools.
@@ -1023,6 +1081,62 @@ def _execute_approved_patch_file(params: dict) -> dict:
         return {"error": f"Unable to patch file: {error}"}
 
 
+def _execute_approved_replace_file_content(params: dict) -> dict:
+    path = params.get("path", "")
+    target = params.get("targetContent", "")
+    replacement = params.get("replacementContent", "")
+    abs_path = _agent_safe_path(path)
+    if abs_path is None or not os.path.isfile(abs_path):
+        return {"error": f"Invalid or missing file: {path}"}
+    if not target:
+        return {"error": "Target content must not be empty."}
+    try:
+        with open(abs_path, "r", encoding="utf-8") as handle:
+            content = handle.read()
+        matches = content.count(target)
+        if matches != 1:
+            return {"error": f"Replace requires exactly one matching fragment; found {matches}.", "path": path}
+        updated = content.replace(target, replacement, 1)
+        result = write_sandboxed_file(abs_path, updated, PROJECT_DIR)
+        if result.get("error"):
+            return result
+        return {"success": True, "path": path, "replacements": 1,
+                "bytes_written": result.get("bytes_written", 0), "sandbox": result.get("sandbox")}
+    except OSError as error:
+        return {"error": f"Unable to replace file content: {error}"}
+
+
+def _execute_approved_multi_replace_file_content(params: dict) -> dict:
+    path = params.get("path", "")
+    replacements = params.get("replacements", [])
+    abs_path = _agent_safe_path(path)
+    if abs_path is None or not os.path.isfile(abs_path):
+        return {"error": f"Invalid or missing file: {path}"}
+    if not replacements:
+        return {"error": "Replacements list must not be empty."}
+    try:
+        with open(abs_path, "r", encoding="utf-8") as handle:
+            content = handle.read()
+        
+        for idx, rep in enumerate(replacements):
+            target = rep.get("targetContent", "")
+            replacement = rep.get("replacementContent", "")
+            if not target:
+                return {"error": f"Target content at index {idx} must not be empty."}
+            matches = content.count(target)
+            if matches != 1:
+                return {"error": f"Replace at index {idx} requires exactly one matching fragment; found {matches}.", "path": path}
+            content = content.replace(target, replacement, 1)
+
+        result = write_sandboxed_file(abs_path, content, PROJECT_DIR)
+        if result.get("error"):
+            return result
+        return {"success": True, "path": path, "replacements": len(replacements),
+                "bytes_written": result.get("bytes_written", 0), "sandbox": result.get("sandbox")}
+    except OSError as error:
+        return {"error": f"Unable to multi-replace file content: {error}"}
+
+
 def _execute_approved_create_directory(params: dict) -> dict:
     path = params.get("path", "")
     abs_path = _agent_safe_path(path)
@@ -1071,7 +1185,11 @@ MCP_LOCAL_EXECUTORS = {
     "app_action_ai":             tool_application_action,
     "app_action_general":        tool_application_action,
     "rag_search":                tool_rag_search,
-    # write_file, run_command, patch_file, create_directory require approval
+    # LSP tools (read-only, require clangd or pylsp on PATH)
+    "go_to_definition":          _lsp_client.tool_go_to_definition,
+    "find_references":           _lsp_client.tool_find_references,
+    # write_file, run_command, patch_file, replace_file_content,
+    # multi_replace_file_content, create_directory require approval
 }
 
 # Safe tools use the local Streamable HTTP MCP endpoint. Approval-gated write
@@ -1399,14 +1517,16 @@ def _run_langgraph_agent(system_prompt: str, task: str, session_id: str,
                           event_sink: Callable[[dict], None] | None = None,
                           prior_step_count: int = 0,
                           approval_granted: bool = False,
-                          approval_scope: str = "") -> dict:
+                          approval_scope: str = "",
+                          supervisor_route: Specialist | None = None) -> dict:
     """Run the tool loop through LangGraph while preserving the Qt API response."""
     if not LANGGRAPH_AVAILABLE or LocalAgentGraph is None:
         raise HTTPException(
             status_code=503,
             detail="LangGraph is required for Agent mode. Run: pip install -r AIAssistant/requirements.txt",
         )
-    supervisor_route = route_task(task)
+    if supervisor_route is None:
+        supervisor_route = route_task(task)
 
     def complete(messages: list[dict[str, str]], current_temperature: float) -> str:
         total_chars = sum(len(message.get("content", "")) for message in messages)
@@ -1704,6 +1824,30 @@ def _stream_langgraph_execution(run: Callable[[Callable[[dict], None]], dict]):
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+def llm_route_task(task: str, temperature: float = 0.1) -> Specialist:
+    """Use LLM to dynamically route the task to a specialist."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "specialist": {
+                "type": "string",
+                "enum": ["code", "toolapp", "chatbot", "supervisor", "research", "desktop_workflow"]
+            }
+        },
+        "required": ["specialist"]
+    }
+    messages = [
+        {"role": "system", "content": "You are a routing supervisor. Route the user task to the most appropriate specialist.\n'code' for code editing/creation tasks.\n'toolapp' for application/UI manipulation.\n'chatbot' for conversational queries.\n'research' for searching/reading documentation without changes.\n'supervisor' if unclear."},
+        {"role": "user", "content": task}
+    ]
+    response = _structured_agent_completion(messages, max_tokens=100, temperature=temperature, schema=schema)
+    try:
+        data = json.loads(response)
+        return Specialist(data.get("specialist", "supervisor"))
+    except Exception as e:
+        logger.warning("Failed to parse LLM route response: %s", e)
+        return Specialist.SUPERVISOR
+
 @agent_router.post("/v1/agent/execute")
 def agent_execute(request: AgentExecuteRequest, http_req: Request):
     """
@@ -1718,7 +1862,12 @@ def agent_execute(request: AgentExecuteRequest, http_req: Request):
     task = request.task
     session_id = request.session_id or "agent_default"
     task_coordinator.start(session_id, task=request.task)
-    supervisor_route = route_task(task)
+    
+    try:
+        supervisor_route = llm_route_task(task, request.temperature)
+    except Exception as e:
+        logger.warning("LLM routing failed, falling back to heuristic: %s", e)
+        supervisor_route = route_task(task)
     logger.info("[SUPERVISOR] routed task to %s", supervisor_route.value)
     retry_idx  = request.retry_message_index  # None ở request thường
 
@@ -1844,11 +1993,11 @@ def agent_execute(request: AgentExecuteRequest, http_req: Request):
                                                    initial_messages=[{"role": "system", "content": system_prompt},
                                                                      *history_messages,
                                                                      {"role": "user", "content": task_with_attachments}],
-                                                   event_sink=sink))
+                                                   event_sink=sink, supervisor_route=supervisor_route))
         result = _run_langgraph_agent(
             system_prompt, task_with_attachments, session_id, request.temperature, request.language, req_start,
             initial_messages=[{"role": "system", "content": system_prompt}, *history_messages,
-                              {"role": "user", "content": task_with_attachments}])
+                              {"role": "user", "content": task_with_attachments}], supervisor_route=supervisor_route)
         if retry_idx is not None:
             result["retry_message_index"] = retry_idx
         return _agent_response(result, http_req)
@@ -2238,6 +2387,10 @@ def agent_approve(request: AgentApproveRequest, http_req: Request):
         tool_result = _execute_approved_run_command(tool_params)
     elif tool_name == "patch_file":
         tool_result = _execute_approved_patch_file(tool_params)
+    elif tool_name == "replace_file_content":
+        tool_result = _execute_approved_replace_file_content(tool_params)
+    elif tool_name == "multi_replace_file_content":
+        tool_result = _execute_approved_multi_replace_file_content(tool_params)
     elif tool_name == "create_directory":
         tool_result = _execute_approved_create_directory(tool_params)
     else:

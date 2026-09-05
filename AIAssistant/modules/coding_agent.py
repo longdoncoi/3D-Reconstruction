@@ -53,7 +53,7 @@ _DISCOVERY_TOOLS = frozenset({
     "git_diff", "get_project_status",
 })
 _SOURCE_TOOLS = frozenset({"read_file", "analyze_code"})
-_MUTATION_TOOLS = frozenset({"write_file", "patch_file", "create_directory"})
+_MUTATION_TOOLS = frozenset({"write_file", "patch_file", "replace_file_content", "multi_replace_file_content", "create_directory"})
 
 
 def _result_is_successful(result: object) -> bool:
@@ -278,7 +278,7 @@ even when the code controls a desktop feature.
 
 Available Code Agent toolbox: find_files, list_directory, search_text,
 read_file (including symbol/range reads), analyze_code, git_diff,
-get_project_status, validate_file, write_file, patch_file,
-create_directory, and run_command. Prefer the smallest read/search operation
+get_project_status, validate_file, write_file, patch_file, replace_file_content,
+multi_replace_file_content, create_directory, and run_command. Prefer the smallest read/search operation
 that proves the change; use git_diff and validate_file after an approved edit.
 """.strip()

@@ -28,6 +28,8 @@ _TOOL_CONTRACT_OVERRIDES = {
     "application_action": {"timeout_seconds": 30, "policy": "desktop_ack"},
     "write_file": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
     "patch_file": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
+    "replace_file_content": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
+    "multi_replace_file_content": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
     "create_directory": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
     "run_command": {"timeout_seconds": 120, "policy": "code_execute", "requires_approval": True},
 }

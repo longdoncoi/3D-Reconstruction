@@ -51,6 +51,7 @@ def load_model(model_idx: int | None = None):
     with llm_lock:
         _release_ml_memory()
         model_path = _download_if_missing(selected)
+        logger.info("loading model: %s", model_path)
         _chat_handler = None
         is_vision_model = bool(selected.get("is_vision"))
         used_cpu = False
