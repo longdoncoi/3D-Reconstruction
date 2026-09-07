@@ -45,6 +45,9 @@ void AIAssistant::startServer(int modelIndex) {
 }
 
 void AIAssistant::startServerProcess(int modelIndex) {
+    const QStringList models = AppConstants::AIAssistant::modelNames();
+    QString modelName = (modelIndex >= 0 && modelIndex < models.size()) ? models.at(modelIndex) : "Unknown Model";
+    qDebug() << "[AI Server] Starting server with model index:" << modelIndex << "(" << modelName << ")";
     m_currentModelIndex = modelIndex;
     m_serverReadyEmitted = false;
     
@@ -97,6 +100,9 @@ void AIAssistant::stopServer() {
 }
 
 void AIAssistant::switchModel(int index) {
+    const QStringList models = AppConstants::AIAssistant::modelNames();
+    QString modelName = (index >= 0 && index < models.size()) ? models.at(index) : "Unknown Model";
+    qDebug() << "[AI Server] Switching model to index:" << index << "(" << modelName << ")";
     startServer(index);
 }
 
@@ -105,6 +111,7 @@ void AIAssistant::restartModel() {
         emit errorOccurred(LM_TR("ai.server_not_running"));
         return;
     }
+    qDebug() << "[AI Server] Reloading current model";
     emit serverStatusChanged(tr("Đang tải lại Model..."));
     QNetworkRequest req{QUrl(AppConstants::AIServer::adminEndpoint("reload-model"))};
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
@@ -551,6 +558,14 @@ void AIAssistant::retryAgentTask(const QString &sessionId, int msgIndex) {
     msg["timestamp"] = QDateTime::currentDateTime().toString(AppConstants::Format::chatTimestamp());
     sess->messages[msgIndex] = msg;
 
+    QStringList attachments;
+    if (msg.contains("attachments")) {
+        QJsonArray arr = msg["attachments"].toArray();
+        for (int i = 0; i < arr.size(); ++i) {
+            attachments.append(arr[i].toString());
+        }
+    }
+
     // Remove old response(s) immediately following the retried message
     while (sess->messages.size() > msgIndex + 1) {
         const QString nextRole = sess->messages[msgIndex + 1]["role"].toString();
@@ -569,7 +584,7 @@ void AIAssistant::retryAgentTask(const QString &sessionId, int msgIndex) {
     request.insertAfterIndex = msgIndex;
     QList<QJsonObject> conversation;
     for (int index = 0; index <= msgIndex; ++index) conversation.append(sess->messages.at(index));
-    request.payload = buildAgentPayload(conversation, msg["content"].toString(), {});
+    request.payload = buildAgentPayload(conversation, msg["content"].toString(), attachments);
     request.payload["session_id"] = sessionId;
     m_queuedRequests.append(request);
     m_isThinking = true;
@@ -586,7 +601,7 @@ void AIAssistant::editMessage(const QString &sessionId, int msgIndex, const QStr
     msg["content"] = newText;
     sess->messages[msgIndex] = msg;
     
-    retryMessage(sessionId, msgIndex);
+    retryAgentTask(sessionId, msgIndex);
 }
 
 // ── Agent mode ────────────────────────────────────────────────────────────────

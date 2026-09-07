@@ -53,14 +53,46 @@ def route_task(task: str, channel: str = "agent") -> Specialist:
     if channel == "chatbot":
         supervisor_logger.info("Supervisor route | channel=chatbot -> chatbot")
         return Specialist.CHATBOT
+        
+    supervisor_logger.info("Supervisor route | Calling LLM for intent classification")
+    try:
+        from . import llm_module
+        if getattr(llm_module, "llm", None) is not None:
+            prompt = (
+                "You are an expert intent classifier for a desktop AI assistant. "
+                "Classify the following user request into exactly one of these categories: "
+                "'CODE' (if it asks to write, modify, debug, or analyze code/software), "
+                "'TOOLAPP' (if it asks to control the app, open/load files in viewer, view 3D models, or start 3D reconstruction), "
+                "'CHATBOT' (if it's a general question, casual chat, explaining images, or asking for concepts/documentation). "
+                "Output ONLY the category name."
+            )
+            messages = [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": task}
+            ]
+            with llm_module.llm_lock:
+                response = llm_module.llm.create_chat_completion(messages=messages, max_tokens=10, temperature=0.1)
+            text = response.get("choices", [{}])[0].get("message", {}).get("content", "").strip().upper()
+            supervisor_logger.info("Supervisor route | LLM classified as: %s", text)
+            if "CODE" in text:
+                return Specialist.CODE
+            if "TOOLAPP" in text:
+                return Specialist.TOOLAPP
+            if "CHATBOT" in text:
+                return Specialist.CHATBOT
+    except Exception as e:
+        supervisor_logger.warning("Supervisor route | LLM classification failed, falling back: %s", e)
+
+    # Fallback to hardcoded filters if LLM classification fails
     if is_coding_task(task):
-        supervisor_logger.info("Supervisor route | coding | task=%s", task[:160])
+        supervisor_logger.info("Supervisor route | fallback coding | task=%s", task[:160])
         return Specialist.CODE
     if looks_like_ui_action(task):
-        supervisor_logger.info("Supervisor route | toolapp | task=%s", task[:160])
+        supervisor_logger.info("Supervisor route | fallback toolapp | task=%s", task[:160])
         return Specialist.TOOLAPP
-    supervisor_logger.info("Supervisor route | unresolved -> supervisor | task=%s", task[:160])
-    return Specialist.SUPERVISOR
+        
+    supervisor_logger.info("Supervisor route | unresolved -> chatbot | task=%s", task[:160])
+    return Specialist.CHATBOT
 
 
 _RESEARCH_TOOLS = {"read_file", "list_directory", "find_files", "search_text", "analyze_code", "git_diff", "rag_search"}

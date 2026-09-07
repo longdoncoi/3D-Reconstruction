@@ -40,6 +40,9 @@ class ChatbotAgent:
         return prepared, {"suppress_citations": suppress_citations}
 
     def clean_answer(self, answer: str, metadata: dict[str, Any], finish_reason: str) -> str:
+        import re
+        answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
+        
         if metadata.get("suppress_citations"):
             answer = self._llm._strip_reference_citations_for_character_answer(answer)
         if finish_reason == "length":

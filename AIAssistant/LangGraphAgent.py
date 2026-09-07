@@ -66,7 +66,7 @@ Trả lời CHÍNH XÁC theo JSON object với schema:
  "steps": ["bước 1", "bước 2", ...]}
 Đặt requires_plan=false và các mảng rỗng nếu yêu cầu chỉ có một bước độc lập.
 Với yêu cầu điều khiển giao diện (mở/tải ảnh, mô hình, DICOM, tái tạo),
-hãy lập các bước thực thi trực tiếp trong ứng dụng; không lập bước mở ứng dụng, tìm tài liệu,
+hãy lập các bước thực thi trực tiếp trong ứng dụng, không lập bước mở ứng dụng, tìm tài liệu,
 tìm mã nguồn, RAG hoặc tìm vị trí tệp.
 Với yêu cầu điều khiển giao diện gồm nhiều hành động nối bằng "và"/"sau đó"/"rồi",
 BẮT BUỘC tách mỗi hành động thành một bước riêng biệt trong "steps".
@@ -96,7 +96,7 @@ Trả về ĐÚNG MỘT JSON object:
 
 _REASONER_PROMPT = """Bạn là Reasoner (Người ra quyết định) của hệ thống AI Assistant.
 Nhiệm vụ của bạn là dựa vào yêu cầu của người dùng, ngữ cảnh hiện tại và kế hoạch đã đề ra để quyết định bước đi tiếp theo.
-Bạn phải tuân thủ nghiêm ngặt các quy tắc và định dạng kết quả (JSON) đã được hướng dẫn.
+Hãy đưa ra lựa chọn gọi tool phù hợp nhất để tiến hành công việc.
 """
 
 

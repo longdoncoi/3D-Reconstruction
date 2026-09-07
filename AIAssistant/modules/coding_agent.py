@@ -13,13 +13,13 @@ logger = get_agent_logger("coding")
 _CODING_TERMS = (
     "code", "coding", "bug", "fix", "refactor", "test", "unit test", "build",
     "compile", "cmake", "lint", "review", "implement", "implementation", "function",
-    "class", "source", "function", "method", "symbol", "snippet", "citation", "cite",
+    "class", "source", "method", "symbol", "snippet", "citation", "cite",
     "feature", "enhance", "enhancement", "improve", "improvement", "export",
-    "add feature", "bo sung", "them", "them tinh nang", "tinh nang", "chuc nang",
-    "phan tich", "giai thich", "ham", "analyze", "analysis", "explain", "debug", "diagnose",
+    "add feature", "bo sung", "them tinh nang", "tinh nang", "chuc nang",
+    "phan tich code", "giai thich code", "analyze code", "explain code", "debug", "diagnose",
     "sua", "sua loi", "loi",
-    "hàm", "ham", "trích dẫn", "trich dan", "mã nguồn", "ma nguon",
-    "mã", "lỗi", "sửa", "kiểm thử", "tái cấu trúc", "biên dịch",
+    "trích dẫn", "trich dan", "mã nguồn", "ma nguon",
+    "lỗi", "sửa", "kiểm thử", "tái cấu trúc", "biên dịch",
 )
 
 

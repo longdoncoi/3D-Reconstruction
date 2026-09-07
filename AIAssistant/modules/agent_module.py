@@ -1408,16 +1408,11 @@ def _constrained_agent_completion(messages: list[dict], max_tokens: int, tempera
             # Remote deployments are expected to return the same envelope.
             logger.info("Constrained LLM response: %s", content)
             return content
-        from llama_cpp import LlamaGrammar  # imported lazily for testability
         kwargs = {
             "messages": messages, "max_tokens": max_tokens,
             "temperature": temperature, "repeat_penalty": 1.1, "stream": False,
         }
-        native_tools = os.getenv("AGENT_NATIVE_TOOL_CALLS", "0") == "1"
-        if native_tools:
-            kwargs.update({"tools": _LLAMA_CPP_TOOLS, "tool_choice": "auto"})
-        else:
-            kwargs["grammar"] = LlamaGrammar.from_json_schema(_TOOL_GRAMMAR_SCHEMA)
+        kwargs.update({"tools": _LLAMA_CPP_TOOLS, "tool_choice": "auto"})
         with llm_runtime.llm_lock:
             response = llm_runtime.llm.create_chat_completion(**kwargs)
     except Exception as error:  # noqa: BLE001
@@ -1442,14 +1437,25 @@ def _constrained_agent_completion(messages: list[dict], max_tokens: int, tempera
         raise RuntimeError("Constrained decoder returned no text content")
     logger.info("Constrained LLM response: %s", content)
     try:
-        envelope = json.loads(content)
+        # Xử lý trường hợp model sinh ra thêm văn bản rác sau chuỗi JSON
+        content_stripped = content.strip()
+        idx = content_stripped.find('{')
+        if idx != -1:
+            json_str = content_stripped[idx:]
+            envelope, _ = json.JSONDecoder().raw_decode(json_str)
+        else:
+            envelope = json.loads(content)
     except json.JSONDecodeError as error:
-        raise RuntimeError("Constrained decoder returned invalid JSON") from error
+        logger.warning("Constrained decoder returned non-JSON text, treating as final response: %s", error)
+        return content
+        
     if envelope.get("kind") == "final" and isinstance(envelope.get("content"), str):
         return envelope["content"]
     if envelope.get("kind") == "tool":
         return json.dumps(envelope, ensure_ascii=False)
-    raise RuntimeError("Constrained decoder returned an unsupported envelope")
+        
+    logger.warning("Constrained decoder returned an unsupported envelope, treating as raw text.")
+    return content
 
 
 _PLANNER_JSON_SCHEMA = {
@@ -1831,22 +1837,22 @@ def llm_route_task(task: str, temperature: float = 0.1) -> Specialist:
         "properties": {
             "specialist": {
                 "type": "string",
-                "enum": ["code", "toolapp", "chatbot", "supervisor", "research", "desktop_workflow"]
+                "enum": ["code", "toolapp", "chatbot", "research", "desktop_workflow"]
             }
         },
         "required": ["specialist"]
     }
     messages = [
-        {"role": "system", "content": "You are a routing supervisor. Route the user task to the most appropriate specialist.\n'code' for code editing/creation tasks.\n'toolapp' for application/UI manipulation.\n'chatbot' for conversational queries.\n'research' for searching/reading documentation without changes.\n'supervisor' if unclear."},
+        {"role": "system", "content": "You are a routing supervisor. Route the user task to the most appropriate specialist.\n'code' for code editing/creation tasks.\n'toolapp' for application/UI manipulation.\n'research' for searching/reading documentation without changes.\n'chatbot' for conversational queries, explanations, answering questions, or if unclear."},
         {"role": "user", "content": task}
     ]
     response = _structured_agent_completion(messages, max_tokens=100, temperature=temperature, schema=schema)
     try:
         data = json.loads(response)
-        return Specialist(data.get("specialist", "supervisor"))
+        return Specialist(data.get("specialist", "chatbot"))
     except Exception as e:
         logger.warning("Failed to parse LLM route response: %s", e)
-        return Specialist.SUPERVISOR
+        return Specialist.CHATBOT
 
 @agent_router.post("/v1/agent/execute")
 def agent_execute(request: AgentExecuteRequest, http_req: Request):
@@ -1984,6 +1990,52 @@ def agent_execute(request: AgentExecuteRequest, http_req: Request):
     if request.attachments:
         names = [os.path.basename(path) for path in request.attachments]
         task_with_attachments += "\n\n[Attached files: " + ", ".join(names) + "]"
+
+    if supervisor_route.value == "chatbot":
+        logger.info("[MODE: AGENT] Chatbot route fast-path (bypassing agent loop)")
+        from .chatbot_agent import ChatbotAgent
+        chatbot = ChatbotAgent(llm_runtime, rag_runtime)
+        image_uri = request.attachments[0] if request.attachments else None
+        
+        user_msg = {"role": "user", "content": task_with_attachments}
+        if request.attachments:
+            user_msg["attachments"] = request.attachments
+        messages_to_build = [*history_messages, user_msg]
+        
+        prepared_msgs, metadata = chatbot.build_messages(
+            messages_to_build, task, image_uri, request.language
+        )
+
+        def _run_chatbot(sink):
+            if backend_mode() != "llama_cpp":
+                resp = openai_compatible_completion(prepared_msgs, max_tokens=2048, temperature=request.temperature)
+                ans = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+            else:
+                with llm_runtime.llm_lock:
+                    resp = llm_runtime.llm.create_chat_completion(
+                        messages=prepared_msgs, max_tokens=2048, temperature=request.temperature
+                    )
+                ans = resp.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+            ans = chatbot.clean_answer(ans, metadata, "stop")
+            sink({"type": "final_answer", "content": ans, "iteration": 0})
+            task_coordinator.finish(session_id, success=True)
+            res = {
+                "status": "completed",
+                "session_id": session_id,
+                "prior_step_count": 0,
+                "steps": [{"type": "final_answer", "content": ans, "iteration": 0}],
+                "total_ms": round((time.monotonic() - req_start) * 1000),
+            }
+            if retry_idx is not None:
+                res["retry_message_index"] = retry_idx
+            return res
+
+        if "text/event-stream" in http_req.headers.get("accept", ""):
+            return _stream_langgraph_execution(_run_chatbot)
+            
+        def _dummy_sink(step): pass
+        return _agent_response(_run_chatbot(_dummy_sink), http_req)
 
     if use_langgraph:
         if "text/event-stream" in http_req.headers.get("accept", ""):

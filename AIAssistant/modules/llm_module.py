@@ -4,8 +4,8 @@ from .rag_module import _image_to_data_uri, _is_image_file, _release_ml_memory
 _RAG_SYSTEM_PROMPT = """Bạn là trợ lý AI chuyên nghiệp cho dự án 3D-Reconstruction.
 NGUYÊN TẮC TRẢ LỜI:
 1. Dựa chủ yếu vào tài liệu và mã nguồn được cung cấp bên dưới để trả lời.
-2. Nếu câu hỏi không liên quan đến bất kỳ nội dung nào trong ngữ cảnh, hãy nói ngắn gọn: 'Câu hỏi này nằm ngoài phạm vi tài liệu dự án.' rồi dừng.
-3. Không bịa đặt hoặc suy đoán thông tin kỹ thuật không có trong tài liệu.
+2. Nếu câu hỏi hoặc hình ảnh không nằm trong ngữ cảnh dự án, hãy sử dụng kiến thức chung để trả lời và hỗ trợ người dùng một cách tốt nhất có thể.
+3. Không bịa đặt hoặc suy đoán thông tin kỹ thuật dự án nếu không có trong tài liệu.
 4. Khi nhắc đến code hoặc tài liệu, hãy ghi rõ số thứ tự nguồn [1], [2]... tương ứng với danh sách ngữ cảnh bên dưới.
 5. Ưu tiên trả lời ĐẦY ĐỦ và CHI TIẾT — giải thích từng bước, nêu lý do kỹ thuật, trích dẫn trực tiếp từ tài liệu khi có thể.
 6. Cấu trúc câu trả lời: tóm tắt ngắn → giải thích chi tiết → ví dụ/code.
@@ -79,14 +79,19 @@ def load_model(model_idx: int | None = None):
                 llm = Llama(model_path=model_path, chat_handler=_chat_handler,
                             chat_format="qwen2.5-vl", n_gpu_layers=0,
                             n_ctx=LLM_N_CTX, n_batch=128, verbose=False,
-                            use_mmap=True, use_mlock=False)
+                            use_mmap=True, use_mlock=False,
+                            chat_format_kwargs={"enable_thinking": False} 
+                            )
             else:
                 llm = Llama(model_path=model_path, n_gpu_layers=0,
                             n_ctx=LLM_N_CTX, n_batch=128, verbose=False,
-                            use_mmap=True, use_mlock=False)
+                            use_mmap=True, use_mlock=False, chat_format="qwen3",
+                            chat_format_kwargs={"enable_thinking": False} # <--- tắt thinking
+                            )
 
         active_model_desc = selected["desc"] + (" — CPU" if used_cpu else "")
         logger.info("Model loaded: %s", active_model_desc)
+        print(f"[Application Output] Model loaded: {active_model_desc}", flush=True)
         return llm
 
 
