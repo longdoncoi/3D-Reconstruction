@@ -36,7 +36,7 @@ namespace AppConstants {
         constexpr int SESSION_PANEL_MIN_WIDTH   = 120;
         constexpr int SESSION_PANEL_MAX_WIDTH   = 280;
         constexpr int MAX_ATTACHMENT_SIZE_MB     = 10;
-        constexpr int VISION_MODEL_INDEX         = 2;
+        constexpr int VISION_MODEL_INDEX         = 3;
 
         // AI model selector options
         inline QStringList modelNames() {

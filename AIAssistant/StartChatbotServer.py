@@ -52,8 +52,6 @@ class ChatRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    total = time.monotonic() - _SERVER_START_TIME
-    
     # Dọn dẹp checkpoint cũ nếu có
     try:
         from modules.checkpointing import cleanup_old_checkpoints
@@ -61,6 +59,7 @@ async def lifespan(_: FastAPI):
     except Exception as e:
         logger.warning(f"Lỗi dọn dẹp checkpoint: {e}")
 
+    total = time.monotonic() - _SERVER_START_TIME
     logger.info("Server ready in %.1fs — http://127.0.0.1:8080", total)
     print(f"[SUCCESS] AI Server started successfully ({total:.1f}s)", flush=True)
     if mcp_server.MCP_AVAILABLE:
@@ -114,6 +113,10 @@ def release_vram():
 def reload_model():
     global chatbot_agent
     try:
+        logger.info(
+            "[MODEL SWITCH] Reload requested — current index=%d (%s)",
+            MODEL_IDX, llm_module.active_model_desc,
+        )
         with llm_module.llm_lock:
             old_llm, llm_module.llm = llm_module.llm, None
             del old_llm
@@ -124,7 +127,14 @@ def reload_model():
         llm_module.load_model()
         if llm_module.is_vision_model:
             rag_module.release_embedding_for_vision()
-        logger.info("Model reloaded successfully")
+        logger.info(
+            "[MODEL SWITCH] Model reloaded successfully: %s (vision=%s)",
+            llm_module.active_model_desc, llm_module.is_vision_model,
+        )
+        print(
+            f"[Application Output] Model reloaded: {llm_module.active_model_desc}",
+            flush=True,
+        )
         return {"status": "ok", "model": llm_module.active_model_desc,
                 "message": "Model reloaded successfully"}
     except Exception as error:
@@ -276,6 +286,7 @@ async def health():
         "chunk_chars": rag_module.CHUNK_CHARS, "chars_per_token": CHARS_PER_TOKEN,
         "max_context": rag_module.MAX_CONTEXT_CHARS, "model": llm_module.active_model_desc,
         "is_vision": llm_module.is_vision_model,
+        "model_idx": MODEL_IDX,
     }
 
 
