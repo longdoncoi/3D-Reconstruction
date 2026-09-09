@@ -28,22 +28,23 @@ struct MatchingConfig {
 struct FilterConfig {
     // Statistical Outlier Removal
     int sorMeanK = 50;
-    float sorStdDevMul = 1.4f;
+    float sorStdDevMul = 1.0f;
 
     // Radius Outlier Removal
     float rorRadius = 0.006f;
-    int rorMinNeighbors = 2;
+    int rorMinNeighbors = 6;
 
     // Voxel Grid
-    float voxelLeafSize = 0.00025f;
+    float voxelLeafSize = 0.003f;
 
     // ★ MỚI — Profile "track-based / ground-truth" — cloud đã dedup + validate đa-view,
     // không cần lọc mật độ gắt vì mỗi điểm đã qua kiểm tra reprojection + parallax angle
-    int   sorMeanKTrack        = 15;
-    float sorStdDevMulTrack    = 2.5f;
+    int   sorMeanKTrack        = 50;
+    float sorStdDevMulTrack    = 1.5f;
     float rorRadiusTrack       = 0.015f;
-    int   rorMinNeighborsTrack = 2;
-    float voxelLeafSizeTrack   = 0.0002f;
+    int   rorMinNeighborsTrack = 4;
+    float rorRadiusMultiplierTrack = 8.0f;
+    float voxelLeafSizeTrack   = 0.0015f;
 };
 
 struct ReconstructionConfig {

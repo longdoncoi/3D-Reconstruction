@@ -214,7 +214,7 @@ set(PCL_DISABLE_MSVC_DEPRECATION_WARNINGS ON)
 if(NOT PCL_DIR AND EXISTS "C:/Program Files/PCL 1.15.1/cmake")
     set(PCL_DIR "C:/Program Files/PCL 1.15.1/cmake" CACHE PATH "Path to PCL CMake files" FORCE)
 endif()
-find_package(PCL REQUIRED COMPONENTS common filters io)
+find_package(PCL REQUIRED COMPONENTS common filters io surface features search)
 
 # ─── 4b. Eigen (dùng cho MultiViewTriangulator) ──────────────────────────────
 if(NOT Eigen3_DIR AND EXISTS "C:/Program Files/PCL 1.15.1/3rdParty/Eigen3/share/eigen3/cmake")

@@ -49,6 +49,31 @@ public:
     // Pipeline lọc tổng hợp
     void processPointCloud();
 
+    void filterFarOutliers(float sigma);
+
+    std::vector<cv::Point3f> densifyPointCloudMLS(
+        const std::vector<cv::Point3f>& pts,
+        const std::vector<cv::Vec3b>& cols,
+        int targetCount = 2500000);
+
+    pcl::PolygonMesh poissonMeshing(
+        const std::vector<cv::Point3f>& densePts,
+        const std::vector<cv::Vec3b>& denseCols,
+        int poissonDepth = 11);
+
+    bool projectWithP(const cv::Point3f& pw, const CameraParams& cam, cv::Point2f& uv);
+
+    void textureFromImages(
+        std::vector<cv::Point3f>& pts,
+        std::vector<cv::Vec3b>& cols,
+        const std::vector<cv::Mat>& images,
+        const std::vector<CameraParams>& cams);
+
+    void textureMeshFromImages(
+        pcl::PolygonMesh& mesh,
+        const std::vector<cv::Mat>& images,
+        const std::vector<CameraParams>& cams);
+
 private:
     ReconstructionConfig m_config;
     
