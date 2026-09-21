@@ -20,7 +20,7 @@ from ai_assistant.adapters.orchestration import LegacyConstrainedCompletion
 from ai_assistant.application.agent_runs import AgentRunService
 from ai_assistant.bootstrap import PlatformContainer, build_container, create_app
 from ai_assistant.domain.tasks import AgentTask
-from modules import agent_module, llm_module, mcp_server, rag_module
+from modules import action_manifest, agent_module, llm_module, mcp_server, rag_module
 from modules.chatbot_agent import ChatbotAgent
 from modules.config import (
     _SERVER_START_TIME,
@@ -214,6 +214,7 @@ def reload_agent():
         importlib.reload(agent_module)
         _refresh_agent_routes()
         agent_module.reset_agent_state()
+        action_manifest.reload_manifest()
         logger.info("Agent code and state reloaded successfully")
         return {"status": "ok", "message": "Agent code and state reloaded successfully"}
     except Exception as error:

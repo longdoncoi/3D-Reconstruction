@@ -405,5 +405,27 @@ class LangGraphMultiAgentTests(unittest.TestCase):
         self.assertFalse(any(step.get("type") == "final_answer" and step.get("content") == "DONE"
                              for step in state["steps"]))
 
+    def test_wrong_desktop_action_is_rejected_before_dispatch(self):
+        replies = iter(["WRONG", "RIGHT"])
+        dispatched = []
+
+        def parse(text):
+            action = "reconstruction.view_3d_model" if text == "WRONG" else "reconstruction.close_3d_model"
+            return "application_action", {"action": action}
+
+        def execute(_tool, params):
+            dispatched.append(params["action"])
+            return {"pending_ui_ack": True, "action": params["action"]}
+
+        graph = LocalAgentGraph(
+            complete=lambda *_: next(replies), parse=parse, execute=execute,
+            needs_approval=lambda _tool: False, max_iterations=4,
+            plan_complete=lambda *_: '{"requires_plan": true, "plan": ["Ẩn mô hình 3D"]}',
+        )
+        state = graph.run([{"role": "system", "content": "test"},
+                           {"role": "user", "content": "ẩn mô hình 3D"}], "step-guard-test", 0.1)
+        self.assertEqual(dispatched, ["reconstruction.close_3d_model"])
+        self.assertTrue(any(s.get("reason") == "step_action_mismatch" for s in state["steps"]))
+
 if __name__ == "__main__":
     unittest.main()

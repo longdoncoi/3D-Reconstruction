@@ -25,6 +25,7 @@ if _enabled:
             "tokens": Counter("agent_tokens_total", "Tokens used", ["type"]),
             "approval": Counter("agent_approval_decisions_total", "Approval decisions", ["outcome"]),
             "schema": Counter("agent_schema_errors_total", "Rejected tool schemas", ["tool"]),
+            "guard": Counter("agent_step_action_guard_total", "Plan-step/action guard decisions", ["outcome"]),
         }
         _tracer = trace.get_tracer("3d-reconstruction.agent")
     except ImportError:
@@ -233,3 +234,7 @@ def record_token_usage(in_tokens: int, out_tokens: int) -> None:
     if _metrics:
         _metrics["tokens"].labels("prompt").inc(in_tokens)
         _metrics["tokens"].labels("completion").inc(out_tokens)
+
+def record_step_guard(outcome: str) -> None:
+    if _metrics:
+        _metrics["guard"].labels(outcome).inc()        

@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "description": "Canonical desktop-agent action contract shared by Python and Qt.",
+  "version": 2,
+  "description": "Canonical desktop-agent action contract shared by Python and Qt. v2 adds 'description' (shown to the LLM), 'intents' (phrases matched against plan steps) and 'aliases'.",
   "workflows": [
     {
       "id": "reconstruction.load_and_start",
@@ -13,18 +13,52 @@
   "actions": [
     {
       "id": "viewer.load_2d",
+      "description": "Load ONE image file from disk into the 2D viewer.",
+      "intents": [
+        "tải ảnh 2D",
+        "tải 2D",
+        "nạp ảnh 2D",
+        "load 2d image",
+        "load 2d"
+      ],
       "parameters": {}
     },
     {
       "id": "viewer.load_3d",
+      "description": "Load an existing 3D model file (OBJ/STL/PLY) from disk. NOT the reconstruction result.",
+      "intents": [
+        "tải mô hình 3D",
+        "tải 3D",
+        "nạp mô hình 3D",
+        "load 3d model",
+        "load 3d"
+      ],
       "parameters": {}
     },
     {
       "id": "viewer.load_dicom",
+      "description": "Load a DICOM series folder (MPR + volume view).",
+      "intents": [
+        "tải DICOM",
+        "tải ảnh DICOM",
+        "tải chuỗi DICOM",
+        "tải chuỗi ảnh DICOM",
+        "nạp DICOM",
+        "load dicom"
+      ],
       "parameters": {}
     },
     {
       "id": "reconstruction.load_images",
+      "description": "Load a folder of multi-view photos as INPUT for 3D reconstruction.",
+      "intents": [
+        "tải ảnh chụp",
+        "tải bộ ảnh",
+        "tải ảnh để tái tạo",
+        "tải ảnh tái tạo",
+        "load reconstruction images",
+        "load images for reconstruction"
+      ],
       "parameters": {
         "workflow_id": {
           "type": "string",
@@ -34,6 +68,15 @@
     },
     {
       "id": "reconstruction.start_reconstruction",
+      "description": "Run 3D reconstruction on the loaded photos.",
+      "intents": [
+        "bắt đầu tái tạo",
+        "chạy tái tạo",
+        "thực hiện tái tạo",
+        "tái tạo 3D",
+        "start reconstruction",
+        "run reconstruction"
+      ],
       "parameters": {
         "workflow_id": {
           "type": "string",
@@ -43,78 +86,228 @@
     },
     {
       "id": "reconstruction.view_3d_model",
+      "description": "SHOW the reconstructed 3D point cloud in the viewport (requires a finished reconstruction).",
+      "intents": [
+        "xem mô hình 3D",
+        "hiển thị mô hình 3D",
+        "xem kết quả tái tạo",
+        "hiển thị kết quả tái tạo",
+        "show 3d model",
+        "view 3d model",
+        "display 3d model"
+      ],
       "parameters": {}
     },
     {
       "id": "reconstruction.close_3d_model",
+      "description": "HIDE / close the reconstructed 3D point cloud. Opposite of reconstruction.view_3d_model.",
+      "intents": [
+        "ẩn mô hình 3D",
+        "đóng mô hình 3D",
+        "tắt mô hình 3D",
+        "ẩn kết quả tái tạo",
+        "đóng kết quả tái tạo",
+        "hide 3d model",
+        "close 3d model",
+        "hide the 3d model",
+        "close the 3d model"
+      ],
       "parameters": {}
     },
     {
       "id": "ai.run_detection",
+      "description": "Run object detection on the current 2D image.",
+      "intents": [
+        "chạy nhận diện",
+        "nhận diện đối tượng",
+        "phát hiện đối tượng",
+        "run detection",
+        "object detection"
+      ],
       "parameters": {}
     },
     {
       "id": "ai.run_segmentation",
+      "description": "Run instance segmentation on the current 2D image.",
+      "intents": [
+        "chạy phân đoạn",
+        "phân đoạn ảnh",
+        "phân vùng",
+        "run segmentation",
+        "segmentation"
+      ],
       "parameters": {}
     },
     {
       "id": "ai.video_tracking",
+      "description": "Track objects in a video file.",
+      "intents": [
+        "theo dõi video",
+        "chạy theo dõi",
+        "video tracking",
+        "track video"
+      ],
       "parameters": {}
     },
     {
       "id": "ai.hide_results",
+      "description": "HIDE the AI detection/segmentation overlay and restore the original image. Not for the 3D model.",
+      "intents": [
+        "ẩn kết quả AI",
+        "ẩn kết quả nhận diện",
+        "ẩn kết quả phân đoạn",
+        "ẩn kết quả",
+        "hide results",
+        "hide ai results"
+      ],
       "parameters": {}
     },
     {
       "id": "ai.training_model",
+      "description": "Train the YOLO detection/segmentation models.",
+      "intents": [
+        "huấn luyện mô hình",
+        "huấn luyện",
+        "train model",
+        "training model"
+      ],
       "parameters": {}
     },
     {
       "id": "ai.view_training_charts",
+      "description": "Open the TensorBoard training charts.",
+      "intents": [
+        "biểu đồ huấn luyện",
+        "xem biểu đồ",
+        "training charts",
+        "view training charts",
+        "tensorboard"
+      ],
       "parameters": {}
     },
     {
       "id": "assistant.open",
+      "description": "Open the AI Assistant dock.",
+      "intents": [
+        "mở trợ lý AI",
+        "mở trợ lý",
+        "open assistant",
+        "open ai assistant"
+      ],
       "parameters": {}
     },
     {
       "id": "assistant.close",
+      "description": "Close the AI Assistant dock.",
+      "intents": [
+        "đóng trợ lý AI",
+        "đóng trợ lý",
+        "close assistant",
+        "close ai assistant"
+      ],
       "parameters": {}
     },
     {
       "id": "assistant.reload_model",
+      "description": "Reload the LLM model.",
+      "intents": [
+        "tải lại model",
+        "tải lại mô hình",
+        "reload model",
+        "restart model"
+      ],
       "parameters": {}
     },
     {
       "id": "assistant.reload_rag",
+      "description": "Rebuild the RAG index.",
+      "intents": [
+        "tải lại rag",
+        "reload rag",
+        "restart rag"
+      ],
       "parameters": {}
     },
     {
       "id": "assistant.reload_agent",
+      "description": "Reset the agent state/code.",
+      "intents": [
+        "tải lại agent",
+        "reload agent",
+        "restart agent"
+      ],
       "parameters": {}
     },
     {
       "id": "assistant.reload_server",
+      "description": "Restart the AI server process.",
+      "intents": [
+        "tải lại server",
+        "khởi động lại server",
+        "reload server",
+        "restart server"
+      ],
       "parameters": {}
     },
     {
       "id": "mail.open",
+      "aliases": [
+        "mail.inbox"
+      ],
+      "description": "Open the mail dock (inbox).",
+      "intents": [
+        "mở hộp thư",
+        "mở mail",
+        "mở thư",
+        "open mail",
+        "open inbox"
+      ],
       "parameters": {}
     },
     {
       "id": "mail.close",
+      "description": "Close the mail dock.",
+      "intents": [
+        "đóng hộp thư",
+        "đóng mail",
+        "đóng thư",
+        "close mail"
+      ],
       "parameters": {}
     },
     {
       "id": "mail.settings",
+      "description": "Open the mail account settings dialog.",
+      "intents": [
+        "cài đặt mail",
+        "cài đặt email",
+        "cài đặt thư",
+        "mail settings",
+        "email settings"
+      ],
       "parameters": {}
     },
     {
       "id": "help.about",
+      "description": "Show the About dialog.",
+      "intents": [
+        "giới thiệu",
+        "thông tin phần mềm",
+        "about"
+      ],
       "parameters": {}
     },
     {
       "id": "language.change",
+      "description": "Switch the UI language (vi|en).",
+      "intents": [
+        "đổi ngôn ngữ",
+        "chuyển ngôn ngữ",
+        "đổi sang tiếng việt",
+        "đổi sang tiếng anh",
+        "change language",
+        "switch language"
+      ],
       "parameters": {
         "language": {
           "type": "string",
@@ -128,22 +321,54 @@
     },
     {
       "id": "admin.settings",
+      "description": "Open the application Settings dialog.",
+      "intents": [
+        "mở cài đặt",
+        "cài đặt hệ thống",
+        "open settings",
+        "settings"
+      ],
       "parameters": {}
     },
     {
       "id": "admin.change_avatar",
+      "description": "Open the avatar cropper.",
+      "intents": [
+        "đổi ảnh đại diện",
+        "đổi avatar",
+        "change avatar"
+      ],
       "parameters": {}
     },
     {
       "id": "admin.change_password",
+      "description": "Open the change-password dialog.",
+      "intents": [
+        "đổi mật khẩu",
+        "change password"
+      ],
       "parameters": {}
     },
     {
       "id": "admin.logout",
+      "description": "Log out the current user.",
+      "intents": [
+        "đăng xuất",
+        "logout",
+        "log out",
+        "sign out"
+      ],
       "parameters": {}
     },
     {
       "id": "admin.login",
+      "description": "Log in (defaults to the admin account).",
+      "intents": [
+        "đăng nhập",
+        "login",
+        "log in",
+        "sign in"
+      ],
       "parameters": {
         "username": {
           "type": "string",

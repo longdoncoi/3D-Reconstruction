@@ -33,13 +33,14 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from modules.action_manifest import canonical_action
+from modules.action_manifest import canonical_action, rank_actions_for_step, step_matches_action
 from modules.agent_logging import get_agent_logger
 from modules.checkpointing import build_checkpointer
 from modules.coding_agent import coding_workflow_guidance, coding_workflow_status
 from modules.inference import strip_think_tags
-from modules.observability import langsmith_trace, span
+from modules.observability import langsmith_trace, record_step_guard, span
 
+_MAX_STEP_MISMATCH_REJECTIONS = 2
 logger = get_agent_logger("reasoning")
 
 # Completion-signal tools: ngay sau khi success -> done=True, khong lap lai
@@ -739,6 +740,18 @@ class LocalAgentGraph:
             logger.info("[NODE: reason] Context compacted before inference: chars=%d tool_calls=%d",
                         message_chars, tool_call_count)
             print(f"[AGENT TRACE] ── Reason: tóm tắt messages (tool_call_count={tool_call_count}).", flush=True)
+        
+        # Small local models copy the previous tool call or the last item of the
+        # remaining-plan list. A last-in-context directive counters that bias.
+        if current_plan_step:
+            directive = (f'[Buoc hien tai] "{current_plan_step}". Chi thuc hien dung buoc nay; '
+                         "khong thuc hien cac buoc sau.")
+            candidates = rank_actions_for_step(current_plan_step)
+            if candidates:
+                best = [name for name, score in candidates if score == candidates[0][1]]
+                directive += (f" Action canonical khop nhat theo manifest: {', '.join(best)}. "
+                              "Day chi la goi y; chi chon action khac khi no ro rang phu hop hon.")
+            messages = [*messages, {"role": "system", "content": directive}]
 
         print("[AGENT TRACE] ── Reason: đang gọi LLM...", flush=True)
         # logger.debug(f"[NODE: reason] Tin nhắn gửi đến LLM: {json.dumps(messages, ensure_ascii=False)}")
@@ -870,6 +883,40 @@ class LocalAgentGraph:
                 "messages":        updated_messages,
                 "tool_call_count": tool_call_count,
             }
+
+        # ── Pre-dispatch guard: right tool, wrong desktop action ─────────────
+        # Reflect runs AFTER Qt executed the action, so a wrong action (e.g.
+        # view_3d_model for "Ẩn mô hình 3D") already changed the UI. The model
+        # still decides; we only bounce an evidently wrong choice back to it.
+        if tool_name == "application_action" and current_plan_step:
+            selected_action = str((tool_params or {}).get("action", ""))
+            if step_matches_action(current_plan_step, selected_action) is False:
+                expected = [name for name, _ in rank_actions_for_step(current_plan_step)][:3]
+                rejections = sum(
+                    1 for step in steps
+                    if step.get("type") == "validation_error"
+                    and step.get("reason") == "step_action_mismatch"
+                    and step.get("plan_step_index") == done_count
+                )
+                logger.warning("[NODE: reason] Step/action mismatch | step=%s | selected=%s | expected=%s | rejections=%d",
+                               current_plan_step, selected_action, expected, rejections)
+                if rejections < _MAX_STEP_MISMATCH_REJECTIONS:
+                    record_step_guard("rejected")
+                    steps.append({"type": "validation_error", "reason": "step_action_mismatch",
+                                  "tool": tool_name, "plan_step_index": done_count,
+                                  "error": f"'{selected_action}' does not match step '{current_plan_step}'",
+                                  "iteration": iteration})
+                    updated_messages = list(state["messages"])
+                    updated_messages.append({"role": "assistant", "content": answer})
+                    updated_messages.append({"role": "user", "content": (
+                        f"LỖI: Action '{selected_action}' KHÔNG khớp bước hiện tại \"{current_plan_step}\". "
+                        f"Action khớp theo manifest: {', '.join(expected)}. "
+                        "Hãy gọi lại application_action với action đúng. Chỉ trả về JSON tool_call.")})
+                    return {"iteration": iteration, "steps": steps, "messages": updated_messages,
+                            "tool_call_count": tool_call_count}
+                # Fail-open after N bounces: UI toggles are reversible and Reflect still reviews.
+                record_step_guard("fallthrough")
+                logger.error("[NODE: reason] Step guard exhausted; dispatching and relying on Reflect.")
 
         # Extract thinking (text truoc tool_call block)
         clean_answer = strip_think_tags(answer)
@@ -1286,7 +1333,7 @@ class LocalAgentGraph:
             current_step_text = plan[completed_plan_steps]
             selected_action = result_step.get("result", {}).get("action") or call.get("params", {}).get("action", "")
             canonical_selected = canonical_action(str(selected_action))
-            match = None
+            match = step_matches_action(current_step_text, str(selected_action))
             logger.info("[NODE: reflect] Semantic check | plan_step=%s | action=%s | canonical=%s | match=%s",
                         current_step_text, selected_action, canonical_selected or "none", match)
             if match is False:

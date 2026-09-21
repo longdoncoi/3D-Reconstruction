@@ -20,6 +20,7 @@ jobs:
         with: {python-version: "3.11"}
       - run: pip install "pydantic>=2.7"
       - run: python AIAssistant/evals/run_tool_eval.py
+      - run: python AIAssistant/test_action_manifest.py
       - name: Publish result summary
         run: |
           echo "## Agent tool-call evaluation" >> "$GITHUB_STEP_SUMMARY"

@@ -12,7 +12,7 @@ from typing import Any
 
 from pydantic import ConfigDict, Field, ValidationError, create_model
 
-from .action_manifest import validate_action_params
+from .action_manifest import action_ids, validate_action_params
 
 _TYPE_MAP = {"string": str, "integer": int, "number": float, "boolean": bool}
 
@@ -62,6 +62,11 @@ def enrich_tool_definitions(tool_definitions: list[dict[str, Any]]) -> list[dict
             tool.setdefault(key, value)
         for key, value in _TOOL_CONTRACT_OVERRIDES.get(tool["name"], {}).items():
             tool[key] = value
+
+        if tool["name"] == "application_action" and "action" in tool["parameters"]:
+            # llama.cpp grammar + JSON Schema now list the exact manifest ids, so an
+            # unknown/hallucinated action cannot even be decoded. Costs 0 prompt tokens.
+            tool["parameters"]["action"] = {**tool["parameters"]["action"], "enum": sorted(action_ids())}
         tool["schema"] = json_schema(tool)
         enriched.append(tool)
     return enriched

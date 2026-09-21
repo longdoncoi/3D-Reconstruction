@@ -11,6 +11,7 @@ from .config import _safe_relpath
 from . import llm_module as llm_runtime
 from . import rag_module as rag_runtime
 from .action_manifest import (
+    action_catalog,
     canonicalise_action_params,
     validate_action_params,
 )
@@ -305,11 +306,11 @@ AGENT_TOOLS.extend([
 app_action_tools = [tool for tool in AGENT_TOOLS if tool["name"].startswith("app_action_")]
 AGENT_TOOLS = [tool for tool in AGENT_TOOLS if not tool["name"].startswith("app_action_")]
 
-app_action_descriptions = "\n".join([f"- {t['description']}" for t in app_action_tools])
-
 AGENT_TOOLS.append({
     "name": "application_action",
-    "description": f"Execute a canonical desktop action from the shared action manifest. Available action categories:\n{app_action_descriptions}",
+    "description": ("Execute exactly ONE canonical desktop action. Choose the id whose meaning matches the "
+                    "CURRENT plan step (show/view and hide/close are different actions). Catalog:\n"
+                    + action_catalog()),
     "parameters": {
         "action": {"type": "string", "description": "Canonical desktop action id (e.g., viewer.load_2d, ai.run_detection)", "required": True},
         "language": {"type": "string", "description": "Required only for language.change: vi or en", "required": False},
