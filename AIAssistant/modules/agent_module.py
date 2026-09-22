@@ -265,9 +265,11 @@ AGENT_TOOLS = [
     },
     {
         "name": "rag_search",
-        "description": "Search project documentation and source code using semantic similarity. "
-                       "Use this to find relevant technical information, APIs, patterns, or code examples "
-                       "before reading specific files. More efficient than read_file when you don't know exactly which file to look at.",
+        "description": "Search PROJECT-SPECIFIC documentation and source code using semantic similarity. "
+                       "Use ONLY when the question requires internal project information such as project members, "
+                       "roles, project history, internal APIs, code patterns, or project documentation. "
+                       "Do NOT use for general knowledge questions (e.g. 'NLP là gì?', 'RAG là gì?', 'OOP là gì?') "
+                       "— answer those directly with final_answer without calling any tool.",
         "parameters": {
             "query": {"type": "string", "description": "The question or topic to search for", "required": True},
             "top_k": {"type": "integer", "description": "Max number of results to return (default 5, max 10)", "required": False},
@@ -1365,6 +1367,11 @@ source liên quan, gọi patch_file/write_file sau khi đã được duyệt, g�
 để review thay đổi và gọi run_command để kiểm chứng. Không được coi việc tìm
 thấy file hoặc đề xuất patch là đã hoàn thành. Không suy ra file/command từ
 tên tính năng; hãy lấy chúng từ source, CMake, test và kết quả tool thực tế.
+
+17. QUAN TRỌNG: Với câu hỏi kiến thức chung (định nghĩa khái niệm, giải thích thuật ngữ công nghệ,
+lý thuyết khoa học, v.v.), trả lời trực tiếp bằng final_answer mà KHÔNG gọi rag_search hoặc
+bất kỳ tool nào. Chỉ dùng rag_search khi câu hỏi CẦN thông tin nội bộ dự án (nhân sự,
+vai trò, lịch sử dự án, tài liệu nội bộ, code cụ thể trong project).
 
 ## EXAMPLE:
 
