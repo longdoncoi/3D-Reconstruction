@@ -1,7 +1,12 @@
-"""Legacy re-export of task_coordinator."""
-import ai_assistant.legacy.task_coordinator as _impl
-from ai_assistant.legacy.task_coordinator import *
+"""TaskCoordinator re-export."""
+from ai_assistant.application.coordination import (
+    TaskCoordinator,
+    TaskRecord,
+    coordinator,
+)
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = [
+    "TaskCoordinator",
+    "TaskRecord",
+    "coordinator",
+]

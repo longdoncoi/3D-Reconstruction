@@ -70,10 +70,16 @@ def build_chat_router(
         attachments = request.messages[-1].attachments or []
         query_image_b64 = None
 
+        try:
+            from ai_assistant.rag.image_utils import image_to_data_uri, is_image_file
+        except ImportError:
+            is_image_file = getattr(rag_module, "_is_image_file", lambda _: False)
+            image_to_data_uri = getattr(rag_module, "_image_to_data_uri", lambda _: "")
+
         for attachment in attachments:
-            if rag_module._is_image_file(attachment):
+            if is_image_file(attachment):
                 try:
-                    query_image_b64 = rag_module._image_to_data_uri(attachment)
+                    query_image_b64 = image_to_data_uri(attachment)
                     break
                 except Exception as error:
                     logger.warning("Failed to read attachment for retrieval: %s", error)
@@ -135,7 +141,12 @@ def build_chat_router(
             with llm_module.llm_lock:
                 started = time.monotonic()
                 answer, finish_reason = "", "stop"
-                for chunk in llm_module.llm.create_chat_completion(
+                stream_fn = (
+                    llm_module.llm.generate
+                    if hasattr(llm_module.llm, "generate")
+                    else llm_module.llm.create_chat_completion
+                )
+                for chunk in stream_fn(
                     messages=messages,
                     max_tokens=max_tokens,
                     temperature=request.temperature,

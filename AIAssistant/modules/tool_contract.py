@@ -1,7 +1,18 @@
 """Legacy re-export of tool_contract."""
-import ai_assistant.legacy.tool_contract as _impl
-from ai_assistant.legacy.tool_contract import *
+from ai_assistant.tools.tool_contract import (
+    build_tool_models,
+    enrich_tool_definitions,
+    grammar_schema,
+    json_schema,
+    openai_tools,
+    validate_tool_call,
+)
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = [
+    "build_tool_models",
+    "enrich_tool_definitions",
+    "grammar_schema",
+    "json_schema",
+    "openai_tools",
+    "validate_tool_call",
+]

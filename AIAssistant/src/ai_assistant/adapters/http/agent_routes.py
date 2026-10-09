@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
@@ -74,13 +74,16 @@ def _stream_langgraph_execution(run: Callable[[Callable[[dict], None]], dict]):
     )
 
 
-def build_agent_router(agent_module: "ModuleType") -> APIRouter:
+def build_agent_router(agent_module: "ModuleType | Any" = None) -> APIRouter:
     """Create the /v1/agent/* APIRouter.
 
     Parameters
     ----------
-    agent_module: The live agent_module reference providing execution services.
+    agent_module: The live agent service or module reference providing execution services.
     """
+    if agent_module is None:
+        from ai_assistant.agents import service as agent_module
+
     router = APIRouter(tags=["agent"])
 
     @router.post("/v1/agent/execute")

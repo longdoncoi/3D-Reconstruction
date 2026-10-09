@@ -72,7 +72,7 @@ def reflect_node(state: AgentState, ctx: ReflectContext) -> dict[str, Any]:
         }
     ]
 
-    print("[AGENT TRACE] ▶ Reflect node: LLM đang đánh giá kết quả tool...", flush=True)
+    print("[AGENT TRACE] >> Reflect node: LLM evaluating tool result...", flush=True)
     raw = ctx.reflect_complete(critic_msgs, max(0.1, state["temperature"] - 0.1)).strip()
     print(f"[AGENT TRACE] ── Reflect node LLM output: {raw[:150]}", flush=True)
 

@@ -1,7 +1,4 @@
 """Legacy re-export of agent_tools."""
-import ai_assistant.legacy.agent_tools as _impl
-from ai_assistant.legacy.agent_tools import *
+from ai_assistant.tools.registry import ToolRegistry
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = ["ToolRegistry"]

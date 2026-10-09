@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import asyncio
 import json
-import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -218,10 +218,10 @@ def build_a2a_router(service: TaskService, agent_name: str, agent_version: str) 
         if service.get(task_id) is None:
             raise HTTPException(status_code=404, detail="A2A task not found")
 
-        def stream():
+        async def stream():
             cursor = 0
             while True:
-                events = service.events(task_id)
+                events = list(service.events(task_id))
                 for event in events[cursor:]:
                     yield f"event: {event['kind']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                 cursor = len(events)
@@ -229,7 +229,7 @@ def build_a2a_router(service: TaskService, agent_name: str, agent_version: str) 
                 if task and task.status.value in {"completed", "failed", "canceled", "rejected"}:
                     yield f"event: done\ndata: {json.dumps(task_payload(task), ensure_ascii=False)}\n\n"
                     return
-                time.sleep(0.25)
+                await asyncio.sleep(0.1)
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
@@ -239,7 +239,7 @@ def build_a2a_router(service: TaskService, agent_name: str, agent_version: str) 
         if service.get(task_id) is None:
             raise HTTPException(status_code=404, detail="A2A task not found")
 
-        def stream():
+        async def stream():
             previous = None
             while True:
                 task = service.get(task_id)
@@ -253,7 +253,7 @@ def build_a2a_router(service: TaskService, agent_name: str, agent_version: str) 
                 previous = snapshot
                 if task.status.value in {"completed", "failed", "canceled", "rejected", "input_required"}:
                     return
-                time.sleep(0.25)
+                await asyncio.sleep(0.1)
 
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 

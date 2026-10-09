@@ -1,7 +1,4 @@
 """Legacy re-export of chatbot_agent."""
-import ai_assistant.legacy.chatbot_agent as _impl
-from ai_assistant.legacy.chatbot_agent import *
+from ai_assistant.orchestration.specialists.chatbot import ChatbotAgent
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = ["ChatbotAgent"]

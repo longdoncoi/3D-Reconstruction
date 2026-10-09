@@ -1,11 +1,4 @@
-"""MCP tool server for the 3D-Reconstruction desktop agent.
-
-The agent owns authorisation and the Qt client owns desktop actions.  This
-server only exposes the non-destructive tools that can run without an
-interactive approval.  It is deliberately mounted in the existing FastAPI
-process so a local MCP client and the bundled agent use exactly the same tool
-contract.
-"""
+"""MCP tool server for the 3D-Reconstruction desktop agent."""
 from __future__ import annotations
 
 import json
@@ -15,11 +8,10 @@ from typing import Any
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError:
-    try:  # MCP SDK 2.x renamed FastMCP to MCPServer.
+    try:
         from mcp.server.mcpserver import MCPServer as FastMCP
-    except ImportError:  # Keep the chat server importable until its dependency is installed.
+    except ImportError:
         FastMCP = None  # type: ignore[misc,assignment]
-
 
 MCP_AVAILABLE = FastMCP is not None
 
@@ -45,8 +37,12 @@ if MCP_AVAILABLE:
     )
 
     @mcp.tool()
-    def read_file(path: str, start_line: int | None = None, end_line: int | None = None,
-                  symbol: str | None = None) -> str:
+    def read_file(
+        path: str,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        symbol: str | None = None,
+    ) -> str:
         """Read a focused range or named source symbol within the project."""
         return _dispatch("read_file", {
             "path": path, "start_line": start_line, "end_line": end_line, "symbol": symbol,
@@ -63,11 +59,18 @@ if MCP_AVAILABLE:
         return _dispatch("find_files", {"pattern": pattern, "path": path, "max_results": max_results})
 
     @mcp.tool()
-    def search_text(query: str, path: str | None = None, file_pattern: str | None = None,
-                    case_sensitive: bool | None = None, max_results: int | None = None) -> str:
+    def search_text(
+        query: str,
+        path: str | None = None,
+        file_pattern: str | None = None,
+        case_sensitive: bool | None = None,
+        max_results: int | None = None,
+    ) -> str:
         """Search project text and return matching file paths and line numbers."""
-        return _dispatch("search_text", {"query": query, "path": path, "file_pattern": file_pattern,
-                                          "case_sensitive": case_sensitive, "max_results": max_results})
+        return _dispatch("search_text", {
+            "query": query, "path": path, "file_pattern": file_pattern,
+            "case_sensitive": case_sensitive, "max_results": max_results,
+        })
 
     @mcp.tool()
     def analyze_code(path: str) -> str:
@@ -95,13 +98,18 @@ if MCP_AVAILABLE:
         return _dispatch("rag_search", {"query": query, "top_k": top_k})
 
     @mcp.tool()
-    def application_action(action: str, language: str | None = None, username: str | None = None,
-                           password: str | None = None) -> str:
+    def application_action(
+        action: str,
+        language: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+    ) -> str:
         """Request a canonical desktop action; the Qt desktop client must acknowledge it."""
-        return _dispatch("application_action", {"action": action, "language": language,
-                                                  "username": username, "password": password})
+        return _dispatch("application_action", {
+            "action": action, "language": language,
+            "username": username, "password": password,
+        })
 
-    # The app is mounted at /mcp, so make its endpoint the mount root.
     _asgi_app = mcp.streamable_http_app(
         streamable_http_path="/", stateless_http=True, json_response=True,
     )
@@ -120,3 +128,44 @@ async def lifespan():
         return
     async with mcp.session_manager.run():
         yield
+
+
+def register_plugin_tools(server: Any = None) -> int:
+    """Dynamically bind tools from PluginRegistry into MCP."""
+    target_server = server or mcp
+    if target_server is None:
+        return 0
+    registered = 0
+    try:
+        from ai_assistant.bootstrap.runtime import platform
+
+        if hasattr(platform, "plugins") and platform.plugins:
+            for spec in platform.plugins.specs():
+                tool_name = spec.name
+                if hasattr(target_server, "get_tool") and target_server.get_tool(tool_name):
+                    continue
+
+                def _make_tool(name: str, desc: str):
+                    def _tool(**kwargs: Any) -> str:
+                        return _dispatch(name, kwargs)
+
+                    _tool.__name__ = name
+                    _tool.__doc__ = desc
+                    return _tool
+
+                if hasattr(target_server, "tool"):
+                    target_server.tool()(_make_tool(tool_name, spec.description or f"Dynamic tool {tool_name}"))
+                    registered += 1
+    except Exception:
+        pass
+    return registered
+
+
+__all__ = [
+    "MCP_AVAILABLE",
+    "asgi_app",
+    "lifespan",
+    "mcp",
+    "register_plugin_tools",
+]
+

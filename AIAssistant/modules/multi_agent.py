@@ -1,7 +1,38 @@
 """Legacy re-export of multi_agent."""
-import ai_assistant.legacy.multi_agent as _impl
-from ai_assistant.legacy.multi_agent import *
+from ai_assistant.orchestration.supervisor import (
+    _CODE_TOOLS,
+    _RESEARCH_TOOLS,
+    _SPECIALIST_INSTRUCTIONS,
+    _TRANSFER_TARGETS,
+    _VERIFICATION_TOOLS,
+    _WORKFLOW_TOOLS,
+    CODE_AGENT_TOOLS,
+    Delegation,
+    Specialist,
+    audit,
+    authorise,
+    delegate,
+    reflect_result,
+    route_task,
+    specialist_instruction,
+    verify_result,
+)
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = [
+    "CODE_AGENT_TOOLS",
+    "_CODE_TOOLS",
+    "_RESEARCH_TOOLS",
+    "_SPECIALIST_INSTRUCTIONS",
+    "_TRANSFER_TARGETS",
+    "_VERIFICATION_TOOLS",
+    "_WORKFLOW_TOOLS",
+    "Delegation",
+    "Specialist",
+    "audit",
+    "authorise",
+    "delegate",
+    "reflect_result",
+    "route_task",
+    "specialist_instruction",
+    "verify_result",
+]

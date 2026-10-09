@@ -45,7 +45,7 @@ def plan_reflect_node(state: AgentState, plan_reflect_complete: Completion | Non
                 "Kế hoạch có đạt yêu cầu và sẵn sàng thực thi không?"
             )},
         ]
-        print("[AGENT TRACE] ▶ Plan Reflect node: LLM đang đánh giá kế hoạch...", flush=True)
+        print("[AGENT TRACE] >> Plan Reflect node: LLM evaluating plan...", flush=True)
         raw = plan_reflect_complete(critic_msgs, max(0.1, state["temperature"] - 0.1)).strip()
         raw = strip_think_tags(raw)
         print(f"[AGENT TRACE] ── Plan Reflect output: {raw[:150]}", flush=True)

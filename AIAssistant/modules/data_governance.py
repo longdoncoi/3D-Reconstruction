@@ -1,7 +1,10 @@
-"""Legacy re-export of data_governance."""
-import ai_assistant.legacy.data_governance as _impl
-from ai_assistant.legacy.data_governance import *
+"""Data governance re-export."""
+from ai_assistant.domain.governance import (
+    scrub_messages,
+    scrub_pii,
+)
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = [
+    "scrub_messages",
+    "scrub_pii",
+]

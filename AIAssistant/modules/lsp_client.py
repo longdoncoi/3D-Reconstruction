@@ -1,7 +1,10 @@
 """Legacy re-export of lsp_client."""
-import ai_assistant.legacy.lsp_client as _impl
-from ai_assistant.legacy.lsp_client import *
+from ai_assistant.tools.lsp_client import (
+    tool_find_references,
+    tool_go_to_definition,
+)
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = [
+    "tool_find_references",
+    "tool_go_to_definition",
+]

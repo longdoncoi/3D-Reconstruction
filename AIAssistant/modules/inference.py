@@ -1,7 +1,14 @@
-"""Legacy re-export of inference."""
-import ai_assistant.legacy.inference as _impl
-from ai_assistant.legacy.inference import *
+"""Inference re-export."""
+from ai_assistant.llm.inference import (
+    backend_mode,
+    cloud_allowed,
+    openai_compatible_completion,
+    strip_think_tags,
+)
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = [
+    "backend_mode",
+    "cloud_allowed",
+    "openai_compatible_completion",
+    "strip_think_tags",
+]

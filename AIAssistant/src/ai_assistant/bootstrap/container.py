@@ -60,7 +60,7 @@ def build_container(base_dir: Path, legacy_tools: "list[Any]",
                 "code_write": "project.write",
                 "code_execute": "project.execute",
             }.get(policy, "project.read")
-            parameters = getattr(legacy, "parameters", {})
+            parameters = getattr(legacy, "json_schema", None) or getattr(legacy, "parameters", {})
             spec = ToolSpec(
                 name=name,
                 description=str(getattr(legacy, "description", "")),
@@ -87,9 +87,10 @@ def build_container(base_dir: Path, legacy_tools: "list[Any]",
                 "code_write": "project.write",
                 "code_execute": "project.execute",
             }.get(policy, "project.read")
+            schema = legacy.get("schema") or legacy.get("json_schema") or legacy.get("parameters", {})
             spec = ToolSpec(
                 name=name, description=str(legacy.get("description", "")),
-                input_schema=dict(legacy.get("schema", {})),
+                input_schema=dict(schema) if isinstance(schema, dict) else {},
                 timeout_seconds=int(legacy.get("timeout_seconds", 10)),
                 side_effect=_side_effect(legacy),
                 requires_approval=bool(legacy.get("requires_approval", False)),

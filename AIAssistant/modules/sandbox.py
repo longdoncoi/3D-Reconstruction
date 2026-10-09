@@ -1,7 +1,12 @@
 """Legacy re-export of sandbox."""
-import ai_assistant.legacy.sandbox as _impl
-from ai_assistant.legacy.sandbox import *
+from ai_assistant.tools.sandbox import (
+    create_directory,
+    run,
+    write_file,
+)
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = [
+    "create_directory",
+    "run",
+    "write_file",
+]

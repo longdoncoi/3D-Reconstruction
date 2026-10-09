@@ -110,3 +110,45 @@ def validate_action_params(params: dict[str, Any]) -> tuple[dict[str, Any] | Non
         if value is not None and definition.get("enum") and value not in definition["enum"]:
             return None, f"{result['action']}.{name} must be one of {definition['enum']}"
     return result, None
+
+
+def looks_like_ui_action(_text: str) -> bool:
+    """Check if text looks like a UI action (deprecated)."""
+    return False
+
+
+def rank_actions_for_step(step_text: str) -> list[tuple[str, int]]:
+    """Rank canonical actions matching phrases in step_text."""
+    haystack = f" {normalize_text(step_text)} "
+    ranked = []
+    for action_id, phrases in _intent_index().items():
+        score = max((words for needle, words in phrases if needle in haystack), default=0)
+        if score:
+            ranked.append((action_id, score))
+    ranked.sort(key=lambda item: (-item[1], item[0]))
+    return ranked
+
+
+def step_matches_action(step_text: str, action: str) -> bool | None:
+    """Check if the given canonical action is the top match for step_text."""
+    canonical = canonical_action(action)
+    ranked = rank_actions_for_step(step_text)
+    if canonical is None or not ranked:
+        return None
+    return dict(ranked).get(canonical, 0) >= ranked[0][1]
+
+
+__all__ = [
+    "action_catalog",
+    "action_ids",
+    "action_intents",
+    "canonical_action",
+    "canonicalise_action_params",
+    "looks_like_ui_action",
+    "manifest",
+    "normalize_text",
+    "rank_actions_for_step",
+    "reload_manifest",
+    "step_matches_action",
+    "validate_action_params",
+]

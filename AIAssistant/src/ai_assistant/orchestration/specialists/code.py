@@ -1,14 +1,13 @@
-"""Isolated policy and context contract for repository engineering tasks."""
+"""Code specialist policy and context contract for repository engineering tasks."""
 from __future__ import annotations
 
 import re
 import unicodedata
 from dataclasses import dataclass
 
-from .agent_logging import get_agent_logger
+from ai_assistant.config.logging import get_agent_logger
 
 logger = get_agent_logger("coding")
-
 
 _CODING_TERMS = (
     "code", "coding", "bug", "fix", "refactor", "test", "unit test", "build",
@@ -59,9 +58,9 @@ _MUTATION_TOOLS = frozenset({"write_file", "patch_file", "replace_file_content",
 def _result_is_successful(result: object) -> bool:
     """Return whether a tool result represents a successful operation.
 
-    Tool executors use a small shared result contract.  Absence of ``error`` is
+    Tool executors use a small shared result contract. Absence of ``error`` is
     not sufficient: a command can finish with a non-zero exit code and a
-    mutation can explicitly report ``success: false``.  Keeping this check here
+    mutation can explicitly report ``success: false``. Keeping this check here
     makes completion evidence independent of a particular feature or tool
     caller.
     """
@@ -282,3 +281,14 @@ get_project_status, validate_file, write_file, patch_file, replace_file_content,
 multi_replace_file_content, create_directory, and run_command. Prefer the smallest read/search operation
 that proves the change; use git_diff and validate_file after an approved edit.
 """.strip()
+
+
+__all__ = [
+    "CodingTaskContext",
+    "CodingWorkflowStatus",
+    "coding_workflow_guidance",
+    "coding_workflow_kind",
+    "coding_workflow_status",
+    "instruction",
+    "is_coding_task",
+]

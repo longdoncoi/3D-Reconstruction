@@ -1,7 +1,4 @@
-"""Legacy re-export of agent_logging."""
-import ai_assistant.legacy.agent_logging as _impl
-from ai_assistant.legacy.agent_logging import *
+"""Agent logging re-export."""
+from ai_assistant.config.logging import get_agent_logger
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = ["get_agent_logger"]

@@ -1,6 +1,6 @@
 """A2A (Agent-to-Agent) protocol layer for the unified assistant.
 
-Provides Agent Card discovery, optional remote agent routing, and a chuẩn
+Provides Agent Card discovery, optional remote agent routing, and a standard
 JSON-RPC 2.0 transport that falls back to in-process execution when the A2A
 SDK is unavailable or remote agents are not configured.
 
@@ -8,18 +8,9 @@ Environment variables
 ---------------------
 A2A_ENABLED         "1" to activate the A2A transport layer (default "0").
 A2A_REMOTE_AGENTS   Comma-separated list of remote ``/.well-known/agent.json``
-                    URLs.  When empty, all delegations stay in-process.
+                    URLs. When empty, all delegations stay in-process.
 A2A_CARD_NAME       Display name for *this* server's published Agent Card.
 A2A_CARD_URL        Public base URL where this server is reachable.
-
-Design rules
-------------
-* Agent Cards are **generated** from ``Specialist`` enum + instruction map —
-  adding a new Specialist automatically produces a new skill entry.
-* All A2A SDK usage is behind ``try/except ImportError`` so the module loads
-  cleanly without ``a2a-sdk`` installed.
-* The public helpers (``a2a_available``, ``build_agent_card``, ``A2ARouter``)
-  degrade gracefully: callers never need to check availability themselves.
 """
 from __future__ import annotations
 
@@ -30,7 +21,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import urljoin
 
-from .agent_logging import get_agent_logger
+from ai_assistant.config.logging import get_agent_logger
 
 logger = get_agent_logger("a2a")
 
@@ -63,9 +54,6 @@ def a2a_available() -> bool:
 
 
 # ── Agent Card (data model) ──────────────────────────────────────────────────
-# Mirrors the A2A spec's AgentCard schema but stays independent of the SDK so
-# the server can always serve ``/.well-known/agent.json`` even without the
-# package installed.
 
 
 @dataclass(frozen=True)
@@ -101,13 +89,8 @@ class AgentCard:
 
 
 def build_agent_card(url: str | None = None) -> AgentCard:
-    """Build the server's Agent Card from the live Specialist registry.
-
-    Skills are derived from ``Specialist`` + ``_SPECIALIST_INSTRUCTIONS`` so
-    adding a new specialist automatically exposes a new A2A skill.
-    """
-    # Import lazily to avoid circular dependency (multi_agent → config → ...).
-    from .multi_agent import _SPECIALIST_INSTRUCTIONS, Specialist
+    """Build the server's Agent Card from the live Specialist registry."""
+    from ai_assistant.orchestration.supervisor import _SPECIALIST_INSTRUCTIONS, Specialist
 
     skills: list[AgentSkill] = []
     for specialist in Specialist:
@@ -147,17 +130,7 @@ _DISCOVERY_TIMEOUT = 5.0  # seconds
 
 
 def discover_remote_agents(urls: list[str] | None = None) -> dict[str, RemoteAgent]:
-    """Fetch Agent Cards from remote endpoints and populate the registry.
-
-    Parameters
-    ----------
-    urls : list[str] | None
-        Explicit URLs to discover.  Defaults to ``A2A_REMOTE_AGENTS``.
-
-    Returns
-    -------
-    dict mapping base URL to ``RemoteAgent``.
-    """
+    """Fetch Agent Cards from remote endpoints and populate the registry."""
     targets = urls if urls is not None else A2A_REMOTE_AGENTS
     if not targets:
         return _remote_registry
@@ -200,17 +173,7 @@ def get_remote_registry() -> dict[str, RemoteAgent]:
 
 
 class A2ARouter:
-    """Route delegations to remote A2A agents without implicit fallback.
-
-    The router checks whether a matching remote agent exists for the target
-    specialist.  If so, it sends the task via JSON-RPC 2.0 over HTTP.  If the
-    remote call fails or no remote agent is registered, the router falls back
-    to the provided ``local_execute`` callback — which is the normal in-process
-    tool execution path.
-
-    This class is safe to instantiate even when the A2A SDK is not installed;
-    it will simply always use the local path.
-    """
+    """Route delegations to remote A2A agents without implicit fallback."""
 
     def find_remote(self, specialist_id: str) -> RemoteAgent | None:
         """Find a remote agent whose skills include ``specialist_id``."""
@@ -221,22 +184,7 @@ class A2ARouter:
 
     def route(self, specialist_id: str, task: str,
               params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Attempt remote A2A dispatch and return its explicit outcome.
-
-        Parameters
-        ----------
-        specialist_id : str
-            The ``Specialist.value`` to route to.
-        task : str
-            The task description / user prompt.
-        params : dict
-            Optional parameters for the remote agent.
-
-        Returns
-        -------
-        dict with at least ``{"source": "remote"|"local", ...}`` plus the
-        actual result payload.
-        """
+        """Attempt remote A2A dispatch and return its explicit outcome."""
         if not a2a_available():
             return {
                 "source": "remote",
@@ -252,7 +200,6 @@ class A2ARouter:
                 "error": f"No trusted remote agent supports {specialist_id}",
             }
 
-        # Attempt remote JSON-RPC call.
         try:
             result = self._call_remote(remote, specialist_id, task, params or {})
             logger.info("A2A remote call succeeded: specialist=%s url=%s",
@@ -302,3 +249,19 @@ class A2ARouter:
         if "error" in response:
             raise RuntimeError(f"A2A error: {response['error']}")
         return response.get("result", {})
+
+
+__all__ = [
+    "A2A_CARD_NAME",
+    "A2A_CARD_URL",
+    "A2A_ENABLED",
+    "A2A_REMOTE_AGENTS",
+    "A2ARouter",
+    "AgentCard",
+    "AgentSkill",
+    "RemoteAgent",
+    "a2a_available",
+    "build_agent_card",
+    "discover_remote_agents",
+    "get_remote_registry",
+]

@@ -22,6 +22,22 @@ _PACKAGE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
 if _PACKAGE_ROOT not in sys.path:
     sys.path.insert(0, _PACKAGE_ROOT)
 
+if sys.platform == "win32":
+    try:
+        from asyncio.proactor_events import _ProactorBasePipeTransport
+
+        _orig_call_connection_lost = _ProactorBasePipeTransport._call_connection_lost
+
+        def _silenced_call_connection_lost(self, exc):  # noqa: ANN001, ANN202
+            try:
+                _orig_call_connection_lost(self, exc)
+            except ConnectionResetError:
+                pass
+
+        _ProactorBasePipeTransport._call_connection_lost = _silenced_call_connection_lost
+    except Exception:
+        pass
+
 from ai_assistant.adapters.a2a import build_a2a_router
 from ai_assistant.adapters.http import (
     build_admin_router,
@@ -33,8 +49,8 @@ from ai_assistant.adapters.orchestration import LegacyConstrainedCompletion
 from ai_assistant.application.agent_runs import AgentRunService
 from ai_assistant.bootstrap import PlatformContainer, build_container, create_app
 from ai_assistant.domain.tasks import AgentTask
+from ai_assistant.orchestration.specialists import ChatbotAgent
 from modules import action_manifest, agent_module, llm_module, mcp_server, rag_module
-from modules.chatbot_agent import ChatbotAgent
 from modules.config import (
     _SERVER_START_TIME,
     BASE_DIR,
@@ -93,7 +109,7 @@ _agent_run_service = AgentRunService(
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     try:
-        from modules.checkpointing import cleanup_old_checkpoints
+        from ai_assistant.adapters.persistence.checkpointing import cleanup_old_checkpoints
         cleanup_old_checkpoints()
     except Exception as e:
         logger.warning(f"Lỗi dọn dẹp checkpoint: {e}")
@@ -118,13 +134,9 @@ app = create_app(platform.settings, lifespan)
 
 
 def _refresh_agent_routes() -> None:
-    """Replace FastAPI's old Agent handlers after reloading agent_module."""
-    agent_paths = {"/v1/agent/execute", "/v1/agent/approve", "/v1/agent/ui-action-result", "/v1/agent/cancel"}
-    app.router.routes[:] = [
-        route for route in app.router.routes
-        if getattr(route, "path", None) not in agent_paths
-    ]
-    app.include_router(build_agent_router(agent_module))
+    """Reset agent state and schema cache on reload without modifying route table."""
+    if hasattr(agent_module, "reset_agent_state"):
+        agent_module.reset_agent_state()
     app.openapi_schema = None
 
 

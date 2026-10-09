@@ -1,16 +1,17 @@
-"""Compatibility facade for the desktop-workflow specialist.
-
-Intent interpretation remains an injected planner concern. This module owns no
-keyword table or hidden desktop-action fallback.
-"""
+"""Desktop workflow specialist for Qt UI actions."""
 from __future__ import annotations
 
 from collections.abc import Callable
 
 
 class ToolAppAgent:
-    def __init__(self, match_action: Callable[[str], dict | None],
-                 match_sequence: Callable[[str], list[dict] | None]) -> None:
+    """Specialist responsible for desktop application action matching and dispatch."""
+
+    def __init__(
+        self,
+        match_action: Callable[[str], dict | None],
+        match_sequence: Callable[[str], list[dict] | None],
+    ) -> None:
         self._match_action = match_action
         self._match_sequence = match_sequence
 
@@ -24,3 +25,6 @@ class ToolAppAgent:
             "Use application_action only after the planner selected a canonical action. "
             "Wait for the desktop acknowledgement before reporting completion."
         )
+
+
+__all__ = ["ToolAppAgent"]

@@ -147,7 +147,12 @@ def run_langgraph_agent(
             audit_agent_fn("tool_transport", delegation, source=result.get("source", "local"))
         else:
             with span_fn("agent.tool", tool=tool_name, session_id=session_id):
-                result = spec.handler(params)
+                from ai_assistant.bootstrap.runtime import execute_approved_tool, execute_tool
+                res = execute_approved_tool(tool_name, params) if approval_granted else execute_tool(tool_name, params)
+                if res.get("error_code") != "runtime_unconfigured":
+                    result = res
+                else:
+                    result = spec.handler(params)
         audit_agent_fn("tool_completed", delegation, success="error" not in result)
         record_tool_fn(tool_name, "error" not in result, time.monotonic() - tool_started)
         return result

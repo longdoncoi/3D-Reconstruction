@@ -1,10 +1,7 @@
 """Lifecycle coordination for long-running Agent tasks.
 
-The coordinator is deliberately transport agnostic: HTTP, SSE and Qt all use
-the same session/request identifiers and can therefore cancel or inspect a
-task without knowing which graph node is currently running.
+Transport-agnostic coordinator supporting cooperative cancellation and status tracking.
 """
-
 from __future__ import annotations
 
 import threading
@@ -52,8 +49,13 @@ class TaskCoordinator:
             self._records[self.key(session_id, request_id)] = record
         return record
 
-    def update(self, session_id: str, request_id: str = "", status: str | None = None,
-               **metadata: Any) -> dict[str, Any]:
+    def update(
+        self,
+        session_id: str,
+        request_id: str = "",
+        status: str | None = None,
+        **metadata: Any,
+    ) -> dict[str, Any]:
         with self._lock:
             record = self._records.get(self.key(session_id, request_id))
             if record is None:
@@ -68,11 +70,10 @@ class TaskCoordinator:
         with self._lock:
             record = self._records.get(self.key(session_id, request_id))
             if record is None:
-                # The HTTP request id may be created later (for example when
-                # a graph reaches an approval/UI boundary). Fall back to the
-                # newest active record for the session in that case.
-                candidates = [r for r in self._records.values()
-                              if r.session_id == session_id and r.status not in self._TERMINAL]
+                candidates = [
+                    r for r in self._records.values()
+                    if r.session_id == session_id and r.status not in self._TERMINAL
+                ]
                 record = max(candidates, key=lambda item: item.updated_at, default=None)
             if record is None:
                 return None
@@ -86,16 +87,30 @@ class TaskCoordinator:
             record = self._records.get(self.key(session_id, request_id))
             if record is not None:
                 return record.cancelled
-            # A session-level cancel applies to any currently active request.
-            return any(r.session_id == session_id and r.cancelled
-                       and r.status == "cancelled" for r in self._records.values())
+            return any(
+                r.session_id == session_id and r.cancelled and r.status == "cancelled"
+                for r in self._records.values()
+            )
 
-    def finish(self, session_id: str, request_id: str = "", success: bool = True,
-               **metadata: Any) -> dict[str, Any]:
-        return self.update(session_id, request_id,
-                           status="cancelled" if self.is_cancelled(session_id, request_id)
-                           else "succeeded" if success else "failed",
-                           **metadata)
+    def finish(
+        self,
+        session_id: str,
+        request_id: str = "",
+        success: bool = True,
+        **metadata: Any,
+    ) -> dict[str, Any]:
+        return self.update(
+            session_id,
+            request_id,
+            status="cancelled" if self.is_cancelled(session_id, request_id) else "succeeded" if success else "failed",
+            **metadata,
+        )
 
 
 coordinator = TaskCoordinator()
+
+__all__ = [
+    "TaskCoordinator",
+    "TaskRecord",
+    "coordinator",
+]

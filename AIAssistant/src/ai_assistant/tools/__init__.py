@@ -8,6 +8,7 @@ from .action_manifest import (
     reload_manifest,
     validate_action_params,
 )
+from .factory import create_tool_registry
 from .registry import ToolRegistry
 from .schema import build_tool_models, grammar_schema
 from .validation import validate_tool_call
@@ -19,6 +20,7 @@ __all__ = [
     "action_intents",
     "build_tool_models",
     "canonical_action",
+    "create_tool_registry",
     "grammar_schema",
     "reload_manifest",
     "validate_action_params",

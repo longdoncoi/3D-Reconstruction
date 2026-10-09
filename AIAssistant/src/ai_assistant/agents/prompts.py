@@ -7,8 +7,20 @@ if TYPE_CHECKING:
     from ai_assistant.tools.registry import ToolRegistry
 
 
-def build_agent_system_prompt(tool_registry: "ToolRegistry", language: str = "vi") -> str:
+def build_agent_system_prompt(
+    tool_registry: "ToolRegistry | str | None" = None,
+    language: str = "vi",
+) -> str:
     """Build the system prompt dynamically from the registered tool set."""
+    if isinstance(tool_registry, str):
+        language = tool_registry
+        tool_registry = None
+
+    if tool_registry is None:
+        from ai_assistant.tools.factory import create_tool_registry
+
+        tool_registry = create_tool_registry()
+
     tool_desc_parts = []
     for spec in tool_registry.get_all():
         params_desc = []

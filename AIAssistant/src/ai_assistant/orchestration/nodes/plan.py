@@ -74,7 +74,7 @@ def plan_node(state: AgentState, plan_complete: Completion) -> dict[str, Any]:
         },
     ]
     
-    print("[AGENT TRACE] ▶ Plan node: đang sinh kế hoạch...", flush=True)
+    print("[AGENT TRACE] >> Plan node: generating plan...", flush=True)
     raw = plan_complete(planning_msgs, max(0.1, state["temperature"] - 0.1)).strip()
     raw = strip_think_tags(raw)
     print(f"[AGENT TRACE] ── Plan: kế hoạch thô: {raw[:200]}", flush=True)

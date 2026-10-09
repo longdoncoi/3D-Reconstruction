@@ -1,7 +1,14 @@
 """Legacy re-export of mcp_server."""
-import ai_assistant.legacy.mcp_server as _impl
-from ai_assistant.legacy.mcp_server import *
+from ai_assistant.adapters.mcp import (
+    MCP_AVAILABLE,
+    asgi_app,
+    lifespan,
+    mcp,
+)
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = [
+    "MCP_AVAILABLE",
+    "asgi_app",
+    "lifespan",
+    "mcp",
+]

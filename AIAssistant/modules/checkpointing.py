@@ -1,7 +1,10 @@
 """Legacy re-export of checkpointing."""
-import ai_assistant.legacy.checkpointing as _impl
-from ai_assistant.legacy.checkpointing import *
+from ai_assistant.adapters.persistence.checkpointing import (
+    build_checkpointer,
+    cleanup_old_checkpoints,
+)
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = [
+    "build_checkpointer",
+    "cleanup_old_checkpoints",
+]

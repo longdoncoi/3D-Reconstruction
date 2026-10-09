@@ -68,13 +68,6 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
         return {"iteration": iteration, "steps": steps, "done": True}
 
     messages = list(state["messages"])
-    if messages and messages[0].get("role") == "system":
-        original_sys = messages[0]["content"]
-        messages[0] = {
-            "role": "system",
-            "content": REASONER_PROMPT + original_sys
-        }
-
     plan = state.get("plan")
     tool_call_count = state.get("tool_call_count", 0)
     done_count = completed_plan_steps(steps, plan)

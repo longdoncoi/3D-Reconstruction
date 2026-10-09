@@ -1,7 +1,30 @@
 """Legacy re-export of a2a_protocol."""
-import ai_assistant.legacy.a2a_protocol as _impl
-from ai_assistant.legacy.a2a_protocol import *
+from ai_assistant.adapters.a2a_protocol import (
+    A2A_CARD_NAME,
+    A2A_CARD_URL,
+    A2A_ENABLED,
+    A2A_REMOTE_AGENTS,
+    A2ARouter,
+    AgentCard,
+    AgentSkill,
+    RemoteAgent,
+    a2a_available,
+    build_agent_card,
+    discover_remote_agents,
+    get_remote_registry,
+)
 
-
-def __getattr__(name):
-    return getattr(_impl, name)
+__all__ = [
+    "A2A_CARD_NAME",
+    "A2A_CARD_URL",
+    "A2A_ENABLED",
+    "A2A_REMOTE_AGENTS",
+    "A2ARouter",
+    "AgentCard",
+    "AgentSkill",
+    "RemoteAgent",
+    "a2a_available",
+    "build_agent_card",
+    "discover_remote_agents",
+    "get_remote_registry",
+]

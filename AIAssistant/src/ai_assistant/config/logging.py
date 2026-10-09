@@ -105,3 +105,38 @@ def cleanup_old_logs(logs_dir: Path | str, max_days: int = 7, max_size_mb: int =
         except OSError:
             pass
         remaining_files.pop(0)
+
+
+def get_agent_logger(agent_name: str) -> logging.Logger:
+    """Return a logger writing this agent's events to its own file."""
+
+    from ai_assistant.config.paths import get_paths
+
+    safe_name = "".join(char if char.isalnum() or char in "-_" else "_" for char in agent_name.lower())
+    agent_logger = logging.getLogger(f"agent.{safe_name}")
+    agent_logger.setLevel(logging.DEBUG)
+    agent_logger.propagate = True
+    if not agent_logger.handlers:
+        logs_dir = get_paths().logs_dir
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            logs_dir / f"agent_{safe_name}.log",
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter(
+            "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
+            "%Y-%m-%d %H:%M:%S",
+        ))
+        handler.setLevel(logging.DEBUG)
+        agent_logger.addHandler(handler)
+    return agent_logger
+
+
+__all__ = [
+    "cleanup_old_logs",
+    "force_utf8_stream",
+    "get_agent_logger",
+    "setup_logging",
+]

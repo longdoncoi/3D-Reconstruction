@@ -1,8 +1,9 @@
-"""Policy-first supervisor and specialists for the unified assistant."""
+"""Policy-first supervisor and specialist coordination for the assistant."""
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
@@ -10,13 +11,14 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from .agent_logging import get_agent_logger
-from .coding_agent import is_coding_task
-from .config import APP_DATA_DIR, logger
+from ai_assistant.config.logging import get_agent_logger
+from ai_assistant.orchestration.specialists.code import is_coding_task
+
+logger = logging.getLogger("ai_assistant.orchestration.supervisor")
 
 # A2A protocol integration — graceful no-op when a2a_protocol is unavailable.
 try:
-    from .a2a_protocol import A2A_ENABLED, a2a_available, get_remote_registry
+    from ai_assistant.adapters.a2a_protocol import A2A_ENABLED, a2a_available, get_remote_registry
     _A2A_IMPORT_OK = True
 except ImportError:
     _A2A_IMPORT_OK = False
@@ -61,10 +63,6 @@ _SPECIALIST_INSTRUCTIONS = {
     Specialist.SUPERVISOR: "Clarify intent, enforce policy, and coordinate the next specialist handoff.",
 }
 
-
-
-
-
 _RESEARCH_TOOLS = {"read_file", "list_directory", "find_files", "search_text", "analyze_code", "git_diff", "rag_search"}
 _VERIFICATION_TOOLS = {"validate_file", "get_project_status"}
 _CODE_TOOLS = {"write_file", "patch_file", "replace_file_content", "multi_replace_file_content", "create_directory", "run_command"}
@@ -80,21 +78,32 @@ _TRANSFER_TARGETS = {
     "transfer_to_chatbot_agent": Specialist.CHATBOT,
 }
 _AUDIT_LOCK = threading.Lock()
-_AUDIT_PATH = os.path.join(APP_DATA_DIR, "AIAssistant", "agent_audit.jsonl")
 _RECENT_DELEGATION_LOGS: dict[tuple[str, str], float] = {}
 
 
-def route_task(task: str) -> Specialist:
-    """Compatibility classifier for callers that route before choosing a tool.
+def _get_audit_path() -> str:
+    app_data_env = os.environ.get("APP_DATA_DIR")
+    if app_data_env:
+        return os.path.join(app_data_env, "AIAssistant", "agent_audit.jsonl")
+    try:
+        from ai_assistant.config.paths import get_paths
+        return str(get_paths().cache_dir / "agent_audit.jsonl")
+    except Exception:
+        return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "Cache", "agent_audit.jsonl"))
 
-    The authoritative coding-intent policy stays in ``coding_agent``; this
-    facade prevents older Qt/LangGraph integrations from duplicating it.
-    """
+
+def route_task(task: str) -> Specialist:
+    """Classify the primary intent into a Specialist role."""
     return Specialist.CODE if is_coding_task(task) else Specialist.SUPERVISOR
 
 
-def delegate(task: str, session_id: str, tool: str | None = None, parameters: dict[str, Any] | None = None,
-             prefer_code: bool = False) -> Delegation:
+def delegate(
+    task: str,
+    session_id: str,
+    tool: str | None = None,
+    parameters: dict[str, Any] | None = None,
+    prefer_code: bool = False,
+) -> Delegation:
     """Select exactly one worker role. Workers never delegate further."""
     if tool in _TRANSFER_TARGETS:
         specialist = _TRANSFER_TARGETS[tool]
@@ -125,48 +134,58 @@ def delegate(task: str, session_id: str, tool: str | None = None, parameters: di
                 )
                 break
 
-    source = json.dumps({"session": session_id, "task": task, "tool": tool, "params": parameters or {}},
-                        ensure_ascii=False, sort_keys=True, default=str)
-    delegation = Delegation(specialist, tool, reason,
-                            hashlib.sha256(source.encode("utf-8")).hexdigest()[:24],
-                            remote_endpoint=remote_endpoint)
-    # The same delegation is frequently (re)computed several times in one tool
-    # call (selection preview, execution handoff, verification replay).  Only
-    # emit the verbose SUPERVISOR_ROUTE/Delegated trace once per unique
-    # session+idempotency pair inside a short window; later identical repeats
-    # are just noise in the Qt server log.
+    source = json.dumps(
+        {"session": session_id, "task": task, "tool": tool, "params": parameters or {}},
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    delegation = Delegation(
+        specialist,
+        tool,
+        reason,
+        hashlib.sha256(source.encode("utf-8")).hexdigest()[:24],
+        remote_endpoint=remote_endpoint,
+    )
+
     _log_key = (session_id, delegation.idempotency_key)
     _now = time.monotonic()
     with _AUDIT_LOCK:
         _last = _RECENT_DELEGATION_LOGS.get(_log_key)
         if _last is None or (_now - _last) > 120:
             _RECENT_DELEGATION_LOGS[_log_key] = _now
-            # Cheap size guard so the map cannot grow unbounded.
             if len(_RECENT_DELEGATION_LOGS) > 512:
                 _RECENT_DELEGATION_LOGS.clear()
             _should_log = True
         else:
             _should_log = False
+
     if _should_log:
         supervisor_logger.info(
             "SUPERVISOR_ROUTE | session=%s basis=%s tool=%s prefer_code=%s -> specialist=%s remote=%s "
             "idempotency_key=%s task_chars=%d parameter_keys=%s",
-            session_id, basis, tool or "none", prefer_code, specialist.value,
-            remote_endpoint or "local", delegation.idempotency_key, len(task),
+            session_id,
+            basis,
+            tool or "none",
+            prefer_code,
+            specialist.value,
+            remote_endpoint or "local",
+            delegation.idempotency_key,
+            len(task),
             sorted((parameters or {}).keys()),
         )
-        # Keep a role-specific trace in addition to the supervisor aggregate log.
-        # This creates agent_<role>.log lazily for research/workflow/code roles too.
         get_agent_logger(specialist.value).info(
             "Delegated | tool=%s reason=%s idempotency_key=%s remote=%s",
-            tool or "none", reason, delegation.idempotency_key,
+            tool or "none",
+            reason,
+            delegation.idempotency_key,
             remote_endpoint or "local",
         )
     return delegation
 
 
 def authorise(delegation: Delegation, needs_approval: bool) -> tuple[bool, str | None]:
-    """Enforce least privilege before the host calls a tool."""
+    """Enforce least privilege before calling a tool."""
     if delegation.tool is None:
         return True, None
     if delegation.specialist is Specialist.CODE and delegation.tool in _CODE_TOOLS and not needs_approval:
@@ -196,9 +215,6 @@ def verify_result(delegation: Delegation, result: Any) -> dict[str, Any]:
         verification_logger.warning("Verification failed | tool=%s reason=%s", delegation.tool, outcome["reason"])
         return outcome
 
-    # Read-only discovery is useful only when it produces an observation the
-    # reasoner can act on.  These field names are the public result contract of
-    # the generic tools, not feature-specific rules.
     evidence_fields = {
         "read_file": ("content",),
         "search_text": ("results",),
@@ -213,31 +229,28 @@ def verify_result(delegation: Delegation, result: Any) -> dict[str, Any]:
         verification_logger.warning("Verification failed | tool=%s reason=%s", delegation.tool, outcome["reason"])
         return outcome
     if delegation.specialist is Specialist.WORKFLOW:
-        outcome = {"passed": bool(result.get("pending_ui_ack") or result.get("success")),
-                   "reason": "Qt acknowledgement is required for desktop actions."}
+        outcome = {
+            "passed": bool(result.get("pending_ui_ack") or result.get("success")),
+            "reason": "Qt acknowledgement is required for desktop actions.",
+        }
     else:
         outcome = {"passed": True, "reason": "Structured tool result passed policy checks."}
-    verification_logger.info("Verification result | tool=%s passed=%s reason=%s",
-                             delegation.tool, outcome["passed"], outcome["reason"])
+    verification_logger.info(
+        "Verification result | tool=%s passed=%s reason=%s",
+        delegation.tool,
+        outcome["passed"],
+        outcome["reason"],
+    )
     return outcome
 
 
 def specialist_instruction(delegation: Delegation) -> str:
-    """Return a compact role handoff for the shared local model.
-
-    Specialists are logical roles, not separate model processes: this retains
-    role separation without multiplying model context or token cost.
-    """
+    """Return a compact role handoff for the shared local model."""
     return _SPECIALIST_INSTRUCTIONS[delegation.specialist]
 
 
 def reflect_result(delegation: Delegation, result: Any, verification: dict[str, Any]) -> dict[str, Any]:
-    """Independent, deterministic critic used after each tool result.
-
-    The next ReAct turn receives this feedback and revises its approach when a
-    tool or verification failed.  Keeping the critic deterministic avoids an
-    additional LLM call for every tool invocation.
-    """
+    """Independent, deterministic critic used after each tool result."""
     if not isinstance(result, dict):
         outcome = {"passed": False, "decision": "revise", "reason": "Tool returned an unstructured result."}
     elif result.get("error"):
@@ -246,17 +259,42 @@ def reflect_result(delegation: Delegation, result: Any, verification: dict[str, 
         outcome = {"passed": False, "decision": "revise", "reason": verification.get("reason", "Verification failed.")}
     else:
         outcome = {"passed": True, "decision": "continue", "reason": "Independent verification accepted the tool result."}
-    verification_logger.info("Reflection result | tool=%s passed=%s decision=%s reason=%s",
-                             delegation.tool, outcome["passed"], outcome["decision"], outcome["reason"])
+    verification_logger.info(
+        "Reflection result | tool=%s passed=%s decision=%s reason=%s",
+        delegation.tool,
+        outcome["passed"],
+        outcome["decision"],
+        outcome["reason"],
+    )
     return outcome
 
 
 def audit(event: str, delegation: Delegation, **details: Any) -> None:
     """Append audit data without ever breaking a user request on I/O failure."""
     record = {"timestamp": time.time(), "event": event, "delegation": asdict(delegation), **details}
+    audit_path = _get_audit_path()
     try:
-        os.makedirs(os.path.dirname(_AUDIT_PATH), exist_ok=True)
-        with _AUDIT_LOCK, open(_AUDIT_PATH, "a", encoding="utf-8") as handle:
+        os.makedirs(os.path.dirname(audit_path), exist_ok=True)
+        with _AUDIT_LOCK, open(audit_path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     except OSError as error:
         logger.warning("Unable to write agent audit event: %s", error)
+
+
+__all__ = [
+    "CODE_AGENT_TOOLS",
+    "_CODE_TOOLS",
+    "_RESEARCH_TOOLS",
+    "_TRANSFER_TARGETS",
+    "_VERIFICATION_TOOLS",
+    "_WORKFLOW_TOOLS",
+    "Delegation",
+    "Specialist",
+    "audit",
+    "authorise",
+    "delegate",
+    "reflect_result",
+    "route_task",
+    "specialist_instruction",
+    "verify_result",
+]
