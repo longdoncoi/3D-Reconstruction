@@ -45,7 +45,7 @@ from ai_assistant.adapters.http import (
     build_chat_router,
     build_health_router,
 )
-from ai_assistant.adapters.orchestration import LegacyConstrainedCompletion
+from ai_assistant.adapters.orchestration import LangGraphAgentOrchestrator
 from ai_assistant.application.agent_runs import AgentRunService
 from ai_assistant.bootstrap import PlatformContainer, build_container, create_app
 from ai_assistant.domain.tasks import AgentTask
@@ -83,7 +83,7 @@ def _rebuild_chatbot_agent() -> None:
 
 # ── Bootstrap services ────────────────────────────────────────────────────────
 def _execute_a2a_task(task: AgentTask) -> dict:
-    """Run a framework-independent agent loop inside the durable A2A lifecycle."""
+    """Run the shared LangGraph agent engine inside the durable A2A lifecycle."""
     if llm_module.llm is None:
         raise RuntimeError("LLM is not initialized")
     return _agent_run_service.run(task)
@@ -97,10 +97,11 @@ platform: PlatformContainer = build_container(
 )
 
 _agent_run_service = AgentRunService(
-    complete=LegacyConstrainedCompletion(agent_module._constrained_agent_completion),
-    tools=platform.tools,
-    tool_descriptions=lambda: "\n".join(
-        f"- {spec.name}: {spec.description}" for spec in platform.plugins.specs()
+    capability_scopes=platform.settings.capability_scopes,
+    orchestrator=LangGraphAgentOrchestrator(
+        execute=agent_module.agent_execute,
+        approve=agent_module.agent_approve,
+        ui_action_result=agent_module.agent_ui_action_result,
     ),
 )
 
@@ -176,7 +177,7 @@ app.include_router(build_admin_router(
 ))
 
 # Agent endpoints
-app.include_router(build_agent_router(agent_module))
+app.include_router(build_agent_router())
 
 # Optional protocol adapters
 if platform.settings.enable_a2a:

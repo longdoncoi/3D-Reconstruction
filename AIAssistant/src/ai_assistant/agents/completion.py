@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
+
+from ai_assistant.settings import load_agent_runtime_settings
 
 logger = logging.getLogger("ai_assistant.agents.completion")
 
@@ -148,7 +149,7 @@ def constrained_completion(messages: list[dict], max_tokens: int, temperature: f
             "messages": messages, "max_tokens": max_tokens,
             "temperature": temperature, "repeat_penalty": 1.1, "stream": False,
         }
-        if os.environ.get("AGENT_NATIVE_TOOL_CALLS", "0") == "1":
+        if load_agent_runtime_settings().native_tool_calls:
             kwargs.update({"tools": openai_tools, "tool_choice": "auto"})
         elif _precompiled_grammar is not None:
             kwargs.update({"grammar": _precompiled_grammar})

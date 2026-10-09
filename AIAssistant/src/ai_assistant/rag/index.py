@@ -134,7 +134,7 @@ def load_cache(paths: AppPaths, settings: RAGSettings) -> tuple[Any, list[ChunkR
             bm25 = pickle.load(f)  # noqa: S301 - trusted local cache
             
         logger.info("Cache loaded: %.1fs | chunks=%d", time.monotonic()-t, len(chunks))
-        print(f"       chunks={len(chunks)}  (from Cache/)")
+        logger.debug(f"       chunks={len(chunks)}  (from Cache/)")
         return index, chunks, bm25
     except Exception as e:
         logger.error("Cache load failed: %s", e)
@@ -164,14 +164,14 @@ def build_index_from_scratch(chunks: list[ChunkResult], embed_model: Any, settin
     final_embeddings = [None] * len(chunks)
     
     if texts:
-        print(f"Encoding {len(texts)} text chunks", end="", flush=True)
+        logger.debug(f"Encoding {len(texts)} text chunks")
         text_embs = embed_model.encode(texts, show_progress_bar=False, normalize_embeddings=True, batch_size=64)
         for idx, emb in zip(text_indices, text_embs):
             final_embeddings[idx] = emb
             
     if image_items:
         image_batch_size = 4
-        print(f"Encoding {len(image_items)} image chunks", end="", flush=True)
+        logger.debug(f"Encoding {len(image_items)} image chunks")
         for start in range(0, len(image_items), image_batch_size):
             batch_items = image_items[start:start + image_batch_size]
             batch_indices = []
@@ -236,7 +236,7 @@ def build_index_from_scratch(chunks: list[ChunkResult], embed_model: Any, settin
             final_embeddings[idx] = emb
 
     embeddings = final_embeddings
-    print(f"\n ✓ Encoding complete ({time.monotonic()-t_enc:.1f}s)")
+    logger.debug(f"\n ✓ Encoding complete ({time.monotonic()-t_enc:.1f}s)")
 
     emb = np.array(embeddings, dtype="float32")
     dim, n = emb.shape[1], len(emb)
@@ -268,12 +268,12 @@ def build_index_from_scratch(chunks: list[ChunkResult], embed_model: Any, settin
 
 def load_or_build_index(chunks: list[ChunkResult], embed_model: Any, paths: AppPaths, settings: RAGSettings, force_rebuild: bool = False, model_idx: int = 0) -> tuple[Any, list[ChunkResult], Any]:
     if not force_rebuild and is_cache_valid(paths, settings):
-        print("       [CACHE HIT]", end="")
+        logger.debug("       [CACHE HIT]")
         index, chunks_loaded, bm25 = load_cache(paths, settings)
         if index is not None:
             return index, chunks_loaded, bm25
-        print(" load failed, rebuilding...")
-    print("       [CACHE MISS] Building index...")
+        logger.debug(" load failed, rebuilding...")
+    logger.debug("       [CACHE MISS] Building index...")
     logger.info("Cache miss — rebuilding")
     
     index, chunks_loaded, bm25 = build_index_from_scratch(chunks, embed_model, settings)
@@ -324,7 +324,7 @@ def scan_documents(paths: AppPaths, registry: Any) -> list[ChunkResult]:
         stats["docx"], stats["pdf"], stats["txt"],
         stats["md"], stats["source"], stats["errors"]
     )
-    print(f"       files={stats['files']}  chunks={len(all_chunks)}"
+    logger.debug(f"       files={stats['files']}  chunks={len(all_chunks)}"
           f"  (docx={stats['docx']} pdf={stats['pdf']} txt={stats['txt']} eml={stats['eml']}"
           f" md={stats['md']} src={stats['source']} err={stats['errors']})")
     return all_chunks

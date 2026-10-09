@@ -68,3 +68,19 @@ class RAGNotReadyError(PlatformError):
 
 class TaskCancelledError(PlatformError):
     """The agent task was cancelled cooperatively."""
+
+
+class NotFoundError(PlatformError):
+    """A requested resource does not exist or is no longer available."""
+
+
+class AuthorizationError(PlatformError):
+    """The caller is not permitted to perform the requested operation."""
+
+
+class UnprocessableRequestError(PlatformError):
+    """The request is syntactically valid but semantically invalid."""
+
+
+class ServiceUnavailableError(PlatformError):
+    """A required backend or capability is not currently available."""

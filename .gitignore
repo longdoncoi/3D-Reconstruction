@@ -94,6 +94,9 @@ CMakeLists.txt.user*
 /AIAssistant/logs/
 /AIAssistant/agent_audit.jsonl
 /AIAssistant/tasks.sqlite
+# Coverage artifacts (Python)
+/AIAssistant/.coverage
+/AIAssistant/htmlcov/
 /AIAssistant/AIAssistant/
 /AIAssistant/.env
 /AIComputerVision/runs/

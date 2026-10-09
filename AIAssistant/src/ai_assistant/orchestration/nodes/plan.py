@@ -8,9 +8,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from modules.action_manifest import normalize_text, rank_actions_for_step
-from modules.agent_logging import get_agent_logger
-from modules.inference import strip_think_tags
+from ai_assistant.config.logging import get_agent_logger
+from ai_assistant.llm.inference import strip_think_tags
+from ai_assistant.tools.action_manifest import normalize_text, rank_actions_for_step
 
 from ..helpers import normalise_plan_payload, plan_step_execution_contract
 from ..prompts import PLANNER_PROMPT
@@ -74,10 +74,10 @@ def plan_node(state: AgentState, plan_complete: Completion) -> dict[str, Any]:
         },
     ]
     
-    print("[AGENT TRACE] >> Plan node: generating plan...", flush=True)
+    logger.debug("[AGENT TRACE] >> Plan node: generating plan...")
     raw = plan_complete(planning_msgs, max(0.1, state["temperature"] - 0.1)).strip()
     raw = strip_think_tags(raw)
-    print(f"[AGENT TRACE] ── Plan: kế hoạch thô: {raw[:200]}", flush=True)
+    logger.debug(f"[AGENT TRACE] ── Plan: kế hoạch thô: {raw[:200]}")
 
     plan: list[str] | None = None
     plan_spec: dict[str, Any] = {}
@@ -111,7 +111,7 @@ def plan_node(state: AgentState, plan_complete: Completion) -> dict[str, Any]:
         
         steps = list(state["steps"])
         steps.append({"type": "plan", "steps": plan, "spec": plan_spec, "tool_hints": tool_hints})
-        print(f"[AGENT TRACE] ── Plan: {plan}", flush=True)
+        logger.debug(f"[AGENT TRACE] ── Plan: {plan}")
         logger.info(f"[NODE: plan] Đã sinh kế hoạch: {plan}")
         return {"plan": plan, "steps": steps,
                 "plan_verified": False,
@@ -120,13 +120,13 @@ def plan_node(state: AgentState, plan_complete: Completion) -> dict[str, Any]:
                 "plan_feedback": ""}
 
     if not parsed:
-        print("[AGENT TRACE] ── Plan: không parse được, tiếp tục không có plan.", flush=True)
+        logger.debug("[AGENT TRACE] ── Plan: không parse được, tiếp tục không có plan.")
         logger.info("[NODE: plan] Không sinh được kế hoạch.")
     elif plan_spec.get("requires_plan"):
-        print("[AGENT TRACE] ── Plan: planner yêu cầu kế hoạch nhưng không có bước hợp lệ.", flush=True)
+        logger.debug("[AGENT TRACE] ── Plan: planner yêu cầu kế hoạch nhưng không có bước hợp lệ.")
         logger.info("[NODE: plan] Planner không trả về bước kế hoạch hợp lệ.")
     else:
-        print("[AGENT TRACE] ── Plan: planner xác nhận không cần kế hoạch.", flush=True)
+        logger.debug("[AGENT TRACE] ── Plan: planner xác nhận không cần kế hoạch.")
         logger.info("[NODE: plan] Planner xác nhận tác vụ một bước.")
     # Một yêu cầu duy nhất (requires_plan=false) không có "plan" nhưng vẫn cần
     # "plan_spec.step_kinds" để Reason biết dùng rag_search/direct/tool.

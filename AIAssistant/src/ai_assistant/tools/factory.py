@@ -5,7 +5,6 @@ import json
 from typing import Any, Callable
 
 from ai_assistant.config.paths import get_paths
-from ai_assistant.core.tools import ToolSpec
 
 from .builtin import (
     tool_analyze_code,
@@ -28,6 +27,7 @@ from .builtin import (
     tool_validate_file,
     tool_write_file,
 )
+from .definition import ToolDefinition
 from .registry import ToolRegistry
 
 
@@ -92,7 +92,7 @@ def create_tool_registry() -> ToolRegistry:
         name = item["name"]
         override = overrides.get(name, {})
         
-        spec = ToolSpec(
+        spec = ToolDefinition(
             name=name,
             description=item.get("description", ""),
             parameters=item.get("parameters", {}),
@@ -107,7 +107,7 @@ def create_tool_registry() -> ToolRegistry:
     # Note: `application_action` might not be in the file depending on the generation logic,
     # as it was appended dynamically. Let's make sure it's there.
     if registry.get("application_action") is None:
-        registry.register(ToolSpec(
+        registry.register(ToolDefinition(
             name="application_action",
             description="Execute exactly ONE canonical desktop action. Choose the id whose meaning matches the CURRENT plan step.",
             parameters={

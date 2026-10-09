@@ -10,11 +10,11 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ai_assistant.config.logging import get_agent_logger
+from ai_assistant.llm.inference import strip_think_tags
 from ai_assistant.observability import record_step_guard
-from modules.action_manifest import rank_actions_for_step, step_matches_action
-from modules.agent_logging import get_agent_logger
-from modules.coding_agent import coding_workflow_guidance, coding_workflow_status
-from modules.inference import strip_think_tags
+from ai_assistant.orchestration.specialists.code import coding_workflow_guidance, coding_workflow_status
+from ai_assistant.tools.action_manifest import rank_actions_for_step, step_matches_action
 
 from ..helpers import (
     clean_project_research_answer,
@@ -53,7 +53,7 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
     """Evaluate context and plan, then select the next tool to execute."""
     iteration = state["iteration"] + 1
     steps = list(state["steps"])
-    print(f"\n[AGENT TRACE] ── Reason node: iter {iteration}", flush=True)
+    logger.debug(f"\n[AGENT TRACE] ── Reason node: iter {iteration}")
     logger.info(f"[NODE: reason] Bắt đầu suy luận (iteration {iteration})")
 
     if ctx.cancel_checker():
@@ -62,7 +62,7 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
         return {"iteration": iteration, "steps": steps, "done": True, "cancelled": True}
 
     if iteration > ctx.max_iterations:
-        print(f"[AGENT TRACE] ── Reason: đạt giới hạn ({ctx.max_iterations} iterations).", flush=True)
+        logger.debug(f"[AGENT TRACE] ── Reason: đạt giới hạn ({ctx.max_iterations} iterations).")
         steps.append({"type": "final_answer",
                       "content": "Agent da dat gioi han so vong lap."})
         return {"iteration": iteration, "steps": steps, "done": True}
@@ -79,7 +79,7 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
         messages = summarize_messages(messages)
         logger.info("[NODE: reason] Context compacted before REASONER_PROMPT: chars=%d tool_calls=%d",
                     base_chars, tool_call_count)
-        print(f"[AGENT TRACE] ── Reason: tóm tắt messages base (tool_call_count={tool_call_count}).", flush=True)
+        logger.debug(f"[AGENT TRACE] ── Reason: tóm tắt messages base (tool_call_count={tool_call_count}).")
 
     # ── Step 2: prepend REASONER_PROMPT to the (already-compacted) system ─
     if messages and messages[0].get("role") == "system":
@@ -113,7 +113,7 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
         if remaining:
             logger.info("[NODE: reason] Plan progress: completed=%d/%d; current step=%s; remaining=%s",
                         done_count, len(plan), remaining[0], remaining)
-            print(f"[AGENT TRACE] ── Reason: plan step {done_count + 1}/{len(plan)} → {remaining[0]}", flush=True)
+            logger.debug(f"[AGENT TRACE] ── Reason: plan step {done_count + 1}/{len(plan)} → {remaining[0]}")
             messages = [*messages, {
                 "role": "system",
                 "content": f"[Ke hoach con lai] {json.dumps(remaining, ensure_ascii=False)}",
@@ -121,7 +121,7 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
         else:
             logger.info("[NODE: reason] Plan progress: completed=%d/%d; all steps finished",
                         done_count, len(plan))
-            print(f"[AGENT TRACE] ── Reason: plan completed {done_count}/{len(plan)}", flush=True)
+            logger.debug(f"[AGENT TRACE] ── Reason: plan completed {done_count}/{len(plan)}")
             messages = [*messages, {
                 "role": "system",
                 "content": "[Kế hoạch đã hoàn tất] Mọi bước trong kế hoạch đã được thực hiện xong. Hãy trả về final_answer để kết thúc, KHÔNG gọi thêm tool.",
@@ -141,7 +141,7 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
     user_request = next((m.get("content", "") for m in state.get("messages", [])
                          if m.get("role") == "user"), "")
     
-    from modules.action_manifest import normalize_text
+    from ai_assistant.tools.action_manifest import normalize_text
 
     plan_spec = state.get("plan_spec") or {}
     step_kinds = plan_spec.get("step_kinds") or [] if isinstance(plan_spec, dict) else []
@@ -181,7 +181,7 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
         hint_index = done_count + 1 if plan else completed_ui_actions + 1
         logger.info("[NODE: reason] ToolApp hint | plan step %d/%d | expected action=%s | failed attempts=%d",
                     hint_index, progress_total, expected_action.get("action"), failed_attempts)
-        print(f"[AGENT TRACE] ── Reason: ToolApp hint step {hint_index}/{progress_total}; gọi LLM tool-calling", flush=True)
+        logger.debug(f"[AGENT TRACE] ── Reason: ToolApp hint step {hint_index}/{progress_total}; gọi LLM tool-calling")
         messages = [*messages, {
             "role": "system",
             "content": (
@@ -247,7 +247,7 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
     if pre_call_chars > _AGENT_HARD_LIMIT:
         messages = summarize_messages(messages)
         logger.info("[NODE: reason] Pre-call safety compact: chars=%d -> compacted", pre_call_chars)
-        print(f"[AGENT TRACE] ── Reason: pre-call safety compact ({pre_call_chars} chars > {_AGENT_HARD_LIMIT})", flush=True)
+        logger.debug(f"[AGENT TRACE] ── Reason: pre-call safety compact ({pre_call_chars} chars > {_AGENT_HARD_LIMIT})")
 
     forced_envelope: dict[str, Any] | None = None
     if step_contract["mode"] == "rag_search":
@@ -275,10 +275,10 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
         logger.info("[NODE: reason] Enforcing execution contract for step/request '%s': %s",
                     current_plan_step or user_request, forced_envelope)
     else:
-        print("[AGENT TRACE] ── Reason: đang gọi LLM...", flush=True)
+        logger.debug("[AGENT TRACE] ── Reason: đang gọi LLM...")
         answer = ctx.complete(messages, state["temperature"]).strip()
         
-    print(f"[AGENT TRACE] ── Reason: LLM output ({len(answer)} chars): {answer[:120].replace(chr(10), ' ')}", flush=True)
+    logger.debug(f"[AGENT TRACE] ── Reason: LLM output ({len(answer)} chars): {answer[:120].replace(chr(10), ' ')}")
     # The raw LLM envelope is already logged once by the constrained
     # completion adapter ("Constrained LLM response").  Logging it again here
     # duplicated the full payload in the server log/Qt console.
@@ -338,7 +338,7 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
                 "error_count": state.get("error_count", 0) + 1
             }
 
-        print(f"[AGENT TRACE] ── Reason: step_answer for plan step {done_count}.", flush=True)
+        logger.debug(f"[AGENT TRACE] ── Reason: step_answer for plan step {done_count}.")
         logger.info("[NODE: reason] LLM trả lời trực tiếp cho bước kế hoạch (step_answer).")
         steps.append({"type": "step_answer", "content": step_content,
                       "iteration": iteration})
@@ -363,7 +363,7 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
         }
 
     if tool_name is None:
-        print("[AGENT TRACE] ── Reason: final answer.", flush=True)
+        logger.debug("[AGENT TRACE] ── Reason: final answer.")
         logger.info("[NODE: reason] LLM quyết định dừng (final_answer).")
         coding_missing = coding_status.missing if coding_status else ()
         
@@ -426,9 +426,8 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
             "[NODE: reason] Validation error cho tool '%s': %s",
             original_tool, error_detail,
         )
-        print(
+        logger.debug(
             f"[AGENT TRACE] ── Reason: VALIDATION ERROR cho '{original_tool}': {error_detail}",
-            flush=True,
         )
         steps.append({
             "type": "validation_error", "tool": original_tool,
@@ -456,7 +455,7 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
     # ── Guard: transfer_to_toolapp_agent block ────────
     if tool_name == "transfer_to_toolapp_agent":
         logger.warning("[NODE: reason] LLM called transfer_to_toolapp_agent, bouncing back to force application_action.")
-        print("[AGENT TRACE] ── Reason: VALIDATION ERROR: called transfer_to_toolapp_agent", flush=True)
+        logger.debug("[AGENT TRACE] ── Reason: VALIDATION ERROR: called transfer_to_toolapp_agent")
         steps.append({
             "type": "validation_error", "tool": tool_name,
             "error": "Forbidden direct call to transfer_to_toolapp_agent.", "iteration": iteration,
@@ -552,7 +551,7 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
                       "remote_endpoint": delegation.get("remote_endpoint"),
                       "iteration": iteration})
                       
-    print(f"[AGENT TRACE] ── Reason: tool call → tool='{tool_name}', params={str(params)[:80]}", flush=True)
+    logger.debug(f"[AGENT TRACE] ── Reason: tool call → tool='{tool_name}', params={str(params)[:80]}")
     logger.info("[NODE: reason] LLM quyết định gọi tool: %s, params: %s", tool_name, params)
     tool_call = {"type": "tool_call", "tool": tool_name,
                   "params": params, "idempotency_key": idempotency_key,
@@ -603,34 +602,34 @@ def after_reason(state: AgentState) -> str:
     """Determine next step after the reason node."""
     if state["done"] or state["pending_tool"] is not None:
         logger.info("[ROUTER: after_reason] → END (done=%s, pending=%s)", state["done"], state["pending_tool"] is not None)
-        print("[AGENT TRACE] ── Router: kết thúc (hoặc chờ phê duyệt)", flush=True)
+        logger.debug("[AGENT TRACE] ── Router: kết thúc (hoặc chờ phê duyệt)")
         return "end"
         
     steps = state.get("steps", [])
     if steps and steps[-1].get("type") == "validation_error":
         logger.info("[ROUTER: after_reason] → REASON (validation error, self-correct)")
-        print("[AGENT TRACE] ── Router: → Reason node (validation error self-correct)", flush=True)
+        logger.debug("[AGENT TRACE] ── Router: → Reason node (validation error self-correct)")
         return "reason"
     if steps and steps[-1].get("type") == "plan_incomplete":
         logger.info("[ROUTER: after_reason] → REASON (premature final answer blocked)")
-        print("[AGENT TRACE] ── Router: → Reason node (plan incomplete)", flush=True)
+        logger.debug("[AGENT TRACE] ── Router: → Reason node (plan incomplete)")
         return "reason"
     if steps and steps[-1].get("type") == "coding_incomplete":
         logger.info("[ROUTER: after_reason] → REASON (coding evidence incomplete)")
-        print("[AGENT TRACE] ── Router: → Reason node (coding workflow incomplete)", flush=True)
+        logger.debug("[AGENT TRACE] ── Router: → Reason node (coding workflow incomplete)")
         return "reason"
     if steps and steps[-1].get("type") == "context_compacted":
         logger.info("[ROUTER: after_reason] → REASON (context compacted)")
-        print("[AGENT TRACE] ── Router: → Reason node (context compacted)", flush=True)
+        logger.debug("[AGENT TRACE] ── Router: → Reason node (context compacted)")
         return "reason"
         
     if (len(steps) >= 2
             and steps[-2].get("type") == "step_answer"
             and steps[-1].get("type") == "reflection"):
         logger.info("[ROUTER: after_reason] → REASON (step_answer completed)")
-        print("[AGENT TRACE] ── Router: → Reason node (step_answer)", flush=True)
+        logger.debug("[AGENT TRACE] ── Router: → Reason node (step_answer)")
         return "reason"
         
     logger.info("[ROUTER: after_reason] → TOOL")
-    print("[AGENT TRACE] ── Router: → Tool node", flush=True)
+    logger.debug("[AGENT TRACE] ── Router: → Tool node")
     return "tool"

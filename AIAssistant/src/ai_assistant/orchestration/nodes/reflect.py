@@ -9,8 +9,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from modules.action_manifest import canonical_action, step_matches_action
-from modules.agent_logging import get_agent_logger
+from ai_assistant.config.logging import get_agent_logger
+from ai_assistant.tools.action_manifest import canonical_action, step_matches_action
 
 from ..helpers import completed_plan_steps
 from ..prompts import CRITIC_PROMPT
@@ -72,9 +72,9 @@ def reflect_node(state: AgentState, ctx: ReflectContext) -> dict[str, Any]:
         }
     ]
 
-    print("[AGENT TRACE] >> Reflect node: LLM evaluating tool result...", flush=True)
+    logger.debug("[AGENT TRACE] >> Reflect node: LLM evaluating tool result...")
     raw = ctx.reflect_complete(critic_msgs, max(0.1, state["temperature"] - 0.1)).strip()
-    print(f"[AGENT TRACE] ── Reflect node LLM output: {raw[:150]}", flush=True)
+    logger.debug(f"[AGENT TRACE] ── Reflect node LLM output: {raw[:150]}")
 
     reflection = None
     try:

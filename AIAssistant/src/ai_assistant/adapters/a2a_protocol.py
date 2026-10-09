@@ -1,8 +1,12 @@
 """A2A (Agent-to-Agent) protocol layer for the unified assistant.
 
-Provides Agent Card discovery, optional remote agent routing, and a standard
-JSON-RPC 2.0 transport that falls back to in-process execution when the A2A
-SDK is unavailable or remote agents are not configured.
+Provides Agent Card publishing, remote Agent Card discovery and the
+:class:`A2ARouter` facade used by the delegation path.
+
+The actual remote transport is :class:`ai_assistant.adapters.a2a_client.
+TrustedA2AClient`, which enforces the deployment allowlist and refuses to send
+sensitive classifications outside the trust boundary. ``A2ARouter`` is a thin
+routing facade over that single client; it never executes tools locally.
 
 Environment variables
 ---------------------
@@ -22,6 +26,8 @@ from typing import Any
 from urllib.parse import urljoin
 
 from ai_assistant.config.logging import get_agent_logger
+
+from .a2a_client import TrustedA2AClient
 
 logger = get_agent_logger("a2a")
 
@@ -173,7 +179,16 @@ def get_remote_registry() -> dict[str, RemoteAgent]:
 
 
 class A2ARouter:
-    """Route delegations to remote A2A agents without implicit fallback."""
+    """Route delegations to remote A2A agents without implicit fallback.
+
+    All HTTP traffic is performed by :class:`TrustedA2AClient`; this class only
+    selects an eligible remote agent and normalises the outcome shape so the
+    delegation caller gets an explicit ``source``/``status`` result.
+    """
+
+    def __init__(self, client: TrustedA2AClient | None = None) -> None:
+        # Injectable for tests; otherwise a per-agent allowlist client is built.
+        self._client = client
 
     def find_remote(self, specialist_id: str) -> RemoteAgent | None:
         """Find a remote agent whose skills include ``specialist_id``."""
@@ -201,13 +216,13 @@ class A2ARouter:
             }
 
         try:
-            result = self._call_remote(remote, specialist_id, task, params or {})
+            result = self._dispatch(remote, specialist_id, task, params or {})
             logger.info("A2A remote call succeeded: specialist=%s url=%s",
                         specialist_id, remote.url)
             return {"source": "remote", "agent_url": remote.url, **result}
         except Exception as error:  # noqa: BLE001
             logger.warning(
-                "A2A remote call failed (specialist=%s url=%s): %s — falling back to local",
+                "A2A remote call failed (specialist=%s url=%s): %s",
                 specialist_id, remote.url, error,
             )
             return {
@@ -217,38 +232,14 @@ class A2ARouter:
                 "error": str(error),
             }
 
-    @staticmethod
-    def _call_remote(agent: RemoteAgent, specialist_id: str,
-                     task: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Send a JSON-RPC 2.0 request to a remote A2A agent."""
-        import urllib.request
-
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "tasks/send",
-            "id": f"{specialist_id}-{int(time.time() * 1000)}",
-            "params": {
-                "id": f"task-{int(time.time() * 1000)}",
-                "message": {
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": task}],
-                },
-                "metadata": params,
-            },
-        }
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(
-            agent.url.rstrip("/") + "/",
-            data=data,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            response = json.loads(resp.read().decode("utf-8"))
-
-        if "error" in response:
-            raise RuntimeError(f"A2A error: {response['error']}")
-        return response.get("result", {})
+    def _dispatch(self, agent: RemoteAgent, specialist_id: str,
+                  task: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Send the task through the trusted A2A client (single transport)."""
+        client = self._client or TrustedA2AClient(trusted_endpoints=frozenset({agent.url}))
+        outcome = client.submit(agent.url, specialist_id, task, metadata=params)
+        if outcome.get("routing") != "remote_selected":
+            raise RuntimeError(outcome.get("error", "Remote A2A call was rejected"))
+        return outcome
 
 
 __all__ = [

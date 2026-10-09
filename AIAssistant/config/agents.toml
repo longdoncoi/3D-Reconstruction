@@ -3,3 +3,12 @@
 # configuration, not source-code enums. Plugins may extend it through a future
 # deployment manifest without changing the application core.
 capabilities = ["supervisor", "chatbot", "research", "code", "desktop_workflow"]
+
+# Least-privilege scope map for durable/remote A2A tasks, keyed by capability.
+# A capability absent from this map is restricted to read-only access.
+[agents.scopes]
+supervisor = ["project.read", "project.write", "project.execute", "desktop.action"]
+code = ["project.read", "project.write", "project.execute"]
+desktop_workflow = ["project.read", "desktop.action"]
+research = ["project.read"]
+chatbot = ["project.read"]

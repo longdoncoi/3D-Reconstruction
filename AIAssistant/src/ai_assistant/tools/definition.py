@@ -1,4 +1,20 @@
-"""Core tool domain models."""
+"""Agent-catalog tool definition.
+
+This is the *executable* counterpart to the pure policy descriptor
+:class:`ai_assistant.domain.tools.ToolSpec`. It carries the argument schema, the
+runtime policy label and the in-process handler used to populate the shared
+:class:`~ai_assistant.tools.registry.ToolRegistry`.
+
+The two models are deliberately distinct responsibilities:
+
+* :class:`~ai_assistant.domain.tools.ToolSpec` — framework-free policy record
+  (side effect, required scope, classification) consumed by the single
+  execution core (:class:`ai_assistant.application.tools.ToolExecutionService`).
+* :class:`ToolDefinition` — agent-facing catalog entry (JSON-schema parameters,
+  handler, serialization helpers) rendered into prompts/grammars.
+
+ADR 0003: there is exactly one type named ``ToolSpec`` in the codebase.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,8 +22,8 @@ from typing import Any, Callable
 
 
 @dataclass(frozen=True)
-class ToolSpec:
-    """Domain model for a tool definition."""
+class ToolDefinition:
+    """A registrable agent tool with its parameter schema and handler."""
     name: str
     description: str
     parameters: dict[str, Any]
@@ -45,19 +61,4 @@ class ToolSpec:
         }
 
 
-@dataclass
-class ToolRequest:
-    """A parsed request to execute a tool."""
-    tool_name: str
-    params: dict[str, Any]
-    raw_text: str | None = None
-
-
-@dataclass
-class ToolResult:
-    """The result of executing a tool."""
-    output: str
-    is_error: bool = False
-    is_terminal: bool = False
-    requires_approval: bool = False
-    ui_ack_id: str | None = None
+__all__ = ["ToolDefinition"]

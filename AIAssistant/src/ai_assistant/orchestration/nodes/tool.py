@@ -9,7 +9,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from modules.agent_logging import get_agent_logger
+from ai_assistant.config.logging import get_agent_logger
 
 from ..state import (
     COMPLETION_TOOLS,
@@ -70,15 +70,15 @@ def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
     is_project_research = (tool_name == "rag_search")
 
     logger.info("[NODE: tool] Thực thi: %s, params: %s", tool_name, str(params)[:200])
-    print(f"\n--- [LOG: TOOL NODE] Thuc thi: {tool_name} ---")
+    logger.debug(f"\n--- [LOG: TOOL NODE] Thuc thi: {tool_name} ---")
     try:
         result = ctx.execute(tool_name, params)
         logger.info("[NODE: tool] Kết quả: %s", str(result)[:500])
-        print(f"[LOG: TOOL NODE] Ket qua: {result}")
+        logger.debug(f"[LOG: TOOL NODE] Ket qua: {result}")
     except Exception as error:  # noqa: BLE001
         result = {"error": f"Tool exception: {error}"}
         logger.error("[NODE: tool] Exception khi thực thi '%s': %s", tool_name, error)
-        print(f"[LOG: TOOL NODE] Loi: {result}")
+        logger.debug(f"[LOG: TOOL NODE] Loi: {result}")
 
     error_count = state.get("error_count", 0)
     if "error" in result:
@@ -227,7 +227,7 @@ def after_tool(state: AgentState) -> str:
     """End after an asynchronous or approval-gated tool result."""
     if state["done"] or state["pending_tool"] is not None:
         logger.info("[ROUTER: after_tool] → END (done=%s, pending=%s)", state["done"], state["pending_tool"] is not None)
-        print("--- [LOG: TOOL ROUTER] Ket thuc (cho ACK/phe duyet) ---")
+        logger.debug("--- [LOG: TOOL ROUTER] Ket thuc (cho ACK/phe duyet) ---")
         return "end"
     if state.get("synthesize_after_rag"):
         logger.info("[ROUTER: after_tool] → REASON (synthesize verified RAG evidence)")
@@ -237,5 +237,5 @@ def after_tool(state: AgentState) -> str:
         logger.info("[ROUTER: after_tool] → REASON (verified low-risk tool)")
         return "reason"
     logger.info("[ROUTER: after_tool] → REFLECT")
-    print("--- [LOG: TOOL ROUTER] -> Reflect Node ---")
+    logger.debug("--- [LOG: TOOL ROUTER] -> Reflect Node ---")
     return "reflect"

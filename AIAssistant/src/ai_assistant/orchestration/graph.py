@@ -10,9 +10,9 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from ai_assistant.adapters.persistence.checkpointing import build_checkpointer
 from ai_assistant.observability import langsmith_trace, span
-from modules.checkpointing import build_checkpointer
-from modules.coding_agent import is_coding_task
+from ai_assistant.orchestration.specialists.code import is_coding_task
 
 from .nodes import (
     ReasonContext,

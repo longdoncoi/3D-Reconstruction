@@ -8,8 +8,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from modules.agent_logging import get_agent_logger
-from modules.inference import strip_think_tags
+from ai_assistant.config.logging import get_agent_logger
+from ai_assistant.llm.inference import strip_think_tags
 
 from ..prompts import PLAN_CRITIC_PROMPT
 from ..state import AgentState, Completion
@@ -45,10 +45,10 @@ def plan_reflect_node(state: AgentState, plan_reflect_complete: Completion | Non
                 "Kế hoạch có đạt yêu cầu và sẵn sàng thực thi không?"
             )},
         ]
-        print("[AGENT TRACE] >> Plan Reflect node: LLM evaluating plan...", flush=True)
+        logger.debug("[AGENT TRACE] >> Plan Reflect node: LLM evaluating plan...")
         raw = plan_reflect_complete(critic_msgs, max(0.1, state["temperature"] - 0.1)).strip()
         raw = strip_think_tags(raw)
-        print(f"[AGENT TRACE] ── Plan Reflect output: {raw[:150]}", flush=True)
+        logger.debug(f"[AGENT TRACE] ── Plan Reflect output: {raw[:150]}")
         try:
             payload = json.loads(raw)
             if isinstance(payload, dict):

@@ -11,9 +11,10 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ai_assistant.adapters.a2a import build_a2a_router
+from ai_assistant.adapters.orchestration import DeterministicAgentOrchestrator
 from ai_assistant.adapters.persistence import SqliteTaskStore
 from ai_assistant.application.agent_runs import AgentRunService
 from ai_assistant.application.tasks import TaskService
@@ -114,10 +115,10 @@ class PlatformArchitectureTests(unittest.TestCase):
                      requires_approval=True, required_scope="project.write", plugin_id="test.plugin"),
             lambda _params: {"saved": True},
         )
-        agent = AgentRunService(
+        agent = AgentRunService(orchestrator=DeterministicAgentOrchestrator(
             complete=lambda _messages, _temperature: '{"kind":"tool","tool":"write","params":{"password":"secret"}}',
             tools=ToolExecutionService(self.registry), tool_descriptions=lambda: "write", max_iterations=1,
-        )
+        ))
         with tempfile.TemporaryDirectory() as directory:
             service = TaskService(SqliteTaskStore(Path(directory) / "tasks.sqlite"), agent.run, frozenset({"supervisor"}))
             app = FastAPI()
@@ -154,10 +155,10 @@ class PlatformArchitectureTests(unittest.TestCase):
                      required_scope="project.write", plugin_id="test.plugin"),
             lambda _params: {"success": True},
         )
-        agent = AgentRunService(
+        agent = AgentRunService(orchestrator=DeterministicAgentOrchestrator(
             complete=lambda _messages, _temperature: '{"kind":"tool","tool":"write","params":{}}',
             tools=ToolExecutionService(self.registry), tool_descriptions=lambda: "write", max_iterations=1,
-        )
+        ))
         result = agent.run(AgentTask.new("supervisor", "change"))
         self.assertEqual(result["status"], "input_required")
 
@@ -188,10 +189,10 @@ class PlatformArchitectureTests(unittest.TestCase):
             '{"kind":"tool","tool":"write","params":{}}',
             '{"kind":"final","content":"done"}',
         ))
-        agent = AgentRunService(
+        agent = AgentRunService(orchestrator=DeterministicAgentOrchestrator(
             complete=lambda _messages, _temperature: next(responses), tools=ToolExecutionService(self.registry),
             tool_descriptions=lambda: "write", max_iterations=2,
-        )
+        ))
         with tempfile.TemporaryDirectory() as directory:
             service = TaskService(SqliteTaskStore(Path(directory) / "tasks.sqlite"), agent.run, frozenset({"supervisor"}))
             task = service.submit("supervisor", "change")

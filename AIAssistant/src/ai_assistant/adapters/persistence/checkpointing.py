@@ -8,13 +8,16 @@ from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
 
+from ai_assistant.settings import load_agent_runtime_settings
+
 logger = logging.getLogger(__name__)
 
 
 def build_checkpointer() -> Any:
     """Return Postgres/Redis saver when explicitly configured, otherwise memory."""
-    backend = os.getenv("AGENT_CHECKPOINT_BACKEND", "memory").casefold()
-    url = os.getenv("AGENT_CHECKPOINT_URL", "")
+    runtime_settings = load_agent_runtime_settings()
+    backend = runtime_settings.checkpoint_backend
+    url = runtime_settings.checkpoint_url
     try:
         if backend == "postgres" and url:
             from langgraph.checkpoint.postgres import PostgresSaver
@@ -33,7 +36,7 @@ def build_checkpointer() -> Any:
         if backend in ("sqlite", "default"):
             from langgraph.checkpoint.sqlite import SqliteSaver
 
-            db_path = os.getenv("AGENT_CHECKPOINT_PATH", "AIAssistant/Cache/checkpoints.sqlite")
+            db_path = runtime_settings.checkpoint_path
             os.makedirs(os.path.dirname(db_path), exist_ok=True)
             conn = sqlite3.connect(db_path, check_same_thread=False)
             saver = SqliteSaver(conn)
@@ -49,11 +52,12 @@ def build_checkpointer() -> Any:
 
 def cleanup_old_checkpoints(max_days: int = 30, max_size_mb: int = 50) -> None:
     """Clean up old checkpoints when using SQLite."""
-    backend = os.getenv("AGENT_CHECKPOINT_BACKEND", "memory").casefold()
+    runtime_settings = load_agent_runtime_settings()
+    backend = runtime_settings.checkpoint_backend
     if backend not in ("sqlite", "default"):
         return
 
-    db_path = os.getenv("AGENT_CHECKPOINT_PATH", "AIAssistant/Cache/checkpoints.sqlite")
+    db_path = runtime_settings.checkpoint_path
     if not os.path.exists(db_path):
         return
 

@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import logging
 
-from ai_assistant.core.tools import ToolSpec
-
 from .action_manifest import action_catalog, action_ids
+from .definition import ToolDefinition
 from .schema import build_tool_models, grammar_schema
 
 logger = logging.getLogger("ai_assistant.tools.registry")
@@ -15,39 +14,32 @@ class ToolRegistry:
     """Registry for agent tools."""
     
     def __init__(self):
-        self._tools: dict[str, ToolSpec] = {}
+        self._tools: dict[str, ToolDefinition] = {}
         self._models: dict[str, type] | None = None
         self._grammar: str | None = None
 
-    def register(self, tool: ToolSpec) -> None:
+    def register(self, tool: ToolDefinition) -> None:
         """Register a single tool."""
         self._tools[tool.name] = tool
         self._models = None
         self._grammar = None
 
-    def register_all(self, tools: list[ToolSpec]) -> None:
+    def register_all(self, tools: list[ToolDefinition]) -> None:
         """Register a list of tools."""
         for tool in tools:
             self.register(tool)
 
-    def get(self, tool_name: str) -> ToolSpec | None:
+    def get(self, tool_name: str) -> ToolDefinition | None:
         """Retrieve a tool by name."""
         return self._tools.get(tool_name)
 
-    def get_all(self) -> list[ToolSpec]:
+    def get_all(self) -> list[ToolDefinition]:
         """Get all registered tools."""
         return list(self._tools.values())
 
     def names(self) -> list[str]:
         """Return all registered tool names."""
         return list(self._tools.keys())
-
-    def execute(self, tool_name: str, params: dict) -> dict:
-        """Execute a registered tool handler."""
-        spec = self.get(tool_name)
-        if spec is None or spec.handler is None:
-            return {"error": f"Tool không tồn tại hoặc không có handler: {tool_name}"}
-        return spec.handler(params)
 
     @property
     def models(self) -> dict[str, type]:
@@ -62,7 +54,7 @@ class ToolRegistry:
                     new_params["action"] = {**new_params["action"], "enum": sorted(action_ids())}
                     # Replace description with dynamic catalog
                     new_desc = f"{spec.description}\n{action_catalog()}"
-                    tools_for_models.append(ToolSpec(
+                    tools_for_models.append(ToolDefinition(
                         name=spec.name,
                         description=new_desc,
                         parameters=new_params,
@@ -94,7 +86,7 @@ class ToolRegistry:
                 new_params = dict(spec.parameters)
                 new_params["action"] = {**new_params["action"], "enum": sorted(action_ids())}
                 new_desc = f"{spec.description}\n{action_catalog()}"
-                dynamic_spec = ToolSpec(
+                dynamic_spec = ToolDefinition(
                     name=spec.name, description=new_desc, parameters=new_params,
                     timeout_seconds=spec.timeout_seconds, policy=spec.policy,
                     requires_approval=spec.requires_approval, idempotent=spec.idempotent,

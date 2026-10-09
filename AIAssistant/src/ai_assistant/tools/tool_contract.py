@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from ai_assistant.core.tools import ToolSpec
 from ai_assistant.tools.action_manifest import action_ids
 from ai_assistant.tools.schema import build_tool_models as _build_tool_models
 from ai_assistant.tools.schema import grammar_schema as _grammar_schema
 from ai_assistant.tools.validation import validate_tool_call
+
+from .definition import ToolDefinition
 
 _DEFAULT_CONTRACT = {
     "timeout_seconds": 10,
@@ -27,13 +28,13 @@ _TOOL_CONTRACT_OVERRIDES = {
 }
 
 
-def _to_tool_specs(tool_definitions: list[dict[str, Any]]) -> list[ToolSpec]:
+def _to_tool_specs(tool_definitions: list[dict[str, Any]]) -> list[ToolDefinition]:
     specs = []
     for source in tool_definitions:
         name = source["name"]
         overrides = _TOOL_CONTRACT_OVERRIDES.get(name, {})
         specs.append(
-            ToolSpec(
+            ToolDefinition(
                 name=name,
                 description=source.get("description", ""),
                 parameters=source.get("parameters", {}),

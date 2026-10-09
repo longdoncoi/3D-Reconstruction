@@ -89,7 +89,7 @@ def build_chat_router(
             http_req.client.host,
             user_query[:60].replace("\n", " "),
         )
-        from modules.multi_agent import Specialist
+        from ai_assistant.orchestration.supervisor import Specialist
 
         logger.info("[SUPERVISOR] routed chat request to %s", Specialist.CHATBOT.value)
 

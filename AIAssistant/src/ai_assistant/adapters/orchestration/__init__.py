@@ -1,4 +1,4 @@
-from .langgraph import LegacyLangGraphOrchestrator
-from .legacy_completion import LegacyConstrainedCompletion
+from .deterministic import DeterministicAgentOrchestrator
+from .langgraph import LangGraphAgentOrchestrator
 
-__all__ = ["LegacyConstrainedCompletion", "LegacyLangGraphOrchestrator"]
+__all__ = ["DeterministicAgentOrchestrator", "LangGraphAgentOrchestrator"]

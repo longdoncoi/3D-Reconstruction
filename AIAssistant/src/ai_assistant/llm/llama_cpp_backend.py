@@ -108,7 +108,7 @@ class LlamaCppBackend(LLMBackend):
                     chat_format_kwargs={"enable_thinking": False}
                 )
                 
-        print(f"[Application Output] Model loaded: {self.model_description}", flush=True)
+        logger.info("[Application Output] Model loaded: %s", self.model_description)
 
     def generate(
         self,

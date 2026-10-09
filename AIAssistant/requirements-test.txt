@@ -1,0 +1,15 @@
+# ─── AIAssistant test dependencies ────────────────────────────────────────────
+# Minimal dependency set for the offline unit/contract/integration test suite.
+# Runtime model/RAG dependencies (llama-cpp-python, faiss,
+# sentence-transformers, llama-index) are not required because the tests inject
+# fakes and never load a model.
+#
+#   pip install -r AIAssistant/requirements-test.txt
+#   cd AIAssistant && python -m unittest discover -s tests -p "test_*.py"
+
+fastapi>=0.111.0
+pydantic>=2.7.0
+langgraph>=1.0.0
+langgraph-checkpoint-sqlite>=2.0.0
+httpx>=0.27.0
+coverage>=7.0

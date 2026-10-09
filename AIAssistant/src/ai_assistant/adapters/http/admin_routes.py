@@ -80,10 +80,6 @@ def build_admin_router(
                 "[MODEL SWITCH] Model reloaded successfully: %s (vision=%s)",
                 llm_module.active_model_desc, llm_module.is_vision_model,
             )
-            print(
-                f"[Application Output] Model reloaded: {llm_module.active_model_desc}",
-                flush=True,
-            )
             return {
                 "status": "ok",
                 "model": llm_module.active_model_desc,
@@ -95,7 +91,7 @@ def build_admin_router(
 
     @router.post("/reload-rag")
     def reload_rag():  # noqa: ANN201
-        from modules.config import ENABLE_RAG
+        from ai_assistant.legacy.config import ENABLE_RAG
         if not ENABLE_RAG:
             return {"status": "skipped", "message": "RAG is disabled"}
         try:

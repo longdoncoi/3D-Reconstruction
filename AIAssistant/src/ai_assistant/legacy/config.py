@@ -158,18 +158,15 @@ _SERVER_START_TIME = time.monotonic()
 
 @contextmanager
 def startup_step(name: str):
-    print(f"  ⏳  {name}...", end="", flush=True)
     t = time.monotonic()
     try:
         yield
     except Exception as e:
         elapsed = time.monotonic() - t
-        print(f" ✗ ({elapsed:.1f}s) — {e}")
         logger.error("FAIL step: %s — %.1fs — %s", name, elapsed, e)
         raise
     else:
         elapsed = time.monotonic() - t
-        print(f" ✓  ({elapsed:.1f}s)")
         logger.info("DONE step: %-40s %.1fs", name, elapsed)
 
 # ─── Model list ───────────────────────────────────────────────────────────────

@@ -13,6 +13,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from ai_assistant.settings import load_agent_runtime_settings
+
 _ALLOWED = {"cmake", "ctest", "python", "pytest", "ruff", "git"}
 _FORBIDDEN = {"&&", "||", ";", "|", ">", "<", "rm", "del", "format", "shutdown"}
 _WRITE_ROOTS = {part.strip() for part in os.getenv(
@@ -20,7 +22,8 @@ _WRITE_ROOTS = {part.strip() for part in os.getenv(
 
 
 def run(command: str, cwd: str, timeout: int) -> dict[str, Any]:
-    if os.getenv("AGENT_SANDBOX_ENABLED", "1") != "1":
+    runtime_settings = load_agent_runtime_settings()
+    if not runtime_settings.sandbox_enabled:
         return {"error": "Agent command sandbox is disabled by policy."}
     if any(token in command.casefold() for token in _FORBIDDEN):
         return {"error": "Command rejected by sandbox policy."}
@@ -31,9 +34,8 @@ def run(command: str, cwd: str, timeout: int) -> dict[str, Any]:
     if not argv or Path(argv[0]).name.casefold() not in _ALLOWED:
         return {"error": "Executable is not in the agent allow-list."}
     env = {"PATH": os.environ.get("PATH", ""), "PYTHONUTF8": "1"}
-    runtime = os.getenv("AGENT_SANDBOX_RUNTIME", "local").casefold()
-    if runtime == "docker":
-        image = os.getenv("AGENT_SANDBOX_IMAGE", "python:3.11-slim")
+    if runtime_settings.sandbox_runtime == "docker":
+        image = runtime_settings.sandbox_image
         argv = ["docker", "run", "--rm", "--network", "none", "--memory", "1g", "--cpus", "1.0",
                 "--pids-limit", "128", "-v", f"{cwd}:/workspace:rw", "-w", "/workspace", image, *argv]
     try:
@@ -42,16 +44,17 @@ def run(command: str, cwd: str, timeout: int) -> dict[str, Any]:
                               encoding="utf-8", errors="replace", check=False)
         return {"command": argv, "return_code": proc.returncode,
                 "stdout": proc.stdout[:5000], "stderr": proc.stderr[:2000],
-                "sandbox": "docker" if runtime == "docker" else "local-allowlist"}
+                "sandbox": "docker" if runtime_settings.sandbox_runtime == "docker" else "local-allowlist"}
     except subprocess.TimeoutExpired:
         return {"error": f"Command timed out after {timeout}s"}
 
 
 def write_file(path: str, content: str, project_root: str) -> dict[str, Any]:
     """Atomically write only allow-listed project subtrees and bounded payloads."""
-    if os.getenv("AGENT_SANDBOX_ENABLED", "1") != "1":
+    runtime_settings = load_agent_runtime_settings()
+    if not runtime_settings.sandbox_enabled:
         return {"error": "Agent write sandbox is disabled by policy."}
-    if len(content.encode("utf-8")) > int(os.getenv("AGENT_MAX_WRITE_BYTES", "1048576")):
+    if len(content.encode("utf-8")) > runtime_settings.max_write_bytes:
         return {"error": "Write exceeds AGENT_MAX_WRITE_BYTES."}
     try:
         relative = Path(path).resolve().relative_to(Path(project_root).resolve())
@@ -75,7 +78,7 @@ def write_file(path: str, content: str, project_root: str) -> dict[str, Any]:
 
 def create_directory(path: str, project_root: str) -> dict[str, Any]:
     """Create an allow-listed directory after explicit approval."""
-    if os.getenv("AGENT_SANDBOX_ENABLED", "1") != "1":
+    if not load_agent_runtime_settings().sandbox_enabled:
         return {"error": "Agent directory sandbox is disabled by policy."}
     try:
         root = Path(project_root).resolve()

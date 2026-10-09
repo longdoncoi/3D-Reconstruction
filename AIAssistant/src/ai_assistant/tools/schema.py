@@ -6,12 +6,12 @@ from typing import Any
 
 from pydantic import ConfigDict, Field, create_model
 
-from ai_assistant.core.tools import ToolSpec
+from .definition import ToolDefinition
 
 _TYPE_MAP = {"string": str, "integer": int, "number": float, "boolean": bool}
 
 
-def build_tool_models(tools: list[ToolSpec]) -> dict[str, type]:
+def build_tool_models(tools: list[ToolDefinition]) -> dict[str, type]:
     """Dynamically create Pydantic models for strict parameter validation."""
     models: dict[str, type] = {}
     for tool in tools:
@@ -35,7 +35,7 @@ def build_tool_models(tools: list[ToolSpec]) -> dict[str, type]:
     return models
 
 
-def grammar_schema(tools: list[ToolSpec]) -> str:
+def grammar_schema(tools: list[ToolDefinition]) -> str:
     """JSON schema for llama_cpp.LlamaGrammar fallback.
     
     A response is either a normal final answer or one exact tool envelope.

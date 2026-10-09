@@ -12,14 +12,17 @@ import os
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
-
-from fastapi import HTTPException, Request
 
 from ai_assistant.adapters.persistence import PendingActionStore
 from ai_assistant.application.coordination import coordinator as task_coordinator
 from ai_assistant.bootstrap.runtime import (
     execute_approved_tool as execute_approved_platform_tool,
+)
+from ai_assistant.domain.errors import (
+    AuthorizationError,
+    ModelNotLoadedError,
+    NotFoundError,
+    UnprocessableRequestError,
 )
 
 # Legacy/shim references
@@ -162,15 +165,21 @@ def _parse_tool_call(response_text: str) -> tuple[str | None, dict | None]:
 class AgentService:
     """Domain service for full Agent execution lifecycle."""
 
-    def __init__(self) -> None:
-        self.pending_actions = _pending_actions
-        self.pending_lock = _pending_lock
-        self.tool_registry = TOOL_REGISTRY
+    def __init__(self, *, pending_actions: PendingActionStore | None = None,
+                 pending_lock=None, tool_registry=None) -> None:
+        self.pending_actions = pending_actions if pending_actions is not None else _pending_actions
+        self.pending_lock = pending_lock if pending_lock is not None else _pending_lock
+        self.tool_registry = tool_registry if tool_registry is not None else TOOL_REGISTRY
+        # Durability (ADR 0003): rehydrate approvals/desktop acks persisted by a
+        # previous process so cross-restart A2A continuation still resolves.
+        # ``load`` is best-effort and tolerates a missing/corrupt file.
+        self.pending_actions.load()
 
-    def execute(self, request: AgentExecuteRequest, http_req: Request) -> Any:
+    def execute(self, request: AgentExecuteRequest, *, event_sink: Callable[[dict], None] | None = None,
+                client_host: str = "unknown") -> dict:
         _cleanup_pending_actions()
         if llm_runtime.llm is None:
-            raise HTTPException(status_code=503, detail="LLM chưa khởi tạo")
+            raise ModelNotLoadedError("LLM chưa khởi tạo")
 
         req_start = time.monotonic()
         task = request.task
@@ -178,7 +187,7 @@ class AgentService:
         task_coordinator.start(session_id, task=request.task)
         retry_idx = request.retry_message_index
 
-        logger.info("[MODE: AGENT] Task from %s: %s…", http_req.client.host if http_req.client else "unknown",
+        logger.info("[MODE: AGENT] Task from %s: %s…", client_host,
                     task[:80].replace("\n", " "))
 
         system_prompt = build_agent_system_prompt(self.tool_registry, language=request.language)
@@ -248,19 +257,17 @@ class AgentService:
                 save_pending_fn=_save_pending_actions,
             )
 
-        from ai_assistant.adapters.http.agent_routes import _agent_response, _stream_langgraph_execution
-        if "text/event-stream" in http_req.headers.get("accept", ""):
-            return _stream_langgraph_execution(_run_agent)
-
-        result = _run_agent()
+        # Transport negotiation (JSON vs SSE) belongs to the HTTP adapter; the
+        # service returns a plain result and optionally streams steps via event_sink.
+        result = _run_agent(event_sink)
         if retry_idx is not None:
             result["retry_message_index"] = retry_idx
-        return _agent_response(result, http_req)
+        return result
 
     def cancel(self, request: AgentCancelRequest) -> dict:
         cancelled = task_coordinator.cancel(request.session_id, request.request_id)
         if cancelled is None:
-            raise HTTPException(status_code=404, detail="Unknown or already finished agent task")
+            raise NotFoundError("Unknown or already finished agent task")
         return {"status": "cancelled", **cancelled}
 
     def ui_action_result(self, request: AgentUiActionResultRequest) -> dict:
@@ -269,7 +276,7 @@ class AgentService:
             action = self.pending_actions.pop(request.request_id, None)
             _save_pending_actions()
         if action is None or not action.get("ui_ack"):
-            raise HTTPException(status_code=404, detail="Unknown or expired UI action request")
+            raise NotFoundError("Unknown or expired UI action request")
 
         params = action["params"]
         result = {"success": request.success, "action": params["action"], **request.result}
@@ -296,10 +303,10 @@ class AgentService:
         if request.success and isinstance(next_actions, list) and next_actions:
             queued = next_actions[0]
             if not isinstance(queued, dict):
-                raise HTTPException(status_code=422, detail="Invalid queued UI action")
+                raise UnprocessableRequestError("Invalid queued UI action")
             next_params, error = validate_action_params(queued)
             if error:
-                raise HTTPException(status_code=422, detail=error)
+                raise UnprocessableRequestError(str(error))
             next_request_id = _generate_action_id()
             next_params["request_id"] = next_request_id
             all_steps = action.get("steps", []) + steps + [{
@@ -395,10 +402,10 @@ class AgentService:
             **({"retry_message_index": retry_idx_stored} if retry_idx_stored is not None else {}),
         }
 
-    def approve(self, request: AgentApproveRequest, http_req: Request) -> dict:
+    def approve(self, request: AgentApproveRequest) -> dict:
         _cleanup_pending_actions()
         if llm_runtime.llm is None:
-            raise HTTPException(status_code=503, detail="LLM chưa khởi tạo")
+            raise ModelNotLoadedError("LLM chưa khởi tạo")
 
         action_id = request.action_id
         with self.pending_lock:
@@ -407,7 +414,7 @@ class AgentService:
 
         if action is None:
             record_approval("missing")
-            raise HTTPException(status_code=404, detail=f"Action not found: {action_id}")
+            raise NotFoundError(f"Action not found: {action_id}")
 
         if task_coordinator.is_cancelled(action.get("session_id", "")):
             task_coordinator.finish(action.get("session_id", ""), success=False)
@@ -420,7 +427,7 @@ class AgentService:
                 self.pending_actions[action_id] = action
                 _save_pending_actions()
             record_approval("unauthorized")
-            raise HTTPException(status_code=403, detail="Action does not belong to this session")
+            raise AuthorizationError("Action does not belong to this session")
 
         if not request.approved:
             record_approval("rejected")
@@ -549,8 +556,9 @@ class AgentService:
 _default_service = AgentService()
 
 
-def agent_execute(request: AgentExecuteRequest, http_req: Request) -> Any:
-    return _default_service.execute(request, http_req)
+def agent_execute(request: AgentExecuteRequest, *, event_sink: Callable[[dict], None] | None = None,
+                  client_host: str = "unknown") -> dict:
+    return _default_service.execute(request, event_sink=event_sink, client_host=client_host)
 
 
 def agent_cancel(request: AgentCancelRequest) -> dict:
@@ -561,8 +569,8 @@ def agent_ui_action_result(request: AgentUiActionResultRequest) -> dict:
     return _default_service.ui_action_result(request)
 
 
-def agent_approve(request: AgentApproveRequest, http_req: Request) -> dict:
-    return _default_service.approve(request, http_req)
+def agent_approve(request: AgentApproveRequest) -> dict:
+    return _default_service.approve(request)
 
 
 def reset_agent_state() -> None:

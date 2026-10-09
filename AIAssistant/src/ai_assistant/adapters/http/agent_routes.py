@@ -1,6 +1,9 @@
 """Agent HTTP routes: /v1/agent/execute, /v1/agent/cancel, /v1/agent/ui-action-result, /v1/agent/approve.
 
-Extracted from legacy agent_module.py into clean HTTP adapter.
+Extracted from legacy agent_module.py into clean HTTP adapter. This adapter owns
+transport negotiation (JSON vs Server-Sent Events); the agent service itself is
+transport-agnostic and returns a plain result while optionally streaming steps
+through an ``event_sink`` callback.
 """
 from __future__ import annotations
 
@@ -23,26 +26,8 @@ if TYPE_CHECKING:
     from types import ModuleType
 
 
-def _agent_response(payload: dict, request: Request):
-    """Negotiate JSON (Qt compatibility) or SSE on the same execute URL."""
-    if "text/event-stream" not in request.headers.get("accept", ""):
-        return payload
-
-    def events():
-        yield f"event: status\ndata: {json.dumps({'status': payload.get('status'), 'session_id': payload.get('session_id')})}\n\n"
-        for step in payload.get("steps", []):
-            yield f"event: step\ndata: {json.dumps(step, ensure_ascii=False)}\n\n"
-        yield f"event: done\ndata: {json.dumps({key: value for key, value in payload.items() if key != 'steps'}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(
-        events(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
 def _stream_langgraph_execution(run: Callable[[Callable[[dict], None]], dict]):
-    """Stream LangGraph node/tool steps as they happen over SSE."""
+    """Stream agent node/tool steps as they happen over SSE."""
     events: queue.Queue[tuple[str, object]] = queue.Queue()
 
     def worker() -> None:
@@ -79,17 +64,28 @@ def build_agent_router(agent_module: "ModuleType | Any" = None) -> APIRouter:
 
     Parameters
     ----------
-    agent_module: The live agent service or module reference providing execution services.
+    agent_module: The live agent service module providing execution services.
+                  Defaults to ``ai_assistant.agents.service``.
     """
     if agent_module is None:
         from ai_assistant.agents import service as agent_module
 
     router = APIRouter(tags=["agent"])
 
+    def _client_host(request: Request) -> str:
+        return request.client.host if request.client else "unknown"
+
     @router.post("/v1/agent/execute")
     def agent_execute(request: AgentExecuteRequest, http_req: Request):
-        """Execute an agentic task with tool-calling loop."""
-        return agent_module.agent_execute(request, http_req)
+        """Execute an agentic task with tool-calling loop (JSON or SSE)."""
+        client_host = _client_host(http_req)
+        if "text/event-stream" in http_req.headers.get("accept", ""):
+            return _stream_langgraph_execution(
+                lambda sink: agent_module.agent_execute(
+                    request, event_sink=sink, client_host=client_host,
+                )
+            )
+        return agent_module.agent_execute(request, client_host=client_host)
 
     @router.post("/v1/agent/cancel")
     def agent_cancel(request: AgentCancelRequest):
@@ -102,9 +98,9 @@ def build_agent_router(agent_module: "ModuleType | Any" = None) -> APIRouter:
         return agent_module.agent_ui_action_result(request)
 
     @router.post("/v1/agent/approve")
-    def agent_approve(request: AgentApproveRequest, http_req: Request):
+    def agent_approve(request: AgentApproveRequest):
         """Approve or reject a pending agent action (write_file, run_command)."""
-        return agent_module.agent_approve(request, http_req)
+        return agent_module.agent_approve(request)
 
     return router
 

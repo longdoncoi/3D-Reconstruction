@@ -5,8 +5,6 @@ import logging
 import time
 from typing import Callable
 
-from fastapi import HTTPException
-
 from ai_assistant.agents.completion import (
     CRITIC_JSON_SCHEMA,
     PLANNER_JSON_SCHEMA,
@@ -15,6 +13,7 @@ from ai_assistant.agents.completion import (
     structured_completion,
 )
 from ai_assistant.agents.pending_store import PendingActionStore
+from ai_assistant.domain.errors import ServiceUnavailableError
 from ai_assistant.tools.action_manifest import validate_action_params
 from ai_assistant.tools.registry import ToolRegistry
 
@@ -77,9 +76,8 @@ def run_langgraph_agent(
     """Run the tool loop via LangGraph while keeping Qt API response shape."""
     LANGGRAPH_AVAILABLE = LocalAgentGraph is not None
     if not LANGGRAPH_AVAILABLE:
-        raise HTTPException(
-            status_code=503,
-            detail="LangGraph is required for Agent mode. Run: pip install -r AIAssistant/requirements.txt",
+        raise ServiceUnavailableError(
+            "LangGraph is required for Agent mode. Run: pip install -r AIAssistant/requirements.txt"
         )
     if supervisor_route is None and Specialist is not None:
         supervisor_route = Specialist.SUPERVISOR
@@ -148,11 +146,11 @@ def run_langgraph_agent(
         else:
             with span_fn("agent.tool", tool=tool_name, session_id=session_id):
                 from ai_assistant.bootstrap.runtime import execute_approved_tool, execute_tool
-                res = execute_approved_tool(tool_name, params) if approval_granted else execute_tool(tool_name, params)
-                if res.get("error_code") != "runtime_unconfigured":
-                    result = res
-                else:
-                    result = spec.handler(params)
+                # ADR 0002: ToolExecutionService is the only execution path. When the
+                # platform runtime is unavailable we surface a structured error instead
+                # of calling ``spec.handler`` directly and bypassing policy checks.
+                result = (execute_approved_tool(tool_name, params) if approval_granted
+                          else execute_tool(tool_name, params))
         audit_agent_fn("tool_completed", delegation, success="error" not in result)
         record_tool_fn(tool_name, "error" not in result, time.monotonic() - tool_started)
         return result

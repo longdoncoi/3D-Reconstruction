@@ -9,7 +9,7 @@ def tool_rag_search(params: dict[str, Any]) -> dict[str, Any]:
     Note: Requires a RAG engine to be injected or used via globals in the caller layer.
     For this module, it forwards to the old rag module for compatibility until rag is fully integrated.
     """
-    from modules import rag_module
+    from ai_assistant.legacy import rag_module
     
     query = params.get("query", "").strip()
     if not query:
