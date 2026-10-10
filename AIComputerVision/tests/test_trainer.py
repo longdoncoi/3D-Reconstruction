@@ -61,10 +61,16 @@ class FakeBackend:
 
 
 def _config(root: Path, **overrides: Any) -> TrainConfig:
-    """Build a config whose dataset always passes preflight."""
+    """Build a config whose dataset always passes preflight.
+
+    Preflight now fails fast when a referenced ``train``/``val`` directory is
+    missing, so the sandbox must contain those directories alongside the YAML.
+    """
 
     data_yaml = root / "data.yaml"
     data_yaml.write_text(VALID_DATASET, encoding="utf-8")
+    for name in ("images/train", "images/val"):
+        (root / name).mkdir(parents=True, exist_ok=True)
     kwargs: dict[str, Any] = {
         "models": ("det", "seg"),
         "data_yaml": data_yaml,

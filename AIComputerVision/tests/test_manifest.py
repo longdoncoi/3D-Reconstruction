@@ -73,6 +73,33 @@ class ManifestRoundTripTests(unittest.TestCase):
             problems = manifest_mod.verify_manifest(models_dir, manifest)
             self.assertTrue(any("sha256 mismatch" in problem for problem in problems))
 
+    def test_verify_detects_a_file_present_without_an_entry(self) -> None:
+        # Bidirectional: a stray ONNX dropped into Models/ with no manifest entry
+        # must be reported, otherwise the manifest stops accounting for it.
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp)
+            (models_dir / "yolo11n.onnx").write_bytes(b"stray-model-bytes")
+            manifest: manifest_mod.Manifest = {"schema_version": 1, "entries": {}}
+            self.assertEqual(
+                manifest_mod.verify_manifest(models_dir, manifest),
+                ["yolo11n.onnx: on disk but not recorded in the manifest"],
+            )
+
+    def test_verify_ignores_non_onnx_files_and_tracked_temp_files(self) -> None:
+        # Only published artifacts (``*.onnx``) count as models; an in-progress
+        # atomic write's temp file must not be reported as an orphan.
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp)
+            good = models_dir / "yolo11n.onnx"
+            good.write_bytes(b"model-bytes")
+            (models_dir / "out.onnx.tmp").write_bytes(b"partial")
+            (models_dir / "notes.txt").write_text("not a model", encoding="utf-8")
+            manifest: manifest_mod.Manifest = {
+                "schema_version": 1,
+                "entries": {"yolo11n.onnx": {"sha256": manifest_mod.sha256_file(good)}},
+            }
+            self.assertEqual(manifest_mod.verify_manifest(models_dir, manifest), [])
+
     def test_build_from_scan_records_only_present_models(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             models_dir = Path(tmp)

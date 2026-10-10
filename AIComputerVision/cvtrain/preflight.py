@@ -83,6 +83,58 @@ def check_dependencies(*, fatal: bool, modules: Sequence[str]) -> list[Check]:
     return checks
 
 
+def _dataset_base(parsed: dict[object, object], yaml_dir: Path) -> Path:
+    """Directory that relative ``train``/``val`` references resolve against.
+
+    Mirrors Ultralytics: an explicit top-level ``path:`` key relocates the
+    dataset root (resolved relative to ``data.yaml``), and without it references
+    are relative to the folder holding ``data.yaml``.
+    """
+
+    root = parsed.get("path")
+    if isinstance(root, str) and root:
+        candidate = Path(root).expanduser()
+        return candidate if candidate.is_absolute() else yaml_dir / candidate
+    return yaml_dir
+
+
+def _ref_exists(value: str, base: Path) -> bool:
+    """Whether a single ``train``/``val`` reference points at something on disk.
+
+    Globs (``images/*.jpg``) are checked at their static prefix: a wildcard has
+    no literal path to test, so validating ``images/`` is the useful subset.
+    """
+
+    raw = Path(value)
+    if raw.is_absolute():
+        return raw.exists()
+    if (base / raw).exists():
+        return True
+    if any(char in value for char in "*?["):
+        head = value.split("?")[0].split("*")[0].split("[")[0].rstrip("\\/")
+        return (base / head).exists() if head else base.exists()
+    return False
+
+
+def _missing_dataset_paths(parsed: dict[object, object], yaml_dir: Path) -> list[str]:
+    """Human-readable ``train``/``val`` references that are not on disk.
+
+    Only string entries are validated: ``train`` can legitimately be a text file
+    listing or a remote URL that the framework resolves, so anything that is not
+    a plain path is left to the framework instead of being rejected here.
+    """
+
+    base = _dataset_base(parsed, yaml_dir)
+    missing: list[str] = []
+    for key in ("train", "val"):
+        value = parsed.get(key)
+        if not isinstance(value, str):
+            continue
+        if not _ref_exists(value, base):
+            missing.append(f"{key}='{value}' (resolved under {base})")
+    return missing
+
+
 def check_data_yaml(path: Path) -> Check:
     if not path.exists():
         return Check(
@@ -115,6 +167,9 @@ def check_data_yaml(path: Path) -> Check:
         missing.append("train or val")
     if missing:
         return Check("dataset", False, f"missing required key(s): {', '.join(missing)} in {path}")
+    missing_paths = _missing_dataset_paths(parsed, path.parent)
+    if missing_paths:
+        return Check("dataset", False, "missing path(s): " + "; ".join(missing_paths))
     return Check("dataset", True, f"{path} ({len(parsed.get('names') or [])} classes)")
 
 

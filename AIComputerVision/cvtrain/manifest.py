@@ -148,10 +148,17 @@ def upsert_entry(manifest: Manifest, filename: str, entry: ManifestEntry) -> Non
 
 
 def verify_manifest(models_dir: Path, manifest: Manifest) -> list[str]:
-    """Return a list of problems; an empty list means the manifest is consistent."""
+    """Return a list of problems; an empty list means the manifest is consistent.
+
+    Verification is bidirectional: an entry whose file is missing on disk is a
+    problem, and so is an ONNX file present on disk without an entry — otherwise
+    ``--verify-manifest`` would silently stop accounting for an artifact that a
+    training run (or a stray copy) dropped into ``Models/``.
+    """
 
     problems: list[str] = []
-    for filename, entry in (manifest.get("entries") or {}).items():
+    entries = manifest.get("entries") or {}
+    for filename, entry in entries.items():
         path = models_dir / filename
         if not path.exists():
             problems.append(f"{filename}: missing on disk")
@@ -163,6 +170,9 @@ def verify_manifest(models_dir: Path, manifest: Manifest) -> list[str]:
         actual = sha256_file(path)
         if actual != expected:
             problems.append(f"{filename}: sha256 mismatch (expected {expected[:12]}..., got {actual[:12]}...)")
+    for path in sorted(models_dir.glob("*.onnx")):
+        if path.name not in entries:
+            problems.append(f"{path.name}: on disk but not recorded in the manifest")
     return problems
 
 

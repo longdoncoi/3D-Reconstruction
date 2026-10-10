@@ -34,8 +34,10 @@ def sha256_file(path: Path) -> str:
 def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8", newline: str = "\n") -> Path:
     """Write ``text`` to ``path`` atomically (temp file in the target directory + rename).
 
-    ``newline="\\n"`` keeps text files byte-identical across platforms, which
-    matters for a JSON manifest that is diffed by Git.
+    The payload is flushed and ``fsync``-ed before the rename so the published
+    file is durable, not just readable. ``newline="\\n"`` keeps text files
+    byte-identical across platforms, which matters for a JSON manifest that is
+    diffed by Git.
     """
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,6 +45,8 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8", newline
     try:
         with os.fdopen(handle, "w", encoding=encoding, newline=newline) as stream:
             stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(tmp_name, path)
     finally:
         if os.path.exists(tmp_name):
@@ -54,14 +58,20 @@ def atomic_copy(src: Path, dst: Path) -> Path:
     """Copy ``src`` onto ``dst`` atomically; returns ``dst``.
 
     Readers therefore see either the previous artifact or the complete new one,
-    never a truncated ONNX file mid-copy.
+    never a truncated ONNX file mid-copy. The temp copy is ``fsync``-ed before
+    the rename so the published artifact is durable, not just complete.
     """
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     handle, tmp_name = tempfile.mkstemp(dir=str(dst.parent), prefix=f".{dst.name}.", suffix=".tmp")
-    os.close(handle)
     try:
-        shutil.copyfile(src, tmp_name)
+        # Copy and fsync through the mkstemp descriptor: on Windows reopening
+        # the temp path would fail (mkstemp marks the file delete-on-close).
+        with os.fdopen(handle, "wb") as stream:
+            with src.open("rb") as source:
+                shutil.copyfileobj(source, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(tmp_name, dst)
     finally:
         if os.path.exists(tmp_name):

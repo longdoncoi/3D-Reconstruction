@@ -48,6 +48,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install ruff
+          # PyYAML so AIComputerVision's preflight dataset tests can actually
+          # parse data.yaml; the cvtrain job below also pins it.
+          pip install "PyYAML==6.0.2"
 
       - name: Ruff lint
         working-directory: AIAssistant

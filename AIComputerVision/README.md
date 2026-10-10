@@ -62,7 +62,9 @@ variable to its full path before starting the app.
 
 Datasets live in `Dataset/data.yaml` at the repository root (git-ignored). The
 file must define `train`, `val` and `names`; `--check` verifies this before any
-training starts.
+training starts — including that the directories the `train`/`val` keys point
+at exist on disk (relative paths resolve against the folder holding the YAML,
+or against an explicit top-level `path:` key, mirroring Ultralytics).
 
 ## Usage
 
@@ -129,7 +131,8 @@ fields are informational.
 Each exported model is recorded in `Models/manifest.json` with its SHA-256,
 size, dataset, hyper-parameters and (best-effort) metrics. `--verify-manifest`
 recomputes the digests, which makes truncation or accidental replacement
-detectable.
+detectable. Verification is bidirectional: an entry whose file went missing is
+reported, and so is an ONNX file sitting in `Models/` without an entry.
 
 ## Tests
 

@@ -15,9 +15,9 @@ That buys two things:
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -84,7 +84,9 @@ def metrics_from(results: object) -> dict[str, float]:
 
 
 def _run_timestamp() -> str:
-    return time.strftime("%Y%m%d-%H%M%S")
+    # Microsecond precision: two invocations in the same second would otherwise
+    # collide on `name` under ultralytics' ``exist_ok=False`` and fail the run.
+    return datetime.now().strftime("%Y%m%d-%H%M%S-%f")
 
 
 class UltralyticsBackend:
