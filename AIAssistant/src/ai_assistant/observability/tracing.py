@@ -1,34 +1,52 @@
-"""OpenTelemetry tracing and unified context managers."""
+"""OpenTelemetry tracing and unified context managers.
+
+The OTel tracer and the Prometheus registry are both built lazily on first use,
+so importing this module never reads the process environment (ADR 0001). A
+disabled or unavailable SDK yields a no-op span identical to the current API.
+"""
 from __future__ import annotations
 
-import os
+import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Iterator
+
+from ai_assistant.settings import observability_enabled
 
 from .langsmith_integration import (
     _active_langsmith_run,
     finish_langsmith_run,
     start_langsmith_run,
 )
-from .metrics import _metrics
+from .metrics import get_metrics
 
-_enabled = os.getenv("AGENT_OBSERVABILITY", "0") == "1"
-_tracer = None
+_tracer_lock = threading.Lock()
+# ``False`` is the "disabled" sentinel; otherwise holds the OTel Tracer (or None).
+_tracer: Any = None
 
-if _enabled:
-    try:
-        from opentelemetry import trace
-        _tracer = trace.get_tracer("3d-reconstruction.agent")
-    except ImportError:
-        pass
+
+def _get_tracer():
+    """Return the cached OTel tracer, or ``None`` when observability is off."""
+    global _tracer
+    if _tracer is None:
+        with _tracer_lock:
+            if _tracer is None:
+                _tracer = False
+                if observability_enabled():
+                    try:
+                        from opentelemetry import trace
+                        _tracer = trace.get_tracer("3d-reconstruction.agent")
+                    except ImportError:
+                        _tracer = False
+    return _tracer
 
 
 @contextmanager
 def span(name: str, **attributes: Any) -> Iterator[None]:
     """Emit an OpenTelemetry span and a nested LangSmith run when enabled."""
     started = time.monotonic()
-    trace_span = _tracer.start_as_current_span(name) if _tracer else None
+    tracer = _get_tracer()
+    trace_span = tracer.start_as_current_span(name) if tracer else None
     if trace_span:
         trace_span.__enter__()
         for key, value in attributes.items():
@@ -47,9 +65,10 @@ def span(name: str, **attributes: Any) -> Iterator[None]:
         raise
     finally:
         elapsed = time.monotonic() - started
-        if _metrics:
-            _metrics["requests"].labels(name, outcome).inc()
-            _metrics["latency"].labels(name).observe(elapsed)
+        metrics = get_metrics()
+        if metrics:
+            metrics["requests"].labels(name, outcome).inc()
+            metrics["latency"].labels(name).observe(elapsed)
         if trace_span:
             trace_span.__exit__(type(error) if error else None, error,
                                 error.__traceback__ if error else None)

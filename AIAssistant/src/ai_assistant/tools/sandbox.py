@@ -13,12 +13,36 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from ai_assistant.settings import load_agent_runtime_settings
+from ai_assistant.settings import agent_write_roots, load_agent_runtime_settings
 
 _ALLOWED = {"cmake", "ctest", "python", "pytest", "ruff", "git"}
-_FORBIDDEN = {"&&", "||", ";", "|", ">", "<", "rm", "del", "format", "shutdown"}
-_WRITE_ROOTS = {part.strip() for part in os.getenv(
-    "AGENT_WRITE_ALLOWLIST", "src,AIAssistant,AIComputerVision,Config,Docs,tests").split(",") if part.strip()}
+_FORBIDDEN = {"&&", "||", ";", "|", ">", "<", "rm", "del", "format", "shutdown", "`", "$("}
+
+# Interpreters whose command line can carry inline code. For these the only
+# accepted trailing arguments are a script path or the benign version/help
+# flags: ``-c``/``-m``/``-`` (and their attached forms, e.g. ``-cprint(1)``)
+# turn the allow-list into arbitrary code execution.
+_INTERPRETERS = frozenset({"python", "python.exe", "python3", "python3.exe"})
+_SAFE_INTERPRETER_FLAGS = frozenset({"--version", "--help", "-V", "-h", "-q", "-B", "-s", "-E"})
+
+
+def _inline_code_requested(argv: list[str]) -> bool:
+    """Return True when an interpreter argument would execute inline code."""
+    if Path(argv[0]).name.casefold() not in _INTERPRETERS:
+        return False
+    for argument in argv[1:]:
+        if argument in {"-", "--"}:
+            return True  # stdin marker / option terminator are never legitimate here
+        if not argument.startswith("-"):
+            continue  # script path
+        if argument in _SAFE_INTERPRETER_FLAGS:
+            continue
+        if argument.startswith("--"):
+            if argument.split("=", 1)[0] in _SAFE_INTERPRETER_FLAGS:
+                continue
+            return True
+        return True  # short option, possibly with an attached value (-c, -cCODE, -m, -mmod)
+    return False
 
 
 def run(command: str, cwd: str, timeout: int) -> dict[str, Any]:
@@ -33,6 +57,8 @@ def run(command: str, cwd: str, timeout: int) -> dict[str, Any]:
         return {"error": f"Invalid command: {error}"}
     if not argv or Path(argv[0]).name.casefold() not in _ALLOWED:
         return {"error": "Executable is not in the agent allow-list."}
+    if _inline_code_requested(argv):
+        return {"error": "Inline interpreter code (-c, -m, -) is rejected by sandbox policy."}
     env = {"PATH": os.environ.get("PATH", ""), "PYTHONUTF8": "1"}
     if runtime_settings.sandbox_runtime == "docker":
         image = runtime_settings.sandbox_image
@@ -60,7 +86,7 @@ def write_file(path: str, content: str, project_root: str) -> dict[str, Any]:
         relative = Path(path).resolve().relative_to(Path(project_root).resolve())
     except ValueError:
         return {"error": "Write target escapes the project root."}
-    if not relative.parts or relative.parts[0] not in _WRITE_ROOTS:
+    if not relative.parts or relative.parts[0] not in agent_write_roots():
         return {"error": "Write target is not in AGENT_WRITE_ALLOWLIST."}
     target = Path(path)
     try:
@@ -86,7 +112,7 @@ def create_directory(path: str, project_root: str) -> dict[str, Any]:
         relative = target.relative_to(root)
     except ValueError:
         return {"error": "Directory target escapes the project root."}
-    if not relative.parts or relative.parts[0] not in _WRITE_ROOTS:
+    if not relative.parts or relative.parts[0] not in agent_write_roots():
         return {"error": "Directory target is not in AGENT_WRITE_ALLOWLIST."}
     try:
         existed = target.is_dir()

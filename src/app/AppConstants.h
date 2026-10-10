@@ -77,6 +77,7 @@ namespace AppConstants {
     namespace AIProcessor {
         inline QString detectionModelFile()     { return QStringLiteral("yolo11n.onnx"); }
         inline QString segmentationModelFile()  { return QStringLiteral("yolo11n-seg.onnx"); }
+        inline QString trackingModelFile()      { return QStringLiteral("yolo11x-tracking.onnx"); }
         inline QString trainScript()            { return QStringLiteral("TrainModel.py"); }
 
         constexpr int    TENSORBOARD_PORT           = 6006;

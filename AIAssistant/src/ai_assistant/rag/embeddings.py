@@ -1,6 +1,21 @@
 """Embedding model adapters."""
 from __future__ import annotations
 
+from typing import Any, Protocol
+
+
+class EmbeddingEncoder(Protocol):
+    """The minimal encoding surface the adapter needs from any encoder model.
+
+    Both the E5 ONNX runtime wrapper and the sentence-transformers models expose
+    this shape, so the LlamaIndex adapter depends on an interface instead of a
+    concrete class.
+    """
+
+    def encode(
+        self, texts: str | list[str], normalize_embeddings: bool = False
+    ) -> Any: ...
+
 
 class E5LlamaEmbedding:
     """Adapter that lets LlamaIndex use the application's E5 encoder/prefixes."""
@@ -13,7 +28,7 @@ class E5LlamaEmbedding:
         _p_prefix = passage_prefix
 
         class E5Embedding(BaseEmbedding):
-            model: object
+            model: EmbeddingEncoder
 
             def _get_query_embedding(self, query: str):
                 return self.model.encode(_q_prefix + query, normalize_embeddings=True).tolist()

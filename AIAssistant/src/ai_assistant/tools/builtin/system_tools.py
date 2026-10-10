@@ -39,10 +39,7 @@ def tool_run_command(params: dict[str, Any]) -> dict[str, Any]:
     timeout = min(params.get("timeout", 30), 120)  # Max 2 minutes
 
     project_root = str(get_paths().project_root)
-    if cwd == ".":
-        abs_cwd = project_root
-    else:
-        abs_cwd = _agent_safe_path(cwd)
+    abs_cwd: str | None = project_root if cwd == "." else _agent_safe_path(cwd)
     if abs_cwd is None or not os.path.isdir(abs_cwd):
         return {"error": f"Invalid command working directory: {cwd}"}
 

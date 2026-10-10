@@ -1,0 +1,18 @@
+# Pinned runtime dependencies for the AIComputerVision training/export pipeline.
+#
+#   pip install -r AIComputerVision/requirements.txt
+#
+# The desktop application does not need these packages at runtime - it only
+# loads the exported ONNX files from AIComputerVision/Models/. They are needed
+# to (re)train models via TrainModel.py.
+#
+# Versions below match the environment the current models were produced with.
+# ``torch`` is intentionally unpinned: pick the build that matches your
+# CUDA/CPU setup (see https://pytorch.org/get-started/locally/).
+ultralytics==8.4.41
+PyYAML==6.0.2
+onnx==1.21.0
+onnxslim==0.1.91
+
+# Optional - only required when training with ``--tensorboard``.
+tensorboard==2.15.2

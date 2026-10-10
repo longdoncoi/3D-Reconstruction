@@ -9,8 +9,8 @@ from ai_assistant.tools.action_manifest import validate_action_params
 def tool_application_action(params: dict[str, Any]) -> dict[str, Any]:
     """Create a UI-action request; success is only reported after Qt ACKs it."""
     canonical_params, error = validate_action_params(params)
-    if error:
-        return {"error": error}
+    if error is not None or canonical_params is None:
+        return {"error": error or "Invalid UI action parameters"}
     return {
         "pending_ui_ack": True,
         "action": canonical_params["action"],

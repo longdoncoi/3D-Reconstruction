@@ -1,0 +1,56 @@
+{
+  "entries": {
+    "yolo11n-seg.onnx": {
+      "role": "segmentation",
+      "scanned_at": "2026-10-09T12:04:38+00:00",
+      "sha256": "8635a39f925e0bcf23cf6ff393763ae36c506347e5698e7f6e5907201396ee6e",
+      "size_bytes": 11626365,
+      "source_weights": "yolo11n-seg.pt",
+      "trained_at": null
+    },
+    "yolo11n.onnx": {
+      "dataset": "F:\\PROJECTS\\QT\\3D-Reconstruction\\Dataset\\data.yaml",
+      "epochs": 5,
+      "imgsz": 640,
+      "metrics": {
+        "fitness": 0.9613356309650053,
+        "metrics/mAP50(B)": 0.975,
+        "metrics/mAP50-95(B)": 0.9613356309650053,
+        "metrics/precision(B)": 0.9988375577009017,
+        "metrics/recall(B)": 0.9791666666666666
+      },
+      "opset": 12,
+      "role": "detection",
+      "run_dir": "F:\\PROJECTS\\QT\\3D-Reconstruction\\AIComputerVision\\runs\\detect\\train-20261009-184750",
+      "scanned_at": "2026-10-09T12:04:38+00:00",
+      "seed": 0,
+      "sha256": "bef19815c810875527f6ad476fd33efc7151ed8c3bcff5b7b71e8bd5a4bba733",
+      "size_bytes": 10604034,
+      "source_weights": "yolo11n.pt",
+      "trained_at": "2026-10-09T11:52:58+00:00"
+    },
+    "yolo11x-tracking.onnx": {
+      "role": "tracking",
+      "scanned_at": "2026-10-09T12:04:38+00:00",
+      "sha256": "cc0cadd451c1226a4712fb01c54817412b081dda2f40d9876b0b5f06ab0cf01f",
+      "size_bytes": 228057866,
+      "source_weights": "yolo11x.pt",
+      "trained_at": null
+    }
+  },
+  "generator": "cvtrain 1.0.0",
+  "last_run": {
+    "dataset": "F:\\PROJECTS\\QT\\3D-Reconstruction\\Dataset\\data.yaml",
+    "epochs": 5,
+    "imgsz": 640,
+    "models": [
+      "det"
+    ],
+    "opset": 12,
+    "seed": 0,
+    "started_at": "2026-10-09T11:47:50+00:00"
+  },
+  "schema_version": 1,
+  "ultralytics": "8.4.41",
+  "updated_at": "2026-10-09T12:04:38+00:00"
+}

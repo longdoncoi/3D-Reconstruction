@@ -90,16 +90,23 @@ CMakeLists.txt.user*
 /.ruff_cache/
 /.vs/
 /AIAssistant/Cache/
-/AIAssistant/Docs/
+/AIAssistant/Docs/*
+!/AIAssistant/Docs/adr/
 /AIAssistant/logs/
 /AIAssistant/agent_audit.jsonl
 /AIAssistant/tasks.sqlite
+# Runtime pending-approval / UI-ACK state, rewritten on every agent run.
+/AIAssistant/pending_agent_actions.json
 # Coverage artifacts (Python)
 /AIAssistant/.coverage
 /AIAssistant/htmlcov/
 /AIAssistant/AIAssistant/
 /AIAssistant/.env
 /AIComputerVision/runs/
+# Coverage artifacts (AIComputerVision) — produced by `coverage run`.
+/AIComputerVision/.coverage
+/AIComputerVision/.coverage.*
+/AIComputerVision/htmlcov/
 
 # Custom App Ignores
 /Predict/
@@ -122,4 +129,14 @@ CMakeLists.txt.user*
 /Config/Config_User.ini
 /Logs/
 /Upload/
-/3DRecontruction/**/recon_cache*.ply
+# Generated reconstruction mesh caches (all variants; e.g. recon_mesh_cache_v3.ply).
+/3DRecontruction/**/recon_*cache*.ply
+
+# Transient junk artifacts (Windows `nul` redirection, checkpoint dumps, local DBs)
+nul
+/nul
+/AIAssistant/nul
+chkpt_run.log
+/AIAssistant/chkpt_run.log
+opencode.db
+/opencode.db

@@ -26,13 +26,13 @@ def image_to_data_uri(filepath: str, max_dim: int = 512) -> str:
     mime = mime_map.get(ext, "jpeg")
     
     try:
-        img = Image.open(filepath)
+        img: Image.Image = Image.open(filepath)
         w, h = img.size
         if max(w, h) > max_dim:
             ratio = max_dim / max(w, h)
             new_w = int(w * ratio)
             new_h = int(h * ratio)
-            img = img.resize((new_w, new_h), Image.LANCZOS)
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         if mime == "jpeg" and img.mode in ("RGBA", "P"):
             img = img.convert("RGB")
         buf = io.BytesIO()
@@ -49,7 +49,8 @@ def image_to_data_uri(filepath: str, max_dim: int = 512) -> str:
 def load_image_for_embedding(filepath: str, max_dim: int = 256):
     """Load and thumbnail an image for Clip/embedding models."""
     from PIL import Image, ImageOps
-    with Image.open(filepath) as img:
-        img = ImageOps.exif_transpose(img).convert("RGB")
-        img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+    with Image.open(filepath) as opened:
+        transposed: Image.Image = ImageOps.exif_transpose(opened) or opened
+        img = transposed.convert("RGB")
+        img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
         return img.copy()

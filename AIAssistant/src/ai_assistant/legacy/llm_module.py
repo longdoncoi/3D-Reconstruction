@@ -33,6 +33,7 @@ from ai_assistant.llm import (
 from ai_assistant.llm import (
     reload_model as _new_reload,
 )
+from ai_assistant.ports import LockLike
 from ai_assistant.rag.image_utils import image_to_data_uri as _image_to_data_uri
 from ai_assistant.rag.image_utils import is_image_file as _is_image_file
 
@@ -50,18 +51,14 @@ from .config import (
 
 # Global state mirroring for backward compatibility
 llm = None
-llm_lock = threading.RLock()
+# Annotated with the structural port so this module keeps satisfying
+# ``ports.LLMRuntime`` regardless of whether it owns a Lock or an RLock.
+llm_lock: LockLike = threading.RLock()
 is_vision_model = False
 _chat_handler = None
 _prompt_builder = DefaultPromptBuilder()
 
 _RAG_SYSTEM_PROMPT = _prompt_builder._build_system_prompt("", "", False, "vi")
-
-def _download_if_missing(model: dict, key: str = "filename", repo_key: str = "repo_id") -> str:
-    # Quick shim to adapt dictionary format to the new object format if needed,
-    # or just use the new backend loader logic directly.
-    # We will let the new model loader handle the exact model downloading.
-    pass
 
 def load_model(model_idx: int | None = None):
     global llm, is_vision_model, active_model_desc

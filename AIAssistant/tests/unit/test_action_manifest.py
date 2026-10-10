@@ -3,7 +3,7 @@ import sys
 import unittest
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from modules.action_manifest import (
+from ai_assistant.tools.action_manifest import (
     action_ids,
     action_intents,
     canonical_action,

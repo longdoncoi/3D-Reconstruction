@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
-from pydantic import ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from .definition import ToolDefinition
 
@@ -27,10 +27,16 @@ def build_tool_models(tools: list[ToolDefinition]) -> dict[str, type]:
             fields[name] = (annotation, Field(default, **constraints) if constraints else default)
         
         # extra="forbid" ensures the LLM cannot hallucinate extra arguments
-        models[tool.name] = create_model(
-            f"{tool.name.title().replace('_', '')}Params",
-            __config__=ConfigDict(extra="forbid", str_strip_whitespace=True, strict=True),
+        create_kwargs: dict[str, Any] = {
+            "__config__": ConfigDict(extra="forbid", str_strip_whitespace=True, strict=True),
             **fields,
+        }
+        models[tool.name] = cast(
+            "type[BaseModel]",
+            create_model(
+                f"{tool.name.title().replace('_', '')}Params",
+                **create_kwargs,
+            ),
         )
     return models
 

@@ -4,8 +4,8 @@ import unittest
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from modules.chatbot_agent import ChatbotAgent
-from modules.toolapp_agent import ToolAppAgent
+from ai_assistant.orchestration.specialists.chatbot import ChatbotAgent
+from ai_assistant.orchestration.specialists.desktop_workflow import ToolAppAgent
 
 
 class _FakeRag:

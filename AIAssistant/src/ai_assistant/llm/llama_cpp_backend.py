@@ -44,13 +44,20 @@ class LlamaCppBackend(LLMBackend):
 
     def _load(self, mmproj_path: str | None, n_ctx: int) -> None:
         from llama_cpp import Llama
-        
+
+        if self._is_vision and not mmproj_path:
+            raise ValueError(
+                "A vision model requires mmproj_path (clip/mmproj weights)."
+            )
+
         release_ml_memory()
         logger.info("loading model: %s", self.model_path)
         
         try:
             if self._is_vision:
                 from llama_cpp.llama_chat_format import Qwen25VLChatHandler
+                if mmproj_path is None:
+                    raise ValueError("Vision model requires mmproj_path")
                 self._chat_handler = Qwen25VLChatHandler(clip_model_path=mmproj_path)
                 self._llm = Llama(
                     model_path=self.model_path,
@@ -82,6 +89,8 @@ class LlamaCppBackend(LLMBackend):
             if self._is_vision:
                 from llama_cpp.llama_chat_format import Qwen25VLChatHandler
                 if self._chat_handler is None:
+                    if mmproj_path is None:
+                        raise ValueError("Vision model requires mmproj_path")
                     self._chat_handler = Qwen25VLChatHandler(clip_model_path=mmproj_path)
                 self._llm = Llama(
                     model_path=self.model_path,

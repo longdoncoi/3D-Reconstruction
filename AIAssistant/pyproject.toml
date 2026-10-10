@@ -32,7 +32,63 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Compatibility shims in modules/ re-export legacy symbols
-"modules/*.py" = ["F401", "F403", "F405", "RUF100"]
-# TrainModel.py has a noqa directive for PLW1510 which is not in the select list.
-"TrainModel.py" = ["RUF100"]
+# Test fixtures intentionally embed sample secrets and grant tokens.
+"tests/**" = ["S105", "S106"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = false
+# Full-package type checking: mypy now covers domain, ports, application and
+# every adapter/agent/orchestration module. Third-party packages without
+# stubs are imported as Any (ignore_missing_imports).
+exclude = [
+    "src/ai_assistant/legacy/",
+]
+
+[tool.importlinter]
+root_package = "ai_assistant"
+# forbid frameworks (fastapi, langgraph, ...) from the pure core; the external
+# packages must be present in the import graph for that check to work.
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Domain and ports only touch the standard library and their own layer"
+type = "forbidden"
+source_modules = ["ai_assistant.domain", "ai_assistant.ports"]
+forbidden_modules = [
+    "ai_assistant.adapters", "ai_assistant.application", "ai_assistant.agents",
+    "ai_assistant.bootstrap", "ai_assistant.config", "ai_assistant.legacy",
+    "ai_assistant.llm", "ai_assistant.observability", "ai_assistant.orchestration",
+    "ai_assistant.rag", "ai_assistant.tools",
+    "fastapi", "langgraph", "langchain", "pydantic", "mcp", "httpx", "uvicorn",
+]
+
+[[tool.importlinter.contracts]]
+name = "Application depends inward only (domain, ports, plugins)"
+type = "forbidden"
+source_modules = ["ai_assistant.application"]
+forbidden_modules = [
+    "ai_assistant.adapters", "ai_assistant.agents", "ai_assistant.bootstrap",
+    "ai_assistant.config", "ai_assistant.legacy", "ai_assistant.llm",
+    "ai_assistant.observability", "ai_assistant.orchestration", "ai_assistant.rag",
+    "ai_assistant.tools",
+    "fastapi", "langgraph", "langchain", "pydantic", "mcp", "httpx", "uvicorn",
+]
+
+[[tool.importlinter.contracts]]
+name = "The legacy modules package stays removed"
+type = "forbidden"
+source_modules = ["ai_assistant"]
+forbidden_modules = ["modules"]
+
+[[tool.importlinter.contracts]]
+name = "Agents and orchestration do not import HTTP, bootstrap or legacy directly"
+type = "forbidden"
+source_modules = ["ai_assistant.agents", "ai_assistant.orchestration"]
+forbidden_modules = ["ai_assistant.adapters.http", "ai_assistant.bootstrap", "ai_assistant.legacy"]
+# Legacy is reachable only through the sanctioned tools shim
+# (tools.builtin.rag_tools); the architecture boundary tests enforce direct
+# imports, so check direct imports here too.
+allow_indirect_imports = true

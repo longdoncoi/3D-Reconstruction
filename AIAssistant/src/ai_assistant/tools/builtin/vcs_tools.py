@@ -7,7 +7,7 @@ from typing import Any
 
 from ai_assistant.config.paths import get_paths
 
-from .file_tools import _AGENT_BLOCKED_DIRS, _agent_safe_path
+from .path_utils import _AGENT_BLOCKED_DIRS, agent_safe_path
 
 
 def tool_get_project_status(params: dict[str, Any]) -> dict[str, Any]:
@@ -38,7 +38,7 @@ def tool_git_diff(params: dict[str, Any]) -> dict[str, Any]:
     if path == ".":
         diff_path = "."
     else:
-        abs_path = _agent_safe_path(path)
+        abs_path = agent_safe_path(path)
         if abs_path is None or not os.path.exists(abs_path):
             return {"error": f"Invalid or missing diff path: {path}"}
         diff_path = os.path.relpath(abs_path, project_root)

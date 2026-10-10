@@ -1,105 +1,77 @@
-"""Unified Agent Service for the 3D-Reconstruction AI Assistant.
+"""Unified Agent Service facade for the 3D-Reconstruction AI Assistant.
 
-Encapsulates Agent execution, cancellation, UI desktop action continuation,
-and human-in-the-loop (HITL) approval workflows using LangGraph and Clean Architecture.
+This module provides the main entry point for Agent execution, delegating to:
+- ``ApprovalService`` — Human-in-the-Loop approval workflows
+- ``UIActionService`` — Desktop UI action continuation
+
+The facade pattern preserves the existing public interface while enabling
+independent testing and evolution of each sub-service (ADR 0004).
 """
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import threading
 import time
 from collections.abc import Callable
 
-from ai_assistant.adapters.persistence import PendingActionStore
-from ai_assistant.application.coordination import coordinator as task_coordinator
-from ai_assistant.bootstrap.runtime import (
-    execute_approved_tool as execute_approved_platform_tool,
-)
-from ai_assistant.domain.errors import (
-    AuthorizationError,
-    ModelNotLoadedError,
-    NotFoundError,
-    UnprocessableRequestError,
-)
-
-# Legacy/shim references
-from ai_assistant.legacy import llm_module as llm_runtime
-from ai_assistant.legacy.config import (
-    APP_DATA_DIR,
-    CHARS_PER_TOKEN,
-    LLM_N_CTX,
-    PROJECT_DIR,
-    USE_LANGGRAPH_AGENT,
-    _safe_relpath,
-)
-from ai_assistant.llm.inference import backend_mode, openai_compatible_completion
-from ai_assistant.observability import (
+from ..application.coordination import coordinator as task_coordinator
+from ..config.paths import get_paths
+from ..domain.errors import ModelNotLoadedError, NotFoundError
+from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
+from ..llm.inference import backend_mode, openai_compatible_completion
+from ..observability import (
     langsmith_trace,
-    record_approval,
     record_schema_error,
     record_tool,
     span,
 )
-from ai_assistant.orchestration.specialists.code import (
+from ..orchestration.specialists.code import (
     CodingTaskContext,
     is_coding_task,
 )
-from ai_assistant.orchestration.specialists.code import (
+from ..orchestration.specialists.code import (
     instruction as coding_instruction,
 )
-from ai_assistant.orchestration.supervisor import (
+from ..orchestration.supervisor import (
     Specialist,
     delegate,
     reflect_result,
     specialist_instruction,
     verify_result,
 )
-from ai_assistant.orchestration.supervisor import (
+from ..orchestration.supervisor import (
     audit as audit_agent,
 )
-from ai_assistant.orchestration.supervisor import (
+from ..orchestration.supervisor import (
     authorise as authorise_delegation,
 )
-from ai_assistant.tools.action_manifest import validate_action_params
-from ai_assistant.tools.factory import create_tool_registry
-from ai_assistant.tools.tool_contract import validate_tool_call
-
-from .completion import (
-    constrained_completion,
-    parse_tool_call,
-)
+from ..ports import LLMRuntime, ToolGateway
+from ..tools.factory import create_tool_registry
+from ..tools.tool_contract import validate_tool_call
+from .approval_service import ApprovalService
 from .models import (
     AgentApproveRequest,
     AgentCancelRequest,
     AgentExecuteRequest,
     AgentUiActionResultRequest,
 )
+from .pending_store import PendingActionStore
 from .prompts import build_agent_system_prompt
 from .runner import run_langgraph_agent
+from .ui_action_service import UIActionService
 
 try:
-    from ai_assistant.adapters.a2a_protocol import A2ARouter
-except ImportError:
-    A2ARouter = None  # type: ignore[assignment,misc]
-
-try:
-    from ai_assistant.orchestration.graph import LocalAgentGraph
+    from ..orchestration.graph import LocalAgentGraph
     LANGGRAPH_AVAILABLE = True
 except ImportError:
-    LocalAgentGraph = None
+    LocalAgentGraph = None  # type: ignore[assignment,misc]
     LANGGRAPH_AVAILABLE = False
 
 logger = logging.getLogger("ai_assistant.agents.service")
 
 TOOL_REGISTRY = create_tool_registry()
-_TOOL_DEFINITIONS = {spec.name: spec.json_schema for spec in TOOL_REGISTRY.get_all()}
-_TOOL_PARAM_MODELS = TOOL_REGISTRY.models
-_LLAMA_CPP_TOOLS = TOOL_REGISTRY.get_openai_tools()
-_TOOL_GRAMMAR_SCHEMA = TOOL_REGISTRY.grammar
-_TOOLS_REQUIRING_APPROVAL = {spec.name for spec in TOOL_REGISTRY.get_all() if spec.requires_approval}
 _AGENT_MAX_ITERATIONS = 12
 AGENT_TOOLS = list(TOOL_REGISTRY.get_all())
 
@@ -112,18 +84,11 @@ def platform_executors() -> dict[str, Callable]:
     return executors
 
 
-# Pending action store
-_pending_lock = threading.Lock()
-_PENDING_ACTIONS_FILE = os.path.join(APP_DATA_DIR, "AIAssistant", "pending_agent_actions.json")
-_pending_actions = PendingActionStore(_PENDING_ACTIONS_FILE)
-
-
-def _save_pending_actions() -> None:
-    _pending_actions.save()
-
-
-def _load_pending_actions() -> None:
-    _pending_actions.load()
+def _default_pending_path() -> str:
+    """Canonical on-disk location for pending approvals and UI actions."""
+    paths = get_paths()
+    data_root = paths.data_dir if paths.data_dir.name == "AIAssistant" else paths.data_dir / "AIAssistant"
+    return str(data_root / "pending_agent_actions.json")
 
 
 def _generate_action_id() -> str:
@@ -131,55 +96,72 @@ def _generate_action_id() -> str:
     return hashlib.sha256(seed).hexdigest()[:12]
 
 
-def _cleanup_pending_actions() -> None:
-    cutoff = time.time() - 600
-    with _pending_lock:
-        had_expired = _pending_actions.cleanup(cutoff)
-        if had_expired:
-            _save_pending_actions()
-            logger.info("Cleaned up expired pending agent actions")
-
-
-def _constrained_agent_completion(messages: list[dict], max_tokens: int, temperature: float) -> str:
-    """Compatibility entry point for constrained completion."""
-    def dummy_record(_in: int, _out: int) -> None:
-        pass
-
-    return constrained_completion(
-        messages=messages,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        llm_runtime=llm_runtime,
-        backend_mode_fn=backend_mode,
-        openai_compatible_fn=openai_compatible_completion,
-        openai_tools=_LLAMA_CPP_TOOLS,
-        grammar_schema=_TOOL_GRAMMAR_SCHEMA,
-        record_token_usage_fn=dummy_record,
-    )
-
-
-def _parse_tool_call(response_text: str) -> tuple[str | None, dict | None]:
-    return parse_tool_call(response_text, _TOOL_PARAM_MODELS, validate_tool_call, record_schema_error)
-
-
 class AgentService:
-    """Domain service for full Agent execution lifecycle."""
+    """Domain service for full Agent execution lifecycle.
 
-    def __init__(self, *, pending_actions: PendingActionStore | None = None,
-                 pending_lock=None, tool_registry=None) -> None:
-        self.pending_actions = pending_actions if pending_actions is not None else _pending_actions
-        self.pending_lock = pending_lock if pending_lock is not None else _pending_lock
+    Facade that delegates to:
+    - ``ApprovalService`` for HITL approval workflows
+    - ``UIActionService`` for desktop UI action continuation
+    """
+
+    def __init__(self, *, llm_runtime: LLMRuntime | None = None,
+                 pending_actions: PendingActionStore | None = None,
+                 pending_lock=None, tool_registry=None,
+                 tool_gateway: ToolGateway | None = None,
+                 checkpointer=None, a2a_router=None) -> None:
+        self.llm_runtime = llm_runtime
+        self.pending_actions = (
+            pending_actions if pending_actions is not None else PendingActionStore(_default_pending_path())
+        )
+        self.pending_lock = pending_lock if pending_lock is not None else threading.Lock()
         self.tool_registry = tool_registry if tool_registry is not None else TOOL_REGISTRY
+        self.tool_gateway = tool_gateway
+        # LangGraph persistence and the A2A transport are adapter concerns
+        # injected by the composition root; ``None`` keeps the facade runnable
+        # without them (stateless graphs, local-only dispatch).
+        self._checkpointer = checkpointer
+        self._a2a_router = a2a_router
         # Durability (ADR 0003): rehydrate approvals/desktop acks persisted by a
         # previous process so cross-restart A2A continuation still resolves.
-        # ``load`` is best-effort and tolerates a missing/corrupt file.
         self.pending_actions.load()
+
+        # Sub-services share the same pending state, tool gateway and graph
+        # persistence; the A2A router stays on the semantic-path delegations.
+        self._approval_service = ApprovalService(
+            llm_runtime=llm_runtime,
+            pending_actions=self.pending_actions,
+            pending_lock=self.pending_lock,
+            tool_gateway=tool_gateway,
+            tool_registry=self.tool_registry,
+            checkpointer=self._checkpointer,
+        )
+        self._ui_action_service = UIActionService(
+            llm_runtime=llm_runtime,
+            pending_actions=self.pending_actions,
+            pending_lock=self.pending_lock,
+            tool_gateway=tool_gateway,
+            tool_registry=self.tool_registry,
+            checkpointer=self._checkpointer,
+        )
+
+    def _require_llm(self) -> None:
+        if self.llm_runtime is None or self.llm_runtime.llm is None:
+            raise ModelNotLoadedError("LLM chưa khởi tạo")
+
+    def _save_pending(self) -> None:
+        self.pending_actions.save()
+
+    def _cleanup_pending(self) -> None:
+        cutoff = time.time() - 600
+        with self.pending_lock:
+            if self.pending_actions.cleanup(cutoff):
+                self._save_pending()
+                logger.info("Cleaned up expired pending agent actions")
 
     def execute(self, request: AgentExecuteRequest, *, event_sink: Callable[[dict], None] | None = None,
                 client_host: str = "unknown") -> dict:
-        _cleanup_pending_actions()
-        if llm_runtime.llm is None:
-            raise ModelNotLoadedError("LLM chưa khởi tạo")
+        self._cleanup_pending()
+        self._require_llm()
 
         req_start = time.monotonic()
         task = request.task
@@ -193,7 +175,7 @@ class AgentService:
         system_prompt = build_agent_system_prompt(self.tool_registry, language=request.language)
         if is_coding_task(task):
             system_prompt += "\n\n" + coding_instruction(CodingTaskContext(
-                task=task, language=request.language, project_root=_safe_relpath(PROJECT_DIR, PROJECT_DIR),
+                task=task, language=request.language, project_root=".",
             ))
 
         history_messages: list[dict[str, str]] = []
@@ -225,11 +207,12 @@ class AgentService:
                 temperature=request.temperature,
                 language=request.language,
                 request_started=req_start,
-                llm_runtime=llm_runtime,
+                llm_runtime=self.llm_runtime,
                 backend_mode_fn=backend_mode,
                 openai_compatible_fn=openai_compatible_completion,
                 record_token_usage_fn=record_tokens,
                 tool_registry=self.tool_registry,
+                tool_gateway=self.tool_gateway,
                 pending_actions=self.pending_actions,
                 pending_lock=self.pending_lock,
                 task_coordinator=task_coordinator,
@@ -250,11 +233,12 @@ class AgentService:
                 supervisor_route=Specialist.SUPERVISOR,
                 LocalAgentGraph=LocalAgentGraph,
                 Specialist=Specialist,
-                A2ARouter=A2ARouter,
+                A2ARouter=self._a2a_router,
+                checkpointer=self._checkpointer,
                 llm_n_ctx=LLM_N_CTX,
                 chars_per_token=CHARS_PER_TOKEN,
                 generate_action_id_fn=_generate_action_id,
-                save_pending_fn=_save_pending_actions,
+                save_pending_fn=self._save_pending,
             )
 
         # Transport negotiation (JSON vs SSE) belongs to the HTTP adapter; the
@@ -270,311 +254,25 @@ class AgentService:
             raise NotFoundError("Unknown or already finished agent task")
         return {"status": "cancelled", **cancelled}
 
-    def ui_action_result(self, request: AgentUiActionResultRequest) -> dict:
-        _cleanup_pending_actions()
-        with self.pending_lock:
-            action = self.pending_actions.pop(request.request_id, None)
-            _save_pending_actions()
-        if action is None or not action.get("ui_ack"):
-            raise NotFoundError("Unknown or expired UI action request")
-
-        params = action["params"]
-        result = {"success": request.success, "action": params["action"], **request.result}
-        steps = []
-        steps.append({
-            "type": "tool_result",
-            "tool": "application_action",
-            "request_id": request.request_id,
-            "result": result,
-            "iteration": action.get("iteration", 0),
-        })
-
-        delegation = delegate(action["task"], action["session_id"], "application_action", params)
-        verification = verify_result(delegation, result)
-        audit_agent("tool_verified", delegation, **verification)
-        steps.append({
-            "type": "verification",
-            "tool": "application_action",
-            "result": verification,
-            "iteration": action.get("iteration", 0),
-        })
-
-        next_actions = action.get("next_actions") or []
-        if request.success and isinstance(next_actions, list) and next_actions:
-            queued = next_actions[0]
-            if not isinstance(queued, dict):
-                raise UnprocessableRequestError("Invalid queued UI action")
-            next_params, error = validate_action_params(queued)
-            if error:
-                raise UnprocessableRequestError(str(error))
-            next_request_id = _generate_action_id()
-            next_params["request_id"] = next_request_id
-            all_steps = action.get("steps", []) + steps + [{
-                "type": "tool_call", "tool": "application_action", "params": next_params,
-                "iteration": action.get("iteration", 0) + 1,
-            }]
-            with self.pending_lock:
-                self.pending_actions[next_request_id] = {
-                    "ui_ack": True, "params": next_params, "task": action["task"],
-                    "session_id": action["session_id"], "steps": all_steps,
-                    "messages": action.get("messages", []), "next_actions": next_actions[1:],
-                    "iteration": action.get("iteration", 0) + 1,
-                    "temperature": action.get("temperature", 0.3),
-                    "language": action.get("language", "vi"), "created_at": time.time(),
-                }
-                _save_pending_actions()
-            return {
-                "status": "pending_ui_action", "session_id": action["session_id"],
-                "request_id": next_request_id, "prior_step_count": len(action.get("steps", [])),
-                "steps": all_steps,
-                "ui_action": {"request_id": next_request_id, "action": next_params["action"], "params": next_params},
-            }
-
-        if action.get("messages") and USE_LANGGRAPH_AGENT and LANGGRAPH_AVAILABLE:
-            messages = action["messages"]
-            tool_call_text = json.dumps({"tool": "application_action", "params": params}, ensure_ascii=False)
-            messages.append({"role": "assistant", "content": f"```tool_call\n{tool_call_text}\n```"})
-            result_text = json.dumps(result, ensure_ascii=False, indent=2)
-            if len(result_text) > 8000:
-                result_text = result_text[:8000] + "\n... [truncated]"
-            messages.append({
-                "role": "user",
-                "content": f"Tool `application_action` returned:\n```json\n{result_text}\n```\n\nPhân tích kết quả. NẾU kế hoạch của bạn CÒN bước tiếp theo, hãy bắt buộc GỌI TOOL cho bước đó ngay lập tức (KHÔNG HỎI LẠI NGƯỜI DÙNG). Nếu đã hoàn thành toàn bộ, đưa ra thông báo kết thúc.",
-            })
-
-            def record_tokens(_in: int, _out: int) -> None:
-                pass
-
-            system_prompt = messages[0]["content"] if messages and messages[0].get("role") == "system" else build_agent_system_prompt(self.tool_registry, language=action.get("language", "vi"))
-            return run_langgraph_agent(
-                system_prompt=system_prompt,
-                task=action["task"],
-                session_id=action["session_id"],
-                temperature=action["temperature"],
-                language=action.get("language", "vi"),
-                request_started=time.monotonic(),
-                llm_runtime=llm_runtime,
-                backend_mode_fn=backend_mode,
-                openai_compatible_fn=openai_compatible_completion,
-                record_token_usage_fn=record_tokens,
-                tool_registry=self.tool_registry,
-                pending_actions=self.pending_actions,
-                pending_lock=self.pending_lock,
-                task_coordinator=task_coordinator,
-                delegate_fn=delegate,
-                authorise_delegation_fn=authorise_delegation,
-                audit_agent_fn=audit_agent,
-                verify_result_fn=verify_result,
-                reflect_result_fn=reflect_result,
-                record_tool_fn=record_tool,
-                record_schema_error_fn=record_schema_error,
-                validate_tool_call_fn=validate_tool_call,
-                langsmith_trace_fn=langsmith_trace,
-                span_fn=span,
-                specialist_instruction_fn=specialist_instruction,
-                is_coding_task_fn=is_coding_task,
-                initial_messages=messages,
-                initial_steps=action.get("steps", []) + steps,
-                initial_iteration=action.get("iteration", 0),
-                resume_with_reflection=True,
-                prior_step_count=len(action.get("steps", [])),
-                LocalAgentGraph=LocalAgentGraph,
-                Specialist=Specialist,
-                A2ARouter=A2ARouter,
-                llm_n_ctx=LLM_N_CTX,
-                chars_per_token=CHARS_PER_TOKEN,
-                generate_action_id_fn=_generate_action_id,
-                save_pending_fn=_save_pending_actions,
-            )
-
-        content = (f"Đã thực thi {params['action']}." if request.success
-                   else f"Không thể thực thi {params['action']}: {result.get('error', 'unknown error')}")
-        steps.append({"type": "final_answer", "content": content})
-        all_steps = action.get("steps", []) + steps
-        task_coordinator.finish(action["session_id"], success=request.success)
-        retry_idx_stored = action.get("retry_message_index")
-        return {
-            "status": "completed" if request.success else "failed",
-            "session_id": action["session_id"],
-            "request_id": request.request_id,
-            "prior_step_count": len(action.get("steps", [])),
-            "steps": all_steps,
-            **({"retry_message_index": retry_idx_stored} if retry_idx_stored is not None else {}),
-        }
-
     def approve(self, request: AgentApproveRequest) -> dict:
-        _cleanup_pending_actions()
-        if llm_runtime.llm is None:
-            raise ModelNotLoadedError("LLM chưa khởi tạo")
+        """Delegate to ApprovalService for HITL approval workflows."""
+        self._cleanup_pending()
+        return self._approval_service.approve(request)
 
-        action_id = request.action_id
-        with self.pending_lock:
-            action = self.pending_actions.pop(action_id, None)
-            _save_pending_actions()
-
-        if action is None:
-            record_approval("missing")
-            raise NotFoundError(f"Action not found: {action_id}")
-
-        if task_coordinator.is_cancelled(action.get("session_id", "")):
-            task_coordinator.finish(action.get("session_id", ""), success=False)
-            return {"status": "cancelled", "action_id": action_id,
-                    "steps": [*action.get("steps", []), {
-                        "type": "cancelled", "content": "Task cancelled before approval."}]}
-
-        if request.session_id and request.session_id != action.get("session_id"):
-            with self.pending_lock:
-                self.pending_actions[action_id] = action
-                _save_pending_actions()
-            record_approval("unauthorized")
-            raise AuthorizationError("Action does not belong to this session")
-
-        if not request.approved:
-            record_approval("rejected")
-            return {
-                "status": "rejected",
-                "action_id": action_id,
-                "approval_scope": action.get("approval_scope", ""),
-                "approval_preview": action.get("approval_preview"),
-                "prior_step_count": len(action["steps"]),
-                "steps": action["steps"] + [{
-                    "type": "tool_result",
-                    "tool": action["tool"],
-                    "action_id": action_id,
-                    "result": {"rejected": True, "message": "Người dùng từ chối thực thi action này."},
-                    "iteration": action["iteration"],
-                }],
-            }
-
-        record_approval("approved")
-        tool_name = action["tool"]
-        tool_params = action["params"]
-        approved_tool_started = time.monotonic()
-        tool_result = execute_approved_platform_tool(tool_name, tool_params)
-        record_tool(tool_name, "error" not in tool_result, time.monotonic() - approved_tool_started)
-
-        prior_step_count = len(action["steps"])
-        steps = action["steps"]
-        steps.append({
-            "type": "tool_result",
-            "tool": tool_name,
-            "action_id": action_id,
-            "result": tool_result,
-            "iteration": action["iteration"],
-        })
-        delegation = delegate(action["task"], action["session_id"], tool_name, tool_params)
-        verification = verify_result(delegation, tool_result)
-        audit_agent("tool_verified", delegation, **verification)
-        steps.append({
-            "type": "verification",
-            "tool": tool_name,
-            "result": verification,
-            "iteration": action["iteration"],
-        })
-
-        messages = action["messages"]
-        tool_call_text = json.dumps({"tool": tool_name, "params": tool_params}, ensure_ascii=False)
-        messages.append({"role": "assistant", "content": f"```tool_call\n{tool_call_text}\n```"})
-        result_text = json.dumps(tool_result, ensure_ascii=False, indent=2)
-        if len(result_text) > 8000:
-            result_text = result_text[:8000] + "\n... [truncated]"
-        messages.append({
-            "role": "user",
-            "content": f"Tool `{tool_name}` was approved and executed. Result:\n```json\n{result_text}\n```\n\nContinue with your analysis or provide final answer.",
-        })
-
-        if USE_LANGGRAPH_AGENT and LANGGRAPH_AVAILABLE:
-            system_prompt = messages[0]["content"] if messages and messages[0].get("role") == "system" else build_agent_system_prompt(self.tool_registry, language=action.get("language", "vi"))
-            steps.append({"type": "approval_granted", "scope_id": action.get("approval_scope", ""),
-                          "tool": tool_name, "action_id": action_id})
-
-            def record_tokens(_in: int, _out: int) -> None:
-                pass
-
-            return run_langgraph_agent(
-                system_prompt=system_prompt,
-                task=action["task"],
-                session_id=action["session_id"],
-                temperature=action["temperature"],
-                language=action.get("language", "vi"),
-                request_started=time.monotonic(),
-                llm_runtime=llm_runtime,
-                backend_mode_fn=backend_mode,
-                openai_compatible_fn=openai_compatible_completion,
-                record_token_usage_fn=record_tokens,
-                tool_registry=self.tool_registry,
-                pending_actions=self.pending_actions,
-                pending_lock=self.pending_lock,
-                task_coordinator=task_coordinator,
-                delegate_fn=delegate,
-                authorise_delegation_fn=authorise_delegation,
-                audit_agent_fn=audit_agent,
-                verify_result_fn=verify_result,
-                reflect_result_fn=reflect_result,
-                record_tool_fn=record_tool,
-                record_schema_error_fn=record_schema_error,
-                validate_tool_call_fn=validate_tool_call,
-                langsmith_trace_fn=langsmith_trace,
-                span_fn=span,
-                specialist_instruction_fn=specialist_instruction,
-                is_coding_task_fn=is_coding_task,
-                initial_messages=messages,
-                initial_steps=steps,
-                initial_iteration=action["iteration"],
-                resume_with_reflection=True,
-                prior_step_count=prior_step_count,
-                approval_granted=True,
-                approval_scope=action.get("approval_scope", ""),
-                LocalAgentGraph=LocalAgentGraph,
-                Specialist=Specialist,
-                A2ARouter=A2ARouter,
-                llm_n_ctx=LLM_N_CTX,
-                chars_per_token=CHARS_PER_TOKEN,
-                generate_action_id_fn=_generate_action_id,
-                save_pending_fn=_save_pending_actions,
-            )
-
-        # Fallback if LangGraph unavailable
-        return {
-            "status": "completed",
-            "session_id": action["session_id"],
-            "prior_step_count": prior_step_count,
-            "steps": steps,
-        }
+    def ui_action_result(self, request: AgentUiActionResultRequest) -> dict:
+        """Delegate to UIActionService for desktop UI action continuation."""
+        self._cleanup_pending()
+        return self._ui_action_service.ui_action_result(request)
 
     def reset_state(self) -> None:
         with self.pending_lock:
             self.pending_actions.clear()
             try:
-                if os.path.exists(_PENDING_ACTIONS_FILE):
-                    os.remove(_PENDING_ACTIONS_FILE)
+                import os
+                if os.path.exists(self.pending_actions.path):
+                    os.remove(self.pending_actions.path)
             except OSError as error:
                 logger.warning("Unable to remove pending action state: %s", error)
-
-
-# Default singleton instance and top-level function bridges
-_default_service = AgentService()
-
-
-def agent_execute(request: AgentExecuteRequest, *, event_sink: Callable[[dict], None] | None = None,
-                  client_host: str = "unknown") -> dict:
-    return _default_service.execute(request, event_sink=event_sink, client_host=client_host)
-
-
-def agent_cancel(request: AgentCancelRequest) -> dict:
-    return _default_service.cancel(request)
-
-
-def agent_ui_action_result(request: AgentUiActionResultRequest) -> dict:
-    return _default_service.ui_action_result(request)
-
-
-def agent_approve(request: AgentApproveRequest) -> dict:
-    return _default_service.approve(request)
-
-
-def reset_agent_state() -> None:
-    _default_service.reset_state()
 
 
 __all__ = [
@@ -585,18 +283,5 @@ __all__ = [
     "AgentExecuteRequest",
     "AgentService",
     "AgentUiActionResultRequest",
-    "_constrained_agent_completion",
-    "_load_pending_actions",
-    "_parse_tool_call",
-    "_pending_actions",
-    "_pending_lock",
-    "_save_pending_actions",
-    "agent_approve",
-    "agent_cancel",
-    "agent_execute",
-    "agent_ui_action_result",
-    "backend_mode",
-    "llm_runtime",
     "platform_executors",
-    "reset_agent_state",
 ]

@@ -26,6 +26,9 @@ class ArchitectureSettings:
     capability_scopes: Mapping[str, frozenset[str]]
     allowed_plugins: frozenset[str]
     allowed_origins: tuple[str, ...]
+    a2a_remote_agents: frozenset[str] = frozenset()
+    a2a_card_name: str = "3D-Reconstruction AI Assistant"
+    a2a_card_url: str = "http://127.0.0.1:8080"
 
     @classmethod
     def load(cls, base_dir: Path) -> "ArchitectureSettings":
@@ -63,6 +66,10 @@ class ArchitectureSettings:
             capability_scopes=capability_scopes,
             allowed_plugins=frozenset(str(item) for item in plugins.get("enabled", ["builtin.legacy-tools"])),
             allowed_origins=tuple(str(item) for item in api.get("allowed_origins", [])),
+            # A2A transport configuration (ADR 0001: centralized in settings, not import-time env reads)
+            a2a_remote_agents=frozenset(str(item) for item in a2a.get("trusted_endpoints", [])),
+            a2a_card_name=str(runtime.get("a2a_card_name", "3D-Reconstruction AI Assistant")),
+            a2a_card_url=str(runtime.get("a2a_card_url", "http://127.0.0.1:8080")),
         )
 
 
@@ -103,3 +110,101 @@ class AgentRuntimeSettings:
 def load_agent_runtime_settings(env: Mapping[str, str] | None = None) -> AgentRuntimeSettings:
     """Read the agent-runtime toggles from ``env`` (defaults to ``os.environ``)."""
     return AgentRuntimeSettings.from_env(env)
+
+
+def use_langgraph_agent(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether the LangGraph decision loop is enabled.
+
+    Parsed here instead of a legacy module-level global so the agent layer reads
+    the toggle through ``settings`` (ADR 0001). Defaults to enabled.
+    """
+    values = os.environ if env is None else env
+    return values.get("USE_LANGGRAPH_AGENT", "1") != "0"
+
+
+# ── Runtime toggles read on demand ───────────────────────────────────────────
+# ADR 0001 forbids reading the environment at import time anywhere except this
+# module and ``bootstrap``. These accessors keep that boundary explicit while
+# allowing modules to consume their knob lazily from ``settings`` at call time.
+
+def observability_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether metrics/tracing exporters are active (``AGENT_OBSERVABILITY=1``)."""
+    values = os.environ if env is None else env
+    return values.get("AGENT_OBSERVABILITY", "0") == "1"
+
+
+def langsmith_settings(env: Mapping[str, str] | None = None) -> dict[str, str] | None:
+    """Return LangSmith credentials when tracing is enabled, else ``None``.
+
+    ``None`` is returned unless ``LANGSMITH_TRACING`` is truthy and
+    ``LANGSMITH_API_KEY`` is set, so the observability adapter never has to
+    re-implement the toggle.
+    """
+    values = os.environ if env is None else env
+    if values.get("LANGSMITH_TRACING", "").lower() not in {"true", "1", "yes"}:
+        return None
+    api_key = values.get("LANGSMITH_API_KEY", "")
+    if not api_key:
+        return None
+    return {
+        "project": values.get("LANGSMITH_PROJECT", "3d-reconstruction"),
+        "api_key": api_key,
+        "endpoint": values.get("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"),
+    }
+
+
+def a2a_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether the A2A transport layer is active (``A2A_ENABLED=1``)."""
+    values = os.environ if env is None else env
+    return values.get("A2A_ENABLED", "0") == "1"
+
+
+def a2a_remote_agent_urls(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """Return the trusted remote agent card URLs from ``A2A_REMOTE_AGENTS``."""
+    values = os.environ if env is None else env
+    return tuple(
+        url.strip()
+        for url in values.get("A2A_REMOTE_AGENTS", "").split(",")
+        if url.strip()
+    )
+
+
+def a2a_card_name(env: Mapping[str, str] | None = None) -> str:
+    """Display name for this server's published Agent Card."""
+    values = os.environ if env is None else env
+    return values.get("A2A_CARD_NAME", "3D-Reconstruction AI Assistant")
+
+
+def a2a_card_url(env: Mapping[str, str] | None = None) -> str:
+    """Public base URL where this server is reachable."""
+    values = os.environ if env is None else env
+    return values.get("A2A_CARD_URL", "http://127.0.0.1:8080")
+
+
+def agent_write_roots(env: Mapping[str, str] | None = None) -> frozenset[str]:
+    """Subtree allow-list for sandboxed writes (``AGENT_WRITE_ALLOWLIST``)."""
+    values = os.environ if env is None else env
+    return frozenset(
+        part.strip()
+        for part in values.get(
+            "AGENT_WRITE_ALLOWLIST", "src,AIAssistant,AIComputerVision,Config,Docs,tests"
+        ).split(",")
+        if part.strip()
+    )
+
+
+def lsp_binaries(env: Mapping[str, str] | None = None) -> tuple[str, str, int]:
+    """Resolve the LSP server executables and request timeout.
+
+    Returns ``(clangd_binary, pylsp_binary, timeout_seconds)``.
+    """
+    values = os.environ if env is None else env
+    try:
+        timeout = int(values.get("AGENT_LSP_TIMEOUT", "15"))
+    except ValueError:
+        timeout = 15
+    return (
+        values.get("AGENT_CLANGD_BIN", "clangd"),
+        values.get("AGENT_PYLSP_BIN", "pylsp"),
+        timeout,
+    )

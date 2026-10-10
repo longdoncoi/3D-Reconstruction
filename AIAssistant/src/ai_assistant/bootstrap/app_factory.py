@@ -1,7 +1,7 @@
 """FastAPI composition boundary for the platform."""
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -17,11 +17,14 @@ from ..domain.errors import (
 )
 from ..settings import ArchitectureSettings
 
+# FastAPI accepts both sync and async exception handlers.
+ExceptionHandler = Callable[[Request, Exception], JSONResponse | Awaitable[JSONResponse]]
+
 
 def _register_domain_error_handlers(app: FastAPI) -> None:
     """Translate transport-agnostic domain errors into HTTP responses."""
 
-    def handler_for(status_code: int) -> Callable[[Request, Exception], JSONResponse]:
+    def handler_for(status_code: int) -> ExceptionHandler:
         async def handler(_request: Request, exc: Exception) -> JSONResponse:
             return JSONResponse(status_code=status_code, content={"detail": str(exc)})
 

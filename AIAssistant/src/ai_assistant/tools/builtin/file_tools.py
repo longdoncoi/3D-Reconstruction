@@ -10,35 +10,14 @@ from ai_assistant.config.paths import get_paths
 from ai_assistant.tools.sandbox import create_directory
 from ai_assistant.tools.sandbox import write_file as write_sandboxed_file
 
-_AGENT_BLOCKED_DIRS = {".git", "build", "__pycache__", ".vs", "node_modules"}
-_AGENT_BLOCKED_EXTS = {".exe", ".dll", ".so", ".bin", ".dat", ".pkl", ".gguf", ".onnx", ".pt"}
-_AGENT_MAX_FILE_READ_CHARS = 24000
-_AGENT_MAX_UNSCOPED_SOURCE_LINES = 240
+from .path_utils import (
+    _AGENT_BLOCKED_EXTS,
+    _AGENT_MAX_FILE_READ_CHARS,
+    _AGENT_MAX_UNSCOPED_SOURCE_LINES,
+    agent_safe_path,
+)
 
-
-def _agent_safe_path(rel_path: str) -> str | None:
-    """Validate and resolve a relative path within project_root. Returns None if unsafe."""
-    if not rel_path:
-        return None
-    project_root = str(get_paths().project_root)
-    # Normalize separators
-    rel_path = rel_path.replace("\\", "/").strip("/")
-    # Block traversal
-    if ".." in rel_path.split("/"):
-        return None
-    abs_path = os.path.normpath(os.path.join(project_root, rel_path))
-    # Ensure within project
-    try:
-        if os.path.commonpath([abs_path, os.path.normpath(project_root)]) != os.path.normpath(project_root):
-            return None
-    except ValueError:
-        return None
-    # Check blocked dirs
-    parts = rel_path.split("/")
-    for part in parts:
-        if part in _AGENT_BLOCKED_DIRS:
-            return None
-    return abs_path
+_agent_safe_path = agent_safe_path
 
 
 def tool_read_file(params: dict[str, Any]) -> dict[str, Any]:

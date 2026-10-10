@@ -5,7 +5,8 @@ from unittest.mock import patch
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from modules import agent_module
+from ai_assistant.adapters import legacy_agent as agent_impl
+from ai_assistant.adapters import legacy_agent as agent_module
 
 
 class UiContinuationTests(unittest.TestCase):
@@ -32,7 +33,10 @@ class UiContinuationTests(unittest.TestCase):
             request = agent_module.AgentUiActionResultRequest(
                 request_id=request_id, success=True, result={"action": "viewer.load_2d"},
             )
-            with patch.object(agent_module, "_save_pending_actions"):
+            # ``ui_action_result`` persists through ``AgentService._save_pending``;
+            # patch that method (not the module-level shim) so this test never
+            # rewrites the real AIAssistant/pending_agent_actions.json file.
+            with patch.object(agent_impl._default_service, "_save_pending"):
                 response = agent_module.agent_ui_action_result(request)
             self.assertEqual(response["prior_step_count"], len(previous_steps))
             self.assertEqual(response["steps"][:len(previous_steps)], previous_steps)

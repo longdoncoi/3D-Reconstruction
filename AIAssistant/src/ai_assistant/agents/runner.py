@@ -37,6 +37,7 @@ def run_langgraph_agent(
     openai_compatible_fn: Callable,
     record_token_usage_fn: Callable[[int, int], None],
     tool_registry: ToolRegistry,
+    tool_gateway=None,
     pending_actions: PendingActionStore,
     pending_lock,
     task_coordinator,
@@ -61,14 +62,17 @@ def run_langgraph_agent(
     prior_step_count: int = 0,
     approval_granted: bool = False,
     approval_scope: str = "",
+    approval_token: str = "",
+    granted_fingerprint: str = "",
     supervisor_route=None,
     # LangGraph class
     LocalAgentGraph=None,
     Specialist=None,
     A2ARouter=None,
+    checkpointer=None,
     # Tokens
     llm_n_ctx: int = 8192,
-    chars_per_token: int = 4,
+    chars_per_token: float = 4,
     # Helpers
     generate_action_id_fn: Callable[[], str] | None = None,
     save_pending_fn: Callable[[], None] | None = None,
@@ -125,8 +129,8 @@ def run_langgraph_agent(
             return {"error": reason or "Tool call denied by supervisor policy."}
         if tool_name == "application_action":
             canonical_params, error = validate_action_params(params)
-            if error:
-                return {"error": error}
+            if error is not None or canonical_params is None:
+                return {"error": error or "Invalid UI action parameters"}
             canonical_params["request_id"] = _action_id()
             params.clear()
             params.update(canonical_params)
@@ -145,12 +149,18 @@ def run_langgraph_agent(
             audit_agent_fn("tool_transport", delegation, source=result.get("source", "local"))
         else:
             with span_fn("agent.tool", tool=tool_name, session_id=session_id):
-                from ai_assistant.bootstrap.runtime import execute_approved_tool, execute_tool
-                # ADR 0002: ToolExecutionService is the only execution path. When the
-                # platform runtime is unavailable we surface a structured error instead
-                # of calling ``spec.handler`` directly and bypassing policy checks.
-                result = (execute_approved_tool(tool_name, params) if approval_granted
-                          else execute_tool(tool_name, params))
+                # ADR 0002/0003: ToolExecutionService is the only execution path,
+                # reached through the injected gateway. When no gateway is wired we
+                # surface a structured error instead of calling the registry
+                # directly and bypassing policy checks.
+                if tool_gateway is None:
+                    result = {"success": False, "error_code": "runtime_unconfigured",
+                              "error": "AI Agent Platform is not bootstrapped"}
+                else:
+                    # Only a single-use grant unlocks an approval-gated tool;
+                    # ``approval_granted`` alone no longer reaches execution.
+                    result = (tool_gateway.execute_approved(tool_name, params, approval_token) if approval_token
+                              else tool_gateway.execute(tool_name, params))
         audit_agent_fn("tool_completed", delegation, success="error" not in result)
         record_tool_fn(tool_name, "error" not in result, time.monotonic() - tool_started)
         return result
@@ -195,6 +205,15 @@ def run_langgraph_agent(
     )
     _ls_ctx = _ls_ctx_mgr.__enter__()
 
+    # Single-use approval grant: the reason node asks again as soon as the
+    # grant for the approved invocation is spent, instead of looping on a
+    # tool the gateway will refuse.
+    approval_covers_fn: Callable[[str, dict], bool] | None = None
+    if approval_token and tool_gateway is not None and hasattr(tool_gateway, "approval_covers"):
+        def _covers(tool_name: str, tool_params: dict) -> bool:
+            return bool(tool_gateway.approval_covers(tool_name, tool_params, approval_token))
+        approval_covers_fn = _covers
+
     graph = LocalAgentGraph(
         complete=complete,
         parse=lambda text: parse_tool_call(text, tool_models, validate_tool_call_fn,
@@ -204,6 +223,7 @@ def run_langgraph_agent(
         max_iterations=_AGENT_MAX_ITERATIONS,
         emit=event_sink,
         select_specialist=select_specialist,
+        approval_covers=approval_covers_fn,
         verify_result=verify_tool_result,
         reflect_result=deterministic_reflection,
         plan_complete=lambda msgs, temp: structured_completion(
@@ -213,6 +233,7 @@ def run_langgraph_agent(
         plan_reflect_complete=lambda msgs, temp: structured_completion(
             msgs, 512, temp, CRITIC_JSON_SCHEMA, llm_runtime, backend_mode_fn, openai_compatible_fn),
         cancel_checker=lambda: task_coordinator.is_cancelled(session_id),
+        checkpointer=checkpointer,
     )
 
     messages = initial_messages or [
@@ -232,6 +253,7 @@ def run_langgraph_agent(
                 any(step.get("type") == "approval_granted" for step in (initial_steps or []))
             ),
             approval_scope=approval_scope,
+            granted_fingerprint=granted_fingerprint,
         )
     except BaseException as error:
         _ls_ctx["outputs"] = {"status": "error", "error": str(error)}
@@ -314,7 +336,7 @@ def run_langgraph_agent(
     if not any(step["type"] == "final_answer" for step in steps):
         steps.append({"type": "final_answer", "content": "Agent đã kết thúc mà chưa có kết luận."})
     return {
-        "status": "completed", "session_id": session_id, "steps": steps,
+        "status": pending_status, "session_id": session_id, "steps": steps,
         "prior_step_count": prior_step_count,
         "iterations": state["iteration"],
         "total_ms": round((time.monotonic() - request_started) * 1000),

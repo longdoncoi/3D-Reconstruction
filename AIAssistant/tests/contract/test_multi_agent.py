@@ -4,8 +4,8 @@ import unittest
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from modules.coding_agent import CodingTaskContext, instruction, is_coding_task
-from modules.multi_agent import Specialist, authorise, delegate, route_task, verify_result
+from ai_assistant.orchestration.specialists.code import CodingTaskContext, instruction, is_coding_task
+from ai_assistant.orchestration.supervisor import Specialist, authorise, delegate, route_task, verify_result
 
 
 class MultiAgentPolicyTests(unittest.TestCase):

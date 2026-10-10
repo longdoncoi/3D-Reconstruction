@@ -11,9 +11,9 @@ from ..domain.security import DataClassification
 from ..domain.tools import SideEffect, ToolSpec
 from ..plugins.loader import load_entrypoint_plugins
 from ..plugins.registry import PluginRegistry
-from ..ports import AgentTaskExecutor, ToolExecutor
+from ..ports import AgentTaskExecutor, ToolExecutor, ToolGateway
 from ..settings import ArchitectureSettings
-from .runtime import configure_tool_service
+from .runtime import PlatformToolGateway
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +22,7 @@ class PlatformContainer:
     plugins: PluginRegistry
     tools: ToolExecutionService
     tasks: TaskService
+    gateway: ToolGateway
 
 
 def _side_effect(legacy: dict[str, Any]) -> SideEffect:
@@ -102,7 +103,7 @@ def build_container(base_dir: Path, legacy_tools: "list[Any]",
         plugins.register_tool(spec, executor)
     load_entrypoint_plugins(plugins)
     tools = ToolExecutionService(plugins)
-    configure_tool_service(tools)
+    gateway = PlatformToolGateway(tools)
     store = SqliteTaskStore(settings.data_dir / "tasks.sqlite")
     task_service = TaskService(store, task_executor, settings.agent_capabilities)
-    return PlatformContainer(settings, plugins, tools, task_service)
+    return PlatformContainer(settings, plugins, tools, task_service, gateway)

@@ -14,7 +14,8 @@ class AgentState(TypedDict):
     pending_tool:    dict[str, Any] | None  # tool waiting for user approval
     plan:            list[str] | None       # plan steps
     plan_spec:       dict[str, Any] | None  # structured planner contract
-    approval_granted: bool                  # one approval covers this plan scope
+    approval_granted: bool                  # an approval was granted for this run
+    granted_fingerprint: str                # exact tool+params the approval covers
     approval_scope:   str                   # stable hash of task/plan scope
     cancelled:        bool                  # cooperative cancellation requested
     tool_call_count: int                    # number of tool calls (triggers summarisation)
@@ -37,6 +38,7 @@ Completion       = Callable[[list[dict[str, str]], float], str]
 Parser           = Callable[[str], tuple[str | None, dict[str, Any] | None]]
 Executor         = Callable[[str, dict[str, Any]], dict[str, Any]]
 NeedsApproval    = Callable[[str], bool]
+ApprovalCovers   = Callable[[str, dict[str, Any]], bool]
 SelectSpecialist = Callable[[str, dict[str, Any]], dict[str, Any]]
 VerifyResult     = Callable[[str, dict[str, Any], dict[str, Any]], dict[str, Any]]
 ReflectResult    = Callable[[str, dict[str, Any], dict[str, Any], dict[str, Any]], dict[str, Any]]

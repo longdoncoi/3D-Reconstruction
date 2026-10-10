@@ -7,8 +7,8 @@ import unittest
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from ai_assistant.orchestration.supervisor import delegate, reflect_result, verify_result
 from LangGraphAgent import LocalAgentGraph
-from modules.multi_agent import delegate, reflect_result, verify_result
 
 
 class CodingAgentCompletionTests(unittest.TestCase):
@@ -82,7 +82,7 @@ class CodingAgentCompletionTests(unittest.TestCase):
     def test_requested_coding_tasks_complete_from_observed_lifecycle_evidence(self) -> None:
         tasks = (
             ("Phân tích và giải thích chức năng của hàm _build_code_citation_result trong "
-             "AIAssistant/modules/agent_module.py", ["READ"]),
+             "src/ai_assistant/adapters/legacy_agent.py", ["READ"]),
             ("Fix lỗi khi tải ảnh DICOM trong project, bổ sung unit test và kiểm tra build.",
              ["READ", "PATCH", "DIFF", "CHECK"]),
             ("Bổ sung chức năng export kết quả reconstruction sang file OBJ.",

@@ -14,7 +14,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from modules.multi_agent import (  # noqa: E402
+from ai_assistant.orchestration.supervisor import (  # noqa: E402
     _CODE_TOOLS,
     _RESEARCH_TOOLS,
     _TRANSFER_TARGETS,
@@ -28,7 +28,7 @@ from modules.multi_agent import (  # noqa: E402
 
 # A2A and LangSmith imports — guarded so the eval runs even without them.
 try:
-    from modules.a2a_protocol import A2ARouter, AgentCard, build_agent_card
+    from ai_assistant.adapters.a2a_protocol import A2ARouter, AgentCard, build_agent_card
     _a2a_eval_ok = True
 except ImportError:
     _a2a_eval_ok = False

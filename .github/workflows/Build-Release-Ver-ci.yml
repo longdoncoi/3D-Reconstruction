@@ -248,7 +248,23 @@ jobs:
               }
             }
           }
-          if (Test-Path "AIComputerVision") { Copy-Item "AIComputerVision" "$dist/AIComputerVision" -Recurse -Force }
+          # CV training assets: exclude generated logs/caches and the test suite,
+          # and ship only the runtime ONNX models + provenance manifest (base
+          # *.pt weights are git-ignored and ultralytics downloads them on demand).
+          if (Test-Path "AIComputerVision") {
+            New-Item -ItemType Directory -Path "$dist/AIComputerVision" -Force | Out-Null
+            Get-ChildItem "AIComputerVision" -Exclude "runs","__pycache__",".cache","tests","Models" | ForEach-Object {
+              if ($_.PSIsContainer) {
+                Copy-Item $_.FullName "$dist/AIComputerVision/$($_.Name)" -Recurse -Force
+              } else {
+                Copy-Item $_.FullName "$dist/AIComputerVision/" -Force
+              }
+            }
+            New-Item -ItemType Directory -Path "$dist/AIComputerVision/Models" -Force | Out-Null
+            Get-ChildItem "AIComputerVision/Models" -File |
+              Where-Object { $_.Extension -in ".onnx", ".json" } |
+              Copy-Item -Destination "$dist/AIComputerVision/Models/" -Force
+          }
 
           # Copy Config directory (app configuration files)
           if (Test-Path "Config") { Copy-Item "Config" "$dist/" -Recurse -Force }

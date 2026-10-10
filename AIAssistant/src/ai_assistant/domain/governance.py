@@ -37,7 +37,36 @@ def scrub_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return scrubbed_messages
 
 
+# Keys whose values must never leave the process through a transport payload,
+# a task event or a log line. ``continuation`` carries the internal HITL
+# execution context (action id + tool params): leaking it would let a caller
+# forge an approval for a pending action.
+SENSITIVE_KEYS = frozenset({
+    "password", "passwd", "secret", "token", "api_key", "apikey",
+    "authorization", "access_token", "refresh_token", "cookie",
+    "continuation", "action_id", "approval_scope",
+})
+
+
+def redact_value(value: Any, key: str = "") -> Any:
+    """Recursively replace sensitive values with ``[redacted]``.
+
+    Single owner of the transport redaction policy: A2A payloads, durable task
+    events and log scrubbing all delegate here so a new sensitive key is added
+    in exactly one place.
+    """
+    if key.casefold() in SENSITIVE_KEYS:
+        return "[redacted]"
+    if isinstance(value, dict):
+        return {str(item_key): redact_value(item_value, str(item_key)) for item_key, item_value in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_value(item) for item in value]
+    return value
+
+
 __all__ = [
+    "SENSITIVE_KEYS",
+    "redact_value",
     "scrub_messages",
     "scrub_pii",
 ]

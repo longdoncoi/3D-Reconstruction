@@ -13,6 +13,7 @@ _STEP_KINDS = {"rag_search", "direct", "application_action", "model_selected"}
 
 def clean_project_research_answer(answer: str) -> str:
     """Remove RAG transport labels if a model accidentally repeats them."""
+    answer = answer or ""
     cleaned = re.sub(r"(?im)^\s*=+\s*(?:TÀI LIỆU THAM KHẢO|MÃ NGUỒN LIÊN QUAN)\s*=+\s*$\n?", "", answer)
     cleaned = re.sub(r"(?im)^\s*(?:TÀI LIỆU THAM KHẢO|MÃ NGUỒN LIÊN QUAN)\s*:?[ \t]*$\n?", "", cleaned)
     cleaned = re.sub(r"(?m)^\s*\[\d+\]\s+[^\n]+\.(?:txt|md|pdf|docx?|pptx?|xlsx?|eml|html?)\s*$\n?", "", cleaned)
@@ -141,10 +142,10 @@ def plan_step_execution_contract(step_text: str, rank_actions_fn, normalize_fn, 
         return {"mode": "model_selected"}
     if kind == "rag_search":
         query = project_role_rag_query(step_text, normalize_fn)
-        contract: dict[str, Any] = {"mode": "rag_search", "query": query}
+        rag_contract: dict[str, Any] = {"mode": "rag_search", "query": query}
         if is_project_role_lookup(step_text, normalize_fn):
-            contract["top_k"] = 8
-        return contract
+            rag_contract["top_k"] = 8
+        return rag_contract
     if kind == "direct":
         return {"mode": "direct_answer"}
 

@@ -3,35 +3,9 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from ..ports import LLMBackend
 
-class LLMBackend(Protocol):
-    """Abstract interface for LLM inference engines."""
-    
-    @property
-    def is_vision_supported(self) -> bool:
-        """Return True if this backend can process images."""
-        ...
-        
-    @property
-    def model_description(self) -> str:
-        """Return a human-readable description of the loaded model."""
-        ...
-
-    def generate(
-        self,
-        messages: list[dict[str, Any]],
-        temperature: float = 0.2,
-        max_tokens: int = 1500,
-        stream: bool = False,
-        stop: list[str] | None = None,
-        **kwargs: Any
-    ) -> Any:
-        """Generate a response synchronously. 
-        
-        Returns the raw backend response format (e.g., Llama-cpp chat completion dict) 
-        during the migration phase.
-        """
-        ...
+__all__ = ["LLMBackend", "PromptBuilder"]
 
 
 class PromptBuilder(Protocol):

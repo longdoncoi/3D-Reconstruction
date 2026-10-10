@@ -4,7 +4,7 @@ import unittest
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from modules.multi_agent import delegate, reflect_result, specialist_instruction, verify_result
+from ai_assistant.orchestration.supervisor import delegate, reflect_result, specialist_instruction, verify_result
 
 
 class AgentReflectionTests(unittest.TestCase):

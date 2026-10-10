@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Callable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
@@ -22,8 +22,10 @@ from ai_assistant.agents.models import (
     AgentUiActionResultRequest,
 )
 
+from .security import TransportPolicy, agent_guards
+
 if TYPE_CHECKING:
-    from types import ModuleType
+    from ai_assistant.agents.service import AgentService
 
 
 def _stream_langgraph_execution(run: Callable[[Callable[[dict], None]], dict]):
@@ -59,18 +61,23 @@ def _stream_langgraph_execution(run: Callable[[Callable[[dict], None]], dict]):
     )
 
 
-def build_agent_router(agent_module: "ModuleType | Any" = None) -> APIRouter:
+def build_agent_router(agent_service: "AgentService | None" = None,
+                       policy: TransportPolicy | None = None) -> APIRouter:
     """Create the /v1/agent/* APIRouter.
 
     Parameters
     ----------
-    agent_module: The live agent service module providing execution services.
-                  Defaults to ``ai_assistant.agents.service``.
+    agent_service: The injected agent service instance. The composition root
+                   builds one ``AgentService`` with the shared tool gateway and
+                   passes it here; a bare default is only used by local tooling.
+    policy:        Transport trust policy (ADR 0008) — loopback peer, allowed
+                   origin and optional ``AI_AGENT_TOKEN`` bearer.
     """
-    if agent_module is None:
-        from ai_assistant.agents import service as agent_module
+    if agent_service is None:
+        from ai_assistant.agents.service import AgentService
+        agent_service = AgentService()
 
-    router = APIRouter(tags=["agent"])
+    router = APIRouter(tags=["agent"], dependencies=agent_guards(policy))
 
     def _client_host(request: Request) -> str:
         return request.client.host if request.client else "unknown"
@@ -81,26 +88,26 @@ def build_agent_router(agent_module: "ModuleType | Any" = None) -> APIRouter:
         client_host = _client_host(http_req)
         if "text/event-stream" in http_req.headers.get("accept", ""):
             return _stream_langgraph_execution(
-                lambda sink: agent_module.agent_execute(
+                lambda sink: agent_service.execute(
                     request, event_sink=sink, client_host=client_host,
                 )
             )
-        return agent_module.agent_execute(request, client_host=client_host)
+        return agent_service.execute(request, client_host=client_host)
 
     @router.post("/v1/agent/cancel")
     def agent_cancel(request: AgentCancelRequest):
         """Request cooperative cancellation for a running session/request."""
-        return agent_module.agent_cancel(request)
+        return agent_service.cancel(request)
 
     @router.post("/v1/agent/ui-action-result")
     def agent_ui_action_result(request: AgentUiActionResultRequest):
         """Close the desktop-action loop after the Qt slot has run."""
-        return agent_module.agent_ui_action_result(request)
+        return agent_service.ui_action_result(request)
 
     @router.post("/v1/agent/approve")
     def agent_approve(request: AgentApproveRequest):
         """Approve or reject a pending agent action (write_file, run_command)."""
-        return agent_module.agent_approve(request)
+        return agent_service.approve(request)
 
     return router
 

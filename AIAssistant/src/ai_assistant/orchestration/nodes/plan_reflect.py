@@ -31,7 +31,7 @@ def plan_reflect_node(state: AgentState, plan_reflect_complete: Completion | Non
     # Manifest matching is advisory only. Natural-language plan steps can
     # legitimately describe an action without repeating its canonical
     # phrase. Log the hints for observability.
-    plan_hints = []
+    plan_hints: list[str] = []
     logger.info("[NODE: plan_reflect] Action hints | hints=%s", plan_hints)
 
     if review is None and plan_reflect_complete is not None:

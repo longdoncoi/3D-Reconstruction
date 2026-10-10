@@ -66,15 +66,31 @@ def cleanup_old_checkpoints(max_days: int = 30, max_size_mb: int = 50) -> None:
         size_mb = stat.st_size / (1024 * 1024)
         if size_mb > max_size_mb:
             logger.info("Checkpoint database size (%.1fMB) exceeds limit (%.1fMB); running VACUUM", size_mb, max_size_mb)
-            with sqlite3.connect(db_path) as conn:
-                try:
-                    conn.execute("DELETE FROM checkpoints WHERE thread_id NOT IN (SELECT thread_id FROM checkpoints ORDER BY checkpoint_id DESC LIMIT 100)")
-                    conn.execute("DELETE FROM writes WHERE thread_id NOT IN (SELECT thread_id FROM checkpoints ORDER BY checkpoint_id DESC LIMIT 100)")
-                except sqlite3.OperationalError:
-                    pass
-                conn.execute("VACUUM")
+            _vacuum_database(db_path)
     except Exception as error:  # noqa: BLE001
         logger.warning("Could not clean up checkpoints: %s", error)
+
+
+def _vacuum_database(db_path: str) -> None:
+    """Prune old checkpoint rows and compact the SQLite file.
+
+    The connection is always closed, including when ``VACUUM`` fails (for
+    example inside an implicit transaction): a leaked handle keeps the file
+    locked on Windows.
+    """
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("DELETE FROM checkpoints WHERE thread_id NOT IN (SELECT thread_id FROM checkpoints ORDER BY checkpoint_id DESC LIMIT 100)")
+            conn.execute("DELETE FROM writes WHERE thread_id NOT IN (SELECT thread_id FROM checkpoints ORDER BY checkpoint_id DESC LIMIT 100)")
+            conn.commit()
+        except sqlite3.OperationalError:
+            conn.rollback()
+        conn.execute("VACUUM")
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 __all__ = [

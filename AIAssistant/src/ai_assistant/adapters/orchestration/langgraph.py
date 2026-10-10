@@ -99,7 +99,9 @@ class LangGraphAgentOrchestrator:
         status = result.get("status")
         steps = list(result.get("steps") or [])
         if status == "pending_approval":
-            pending = next((step for step in steps if step.get("type") == "pending_approval"), {})
+            pending: dict[str, Any] = next(
+                (step for step in steps if step.get("type") == "pending_approval"), {}
+            )
             return {
                 "status": "input_required",
                 "content": "Approval is required before this tool can run",

@@ -5,8 +5,8 @@ from unittest.mock import patch
 sys.path.insert(0, '..')   # f:\PROJECTS\QT\3D-Reconstruction\AIAssistant is cwd
 sys.path.insert(0, '.')
 
-from modules import agent_module
-from modules.agent_module import _parse_tool_call
+from ai_assistant.adapters import legacy_agent as agent_module
+from ai_assistant.adapters.legacy_agent import _parse_tool_call
 
 def test(name, text, expected_tool, expected_action=None):
     t, p = _parse_tool_call(text)

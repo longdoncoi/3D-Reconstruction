@@ -121,7 +121,7 @@ class DefaultPromptBuilder:
 
     def build_messages(self, messages: list[dict[str, Any]], doc_ctx: str, code_ctx: str, language: str = "vi", suppress_citations: bool = False) -> list[dict[str, Any]]:
         system_prompt = self._build_system_prompt(doc_ctx, code_ctx, suppress_citations, language)
-        result = [{"role": "system", "content": system_prompt}]
+        result: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         
         history = trim_history(messages[:-1], chars_per_token=self.chars_per_token)
         for msg in history:
@@ -147,7 +147,7 @@ class DefaultPromptBuilder:
         # but expect attachments to be resolved in the caller, or we import the URI helper.
         
         system_prompt = self._build_system_prompt(doc_ctx, code_ctx, suppress_citations, language)
-        result = [{"role": "system", "content": system_prompt}]
+        result: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         
         history = trim_history(messages[:-1], chars_per_token=self.chars_per_token)
         for msg in history:

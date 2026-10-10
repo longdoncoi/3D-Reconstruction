@@ -1,12 +1,14 @@
 #include "AITrainDockWidget.h"
 #include "IAppContext.h"
 #include "AppConfig.h"
+#include "AppConstants.h"
 #include "../../utils/ModernMessageBox.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QScrollBar>
 #include <QDialog>
 #include <QCheckBox>
@@ -82,6 +84,13 @@ AITrainDockWidget::AITrainDockWidget(IAppContext* ctx, QWidget* parent)
     connect(trainProcess, &QProcess::readyReadStandardOutput, this, &AITrainDockWidget::onTrainProcessOutput);
     connect(trainProcess, &QProcess::readyReadStandardError, this, &AITrainDockWidget::onTrainProcessOutput);
     connect(trainProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &AITrainDockWidget::onTrainProcessFinished);
+    connect(trainProcess, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart) return;
+        trainLogBrowser->append("<font color='#d32f2f'>Không thể khởi động Python. Hãy kiểm tra Python trong PATH "
+                                "hoặc đặt biến môi trường RECONSTRUCTION_PYTHON.</font>");
+        trainProgressBar->hide();
+        btnStopTrain->hide();
+    });
 }
 
 AITrainDockWidget::~AITrainDockWidget() {
@@ -94,9 +103,17 @@ AITrainDockWidget::~AITrainDockWidget() {
 void AITrainDockWidget::startTraining(bool autoConfirm) {
     show();
     if (trainProcess->state() == QProcess::NotRunning) {
-        QString scriptPath = AppConfig::instance().aiComputerVisionDir() + "/TrainModel.py";
+        QString scriptPath = AppConfig::instance().aiComputerVisionDir() + "/" + AppConstants::AIProcessor::trainScript();
         QString modelsPath = AppConfig::instance().modelsDir();
-        bool modelExists = QFile::exists(modelsPath + "/yolo11n.onnx") || QFile::exists(modelsPath + "/yolo11n-seg.onnx") || QFile::exists(modelsPath + "/yolo11n-tracking.onnx");
+        const QStringList modelFiles = {
+            AppConstants::AIProcessor::detectionModelFile(),
+            AppConstants::AIProcessor::segmentationModelFile(),
+            AppConstants::AIProcessor::trackingModelFile(),
+        };
+        bool modelExists = false;
+        for (const QString& file : modelFiles) {
+            modelExists = modelExists || QFile::exists(modelsPath + "/" + file);
+        }
         
         QDialog dialog(m_ctx->mainWindow());
         dialog.setWindowTitle(m_ctx->translate("ai.training"));
@@ -130,6 +147,12 @@ void AITrainDockWidget::startTraining(bool autoConfirm) {
             return;
         }
 
+        if (!chkDet->isChecked() && !chkSeg->isChecked() && !chkTrack->isChecked()) {
+            ModernMessageBox::warning(m_ctx->mainWindow(), m_ctx->translate("ai.training"),
+                                      "Select at least one model to train.");
+            return;
+        }
+
         if (modelExists && !autoConfirm) {
             if (!ModernMessageBox::question(m_ctx->mainWindow(), m_ctx->translate("aiproc.confirm"), m_ctx->translate("aiproc.model_exists_retrain"))) {
                 return;
@@ -138,6 +161,8 @@ void AITrainDockWidget::startTraining(bool autoConfirm) {
     
         trainLogBrowser->clear();
         trainLogBrowser->append("<font color='#10a37f'>--- Bắt đầu tiến trình huấn luyện ---</font>");
+        trainProgressBar->setRange(0, 0);
+        trainProgressBar->setValue(0);
         trainProgressBar->show();
         btnStopTrain->show();
         btnStopTrain->setEnabled(true);
@@ -154,7 +179,11 @@ void AITrainDockWidget::startTraining(bool autoConfirm) {
         if (chkSeg->isChecked()) args << "--seg";
         if (chkTrack->isChecked()) args << "--track";
 
-        trainProcess->start("python", args);
+        // Allow pinning a specific interpreter/venv; fall back to "python" on PATH.
+        QString pythonExe = qEnvironmentVariable("RECONSTRUCTION_PYTHON");
+        if (pythonExe.isEmpty()) pythonExe = QStringLiteral("python");
+
+        trainProcess->start(pythonExe, args);
     }
 }
 
@@ -178,9 +207,25 @@ void AITrainDockWidget::closeTrainDock() {
 }
 
 void AITrainDockWidget::onTrainProcessOutput() {
-    QByteArray out = trainProcess->readAllStandardOutput();
-    QByteArray err = trainProcess->readAllStandardError();
-    if (!out.isEmpty()) trainLogBrowser->append(QString::fromUtf8(out).trimmed());
+    const QByteArray out = trainProcess->readAllStandardOutput();
+    const QByteArray err = trainProcess->readAllStandardError();
+
+    if (!out.isEmpty()) {
+        static const QRegularExpression pctRe(QStringLiteral("pct=(\\d{1,3})"));
+        const QStringList lines = QString::fromUtf8(out).split('\n', Qt::SkipEmptyParts);
+        for (const QString& line : lines) {
+            const int marker = line.indexOf(QStringLiteral("[PROGRESS]"));
+            if (marker >= 0) {
+                const QRegularExpressionMatch match = pctRe.match(line.mid(marker));
+                if (match.hasMatch()) {
+                    const int pct = qBound(0, match.captured(1).toInt(), 100);
+                    if (trainProgressBar->maximum() != 100) trainProgressBar->setRange(0, 100);
+                    trainProgressBar->setValue(pct);
+                }
+            }
+            trainLogBrowser->append(line);
+        }
+    }
     if (!err.isEmpty()) trainLogBrowser->append("<font color='#f59e0b'>" + QString::fromUtf8(err).trimmed() + "</font>");
     
     QScrollBar *sb = trainLogBrowser->verticalScrollBar();

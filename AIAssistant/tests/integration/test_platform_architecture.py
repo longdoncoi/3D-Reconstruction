@@ -56,7 +56,25 @@ class PlatformArchitectureTests(unittest.TestCase):
         )
         service = ToolExecutionService(self.registry)
         self.assertEqual(service.execute("write", {}, self.principal).error_code, "approval_required")
-        self.assertTrue(service.execute("write", {}, self.principal, approval_granted=True).success)
+        # A bare boolean is no longer accepted: only a grant bound to this
+        # exact invocation unlocks the tool, and it is spent on execution.
+        self.assertEqual(
+            service.execute("write", {}, self.principal, approval_token="unissued").error_code,
+            "approval_required",
+        )
+        service.issue_approval_grant("write", {}, "grant-1")
+        self.assertTrue(service.execute("write", {}, self.principal, approval_token="grant-1").success)
+        # single use: the same grant does not work twice
+        self.assertEqual(
+            service.execute("write", {}, self.principal, approval_token="grant-1").error_code,
+            "approval_required",
+        )
+        # and it never covers a different tool or different params
+        service.issue_approval_grant("write", {}, "grant-2")
+        self.assertEqual(
+            service.execute("write", {"other": 1}, self.principal, approval_token="grant-2").error_code,
+            "approval_required",
+        )
 
     def test_task_lifecycle_is_durable_and_cancelable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -88,7 +106,7 @@ class PlatformArchitectureTests(unittest.TestCase):
             )
             app = FastAPI()
             app.include_router(build_a2a_router(service, "test-agent", "1.0.0"))
-            with TestClient(app) as client:
+            with TestClient(app, client=("127.0.0.1", 50000)) as client:
                 card = client.get("/.well-known/agent.json")
                 self.assertEqual(card.status_code, 200)
                 self.assertEqual(card.json()["protocolVersion"], "0.3")
@@ -123,7 +141,7 @@ class PlatformArchitectureTests(unittest.TestCase):
             service = TaskService(SqliteTaskStore(Path(directory) / "tasks.sqlite"), agent.run, frozenset({"supervisor"}))
             app = FastAPI()
             app.include_router(build_a2a_router(service, "test-agent", "1.0.0"))
-            with TestClient(app) as client:
+            with TestClient(app, client=("127.0.0.1", 50000)) as client:
                 response = client.post("/message:send", headers={"A2A-Version": "0.3"}, json={
                     "message": {"role": "ROLE_USER", "messageId": "m1", "parts": [{"text": "change"}]},
                 })

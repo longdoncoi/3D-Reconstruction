@@ -50,13 +50,17 @@ class DeterministicAgentOrchestrator:
                 if resume.get("approved") is not True:
                     steps.append({"type": "tool_result", "tool": pending["tool"], "result": {"rejected": True}, "iteration": iteration})
                     return AgentRunResult("completed", "The requested action was not approved", tuple(steps)).to_dict()
+                # The durable resume carries the user's decision; bind a
+                # single-use grant to the exact invocation before executing it.
+                grant_token = f"a2a:{task.id}:{pending['tool']}"
+                self._tools.issue_approval_grant(pending["tool"], pending["params"], grant_token)
                 payload = self._tools.execute(pending["tool"], pending["params"], principal,
-                                              correlation_id=task.id, approval_granted=True).to_dict()
+                                              correlation_id=task.id, approval_token=grant_token).to_dict()
             else:
-                payload = resume.get("result")
-                if not isinstance(payload, dict):
+                result_payload = resume.get("result")
+                if not isinstance(result_payload, dict):
                     return AgentRunResult("failed", "Desktop acknowledgement result is required", tuple(steps)).to_dict()
-                payload = {"success": bool(resume.get("success", True)), **payload}
+                payload = {"success": bool(resume.get("success", True)), **result_payload}
             steps.append({"type": "tool_result", "tool": pending["tool"], "result": payload, "iteration": iteration})
             messages.extend((
                 {"role": "assistant", "content": pending["raw"]},

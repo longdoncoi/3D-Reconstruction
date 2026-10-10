@@ -6,11 +6,11 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
-from ai_assistant.adapters.persistence.checkpointing import build_checkpointer
 from ai_assistant.observability import langsmith_trace, span
 from ai_assistant.orchestration.specialists.code import is_coding_task
 
@@ -33,6 +33,7 @@ from .nodes import (
 )
 from .state import (
     AgentState,
+    ApprovalCovers,
     Completion,
     Executor,
     NeedsApproval,
@@ -57,12 +58,17 @@ class LocalAgentGraph:
         max_iterations: int,
         emit: Callable[[dict[str, Any]], None] | None = None,
         select_specialist: SelectSpecialist | None = None,
+        approval_covers: ApprovalCovers | None = None,
         verify_result: VerifyResult | None = None,
         reflect_result: ReflectResult | None = None,
         plan_complete: Completion | None = None,
         reflect_complete: Completion | None = None,
         plan_reflect_complete: Completion | None = None,
         cancel_checker: Callable[[], bool] | None = None,
+        # Persistence is an adapter concern: the composition root injects the
+        # checkpointer (see bootstrap). ``None`` runs stateless, which is what
+        # tests and single-shot runs want.
+        checkpointer: Any | None = None,
     ) -> None:
         self._complete = complete
         self._parse = parse
@@ -71,6 +77,7 @@ class LocalAgentGraph:
         self._max_iterations = max_iterations
         self._emit = emit
         self._select_specialist = select_specialist
+        self._approval_covers = approval_covers
         self._verify_result = verify_result
         self._reflect_result = reflect_result
         self._plan_complete = plan_complete or complete
@@ -80,11 +87,14 @@ class LocalAgentGraph:
         self._emitted_steps = 0
 
         builder = StateGraph(AgentState)
-        builder.add_node("plan", self._traced("plan", self._plan))
-        builder.add_node("plan_reflect", self._traced("plan_reflect", self._plan_reflect))
-        builder.add_node("reason", self._traced("reason", self._reason))
-        builder.add_node("tool", self._traced("tool", self._tool))
-        builder.add_node("reflect", self._traced("reflect", self._reflect))
+        # LangGraph's typed overloads reject ReAct nodes returning plain
+        # ``dict[str, Any]`` partials; cast through Any at this single boundary.
+        # Runtime behavior is covered by the agent e2e/integration tests.
+        builder.add_node("plan", cast(Any, self._traced("plan", self._plan)))
+        builder.add_node("plan_reflect", cast(Any, self._traced("plan_reflect", self._plan_reflect)))
+        builder.add_node("reason", cast(Any, self._traced("reason", self._reason)))
+        builder.add_node("tool", cast(Any, self._traced("tool", self._tool)))
+        builder.add_node("reflect", cast(Any, self._traced("reflect", self._reflect)))
 
         builder.add_conditional_edges(
             START,
@@ -117,7 +127,7 @@ class LocalAgentGraph:
             {"reason": "reason", "end": END},
         )
 
-        self._checkpointer = build_checkpointer()
+        self._checkpointer = checkpointer
         self._graph = builder.compile(checkpointer=self._checkpointer)
 
     def _traced(self, name: str, handler: Callable[[AgentState], dict[str, Any]]) -> Callable[[AgentState], dict[str, Any]]:
@@ -175,6 +185,7 @@ class LocalAgentGraph:
         enforce_plan_completion: bool = False,
         approval_granted: bool = False,
         approval_scope: str = "",
+        granted_fingerprint: str = "",
     ) -> AgentState:
         self._emitted_steps = len(steps or [])
         restored_plan = next(
@@ -186,7 +197,7 @@ class LocalAgentGraph:
             None,
         )
 
-        config = {"configurable": {"thread_id": session_id}}
+        config: RunnableConfig = {"configurable": {"thread_id": session_id}}
 
         input_state: dict[str, Any] = {
             "messages": messages,
@@ -199,6 +210,7 @@ class LocalAgentGraph:
             "plan_spec": next((step.get("spec") for step in reversed(steps or []) if step.get("type") == "plan"), None),
             "approval_granted": approval_granted,
             "approval_scope": approval_scope,
+            "granted_fingerprint": granted_fingerprint,
             "cancelled": False,
             "tool_call_count": 0,
             "last_reflection": None,
@@ -216,7 +228,7 @@ class LocalAgentGraph:
 
         if required_ui_actions is not None:
             input_state["required_ui_actions"] = required_ui_actions
-        elif not resume_with_reflection:
+        elif not resume_with_reflection or self._checkpointer is None:
             input_state["required_ui_actions"] = []
         else:
             try:
@@ -231,7 +243,7 @@ class LocalAgentGraph:
                 prior_values = {}
             input_state["required_ui_actions"] = prior_values.get("required_ui_actions", [])
 
-        return self._graph.invoke(input_state, config=config)
+        return cast(AgentState, self._graph.invoke(cast(Any, input_state), config=config))
 
     @staticmethod
     def _initial_node(state: AgentState) -> str:
@@ -261,6 +273,7 @@ class LocalAgentGraph:
             max_iterations=self._max_iterations,
             cancel_checker=self._cancel_checker,
             select_specialist=self._select_specialist,
+            approval_covers=self._approval_covers,
         )
         return reason_node(state, ctx)
 

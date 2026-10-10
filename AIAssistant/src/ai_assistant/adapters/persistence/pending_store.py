@@ -64,6 +64,8 @@ class PendingActionStore:
     def save(self) -> None:
         with self._lock:
             try:
+                if not self._path.name:
+                    return
                 self._path.parent.mkdir(parents=True, exist_ok=True)
                 temp_path = self._path.with_suffix(".tmp")
                 with open(temp_path, "w", encoding="utf-8") as handle:
@@ -76,7 +78,7 @@ class PendingActionStore:
         with self._lock:
             expired = [
                 key for key, value in self._data.items()
-                if value.get("created_at") is not None and value.get("created_at") < cutoff
+                if (created_at := value.get("created_at")) is not None and created_at < cutoff
             ]
             for key in expired:
                 del self._data[key]

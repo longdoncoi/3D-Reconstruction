@@ -15,10 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_assistant.config.paths import get_paths
-
-_CLANGD_BINARY = os.getenv("AGENT_CLANGD_BIN", "clangd")
-_PYLSP_BINARY = os.getenv("AGENT_PYLSP_BIN", "pylsp")
-_LSP_TIMEOUT = int(os.getenv("AGENT_LSP_TIMEOUT", "15"))
+from ai_assistant.settings import lsp_binaries
 
 _CPP_EXTS = {".cpp", ".c", ".h", ".hpp", ".cc", ".cxx"}
 _PY_EXTS = {".py"}
@@ -146,6 +143,7 @@ def _lsp_call(
     char_0based: int,
     method: str,
     extra_params: dict | None = None,
+    timeout: int = 15,
 ) -> dict:
     resolved_bin = shutil.which(server_bin)
     if not resolved_bin:
@@ -216,9 +214,9 @@ def _lsp_call(
         proc.stdin.write(_make_request(method, req_params, req_id=2))  # type: ignore[union-attr]
         proc.stdin.flush()  # type: ignore[union-attr]
 
-        resp = _read_response(proc, timeout=float(_LSP_TIMEOUT))
+        resp = _read_response(proc, timeout=float(timeout))
         if resp is None:
-            return {"error": f"LSP request '{method}' timed out after {_LSP_TIMEOUT}s."}
+            return {"error": f"LSP request '{method}' timed out after {timeout}s."}
 
         if "error" in resp:
             err = resp["error"]
@@ -255,15 +253,17 @@ def tool_go_to_definition(params: dict) -> dict:
     project_dir = _get_project_dir()
     abs_path = os.path.join(project_dir, path) if not os.path.isabs(path) else path
     ext = os.path.splitext(abs_path)[1].lower()
+    clangd_bin, pylsp_bin, lsp_timeout = lsp_binaries()
 
     if ext in _CPP_EXTS:
-        server_bin, server_args = _CLANGD_BINARY, ["--log=error"]
+        server_bin, server_args = clangd_bin, ["--log=error"]
     elif ext in _PY_EXTS:
-        server_bin, server_args = _PYLSP_BINARY, []
+        server_bin, server_args = pylsp_bin, []
     else:
         return {"error": f"Unsupported file extension for LSP: {ext}."}
 
-    response = _lsp_call(server_bin, server_args, abs_path, line, character, "textDocument/definition")
+    response = _lsp_call(server_bin, server_args, abs_path, line, character,
+                         "textDocument/definition", timeout=lsp_timeout)
 
     if response.get("error"):
         return response
@@ -288,15 +288,17 @@ def tool_find_references(params: dict) -> dict:
     project_dir = _get_project_dir()
     abs_path = os.path.join(project_dir, path) if not os.path.isabs(path) else path
     ext = os.path.splitext(abs_path)[1].lower()
+    clangd_bin, pylsp_bin, lsp_timeout = lsp_binaries()
 
     if ext in _CPP_EXTS:
-        server_bin, server_args = _CLANGD_BINARY, ["--log=error"]
+        server_bin, server_args = clangd_bin, ["--log=error"]
     elif ext in _PY_EXTS:
-        server_bin, server_args = _PYLSP_BINARY, []
+        server_bin, server_args = pylsp_bin, []
     else:
         return {"error": f"Unsupported file extension for LSP: {ext}."}
 
-    response = _lsp_call(server_bin, server_args, abs_path, line, character, "textDocument/references")
+    response = _lsp_call(server_bin, server_args, abs_path, line, character,
+                         "textDocument/references", timeout=lsp_timeout)
 
     if response.get("error"):
         return response

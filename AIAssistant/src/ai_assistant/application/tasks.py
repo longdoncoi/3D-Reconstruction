@@ -4,6 +4,7 @@ import threading
 from collections.abc import Mapping
 from time import monotonic
 
+from ..domain.governance import redact_value
 from ..domain.security import DataClassification
 from ..domain.tasks import AgentTask, TaskStatus
 from ..ports import AgentTaskExecutor, TaskStore
@@ -142,11 +143,18 @@ class TaskService:
                 public_result = {key: value for key, value in result.items() if key != "continuation"}
                 waiting = latest.transition(TaskStatus.INPUT_REQUIRED, result=public_result)
                 self._store.save(waiting)
-                self._store.append_event(task_id, "status", {"status": waiting.status, "result": result})
+                # Events are a transport surface (SSE): they get the same
+                # redaction as ``task_payload`` so the HITL continuation — which
+                # carries the action id and the approved tool params — can never
+                # be read back by a caller that only holds the task id.
+                self._store.append_event(
+                    task_id, "status",
+                    {"status": waiting.status, "result": redact_value(result)},
+                )
                 return
             completed = latest.transition(TaskStatus.COMPLETED, result=result)
             self._store.save(completed)
-            self._store.append_event(task_id, "artifact", {"result": result})
+            self._store.append_event(task_id, "artifact", {"result": redact_value(result)})
             self._store.append_event(task_id, "status", {"status": completed.status})
         except Exception as error:  # The task becomes observable failure, not a hidden fallback.
             latest = self._store.get(task_id)

@@ -12,13 +12,13 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 
 if TYPE_CHECKING:
-    from types import ModuleType
+    from ._types import LLMModuleLike, PlatformLike, RAGModuleLike
 
 
 def build_health_router(
-    llm_module: "ModuleType",
-    rag_module: "ModuleType",
-    platform: object,
+    llm_module: "LLMModuleLike",
+    rag_module: "RAGModuleLike",
+    platform: "PlatformLike",
     server_start_time: float,
     embed_model_name: str,
     chars_per_token: int,

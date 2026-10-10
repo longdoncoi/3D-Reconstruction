@@ -13,3 +13,5 @@ langgraph>=1.0.0
 langgraph-checkpoint-sqlite>=2.0.0
 httpx>=0.27.0
 coverage>=7.0
+mypy>=1.10.0
+import-linter>=2.0.0

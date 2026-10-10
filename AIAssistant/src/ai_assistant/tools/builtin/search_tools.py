@@ -8,17 +8,16 @@ from typing import Any
 
 from ai_assistant.config.paths import get_paths
 
-from .file_tools import _AGENT_BLOCKED_DIRS, _agent_safe_path
+from .path_utils import _AGENT_BLOCKED_DIRS, agent_safe_path
+
+_agent_safe_path = agent_safe_path
 
 
 def tool_list_directory(params: dict[str, Any]) -> dict[str, Any]:
     """List directory contents."""
     path = params.get("path", ".")
     project_root = str(get_paths().project_root)
-    if path == ".":
-        abs_path = project_root
-    else:
-        abs_path = _agent_safe_path(path)
+    abs_path: str | None = project_root if path == "." else _agent_safe_path(path)
     if abs_path is None:
         return {"error": f"Đường dẫn không hợp lệ: {path}"}
     if not os.path.isdir(abs_path):
@@ -26,7 +25,7 @@ def tool_list_directory(params: dict[str, Any]) -> dict[str, Any]:
 
     recursive = params.get("recursive", False)
     max_depth = params.get("max_depth", 3)
-    entries = []
+    entries: list[dict[str, Any]] = []
     count = 0
     max_entries = 150
 
@@ -90,7 +89,7 @@ def tool_find_files(params: dict[str, Any]) -> dict[str, Any]:
         return {"error": "File pattern must not be empty."}
     path = params.get("path", ".")
     project_root = str(get_paths().project_root)
-    abs_root = project_root if path == "." else _agent_safe_path(path)
+    abs_root: str | None = project_root if path == "." else _agent_safe_path(path)
     if abs_root is None or not os.path.isdir(abs_root):
         return {"error": f"Invalid or missing directory: {path}"}
     max_results = min(max(int(params.get("max_results", 100)), 1), 500)
@@ -120,10 +119,9 @@ def tool_search_text(params: dict[str, Any]) -> dict[str, Any]:
 
     search_path = params.get("path", ".")
     project_root = str(get_paths().project_root)
-    if search_path == ".":
-        abs_search = project_root
-    else:
-        abs_search = _agent_safe_path(search_path)
+    abs_search: str | None = (
+        project_root if search_path == "." else _agent_safe_path(search_path)
+    )
     if abs_search is None:
         return {"error": f"Đường dẫn không hợp lệ: {search_path}"}
     if not os.path.isdir(abs_search) and not os.path.isfile(abs_search):

@@ -10,14 +10,17 @@ from ai_assistant.tools.validation import validate_tool_call
 
 from .definition import ToolDefinition
 
-_DEFAULT_CONTRACT = {
+#: Single owner of the *policy contract* for built-in tools. The factory, the
+#: registry enrichment and the JSON schema builders all resolve per-tool policy
+#: through :func:`tool_contract_for` — nobody may redefine these values.
+DEFAULT_CONTRACT: dict[str, Any] = {
     "timeout_seconds": 10,
     "policy": "read_only",
     "requires_approval": False,
     "idempotent": True,
 }
 
-_TOOL_CONTRACT_OVERRIDES = {
+TOOL_CONTRACT_OVERRIDES: dict[str, dict[str, Any]] = {
     "application_action": {"timeout_seconds": 30, "policy": "desktop_ack"},
     "write_file": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
     "patch_file": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
@@ -28,20 +31,25 @@ _TOOL_CONTRACT_OVERRIDES = {
 }
 
 
+def tool_contract_for(name: str) -> dict[str, Any]:
+    """Resolve the effective policy contract for a tool name."""
+    return {**DEFAULT_CONTRACT, **TOOL_CONTRACT_OVERRIDES.get(name, {})}
+
+
 def _to_tool_specs(tool_definitions: list[dict[str, Any]]) -> list[ToolDefinition]:
     specs = []
     for source in tool_definitions:
         name = source["name"]
-        overrides = _TOOL_CONTRACT_OVERRIDES.get(name, {})
+        contract = tool_contract_for(name)
         specs.append(
             ToolDefinition(
                 name=name,
                 description=source.get("description", ""),
                 parameters=source.get("parameters", {}),
-                timeout_seconds=overrides.get("timeout_seconds", _DEFAULT_CONTRACT["timeout_seconds"]),
-                policy=overrides.get("policy", _DEFAULT_CONTRACT["policy"]),
-                requires_approval=overrides.get("requires_approval", _DEFAULT_CONTRACT["requires_approval"]),
-                idempotent=overrides.get("idempotent", _DEFAULT_CONTRACT["idempotent"]),
+                timeout_seconds=contract["timeout_seconds"],
+                policy=contract["policy"],
+                requires_approval=contract["requires_approval"],
+                idempotent=contract["idempotent"],
             )
         )
     return specs
@@ -56,7 +64,7 @@ def enrich_tool_definitions(tool_definitions: list[dict[str, Any]]) -> list[dict
     specs = _to_tool_specs(tool_definitions)
     enriched = []
     for spec in specs:
-        tool_dict = {
+        tool_dict: dict[str, Any] = {
             "name": spec.name,
             "description": spec.description,
             "parameters": spec.parameters,
@@ -88,10 +96,13 @@ def grammar_schema(tool_definitions: list[dict[str, Any]]) -> str:
 
 
 __all__ = [
+    "DEFAULT_CONTRACT",
+    "TOOL_CONTRACT_OVERRIDES",
     "build_tool_models",
     "enrich_tool_definitions",
     "grammar_schema",
     "json_schema",
     "openai_tools",
+    "tool_contract_for",
     "validate_tool_call",
 ]

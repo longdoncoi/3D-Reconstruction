@@ -6,13 +6,15 @@ endpoint — RAG retrieval, vision, context limit check, and streaming inference
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
+from .security import TransportPolicy, chat_guards
+
 if TYPE_CHECKING:
-    from types import ModuleType
+    from ._types import ChatbotAgentLike, LLMModuleLike, LoggerLike, RAGModuleLike
 
 
 class ChatMessage(BaseModel):
@@ -40,11 +42,12 @@ class ChatRequest(BaseModel):
 
 
 def build_chat_router(
-    llm_module: "ModuleType",
-    rag_module: "ModuleType",
-    get_chatbot_agent: Callable,
+    llm_module: "LLMModuleLike",
+    rag_module: "RAGModuleLike",
+    get_chatbot_agent: Callable[[], "ChatbotAgentLike"],
     llm_n_ctx: int,
-    logger: object,
+    logger: "LoggerLike",
+    policy: TransportPolicy | None = None,
 ) -> APIRouter:
     """Create the /v1/chat/completions APIRouter.
 
@@ -57,8 +60,10 @@ def build_chat_router(
                        to propagate without re-registering the router.
     llm_n_ctx:         Context window size from config.
     logger:            Application logger.
+    policy:            Transport trust policy (ADR 0008) — loopback peer,
+                       allowed origin and optional ``AI_AGENT_TOKEN`` bearer.
     """
-    router = APIRouter(tags=["chat"])
+    router = APIRouter(tags=["chat"], dependencies=chat_guards(policy))
 
     @router.post("/v1/chat/completions")
     def chat_completions(request: ChatRequest, http_req: Request):  # noqa: ANN201
@@ -68,25 +73,37 @@ def build_chat_router(
         req_start = time.monotonic()
         user_query = request.messages[-1].content
         attachments = request.messages[-1].attachments or []
-        query_image_b64 = None
+        query_image_b64: str | None = None
+
+        # image_utils ships with the full runtime; fall back to the rag_module
+        # helpers when the RAG extras are not installed (offline CI).
+        def fallback_is_image(_path: str) -> bool:
+            return False
+
+        def fallback_to_data_uri(_path: str) -> str:
+            return ""
 
         try:
             from ai_assistant.rag.image_utils import image_to_data_uri, is_image_file
+
+            image_check: Callable[[str], bool] = is_image_file
+            data_uri_fn: Callable[[str], str] = image_to_data_uri
         except ImportError:
-            is_image_file = getattr(rag_module, "_is_image_file", lambda _: False)
-            image_to_data_uri = getattr(rag_module, "_image_to_data_uri", lambda _: "")
+            image_check = getattr(rag_module, "_is_image_file", fallback_is_image)
+            data_uri_fn = getattr(rag_module, "_image_to_data_uri", fallback_to_data_uri)
 
         for attachment in attachments:
-            if is_image_file(attachment):
+            if image_check(attachment):
                 try:
-                    query_image_b64 = image_to_data_uri(attachment)
+                    query_image_b64 = data_uri_fn(attachment)
                     break
                 except Exception as error:
                     logger.warning("Failed to read attachment for retrieval: %s", error)
 
+        client_host = http_req.client.host if http_req.client else "unknown"
         logger.info(
             "[MODE: CHAT] Query from %s: %s…",
-            http_req.client.host,
+            client_host,
             user_query[:60].replace("\n", " "),
         )
         from ai_assistant.orchestration.supervisor import Specialist
@@ -112,15 +129,14 @@ def build_chat_router(
         rag_ms = (time.monotonic() - rag_start) * 1000
 
         if llm_module.is_vision_model:
-            estimated_tokens = sum(
-                llm_module.estimate_tokens(part.get("text", ""))
-                for message in messages
-                for part in (
-                    message.get("content")
-                    if isinstance(message.get("content"), list)
-                    else [{"text": message.get("content", "")}]
+            estimated_tokens = 0
+            for message in messages:
+                content = message.get("content")
+                parts: list[dict[str, Any]] = (
+                    content if isinstance(content, list) else [{"text": content or ""}]
                 )
-            )
+                for part in parts:
+                    estimated_tokens += llm_module.estimate_tokens(part.get("text", ""))
         else:
             estimated_tokens = sum(
                 llm_module.estimate_tokens(message.get("content", ""))

@@ -67,9 +67,9 @@ void AIProcessorPlugin::initialize(IAppContext *context) {
 void AIProcessorPlugin::loadModelsInBackground() {
   if (!m_aiSvc) return;
   QString modelsPath = AppConfig::instance().modelsDir();
-  QString detPath = modelsPath + "/yolo11n.onnx";
-  QString segPath = modelsPath + "/yolo11n-seg.onnx";
-  QString trackPath = modelsPath + "/yolo11x-tracking.onnx";
+  QString detPath = modelsPath + "/" + AppConstants::AIProcessor::detectionModelFile();
+  QString segPath = modelsPath + "/" + AppConstants::AIProcessor::segmentationModelFile();
+  QString trackPath = modelsPath + "/" + AppConstants::AIProcessor::trackingModelFile();
   bool detExists = QFile::exists(detPath);
   bool segExists = QFile::exists(segPath);
   bool trackExists = QFile::exists(trackPath);

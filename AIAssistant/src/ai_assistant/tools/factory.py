@@ -29,6 +29,7 @@ from .builtin import (
 )
 from .definition import ToolDefinition
 from .registry import ToolRegistry
+from .tool_contract import tool_contract_for
 
 
 def builtin_handlers() -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
@@ -60,18 +61,6 @@ def builtin_handlers() -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
     }
 
 
-def _default_tool_contract_overrides() -> dict[str, dict[str, Any]]:
-    return {
-        "application_action": {"timeout_seconds": 30, "policy": "desktop_ack"},
-        "write_file": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
-        "patch_file": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
-        "replace_file_content": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
-        "multi_replace_file_content": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
-        "create_directory": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
-        "run_command": {"timeout_seconds": 120, "policy": "code_execute", "requires_approval": True},
-    }
-
-
 def create_tool_registry() -> ToolRegistry:
     """Create and populate the global ToolRegistry from configuration."""
     registry = ToolRegistry()
@@ -86,20 +75,19 @@ def create_tool_registry() -> ToolRegistry:
         tools_def = json.load(f)
 
     handlers = builtin_handlers()
-    overrides = _default_tool_contract_overrides()
 
     for item in tools_def:
         name = item["name"]
-        override = overrides.get(name, {})
+        contract = tool_contract_for(name)
         
         spec = ToolDefinition(
             name=name,
             description=item.get("description", ""),
             parameters=item.get("parameters", {}),
-            timeout_seconds=override.get("timeout_seconds", 10),
-            policy=override.get("policy", "read_only"),
-            requires_approval=override.get("requires_approval", False),
-            idempotent=override.get("idempotent", True),
+            timeout_seconds=contract["timeout_seconds"],
+            policy=contract["policy"],
+            requires_approval=contract["requires_approval"],
+            idempotent=contract["idempotent"],
             handler=handlers.get(name),
         )
         registry.register(spec)
@@ -107,6 +95,7 @@ def create_tool_registry() -> ToolRegistry:
     # Note: `application_action` might not be in the file depending on the generation logic,
     # as it was appended dynamically. Let's make sure it's there.
     if registry.get("application_action") is None:
+        contract = tool_contract_for("application_action")
         registry.register(ToolDefinition(
             name="application_action",
             description="Execute exactly ONE canonical desktop action. Choose the id whose meaning matches the CURRENT plan step.",
@@ -116,8 +105,8 @@ def create_tool_registry() -> ToolRegistry:
                 "username": {"type": "string", "description": "Optional login username", "required": False},
                 "password": {"type": "string", "description": "Optional login password", "required": False},
             },
-            timeout_seconds=30,
-            policy="desktop_ack",
+            timeout_seconds=contract["timeout_seconds"],
+            policy=contract["policy"],
             handler=handlers.get("application_action")
         ))
         

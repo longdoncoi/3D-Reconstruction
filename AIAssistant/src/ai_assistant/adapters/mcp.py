@@ -5,6 +5,8 @@ import json
 from contextlib import asynccontextmanager
 from typing import Any
 
+from ..ports import ToolGateway
+
 try:
     from mcp.server.fastmcp import FastMCP
 except ImportError:
@@ -15,13 +17,25 @@ except ImportError:
 
 MCP_AVAILABLE = FastMCP is not None
 
+_tool_gateway: ToolGateway | None = None
+
+
+def configure_tool_gateway(gateway: ToolGateway) -> None:
+    """Inject the shared tool gateway into the MCP adapter (composition root)."""
+    global _tool_gateway
+    _tool_gateway = gateway
+
 
 def _dispatch(tool_name: str, parameters: dict[str, Any]) -> str:
     """Adapt an MCP call to the platform's single policy-enforced tool path."""
-    from ai_assistant.bootstrap.runtime import execute_tool
-
     parameters = {name: value for name, value in parameters.items() if value is not None}
-    return json.dumps(execute_tool(tool_name, parameters), ensure_ascii=False)
+    if _tool_gateway is None:
+        return json.dumps(
+            {"success": False, "error_code": "runtime_unconfigured",
+             "error": "AI Agent Platform is not bootstrapped"},
+            ensure_ascii=False,
+        )
+    return json.dumps(_tool_gateway.execute(tool_name, parameters), ensure_ascii=False)
 
 
 mcp = None
@@ -130,32 +144,33 @@ async def lifespan():
         yield
 
 
-def register_plugin_tools(server: Any = None) -> int:
-    """Dynamically bind tools from PluginRegistry into MCP."""
+def register_plugin_tools(server: Any = None, plugins: Any = None) -> int:
+    """Dynamically bind tools from an injected PluginRegistry into MCP.
+
+    ``plugins`` is supplied by the composition root (``platform.plugins``);
+    without it this is a no-op rather than reaching for a global container.
+    """
     target_server = server or mcp
-    if target_server is None:
+    if target_server is None or plugins is None:
         return 0
     registered = 0
     try:
-        from ai_assistant.bootstrap.runtime import platform
+        for spec in plugins.specs():
+            tool_name = spec.name
+            if hasattr(target_server, "get_tool") and target_server.get_tool(tool_name):
+                continue
 
-        if hasattr(platform, "plugins") and platform.plugins:
-            for spec in platform.plugins.specs():
-                tool_name = spec.name
-                if hasattr(target_server, "get_tool") and target_server.get_tool(tool_name):
-                    continue
+            def _make_tool(name: str, desc: str):
+                def _tool(**kwargs: Any) -> str:
+                    return _dispatch(name, kwargs)
 
-                def _make_tool(name: str, desc: str):
-                    def _tool(**kwargs: Any) -> str:
-                        return _dispatch(name, kwargs)
+                _tool.__name__ = name
+                _tool.__doc__ = desc
+                return _tool
 
-                    _tool.__name__ = name
-                    _tool.__doc__ = desc
-                    return _tool
-
-                if hasattr(target_server, "tool"):
-                    target_server.tool()(_make_tool(tool_name, spec.description or f"Dynamic tool {tool_name}"))
-                    registered += 1
+            if hasattr(target_server, "tool"):
+                target_server.tool()(_make_tool(tool_name, spec.description or f"Dynamic tool {tool_name}"))
+                registered += 1
     except Exception:
         pass
     return registered
@@ -164,6 +179,7 @@ def register_plugin_tools(server: Any = None) -> int:
 __all__ = [
     "MCP_AVAILABLE",
     "asgi_app",
+    "configure_tool_gateway",
     "lifespan",
     "mcp",
     "register_plugin_tools",

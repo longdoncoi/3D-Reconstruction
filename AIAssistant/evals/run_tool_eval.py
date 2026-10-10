@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from modules.tool_contract import build_tool_models, validate_tool_call
+from ai_assistant.tools.tool_contract import build_tool_models, validate_tool_call
 
 TOOLS = [
     {"name": "application_action", "parameters": {"action": {"type": "string", "required": True},

@@ -6,9 +6,9 @@ HTTP adapters, modules, and services. Business logic lives in sub-modules:
   - /admin/*            → src/ai_assistant/adapters/http/admin_routes.py
   - /v1/chat/*          → src/ai_assistant/adapters/http/chat_routes.py
   - /health, /metrics   → src/ai_assistant/adapters/http/health_routes.py
-  - /v1/agent/*         → modules/agent_module.py (agent_router, pending migration)
+  - /v1/agent/*         → src/ai_assistant/adapters/http/agent_routes.py (injected AgentService)
   - /a2a/*              → src/ai_assistant/adapters/a2a.py
-  - /mcp                → modules/mcp_server.py
+  - /mcp                → ai_assistant/adapters/legacy/mcp_server (legacy adapter)
 """
 
 import os
@@ -45,13 +45,14 @@ from ai_assistant.adapters.http import (
     build_chat_router,
     build_health_router,
 )
+from ai_assistant.adapters.http.security import TransportPolicy
 from ai_assistant.adapters.orchestration import LangGraphAgentOrchestrator
+from ai_assistant.agents.service import AGENT_TOOLS, AgentService, platform_executors
 from ai_assistant.application.agent_runs import AgentRunService
 from ai_assistant.bootstrap import PlatformContainer, build_container, create_app
 from ai_assistant.domain.tasks import AgentTask
-from ai_assistant.orchestration.specialists import ChatbotAgent
-from modules import action_manifest, agent_module, llm_module, mcp_server, rag_module
-from modules.config import (
+from ai_assistant.legacy import llm_module, mcp_server, rag_module
+from ai_assistant.legacy.config import (
     _SERVER_START_TIME,
     BASE_DIR,
     CHARS_PER_TOKEN,
@@ -63,6 +64,8 @@ from modules.config import (
     _safe_relpath,
     logger,
 )
+from ai_assistant.orchestration.specialists import ChatbotAgent
+from ai_assistant.tools import action_manifest
 
 # ── Global mutable chatbot agent (recreated on model/RAG reload) ─────────────
 # Wrapped in a getter so the HTTP router captures the getter reference, not the
@@ -91,17 +94,21 @@ def _execute_a2a_task(task: AgentTask) -> dict:
 
 platform: PlatformContainer = build_container(
     BASE_DIR,
-    agent_module.AGENT_TOOLS,
-    agent_module.platform_executors(),
+    AGENT_TOOLS,
+    platform_executors(),
     _execute_a2a_task,
 )
+
+# The composition root owns the single agent service. Its shared tool gateway
+# is injected from the DI container, so no module-level service locator remains.
+agent_service = AgentService(tool_gateway=platform.gateway, llm_runtime=llm_module)
 
 _agent_run_service = AgentRunService(
     capability_scopes=platform.settings.capability_scopes,
     orchestrator=LangGraphAgentOrchestrator(
-        execute=agent_module.agent_execute,
-        approve=agent_module.agent_approve,
-        ui_action_result=agent_module.agent_ui_action_result,
+        execute=agent_service.execute,
+        approve=agent_service.approve,
+        ui_action_result=agent_service.ui_action_result,
     ),
 )
 
@@ -133,11 +140,17 @@ async def lifespan(_: FastAPI):
 # ── FastAPI Application ───────────────────────────────────────────────────────
 app = create_app(platform.settings, lifespan)
 
+# Transport trust policy (ADR 0008): one parsed object shared by every adapter
+# so loopback/origin/token enforcement cannot drift between surfaces.
+transport_policy = TransportPolicy.from_env(
+    allowed_origins=platform.settings.allowed_origins,
+    allow_remote_a2a=platform.settings.allow_remote_a2a,
+)
+
 
 def _refresh_agent_routes() -> None:
     """Reset agent state and schema cache on reload without modifying route table."""
-    if hasattr(agent_module, "reset_agent_state"):
-        agent_module.reset_agent_state()
+    agent_service.reset_state()
     app.openapi_schema = None
 
 
@@ -161,6 +174,7 @@ app.include_router(build_chat_router(
     get_chatbot_agent=_get_chatbot_agent,
     llm_n_ctx=LLM_N_CTX,
     logger=logger,
+    policy=transport_policy,
 ))
 
 # Admin routes
@@ -168,23 +182,26 @@ app.include_router(build_admin_router(
     llm_module=llm_module,
     rag_module=rag_module,
     action_manifest_module=action_manifest,
-    agent_module=agent_module,
+    reset_agent_state_fn=agent_service.reset_state,
     models=MODELS,
     model_idx=MODEL_IDX,
     refresh_agent_routes_fn=_refresh_agent_routes,
     rebuild_chatbot_agent_fn=_rebuild_chatbot_agent,
     logger=logger,
+    policy=transport_policy,
 ))
 
 # Agent endpoints
-app.include_router(build_agent_router())
+app.include_router(build_agent_router(agent_service, policy=transport_policy))
 
 # Optional protocol adapters
 if platform.settings.enable_a2a:
     app.include_router(build_a2a_router(
         platform.tasks, "3D-Reconstruction AI Assistant", "3.0.0",
+        policy=transport_policy,
     ))
 if platform.settings.enable_mcp and mcp_server.MCP_AVAILABLE:
+    mcp_server.configure_tool_gateway(platform.gateway)
     app.mount("/mcp", mcp_server.asgi_app())
 
 

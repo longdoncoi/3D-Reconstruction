@@ -10,24 +10,34 @@ import importlib
 import os
 import threading
 import time
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, cast
 
 from fastapi import APIRouter, HTTPException
+
+from .security import TransportPolicy, admin_guards
 
 if TYPE_CHECKING:
     from types import ModuleType
 
+    from ._types import (
+        ActionManifestLike,
+        LLMModuleLike,
+        LoggerLike,
+        RAGModuleLike,
+    )
+
 
 def build_admin_router(
-    llm_module: "ModuleType",
-    rag_module: "ModuleType",
-    action_manifest_module: "ModuleType",
-    agent_module: "ModuleType",
+    llm_module: "LLMModuleLike",
+    rag_module: "RAGModuleLike",
+    action_manifest_module: "ActionManifestLike",
+    reset_agent_state_fn: Callable[[], None],
     models: list,
     model_idx: int,
     refresh_agent_routes_fn: Callable[[], None],
     rebuild_chatbot_agent_fn: Callable[[], None],
-    logger: object,
+    logger: "LoggerLike",
+    policy: TransportPolicy | None = None,
 ) -> APIRouter:
     """Create the /admin/* APIRouter with all injected dependencies.
 
@@ -36,14 +46,20 @@ def build_admin_router(
     llm_module:             The live llm_module reference (module-level globals used).
     rag_module:             The live rag_module reference.
     action_manifest_module: Reference to action_manifest module for reload.
-    agent_module:           Reference to agent_module for reset/reload.
+    reset_agent_state_fn:   Callback that clears the injected agent service state.
     models:                 MODELS list from config.
     model_idx:              Current MODEL_IDX from config.
     refresh_agent_routes_fn: Callback to re-attach agent router after reload.
     rebuild_chatbot_agent_fn: Callback to recreate ChatbotAgent after module reload.
     logger:                 Application logger.
     """
-    router = APIRouter(prefix="/admin", tags=["admin"])
+    router = APIRouter(
+        prefix="/admin",
+        tags=["admin"],
+        # Destructive management surface: loopback peer, allow-listed origin and
+        # (when deployed with AI_ADMIN_TOKEN) a bearer token — see ADR 0008.
+        dependencies=admin_guards(policy),
+    )
 
     @router.post("/release-vram")
     def release_vram():  # noqa: ANN201
@@ -71,7 +87,7 @@ def build_admin_router(
                 del old_llm
                 gc.collect()
                 rag_module._release_ml_memory()
-            importlib.reload(llm_module)
+            importlib.reload(cast("ModuleType", llm_module))
             rebuild_chatbot_agent_fn()
             llm_module.load_model()
             if llm_module.is_vision_model:
@@ -103,7 +119,7 @@ def build_admin_router(
                 rag_module._reranker = None
             gc.collect()
             rag_module._release_ml_memory()
-            importlib.reload(rag_module)
+            importlib.reload(cast("ModuleType", rag_module))
             rebuild_chatbot_agent_fn()
             chunks = rag_module.initialize_rag(
                 force_rebuild=True,
@@ -124,12 +140,11 @@ def build_admin_router(
     @router.post("/reload-agent")
     def reload_agent():  # noqa: ANN201
         try:
-            agent_module.reset_agent_state()
+            reset_agent_state_fn()
             import LangGraphAgent
             importlib.reload(LangGraphAgent)
-            importlib.reload(agent_module)
             refresh_agent_routes_fn()
-            agent_module.reset_agent_state()
+            reset_agent_state_fn()
             action_manifest_module.reload_manifest()
             logger.info("Agent code and state reloaded successfully")
             return {"status": "ok", "message": "Agent code and state reloaded successfully"}
