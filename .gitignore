@@ -144,3 +144,6 @@ chkpt_run.log
 /AIAssistant/chkpt_run.log
 opencode.db
 /opencode.db
+
+# Local OpenAI Codex CLI agent config (kept out of the repository).
+/.codex/
