@@ -89,6 +89,18 @@ class ProgressReporterTests(unittest.TestCase):
         self.assertEqual(reporter.last_percent, held)
         self.assertIn(f"pct={held} stage=error", captured.output[-1])
 
+    def test_a_skipped_model_occupies_the_slot_a_finished_export_would(self) -> None:
+        # The bar must stay monotonic when models are skipped, so the marker
+        # lands exactly where ``exported`` would have landed.
+        reporter = ProgressReporter(("det", "seg"))
+        with self.assertLogs("cvtrain.progress", level="INFO") as captured:
+            reporter.preflight(1.0)
+            reporter.skipped(0, "det")
+
+        self.assertIn("stage=skip", captured.output[-1])
+        self.assertIn("key=det", captured.output[-1])
+        self.assertEqual(reporter.last_percent, compute_percent(0, 2, "export", 1.0))
+
 
 if __name__ == "__main__":
     unittest.main()

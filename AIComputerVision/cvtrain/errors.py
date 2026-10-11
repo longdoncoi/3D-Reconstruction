@@ -49,4 +49,12 @@ class CvTrainError(Exception):
 
 
 class BackendUnavailableError(CvTrainError):
-    """The ML backend could not be imported (missing or broken install)."""
+    """The ML backend could not be imported (missing or broken install).
+
+    An environment problem is a preflight-class failure, so this is exit code
+    ``2`` like every other check that could have caught it earlier: preflight
+    normally *does* catch it, and a broken install that slipped past
+    ``find_spec`` must not report a different code for the same underlying cause.
+    """
+
+    exit_code: ExitCode = ExitCode.PREFLIGHT

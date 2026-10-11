@@ -135,6 +135,11 @@ class TrainConfig:
     dry_run: bool = False
     check_only: bool = False
     verbose: bool = False
+    skip_unchanged: bool = False
+    """Skip models whose published ONNX already satisfies this exact invocation.
+
+    Makes a run idempotent: re-running the same command trains nothing. See
+    :func:`cvtrain.trainer._already_current` for what "satisfies" means."""
 
     def output_path(self, spec: ModelSpec) -> Path:
         """Where ``spec``'s exported ONNX is published for this invocation."""

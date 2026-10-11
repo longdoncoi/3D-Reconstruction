@@ -82,6 +82,9 @@ python AIComputerVision/TrainModel.py --track --yes
 python AIComputerVision/TrainModel.py --check
 python AIComputerVision/TrainModel.py --dry-run
 
+# Idempotent re-run: train only the models whose ONNX no longer matches
+python AIComputerVision/TrainModel.py --skip-unchanged --yes
+
 # Override hyper-parameters
 python AIComputerVision/TrainModel.py --det --epochs 50 --batch 8 --imgsz 640 --seed 42
 
@@ -89,6 +92,11 @@ python AIComputerVision/TrainModel.py --det --epochs 50 --batch 8 --imgsz 640 --
 python AIComputerVision/TrainModel.py --write-manifest
 python AIComputerVision/TrainModel.py --verify-manifest
 ```
+
+`--skip-unchanged` is about *whether to train*, not about permission to
+overwrite: an interactive run still asks before touching a model that exists but
+no longer matches (the desktop app passes `--yes` and never prompts). See
+[Manifest](#manifest) for the exact rule a model has to satisfy to be skipped.
 
 Exit codes are declared once in `cvtrain/errors.py` (`ExitCode`) and never
 written as bare integers elsewhere: `0` success, `1` unexpected failure, `2`
@@ -119,13 +127,17 @@ progress bar:
 ```
 [PROGRESS] pct=42 stage=train key=seg epoch=3/5
 [PROGRESS] pct=96 stage=export key=seg
+[PROGRESS] pct=96 stage=skip key=track
 [PROGRESS] pct=100 stage=manifest
 [PROGRESS] pct=100 stage=done
 ```
 
 Every run ends in a terminal marker — `stage=done` on success, or
 `stage=error` (holding the last published percentage) on failure — so the bar
-never stalls waiting for a line that will not arrive. The Qt side
+never stalls waiting for a line that will not arrive. A model skipped by
+`--skip-unchanged` publishes `stage=skip` at the percentage a completed export
+would occupy, so a run where every model is skipped still climbs monotonically
+to the manifest band. The Qt side
 (`AITrainDockWidget::onTrainProcessOutput`) only parses `pct=`; the other
 fields are informational.
 
@@ -136,6 +148,29 @@ size, dataset, hyper-parameters and (best-effort) metrics. `--verify-manifest`
 recomputes the digests, which makes truncation or accidental replacement
 detectable. Verification is bidirectional: an entry whose file went missing is
 reported, and so is an ONNX file sitting in `Models/` without an entry.
+
+A training run re-verifies the manifest it just wrote and exits `2` when that
+check fails — the same code `--verify-manifest` returns — so an artifact the
+pipeline cannot vouch for is never reported as a clean run.
+
+The document carries a `schema_version`. On load, an older document (schema
+`0`: written before the field existed) is migrated forward through
+`cvtrain/manifest.py::_MIGRATIONS`; a document written by a **newer** `cvtrain`
+is read as-is and explicitly *not* down-stamped, so an older build cannot erase
+the version a future reader needs for its own migration.
+
+Publishing an export replaces the previous ONNX in place and keeps one
+generation of it at `<name>.onnx.bak`. That file is a recovery artifact only:
+it has no manifest entry, `--verify-manifest` ignores it, and the Qt app never
+loads it. `--skip-unchanged` also refuses to trust it — a model is skipped only
+when the published file's digest *and* the recorded dataset/hyper-parameters
+match this invocation exactly, so an artifact adopted by `--write-manifest`
+(which records no provenance) is retrained.
+
+The pipeline assumes a single training process at a time (the desktop app runs
+one). Every write is atomic, so a concurrent run cannot leave a torn file, but
+two runs sharing `Models/` would race on `manifest.json` and the last writer
+wins.
 
 ## Tests
 

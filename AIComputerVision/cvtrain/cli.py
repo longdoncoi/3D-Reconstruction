@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR, help="training log directory")
     parser.add_argument("--tensorboard", action="store_true", help="enable TensorBoard logging")
     parser.add_argument("--dry-run", action="store_true", help="validate and print the plan without training")
+    parser.add_argument(
+        "--skip-unchanged",
+        action="store_true",
+        help="skip models whose ONNX already matches this invocation (idempotent re-run)",
+    )
     parser.add_argument("--check", dest="check_only", action="store_true", help="run preflight only and exit")
     parser.add_argument(
         "--write-manifest",
@@ -104,6 +109,7 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         dry_run=args.dry_run,
         check_only=args.check_only,
         verbose=args.verbose,
+        skip_unchanged=args.skip_unchanged,
     )
 
 

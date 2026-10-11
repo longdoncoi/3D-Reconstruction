@@ -66,6 +66,25 @@ class DataYamlTests(unittest.TestCase):
             self.assertFalse(check.ok)
             self.assertIn("names", check.detail)
 
+    def test_val_is_required_when_train_is_present(self) -> None:
+        # README promises both splits are checked. Without this, a dataset that
+        # has no validation split passes preflight and then either fails deep
+        # inside the framework or trains without ever validating.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "images" / "train").mkdir(parents=True)
+            path = _write(Path(tmp) / "data.yaml", "train: images/train\nnames:\n  0: part\n")
+            check = check_data_yaml(path)
+            self.assertFalse(check.ok)
+            self.assertIn("missing required key(s): val", check.detail)
+
+    def test_train_is_required_when_val_is_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "images" / "val").mkdir(parents=True)
+            path = _write(Path(tmp) / "data.yaml", "val: images/val\nnames:\n  0: part\n")
+            check = check_data_yaml(path)
+            self.assertFalse(check.ok)
+            self.assertIn("missing required key(s): train", check.detail)
+
     def test_valid_dataset_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = _make_dataset(tmp)

@@ -162,9 +162,11 @@ def check_data_yaml(path: Path) -> Check:
 
     if not isinstance(parsed, dict):
         return Check("dataset", False, "top level of data.yaml must be a mapping")
-    missing = [key for key in ("names",) if key not in parsed]
-    if "train" not in parsed and "val" not in parsed:
-        missing.append("train or val")
+    # Both splits are required, exactly as README ("Setup") documents: a dataset
+    # without ``val`` would pass preflight and then fail (or train without ever
+    # validating) deep inside the framework, which is what this check exists to
+    # prevent.
+    missing = [key for key in ("train", "val", "names") if key not in parsed]
     if missing:
         return Check("dataset", False, f"missing required key(s): {', '.join(missing)} in {path}")
     missing_paths = _missing_dataset_paths(parsed, path.parent)

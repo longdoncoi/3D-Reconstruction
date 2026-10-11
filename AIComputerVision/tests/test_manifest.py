@@ -100,6 +100,20 @@ class ManifestRoundTripTests(unittest.TestCase):
             }
             self.assertEqual(manifest_mod.verify_manifest(models_dir, manifest), [])
 
+    def test_verify_ignores_the_rollback_backup(self) -> None:
+        # ``yolo11n.onnx.bak`` is a recovery artifact, not a model: it has no
+        # manifest entry by design and must not be reported as untracked.
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp)
+            good = models_dir / "yolo11n.onnx"
+            good.write_bytes(b"model-bytes")
+            (models_dir / "yolo11n.onnx.bak").write_bytes(b"older-bytes")
+            manifest: manifest_mod.Manifest = {
+                "schema_version": 1,
+                "entries": {"yolo11n.onnx": {"sha256": manifest_mod.sha256_file(good)}},
+            }
+            self.assertEqual(manifest_mod.verify_manifest(models_dir, manifest), [])
+
     def test_build_from_scan_records_only_present_models(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             models_dir = Path(tmp)
@@ -214,6 +228,58 @@ class SchemaRobustnessTests(unittest.TestCase):
                 manifest_mod.verify_manifest(Path(tmp), manifest),
                 ["ghost.onnx: missing on disk"],
             )
+
+
+class SchemaMigrationTests(unittest.TestCase):
+    """``schema_version`` is a contract: read it, upgrade it, never down-stamp."""
+
+    def _load(self, payload: str) -> manifest_mod.Manifest:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / MANIFEST_NAME
+            path.write_text(payload, encoding="utf-8")
+            return manifest_mod.load_manifest(Path(tmp))
+
+    def test_unversioned_document_is_upgraded_to_the_current_schema(self) -> None:
+        # Schema 0: written before the field existed. Entries must survive the
+        # upgrade untouched — only the header is rewritten.
+        manifest = self._load('{"entries": {"yolo11n.onnx": {"sha256": "abc"}}}')
+        self.assertEqual(manifest["schema_version"], manifest_mod.SCHEMA_VERSION)
+        self.assertIn("cvtrain", manifest["generator"])
+        self.assertEqual(manifest["entries"]["yolo11n.onnx"]["sha256"], "abc")
+
+    def test_a_current_document_keeps_its_own_header(self) -> None:
+        manifest = self._load('{"schema_version": 1, "generator": "cvtrain 0.9.0", "entries": {}}')
+        self.assertEqual(manifest["schema_version"], 1)
+        self.assertEqual(manifest["generator"], "cvtrain 0.9.0")
+
+    def test_a_document_from_a_newer_build_is_read_as_is(self) -> None:
+        # Down-stamping would erase the signal a future reader needs in order to
+        # run its own migration, so the version is reported and left alone.
+        with self.assertLogs("cvtrain.manifest", level="WARNING") as captured:
+            manifest = self._load('{"schema_version": 99, "entries": {}}')
+        self.assertEqual(manifest["schema_version"], 99)
+        self.assertTrue(any("not down-stamping" in line for line in captured.output), captured.output)
+
+    def test_a_non_numeric_version_is_treated_as_unversioned(self) -> None:
+        manifest = self._load('{"schema_version": "1", "entries": {}}')
+        self.assertEqual(manifest["schema_version"], manifest_mod.SCHEMA_VERSION)
+
+    def test_a_negative_version_is_treated_as_unversioned(self) -> None:
+        # A corrupt header must not make the migration chain index a negative key.
+        manifest = self._load('{"schema_version": -3, "entries": {}}')
+        self.assertEqual(manifest["schema_version"], manifest_mod.SCHEMA_VERSION)
+
+    def test_a_disk_scan_does_not_down_stamp_a_newer_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp)
+            (models_dir / MODEL_SPECS["det"].output).write_bytes(b"det")
+            (models_dir / MANIFEST_NAME).write_text('{"schema_version": 99, "entries": {}}', encoding="utf-8")
+
+            with self.assertLogs("cvtrain.manifest", level="WARNING"):
+                manifest = manifest_mod.build_from_scan(models_dir)
+
+            self.assertEqual(manifest["schema_version"], 99)
+            self.assertIn(MODEL_SPECS["det"].output, manifest["entries"])
 
 
 if __name__ == "__main__":

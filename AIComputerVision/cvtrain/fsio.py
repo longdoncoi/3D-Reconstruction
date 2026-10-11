@@ -15,10 +15,13 @@ import shutil
 import tempfile
 from pathlib import Path
 
-__all__ = ["CHUNK_SIZE", "atomic_copy", "atomic_write_text", "sha256_file"]
+__all__ = ["BACKUP_SUFFIX", "CHUNK_SIZE", "atomic_copy", "atomic_replace_with_backup", "atomic_write_text", "sha256_file"]
 
 CHUNK_SIZE = 1 << 20
 """Hashing block size (1 MiB): large enough to be fast, small enough for RAM."""
+
+BACKUP_SUFFIX = ".bak"
+"""Suffix of the one-generation rollback copy kept beside a replaced artifact."""
 
 
 def sha256_file(path: Path) -> str:
@@ -77,3 +80,22 @@ def atomic_copy(src: Path, dst: Path) -> Path:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
     return dst
+
+
+def atomic_replace_with_backup(src: Path, dst: Path) -> Path:
+    """Publish ``src`` at ``dst``, keeping the artifact it replaces at ``<dst>.bak``.
+
+    One generation of rollback: an export that turns out to be unusable
+    (truncated weights, broken ONNX conversion, wrong image size) can be put back
+    without retraining. The copy is made — and fsync-ed — *before* the replace,
+    so a failure while backing up leaves the published artifact untouched.
+
+    The backup is a recovery artifact, not a provenance one: it deliberately has
+    no manifest entry, and ``manifest.verify_manifest``'s ``*.onnx`` scan does
+    not match ``yolo11n.onnx.bak``, so it can never be mistaken for a model the
+    Qt app should load.
+    """
+
+    if dst.exists():
+        atomic_copy(dst, dst.with_name(dst.name + BACKUP_SUFFIX))
+    return atomic_copy(src, dst)

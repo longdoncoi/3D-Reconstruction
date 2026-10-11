@@ -8,6 +8,7 @@ the whole flow runs offline in milliseconds and without the ML stack.
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -17,9 +18,9 @@ from unittest import mock
 
 from cvtrain import manifest as manifest_mod
 from cvtrain.backend import TrainedModel
-from cvtrain.config import MODEL_SPECS, TrainConfig
+from cvtrain.config import MANIFEST_NAME, MODEL_SPECS, TrainConfig
 from cvtrain.errors import ExitCode
-from cvtrain.fsio import sha256_file
+from cvtrain.fsio import BACKUP_SUFFIX, sha256_file
 from cvtrain.logging_setup import PROGRESS_PREFIX
 from cvtrain.trainer import confirm_retrain, run
 
@@ -221,18 +222,21 @@ class FailurePathTests(_SandboxedTestCase):
 
 
 class ManifestVerificationTests(_SandboxedTestCase):
-    def test_verification_problems_are_surfaced_as_warnings(self) -> None:
+    def test_verification_problems_fail_the_run(self) -> None:
         cfg = _config(self.root)
         with mock.patch(
             "cvtrain.trainer.manifest_mod.verify_manifest",
             return_value=["ghost.onnx: missing on disk"],
         ):
-            with self.assertLogs("cvtrain.trainer", level="WARNING") as captured:
+            with self.assertLogs("cvtrain.trainer", level="ERROR") as captured:
                 code = run(cfg, backend=FakeBackend())
 
-        # The run still succeeds, but the operator must see *why* it is suspect.
-        self.assertEqual(code, ExitCode.OK)
-        self.assertIn("manifest: ghost.onnx: missing on disk", captured.output[0])
+        # Same condition, same exit code as ``--verify-manifest``: an artifact we
+        # cannot vouch for must never be reported to the Qt dock as a clean run.
+        self.assertEqual(code, ExitCode.PREFLIGHT)
+        joined = "\n".join(captured.output)
+        self.assertIn("manifest: ghost.onnx: missing on disk", joined)
+        self.assertIn("Manifest verification failed", joined)
 
 
 class ConfirmRetrainTests(_SandboxedTestCase):
@@ -258,6 +262,126 @@ class ConfirmRetrainTests(_SandboxedTestCase):
             "builtins.input", side_effect=AssertionError("prompted")
         ):
             self.assertTrue(confirm_retrain(cfg))
+
+
+class SkipUnchangedTests(_SandboxedTestCase):
+    """``--skip-unchanged`` turns an identical re-run into a no-op."""
+
+    def _run(self, **overrides: Any) -> tuple[int, FakeBackend]:
+        """One pipeline run; returns its exit code and the backend that drove it."""
+
+        cfg = _config(self.root, **overrides)
+        backend = FakeBackend()
+        return run(cfg, backend=backend), backend
+
+    def test_retraining_stays_the_default(self) -> None:
+        # Opt-in: without the flag a re-run must keep overwriting, which is what
+        # the Qt dialog and every existing caller rely on.
+        self._run(models=("det",))
+        _, backend = self._run(models=("det",))
+        self.assertIn("train:det", backend.calls)
+
+    def test_an_identical_invocation_trains_nothing(self) -> None:
+        self._run(models=("det",), skip_unchanged=True)
+        _, backend = self._run(models=("det",), skip_unchanged=True)
+        # ``prepare`` still applies run-wide settings; no model is trained or
+        # exported, so the published artifact is never touched again.
+        self.assertEqual(backend.calls, ["prepare"])
+
+    def test_a_skipped_model_still_advances_the_progress_bar(self) -> None:
+        self._run(models=("det",), skip_unchanged=True)
+        with self.assertLogs("cvtrain.progress", level="INFO") as captured:
+            self._run(models=("det",), skip_unchanged=True)
+        lines = [line for line in captured.output if PROGRESS_PREFIX in line]
+        self.assertTrue(any("stage=skip" in line for line in lines), lines)
+        self.assertTrue(lines[-1].endswith("pct=100 stage=done"), lines[-1])
+
+    def test_a_missing_artifact_is_trained(self) -> None:
+        _, backend = self._run(models=("det",), skip_unchanged=True)
+        self.assertIn("train:det", backend.calls)
+
+    def test_a_tampered_artifact_is_trained(self) -> None:
+        cfg = _config(self.root, models=("det",), skip_unchanged=True)
+        run(cfg, backend=FakeBackend())
+        cfg.output_path(MODEL_SPECS["det"]).write_bytes(b"tampered")
+
+        _, backend = self._run(models=("det",), skip_unchanged=True)
+        self.assertIn("train:det", backend.calls)
+
+    def test_an_artifact_without_a_manifest_entry_is_trained(self) -> None:
+        # A file dropped into Models/ by hand carries provenance nobody
+        # recorded; "it exists" is not evidence that it is the requested model.
+        cfg = _config(self.root, models=("det",))
+        target = cfg.output_path(MODEL_SPECS["det"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"hand-made")
+
+        _, backend = self._run(models=("det",), skip_unchanged=True)
+        self.assertIn("train:det", backend.calls)
+
+    def test_different_hyper_parameters_are_trained(self) -> None:
+        self._run(models=("det",), skip_unchanged=True)
+        _, backend = self._run(models=("det",), skip_unchanged=True, epochs=4)
+        self.assertIn("train:det", backend.calls)
+
+    def test_an_entry_without_provenance_is_trained(self) -> None:
+        # ``--write-manifest`` records identity + digest but no hyper-parameters,
+        # so nothing proves the file is what this invocation is asking for.
+        cfg = _config(self.root, models=("det",), skip_unchanged=True)
+        run(cfg, backend=FakeBackend())
+        manifest = manifest_mod.load_manifest(cfg.models_dir)
+        stored = manifest["entries"][MODEL_SPECS["det"].output]
+        manifest["entries"][MODEL_SPECS["det"].output] = manifest_mod.ManifestEntry(
+            role=stored["role"],
+            sha256=stored["sha256"],
+            size_bytes=stored["size_bytes"],
+        )
+        manifest_mod.save_manifest(cfg.models_dir, manifest)
+
+        _, backend = self._run(models=("det",), skip_unchanged=True)
+        self.assertIn("train:det", backend.calls)
+
+
+class PublishBackupTests(_SandboxedTestCase):
+    """Replacing an artifact keeps one generation of the previous one."""
+
+    def test_the_first_publish_leaves_no_backup(self) -> None:
+        cfg = _config(self.root, models=("det",))
+        run(cfg, backend=FakeBackend())
+        target = cfg.output_path(MODEL_SPECS["det"])
+        self.assertTrue(target.exists())
+        self.assertFalse(target.with_name(target.name + BACKUP_SUFFIX).exists())
+
+    def test_republishing_keeps_exactly_one_previous_generation(self) -> None:
+        cfg = _config(self.root, models=("det",))
+        target = cfg.output_path(MODEL_SPECS["det"])
+        backup = target.with_name(target.name + BACKUP_SUFFIX)
+
+        run(cfg, backend=FakeBackend())
+        target.write_bytes(b"generation-1")
+        run(cfg, backend=FakeBackend())
+        self.assertEqual(target.read_bytes(), b"ONNX:det")
+        self.assertEqual(backup.read_bytes(), b"generation-1")
+
+        target.write_bytes(b"generation-2")
+        run(cfg, backend=FakeBackend())
+        # One generation only: the older backup is replaced, not accumulated.
+        self.assertEqual(target.read_bytes(), b"ONNX:det")
+        self.assertEqual(backup.read_bytes(), b"generation-2")
+
+
+class SchemaForwardCompatibilityTests(_SandboxedTestCase):
+    def test_a_training_run_does_not_down_stamp_a_newer_manifest(self) -> None:
+        cfg = _config(self.root, models=("det",))
+        cfg.models_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.models_dir / MANIFEST_NAME).write_text('{"schema_version": 99, "entries": {}}', encoding="utf-8")
+
+        with self.assertLogs("cvtrain.manifest", level="WARNING"):
+            code = run(cfg, backend=FakeBackend())
+
+        self.assertEqual(code, ExitCode.OK)
+        on_disk = json.loads((cfg.models_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(on_disk["schema_version"], 99)
 
 
 if __name__ == "__main__":

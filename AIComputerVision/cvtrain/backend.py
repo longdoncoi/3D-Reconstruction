@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
 from .config import ModelSpec, TrainConfig
+from .errors import BackendUnavailableError
 
 LOG = logging.getLogger("cvtrain.backend")
 
@@ -55,7 +56,13 @@ class TrainedModel(Generic[H]):
 
 @runtime_checkable
 class TrainingBackend(Protocol[H]):
-    """What the orchestrator needs from an ML framework."""
+    """What the orchestrator needs from an ML framework.
+
+    ``@runtime_checkable`` so ``tests/test_backend.py`` can assert structural
+    conformance of a duck-typed double with ``isinstance``. That check only
+    sees the members, never the behaviour — the type checker and the fake
+    backend in ``tests/test_trainer.py`` are what pin down the semantics.
+    """
 
     version: str
     """Framework version, recorded in the manifest as provenance."""
@@ -117,8 +124,6 @@ class UltralyticsBackend:
             from ultralytics import YOLO
             from ultralytics.utils import SETTINGS
         except ImportError as exc:
-            from .errors import BackendUnavailableError
-
             raise BackendUnavailableError(
                 f"ultralytics is not importable ({exc}); run: pip install -r requirements.txt"
             ) from exc

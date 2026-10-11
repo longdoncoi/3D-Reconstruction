@@ -65,6 +65,12 @@ class ParserTests(unittest.TestCase):
         cfg = config_from_args(build_parser().parse_args(["--track"]))
         self.assertEqual(cfg.models, ("track",))
 
+    def test_skip_unchanged_is_opt_in(self) -> None:
+        # Opt-in, because the default must keep overwriting: that is the
+        # behaviour every existing caller (and the Qt dialog) relies on.
+        self.assertFalse(config_from_args(build_parser().parse_args(["--yes"])).skip_unchanged)
+        self.assertTrue(config_from_args(build_parser().parse_args(["--skip-unchanged"])).skip_unchanged)
+
 
 class _CliTestCase(unittest.TestCase):
     """Isolates ``main()``, which configures the package logger as a side effect."""
@@ -92,12 +98,14 @@ class ExitCodeTests(_CliTestCase):
             self.assertEqual(main(["--yes"]), ExitCode.OK)
 
     def test_cvtrain_error_returns_its_code_without_a_traceback(self) -> None:
-        # A missing dependency is expected: one actionable line, no stack trace.
+        # A backend that cannot be imported is an environment failure: one
+        # actionable line, no stack trace, and the same exit code (2) preflight
+        # would have reported had it caught the problem first.
         with mock.patch("cvtrain.cli.trainer.run", side_effect=BackendUnavailableError("ultralytics missing")):
             with mock.patch("cvtrain.cli.LOG") as fake_log:
                 code = main(["--yes"])
 
-        self.assertEqual(code, ExitCode.FAILURE)
+        self.assertEqual(code, ExitCode.PREFLIGHT)
         fake_log.error.assert_called_once()
         self.assertEqual(str(fake_log.error.call_args.args[1]), "ultralytics missing")
         fake_log.exception.assert_not_called()

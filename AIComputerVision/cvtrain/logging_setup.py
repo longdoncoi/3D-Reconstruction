@@ -124,6 +124,17 @@ class ProgressReporter:
     def exported(self, index: int, key: str) -> None:
         self._emit(compute_percent(index, len(self.models), "export", 1.0), stage="export", key=key)
 
+    def skipped(self, index: int, key: str) -> None:
+        """A model that needed no work still advances the bar past its slot.
+
+        Published at the same percentage a completed export would occupy, so a
+        run in which every model is skipped still climbs monotonically to the
+        manifest band instead of jumping. ``stage=skip`` is informational — the
+        Qt dock reads ``pct=`` only.
+        """
+
+        self._emit(compute_percent(index, len(self.models), "export", 1.0), stage="skip", key=key)
+
     def manifest(self, fraction: float = 1.0) -> None:
         self._emit(compute_percent(0, 1, "manifest", fraction), stage="manifest")
 

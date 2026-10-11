@@ -111,6 +111,9 @@ CMakeLists.txt.user*
 /AIComputerVision/.coverage
 /AIComputerVision/.coverage.*
 /AIComputerVision/htmlcov/
+# One-generation rollback copy beside a replaced export (cvtrain.fsio). Never a
+# model the app loads, and never an LFS artifact.
+/AIComputerVision/Models/*.onnx.bak
 
 # Custom App Ignores
 /Predict/

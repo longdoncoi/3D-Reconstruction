@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
 
 from . import __version__
 from .config import MANIFEST_NAME, MODEL_SPECS
@@ -29,6 +30,7 @@ __all__ = [
     "ManifestEntry",
     "build_from_scan",
     "load_manifest",
+    "migrate",
     "now_utc_iso",
     "save_manifest",
     "sha256_file",
@@ -39,6 +41,7 @@ __all__ = [
 LOG = logging.getLogger("cvtrain.manifest")
 
 SCHEMA_VERSION = 1
+"""Version of the document shape this build writes. See :func:`migrate`."""
 
 
 class ManifestEntry(TypedDict, total=False):
@@ -110,8 +113,64 @@ def _skeleton() -> Manifest:
     return {"schema_version": SCHEMA_VERSION, "generator": f"cvtrain {__version__}", "entries": {}}
 
 
+Migration = Callable[[dict[str, Any]], dict[str, Any]]
+"""Upgrades a document from schema ``N`` to ``N + 1``; mutates and returns it."""
+
+
+def _migrate_0_to_1(data: dict[str, Any]) -> dict[str, Any]:
+    """Schema 0 -> 1: documents written before the field was versioned.
+
+    They carry no ``schema_version`` and may carry no ``generator``. The entry
+    map itself is already validated by :func:`load_manifest`, so the shapes of
+    ``entries`` are unchanged by this step.
+    """
+
+    data.setdefault("generator", f"cvtrain {__version__}")
+    return data
+
+
+#: Ordered by the schema version they consume: ``_MIGRATIONS[0]`` yields v1.
+#: Adding a schema bump means adding one entry here plus one test — the chain is
+#: walked by :func:`migrate`, never by ad-hoc ``setdefault`` calls at call sites.
+_MIGRATIONS: dict[int, Migration] = {0: _migrate_0_to_1}
+
+
+def migrate(data: dict[str, Any], path: Path) -> Manifest:
+    """Bring a loaded document up to :data:`SCHEMA_VERSION`.
+
+    Two rules, both deliberate:
+
+    * a document **older** than this build (schema ``0``: written before the
+      field existed) is upgraded step by step through :data:`_MIGRATIONS`, so a
+      caller can never observe a document whose shape it has not agreed to read;
+    * a document **newer** than this build is returned untouched and is
+      explicitly *not* down-stamped. Overwriting its header with the old version
+      number would silently advertise a schema this build does not actually
+      understand, which is how a future reader loses its own migration hook.
+
+    ``version`` is also coerced to ``>= 0``: a garbage header is treated as
+    "unversioned" rather than making the chain index a negative key.
+    """
+
+    raw = data.get("schema_version")
+    version = max(0, raw) if isinstance(raw, int) else 0
+    if version > SCHEMA_VERSION:
+        LOG.warning(
+            "Manifest %s declares schema %d but this build writes %d; reading it as-is (not down-stamping)",
+            path,
+            version,
+            SCHEMA_VERSION,
+        )
+        return cast(Manifest, data)
+    for step in range(version, SCHEMA_VERSION):
+        data = _MIGRATIONS[step](data)
+    data["schema_version"] = SCHEMA_VERSION
+    return cast(Manifest, data)
+
+
 def load_manifest(models_dir: Path) -> Manifest:
-    """Return the existing manifest, or a fresh skeleton when absent/invalid."""
+    """Return the existing manifest migrated to the current schema, or a fresh
+    skeleton when the file is absent, unreadable or structurally invalid."""
 
     path = models_dir / MANIFEST_NAME
     if not path.exists():
@@ -124,10 +183,7 @@ def load_manifest(models_dir: Path) -> Manifest:
     if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
         LOG.warning("Manifest %s is invalid (missing entries dict)", path)
         return _skeleton()
-    manifest = cast(Manifest, data)
-    manifest.setdefault("schema_version", SCHEMA_VERSION)
-    manifest.setdefault("generator", f"cvtrain {__version__}")
-    return manifest
+    return migrate(cast(dict[str, Any], data), path)
 
 
 def save_manifest(models_dir: Path, manifest: Manifest) -> Path:
@@ -224,6 +280,8 @@ def build_from_scan(models_dir: Path) -> Manifest:
         entries[spec.output] = entry
 
     manifest["generator"] = f"cvtrain {__version__}"
-    manifest["schema_version"] = SCHEMA_VERSION
+    # ``schema_version`` is deliberately *not* re-assigned here: ``load_manifest``
+    # already migrated the document, and stamping our own version over a newer
+    # one would down-stamp it (see :func:`migrate`).
     manifest["updated_at"] = scanned
     return manifest

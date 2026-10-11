@@ -27,7 +27,7 @@ from . import manifest as manifest_mod
 from .backend import EpochCallback, TrainedModel, TrainingBackend, UltralyticsBackend
 from .config import BASE_DIR, MODEL_SPECS, ModelSpec, TrainConfig
 from .errors import ExitCode
-from .fsio import atomic_copy, sha256_file
+from .fsio import atomic_replace_with_backup, sha256_file
 from .logging_setup import ProgressReporter
 
 LOG = logging.getLogger("cvtrain.trainer")
@@ -91,7 +91,9 @@ def _start_manifest(cfg: TrainConfig, backend_version: str) -> manifest_mod.Mani
     """Open the manifest and stamp the header describing this invocation."""
 
     manifest = manifest_mod.load_manifest(cfg.models_dir)
-    manifest["schema_version"] = manifest_mod.SCHEMA_VERSION
+    # ``load_manifest`` hands back a document already migrated to the current
+    # schema (and never down-stamps a newer one), so only the run header is
+    # stamped here.
     manifest["generator"] = f"cvtrain {__version__}"
     # Key name is historical: it records whichever backend produced the run.
     manifest["ultralytics"] = backend_version
@@ -128,8 +130,9 @@ def _export_one(
 
     reporter.exporting(index, spec.key)
     generated = backend.export(model, cfg)
-    target = cfg.output_path(spec)
-    atomic_copy(generated, target)
+    # Publish atomically, keeping the artifact we are about to replace at
+    # ``<name>.onnx.bak``: a bad export must be recoverable without retraining.
+    target = atomic_replace_with_backup(generated, cfg.output_path(spec))
     reporter.exported(index, spec.key)
     LOG.info("Exported %s -> %s (%.1f MB)", spec.ckpt, target, target.stat().st_size / (1 << 20))
     return target
@@ -169,6 +172,37 @@ def _record_entry(
     manifest_mod.save_manifest(cfg.models_dir, manifest)
 
 
+def _already_current(spec: ModelSpec, cfg: TrainConfig, manifest: manifest_mod.Manifest) -> bool:
+    """Whether the published ONNX already *is* the artifact this run would build.
+
+    The rule is deliberately strict, because "skip" must never hide work the
+    operator asked for. Every one of these has to hold:
+
+    * the artifact exists at the path the Qt app loads;
+    * its digest matches what the manifest recorded for it (a tampered or
+      half-replaced file is retrained, not trusted);
+    * that entry carries the *same* dataset and hyper-parameters as this
+      invocation — a model trained with different epochs/imgsz/seed is stale
+      with respect to the request even though the file name is identical.
+
+    An entry adopted from disk (``--write-manifest``) has no hyper-parameters,
+    so it never satisfies the last condition and is retrained: provenance we do
+    not have cannot be assumed to match.
+    """
+
+    target = cfg.output_path(spec)
+    if not target.exists():
+        return False
+    entry = (manifest.get("entries") or {}).get(spec.output)
+    if entry is None:
+        return False
+    if entry.get("sha256") != sha256_file(target):
+        return False
+    recorded = (entry.get("epochs"), entry.get("imgsz"), entry.get("seed"), entry.get("opset"), entry.get("dataset"))
+    requested = (cfg.epochs, cfg.imgsz, cfg.seed, cfg.opset, str(cfg.data_yaml))
+    return recorded == requested
+
+
 def _train_all(
     cfg: TrainConfig,
     reporter: ProgressReporter,
@@ -180,6 +214,10 @@ def _train_all(
     total = len(cfg.models)
     for index, key in enumerate(cfg.models):
         spec = MODEL_SPECS[key]
+        if cfg.skip_unchanged and _already_current(spec, cfg, manifest):
+            LOG.info("[%d/%d] %s already matches this invocation; skipping", index + 1, total, spec.output)
+            reporter.skipped(index, spec.key)
+            continue
         LOG.info("[%d/%d] Training %s from %s", index + 1, total, spec.label, spec.ckpt)
         model = backend.train(spec, cfg, _epoch_reporter(reporter, index, spec.key))
         target = _export_one(spec, cfg, reporter, index, model, backend)
@@ -213,14 +251,22 @@ def _execute(cfg: TrainConfig, reporter: ProgressReporter, backend: TrainingBack
 
     manifest = _start_manifest(cfg, active.version)
     exported = _train_all(cfg, reporter, active, manifest)
-    reporter.manifest(1.0)
 
     problems = manifest_mod.verify_manifest(cfg.models_dir, manifest)
-    for problem in problems:
-        LOG.warning("manifest: %s", problem)
-    if not problems:
-        LOG.info("Manifest verified: %s", cfg.manifest_path)
+    if problems:
+        # The artifacts this run just published cannot be vouched for. This is
+        # the same condition ``--verify-manifest`` reports, and that command
+        # exits 2 — returning 0 here would label an inconsistent manifest as a
+        # clean run and let it reach the Qt app unflagged. The progress marker
+        # stays out of the success sequence for the same reason: ``done`` is
+        # reserved for a run that actually verified.
+        for problem in problems:
+            LOG.error("manifest: %s", problem)
+        LOG.error("Manifest verification failed: %s", cfg.manifest_path)
+        return ExitCode.PREFLIGHT
 
+    reporter.manifest(1.0)
+    LOG.info("Manifest verified: %s", cfg.manifest_path)
     LOG.info("Training complete. Exported: %s", ", ".join(exported))
     LOG.info("Base directory: %s", BASE_DIR)
     return ExitCode.OK

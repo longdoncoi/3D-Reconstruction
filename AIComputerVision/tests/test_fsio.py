@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from cvtrain.fsio import atomic_copy, atomic_write_text, sha256_file
+from cvtrain.fsio import BACKUP_SUFFIX, atomic_copy, atomic_replace_with_backup, atomic_write_text, sha256_file
 
 
 def _leftovers(directory: Path) -> list[str]:
@@ -94,6 +94,53 @@ class AtomicCopyTests(unittest.TestCase):
             # The publish target must never be truncated by a failed attempt.
             self.assertEqual(dst.read_bytes(), b"previous-good-artifact")
             self.assertEqual(_leftovers(root), [])
+
+
+class AtomicReplaceWithBackupTests(unittest.TestCase):
+    """Publishing keeps one generation of the artifact it replaces."""
+
+    def test_first_publish_leaves_no_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "generated.onnx"
+            dst = root / "Models" / "yolo11n.onnx"
+            src.write_bytes(b"model-v1")
+
+            atomic_replace_with_backup(src, dst)
+
+            self.assertEqual(dst.read_bytes(), b"model-v1")
+            self.assertFalse(dst.with_name(dst.name + BACKUP_SUFFIX).exists())
+
+    def test_replacing_keeps_the_previous_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "generated.onnx"
+            dst = root / "Models" / "yolo11n.onnx"
+            backup = dst.with_name(dst.name + BACKUP_SUFFIX)
+            src.write_bytes(b"model-v1")
+            atomic_replace_with_backup(src, dst)
+
+            src.write_bytes(b"model-v2")
+            atomic_replace_with_backup(src, dst)
+
+            self.assertEqual(dst.read_bytes(), b"model-v2")
+            self.assertEqual(backup.read_bytes(), b"model-v1")
+            self.assertEqual(_leftovers(dst.parent), [])
+
+    def test_a_failed_backup_publish_leaves_the_artifact_intact(self) -> None:
+        # The backup is taken before the replace: if it cannot be written the
+        # published model is never touched, so a crash cannot cost us both.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "generated.onnx"
+            dst = root / "out.onnx"
+            dst.write_bytes(b"previous-good-artifact")
+
+            with mock.patch("cvtrain.fsio.atomic_copy", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    atomic_replace_with_backup(src, dst)
+
+            self.assertEqual(dst.read_bytes(), b"previous-good-artifact")
 
 
 if __name__ == "__main__":
