@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -17,6 +17,38 @@ from ..domain.tasks import AgentTask
 from .a2a_models import ResumeTaskParams, SendMessageParams, SendTaskParams
 from .a2a_payloads import APPROVAL_RESUME_EXTENSION, build_agent_card, task_payload
 from .http.security import TransportPolicy, a2a_guards
+
+# Terminal states that end an SSE stream. The subscription endpoint also ends
+# when the task waits for human input so the client can switch to resume.
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "canceled", "rejected"})
+_SUBSCRIBE_TERMINAL_STATUSES = _TERMINAL_STATUSES | {"input_required"}
+
+_POLL_INTERVAL_SECONDS = 0.1
+
+
+async def _task_pages(service: TaskService, task_id: str,
+                      terminal: frozenset[str]) -> AsyncIterator[tuple[list[dict[str, Any]], AgentTask]]:
+    """Poll a task's event log; yield ``(new_events, task)`` until terminal.
+
+    Shared by both SSE endpoints so the polling loop (cursor tracking, terminal
+    check, bounded sleep) lives in exactly one place.
+    """
+    cursor = 0
+    while True:
+        events = list(service.events(task_id))
+        task = service.get(task_id)
+        if task is None:
+            return
+        yield events[cursor:], task
+        cursor = len(events)
+        if task.status.value in terminal:
+            return
+        await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+
+
+def _sse_response(stream: AsyncIterator[str]) -> StreamingResponse:
+    return StreamingResponse(stream, media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache"})
 
 
 def build_a2a_router(service: TaskService, agent_name: str, agent_version: str,
@@ -129,19 +161,14 @@ def build_a2a_router(service: TaskService, agent_name: str, agent_version: str,
             raise HTTPException(status_code=404, detail="A2A task not found")
 
         async def stream():
-            cursor = 0
-            while True:
-                events = list(service.events(task_id))
-                for event in events[cursor:]:
+            async for events, task in _task_pages(service, task_id, terminal=_TERMINAL_STATUSES):
+                for event in events:
                     yield f"event: {event['kind']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
-                cursor = len(events)
-                task = service.get(task_id)
-                if task and task.status.value in {"completed", "failed", "canceled", "rejected"}:
+                if task.status.value in _TERMINAL_STATUSES:
                     yield f"event: done\ndata: {json.dumps(task_payload(task), ensure_ascii=False)}\n\n"
                     return
-                await asyncio.sleep(0.1)
 
-        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+        return _sse_response(stream())
 
     @router.post("/tasks/{task_id}:subscribe")
     def subscribe_task(task_id: str, request: Request):
@@ -151,21 +178,15 @@ def build_a2a_router(service: TaskService, agent_name: str, agent_version: str,
 
         async def stream():
             previous = None
-            while True:
-                task = service.get(task_id)
-                if task is None:
-                    return
+            async for _, task in _task_pages(service, task_id, terminal=_SUBSCRIBE_TERMINAL_STATUSES):
                 snapshot = task_payload(task)
                 if previous is None:
                     yield f"data: {json.dumps({'task': snapshot}, ensure_ascii=False)}\n\n"
                 elif snapshot["status"] != previous["status"]:
                     yield f"data: {json.dumps({'statusUpdate': {'taskId': task.id, 'status': snapshot['status']}}, ensure_ascii=False)}\n\n"
                 previous = snapshot
-                if task.status.value in {"completed", "failed", "canceled", "rejected", "input_required"}:
-                    return
-                await asyncio.sleep(0.1)
 
-        return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+        return _sse_response(stream())
 
     @router.post("/a2a")
     async def json_rpc(request: Request) -> dict[str, Any]:

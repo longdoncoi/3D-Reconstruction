@@ -7,6 +7,7 @@ covered in the offline CI environment.
 from __future__ import annotations
 
 import json
+import os
 import pickle
 import sys
 import tempfile
@@ -192,6 +193,26 @@ class FileSystemHashTests(unittest.TestCase):
             paths = _paths(tmp, with_docs=False)
             get_file_system_hash(paths, _settings())  # must not raise
 
+    def test_hash_survives_stat_errors(self):
+        """OSError during stat of any scanned file is tolerated (both trees)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            (paths.docs_dirs[0] / "doc.md").write_text("doc", encoding="utf-8")
+            (paths.docs_dirs[0] / "doc.txt").write_text("doc", encoding="utf-8")
+            (paths.project_root / "a.cpp").write_text("cpp", encoding="utf-8")
+            (paths.project_root / "boom.cpp").write_text("cpp", encoding="utf-8")
+
+            real_stat = os.stat
+
+            def raising_stat(path, *args, **kwargs):
+                name = os.fspath(path).replace("\\", "/")
+                if name.endswith("boom.cpp") or name.endswith("doc.txt"):
+                    raise OSError("boom")
+                return real_stat(path, *args, **kwargs)
+
+            with mock.patch("ai_assistant.rag.index.os.stat", side_effect=raising_stat):
+                get_file_system_hash(paths, _settings())  # must not raise
+
 
 class CacheValidityTests(unittest.TestCase):
     def _write_all(self, paths: AppPaths, settings: RAGSettings) -> None:
@@ -309,6 +330,120 @@ class BuildIndexTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_index_from_scratch(chunks, _FakeEmbed(dim=7), _settings())
 
+    def test_builds_ivf_index_for_large_corpus(self):
+        chunks = [_chunk(f"text chunk number {i} with body", f"f{i}.md") for i in range(1000)]
+        index, loaded, bm25 = build_index_from_scratch(chunks, _FakeEmbed(dim=3), _settings())
+        self.assertEqual(index.ntotal, 1000)
+        self.assertEqual(index.nprobe, 16)
+        self.assertEqual(loaded, chunks)
+        self.assertIsInstance(bm25, _FakeBm25.BM25Okapi)
+
+
+class _FakeImg:
+    """Stand-in for a loaded image object that must be closed after encoding."""
+
+    def __init__(self, name: str = "img") -> None:
+        self.name = name
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _ImageFailEmbed:
+    """Embed model whose ``encode`` refuses non-string (image) inputs."""
+
+    def __init__(self, dim: int = 3) -> None:
+        self.dim = dim
+
+    def encode(self, data, **kwargs):
+        tagged = list(data)
+        if any(not isinstance(item, str) for item in tagged):
+            raise RuntimeError("image encode failed")
+        return [[float(i) for i in range(self.dim)] for _ in tagged]
+
+
+class ImageIndexTests(unittest.TestCase):
+    """Coverage of the image-aware embedding paths in build_index_from_scratch."""
+
+    def setUp(self):
+        self.faiss = _FakeFaiss()
+        self.bm25 = _FakeBm25()
+        self._patchers = _patch_heavy(
+            faiss=self.faiss, numpy=_FakeNp(), bm25=self.bm25,
+        )
+        self.addCleanup(lambda: [p.stop() for p in self._patchers])
+        self.images = [
+            ChunkResult(text=f"image {i}", source_path=f"i{i}.png",
+                        loader_type="image", is_image=True)
+            for i in range(2)
+        ]
+
+    def test_image_chunks_encode_with_batched_close(self):
+        chunks = [_chunk("txt", "t.md"), *self.images]
+        with mock.patch("ai_assistant.rag.index.load_image_for_embedding",
+                        return_value=_FakeImg()) as load, \
+             mock.patch("ai_assistant.rag.index.release_ml_memory") as release:
+            index, _, _ = build_index_from_scratch(
+                chunks, _FakeEmbed(dim=3), _settings(embedding_supports_images=True))
+        self.assertEqual(load.call_count, 2)
+        self.assertEqual(index.ntotal, 3)
+        self.assertEqual(release.call_count, 1)
+
+    def test_image_batch_failure_retries_one_by_one(self):
+        chunk = _chunk("txt", "t.md")
+
+        class _BatchOnlyFailEmbed:
+            dim = 3
+
+            def __init__(self):
+                self.image_encodes = 0
+
+            def encode(self, data, **kwargs):
+                data = list(data)
+                if any(not isinstance(d, str) for d in data):
+                    if len(data) > 1:
+                        raise RuntimeError("batch failed")
+                    self.image_encodes += 1
+                return [[0.0, 1.0, 2.0]]
+
+        embed = _BatchOnlyFailEmbed()
+        with mock.patch("ai_assistant.rag.index.load_image_for_embedding",
+                        return_value=_FakeImg()), \
+             mock.patch("ai_assistant.rag.index.release_ml_memory"):
+            index, _, _ = build_index_from_scratch(
+                [chunk, *self.images], embed, _settings(embedding_supports_images=True))
+        self.assertEqual(index.ntotal, 3)
+        self.assertEqual(embed.image_encodes, 2)
+
+    def test_all_image_loads_failing_falls_back_to_text(self):
+        chunks = [_chunk("txt", "t.md"), *self.images]
+        with mock.patch("ai_assistant.rag.index.load_image_for_embedding",
+                        side_effect=ValueError("no image file")), \
+             mock.patch("ai_assistant.rag.index.release_ml_memory"):
+            index, _, _ = build_index_from_scratch(
+                chunks, _FakeEmbed(dim=3), _settings(embedding_supports_images=True))
+        self.assertEqual(index.ntotal, 3)
+
+    def test_image_encode_failure_skips_then_falls_back_to_text(self):
+        chunks = [_chunk("txt", "t.md"), *self.images]
+        with mock.patch("ai_assistant.rag.index.load_image_for_embedding",
+                        return_value=_FakeImg()), \
+             mock.patch("ai_assistant.rag.index.release_ml_memory"):
+            index, _, _ = build_index_from_scratch(
+                chunks, _ImageFailEmbed(dim=3), _settings(embedding_supports_images=True))
+        self.assertEqual(index.ntotal, 3)
+
+    def test_image_close_failure_is_tolerated(self):
+        exploding = _FakeImg("boom")
+        exploding.close = mock.Mock(side_effect=RuntimeError("close failed"))
+        with mock.patch("ai_assistant.rag.index.load_image_for_embedding",
+                        return_value=exploding), \
+             mock.patch("ai_assistant.rag.index.release_ml_memory"):
+            index, _, _ = build_index_from_scratch(
+                self.images, _FakeEmbed(dim=3), _settings(embedding_supports_images=True))
+        self.assertEqual(index.ntotal, 2)
+
 
 class LoadOrBuildTests(unittest.TestCase):
     def test_cache_hit_returns_loaded(self):
@@ -370,6 +505,36 @@ class ScanDocumentsTests(unittest.TestCase):
             registry = SimpleNamespace(load_file=fake_load)
             chunks = scan_documents(paths, registry)
         self.assertEqual(len(chunks), 3)
+
+    def test_scan_skips_unsupported_ext_tilde_and_user_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            (paths.docs_dirs[0] / "guide.txt").write_text("guide", encoding="utf-8")
+            (paths.docs_dirs[0] / "notes.bin").write_text("n", encoding="utf-8")
+            (paths.project_root / "a.md").write_text("a", encoding="utf-8")
+            (paths.project_root / "junk.bin").write_text("c", encoding="utf-8")
+            (paths.project_root / "~scratch.py").write_text("d", encoding="utf-8")
+            (paths.project_root / "layout.user").write_text("e", encoding="utf-8")
+
+            def fake_load(fp, project_dir):
+                fp = str(fp)
+                if fp.endswith((".md", ".py", ".txt")):
+                    return [_chunk("text", fp)]
+                return []
+
+            chunks = scan_documents(paths, SimpleNamespace(load_file=fake_load))
+        self.assertEqual(len(chunks), 2)  # guide.txt + a.md; .bin, ~ and .user are skipped
+
+    def test_scan_counts_unloadable_docs_as_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            (paths.docs_dirs[0] / "broken.txt").write_text("b", encoding="utf-8")
+
+            def fake_load(fp, project_dir):
+                return []  # loader failure → treated as an error, not a chunk
+
+            chunks = scan_documents(paths, SimpleNamespace(load_file=fake_load))
+        self.assertEqual(chunks, [])
 
 
 if __name__ == "__main__":

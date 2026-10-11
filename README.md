@@ -258,8 +258,9 @@ MainWindow (Shell)
 │
 ├── AIAssistant/                ← Hệ thống AI Server, Agent và RAG (Python)
 ├── AIComputerVision/           ← Huấn luyện YOLO, models và kết quả training
-│   ├── StartChatbotServer.py   ← FastAPI server chạy LLM + RAG
-│   └── requirements.txt        ← Python dependencies
+│   ├── cvtrain/                ← Package huấn luyện/xuất ONNX (CLI: TrainModel.py)
+│   ├── Models/                 ← ONNX đã xuất (Git LFS) + manifest.json
+│   └── requirements.txt        ← Python dependencies cho training
 │
 ├── Docs/                       ← Tài liệu dự án (PDF, DOCX, TXT)
 │                               ← RAG đọc từ thư mục này để trả lời câu hỏi

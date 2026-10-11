@@ -1,15 +1,24 @@
 """Coverage for the llama.cpp backend adapter.
 
-``llama_cpp`` is installed in this environment, so we patch the constructor
-classes to exercise the load geometries (GPU, CPU fallback, vision) and the
-attribute-proxy behaviour without loading real weights.
+``llama_cpp`` may or may not be installed: the constructor classes are always
+patched with fakes so the load geometries (GPU, CPU fallback, vision) and the
+attribute-proxy behaviour are exercised without loading real weights.
 """
 from __future__ import annotations
 
+import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from ai_assistant.llm.llama_cpp_backend import LlamaCppBackend
+
+# Stand-in for the optional ``llama_cpp`` package so ``mock.patch`` targets
+# like "llama_cpp.Llama" resolve in the offline CI environment as well.
+_FAKE_LLAMA_CPP = SimpleNamespace(
+    Llama=object,
+    llama_chat_format=SimpleNamespace(Qwen25VLChatHandler=object),
+)
 
 
 class _PatchedLoad:
@@ -19,8 +28,16 @@ class _PatchedLoad:
         self._instance = instance or MagicMock()
 
     def __enter__(self):
+        self._modules_patcher = patch.dict(
+            sys.modules,
+            {
+                "llama_cpp": _FAKE_LLAMA_CPP,
+                "llama_cpp.llama_chat_format": _FAKE_LLAMA_CPP.llama_chat_format,
+            },
+        )
         release = patch("ai_assistant.llm.llama_cpp_backend.release_ml_memory")
         llama = patch("llama_cpp.Llama", return_value=self._instance)
+        self._modules_patcher.start()
         self._release = release.start()
         self._llama = llama.start()
         return self._instance
@@ -28,6 +45,7 @@ class _PatchedLoad:
     def __exit__(self, *exc) -> None:
         self._llama.stop()
         self._release.stop()
+        self._modules_patcher.stop()
 
 
 class LlamaCppBackendLoadTests(unittest.TestCase):

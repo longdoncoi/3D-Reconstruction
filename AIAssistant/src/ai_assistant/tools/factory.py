@@ -61,8 +61,22 @@ def builtin_handlers() -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
     }
 
 
+def platform_executors(registry: ToolRegistry) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
+    """Map each registered tool name to its in-process handler.
+
+    The composition root passes this mapping to the tool gateway so the single
+    execution core can dispatch catalogued tools without re-importing the
+    registry. Tools without a handler are omitted.
+    """
+    return {spec.name: spec.handler for spec in registry.get_all() if spec.handler}
+
+
 def create_tool_registry() -> ToolRegistry:
-    """Create and populate the global ToolRegistry from configuration."""
+    """Create and populate a ToolRegistry from ``Config/agent_tools.json``.
+
+    Returns a fresh registry per call; the composition root owns the single
+    long-lived instance, so this is not a module-level singleton.
+    """
     registry = ToolRegistry()
     paths = get_paths()
     config_file = paths.project_root / "Config" / "agent_tools.json"

@@ -1,15 +1,21 @@
 """Embedding model adapters."""
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 
+@runtime_checkable
 class EmbeddingEncoder(Protocol):
     """The minimal encoding surface the adapter needs from any encoder model.
 
     Both the E5 ONNX runtime wrapper and the sentence-transformers models expose
     this shape, so the LlamaIndex adapter depends on an interface instead of a
     concrete class.
+
+    ``@runtime_checkable`` is required because pydantic builds an ``isinstance``
+    validator for the ``model`` field of the local ``E5Embedding`` model. A plain
+    Protocol cannot be the second argument to ``isinstance``, which made the
+    pydantic schema build fail and aborted server startup (RAG index step).
     """
 
     def encode(

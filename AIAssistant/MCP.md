@@ -1,5 +1,13 @@
 # MCP cho AI Agent
 
+The read-only MCP catalog also includes `find_files` and `git_diff` for Code
+Agent discovery and review. All exposed tools share the server's validated
+JSON contract; file writes and command execution remain approval-gated.
+
+`read_file` accepts `start_line`/`end_line` or `symbol`, so Coding Agent can
+read a bounded C++/Python function through the same MCP contract instead of
+falling back to a whole-file read.
+
 AI server cung cấp MCP Streamable HTTP tại `http://127.0.0.1:8080/mcp` khi
 chạy `StartChatbotServer.py`. Cài dependency một lần bằng:
 

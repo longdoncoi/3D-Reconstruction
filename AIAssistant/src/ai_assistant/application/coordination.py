@@ -107,10 +107,7 @@ class TaskCoordinator:
         )
 
 
-coordinator = TaskCoordinator()
-
 __all__ = [
     "TaskCoordinator",
     "TaskRecord",
-    "coordinator",
 ]

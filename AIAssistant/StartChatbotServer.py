@@ -39,6 +39,7 @@ if sys.platform == "win32":
         pass
 
 from ai_assistant.adapters.a2a import build_a2a_router
+from ai_assistant.adapters.a2a_protocol import A2ARouter
 from ai_assistant.adapters.http import (
     build_admin_router,
     build_agent_router,
@@ -46,12 +47,14 @@ from ai_assistant.adapters.http import (
     build_health_router,
 )
 from ai_assistant.adapters.http.security import TransportPolicy
+from ai_assistant.adapters.mcp import McpToolServer
 from ai_assistant.adapters.orchestration import LangGraphAgentOrchestrator
-from ai_assistant.agents.service import AGENT_TOOLS, AgentService, platform_executors
+from ai_assistant.adapters.persistence.checkpointing import build_checkpointer
+from ai_assistant.agents.service import AgentService
 from ai_assistant.application.agent_runs import AgentRunService
 from ai_assistant.bootstrap import PlatformContainer, build_container, create_app
 from ai_assistant.domain.tasks import AgentTask
-from ai_assistant.legacy import llm_module, mcp_server, rag_module
+from ai_assistant.legacy import llm_module, rag_module
 from ai_assistant.legacy.config import (
     _SERVER_START_TIME,
     BASE_DIR,
@@ -66,6 +69,7 @@ from ai_assistant.legacy.config import (
 )
 from ai_assistant.orchestration.specialists import ChatbotAgent
 from ai_assistant.tools import action_manifest
+from ai_assistant.tools.factory import create_tool_registry, platform_executors
 
 # ── Global mutable chatbot agent (recreated on model/RAG reload) ─────────────
 # Wrapped in a getter so the HTTP router captures the getter reference, not the
@@ -92,16 +96,29 @@ def _execute_a2a_task(task: AgentTask) -> dict:
     return _agent_run_service.run(task)
 
 
+# The composition root owns the single tool catalog, coordinator and agent
+# service. The shared tool gateway, LangGraph checkpointer and A2A transport
+# are injected explicitly, so no module-level service locator remains.
+_tool_registry = create_tool_registry()
 platform: PlatformContainer = build_container(
     BASE_DIR,
-    AGENT_TOOLS,
-    platform_executors(),
+    list(_tool_registry.get_all()),
+    platform_executors(_tool_registry),
     _execute_a2a_task,
 )
 
-# The composition root owns the single agent service. Its shared tool gateway
-# is injected from the DI container, so no module-level service locator remains.
-agent_service = AgentService(tool_gateway=platform.gateway, llm_runtime=llm_module)
+agent_service = AgentService(
+    tool_gateway=platform.gateway,
+    llm_runtime=llm_module,
+    tool_registry=_tool_registry,
+    checkpointer=build_checkpointer(),
+    a2a_router=A2ARouter(),
+    task_coordinator=platform.coordinator,
+)
+
+# The MCP adapter owns one server instance bound to the shared gateway; the
+# legacy ``legacy.mcp_server`` shim remains only as an import-compatible name.
+mcp_server = McpToolServer(platform.gateway)
 
 _agent_run_service = AgentRunService(
     capability_scopes=platform.settings.capability_scopes,
@@ -126,7 +143,7 @@ async def lifespan(_: FastAPI):
     logger.info("Server ready in %.1fs — http://127.0.0.1:8080", total)
     print(f"[SUCCESS] AI Server started successfully ({total:.1f}s)", flush=True)
     try:
-        if platform.settings.enable_mcp and mcp_server.MCP_AVAILABLE:
+        if platform.settings.enable_mcp and mcp_server.available:
             async with mcp_server.lifespan():
                 yield
         elif platform.settings.enable_mcp:
@@ -200,8 +217,8 @@ if platform.settings.enable_a2a:
         platform.tasks, "3D-Reconstruction AI Assistant", "3.0.0",
         policy=transport_policy,
     ))
-if platform.settings.enable_mcp and mcp_server.MCP_AVAILABLE:
-    mcp_server.configure_tool_gateway(platform.gateway)
+if platform.settings.enable_mcp and mcp_server.available:
+    mcp_server.register_plugin_tools(platform.plugins)
     app.mount("/mcp", mcp_server.asgi_app())
 
 

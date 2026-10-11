@@ -1,11 +1,12 @@
 import unittest
 
-from ai_assistant.application.coordination import coordinator as task_coordinator
+from ai_assistant.application.coordination import TaskCoordinator
 from LangGraphAgent import LocalAgentGraph
 
 
 class AgentArchitectureTests(unittest.TestCase):
     def test_coordinator_cancellation_is_session_scoped(self):
+        task_coordinator = TaskCoordinator()
         task_coordinator.start("session-1", task="generic")
         snapshot = task_coordinator.cancel("session-1")
         self.assertEqual(snapshot["status"], "cancelled")

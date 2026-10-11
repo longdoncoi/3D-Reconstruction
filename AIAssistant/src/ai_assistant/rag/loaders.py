@@ -72,6 +72,11 @@ class BaseDocumentLoader(ABC):
                 ))
 
             advance = max(len(block) - self.overlap_chars, self.chunk_chars - self.overlap_chars)
+            if advance <= 0:
+                # Guard against misconfigured loaders (chunk_chars <= overlap_chars):
+                # both candidates can go non-positive, which would make ``pos``
+                # move backwards and spin forever.
+                advance = max(self.chunk_chars, 1)
             pos += advance
 
         return results
@@ -204,6 +209,9 @@ class MarkdownLoader(BaseDocumentLoader):
             else:
                 for sc in self._sliding_window_chunks(section, fp, project_dir, label="Source MD"):
                     sc.text = prefix + sc.text.split("\n", 1)[-1]
+                    # Keep the loader type consistent with short sections: a
+                    # section headed with ``#`` is markdown, not a generic source.
+                    sc.loader_type = "md"
                     sc.metadata = {"heading": heading, "level": level}
                     sc.parent_text = parent_text_for_chunk
                     sc.hierarchy_level = h_level
@@ -220,10 +228,15 @@ class MarkdownLoader(BaseDocumentLoader):
 
 class CppHeaderLoader(BaseDocumentLoader):
     SOURCE_EXTS = {".cpp", ".h", ".py", ".cmake"}
+    # The leading return-type/qualifier tokens use a flat quantifier
+    # (``T(?:\s+T)*\s+``) instead of the nested ``(?:T\s+)+``. The two accept
+    # the same language, but the flat form cannot become ambiguous if the token
+    # class is later extended to include whitespace, so it is defensive without
+    # changing which spans are matched.
     FUNC_RE = re.compile(
         r"(?:^|\n)(?:"
         r"(?:class|struct|namespace)\s+\w+.*?\{"
-        r"|(?:[\w:*&<>\[\]~]+\s+)+(?:\w+::)*\w+\s*\([^)]*\)\s*(?:const\s*)?(?:noexcept\s*)?\{"
+        r"|[\w:*&<>\[\]~]+(?:\s+[\w:*&<>\[\]~]+)*\s+(?:\w+::)*\w+\s*\([^)]*\)\s*(?:const\s*)?(?:noexcept\s*)?\{"
         r")",
         re.MULTILINE,
     )

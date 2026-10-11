@@ -19,8 +19,9 @@ if _app_data:
 else:
     LOGS_DIR = os.path.join(BASE_DIR, "logs")
 
-# Timeout tối đa chờ server khởi động (giây) — load GGUF model có thể mất 2-3 phút
-MAX_STARTUP_WAIT_SEC = 300  # 5 phút
+# Timeout tối đa chờ server khởi động (giây) — load GGUF model + build RAG index
+# có thể mất 5-6 phút ở lần khởi động đầu (đo thực tế ~337s). Để dư 10 phút.
+MAX_STARTUP_WAIT_SEC = 600  # 10 phút
 
 
 def is_server_running() -> bool:

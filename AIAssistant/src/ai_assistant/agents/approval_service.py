@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Any
 
-from ..application.coordination import coordinator as task_coordinator
+from ..application.coordination import TaskCoordinator
 from ..domain.approvals import approval_fingerprint
 from ..domain.errors import AuthorizationError, NotFoundError
 from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
@@ -21,6 +21,7 @@ from ..observability import (
     langsmith_trace,
     record_approval,
     record_schema_error,
+    record_token_usage,
     record_tool,
     span,
 )
@@ -74,13 +75,15 @@ class ApprovalService:
         tool_gateway: ToolGateway | None = None,
         tool_registry=None,
         checkpointer=None,
+        task_coordinator: TaskCoordinator | None = None,
     ) -> None:
         self.llm_runtime = llm_runtime
-        self.pending_actions = pending_actions or PendingActionStore("")
+        self.pending_actions = pending_actions if pending_actions is not None else PendingActionStore("")
         self.pending_lock = pending_lock or threading.Lock()
         self.tool_gateway = tool_gateway
         self.tool_registry = tool_registry
         self._checkpointer = checkpointer
+        self.task_coordinator = task_coordinator if task_coordinator is not None else TaskCoordinator()
 
     def approve(self, request: AgentApproveRequest) -> dict[str, Any]:
         """Process an approval or rejection decision for a pending tool call."""
@@ -96,8 +99,8 @@ class ApprovalService:
             raise NotFoundError(f"Action not found: {action_id}")
         action["action_id"] = action_id
 
-        if task_coordinator.is_cancelled(action.get("session_id", "")):
-            task_coordinator.finish(action.get("session_id", ""), success=False)
+        if self.task_coordinator.is_cancelled(action.get("session_id", "")):
+            self.task_coordinator.finish(action.get("session_id", ""), success=False)
             return {"status": "cancelled", "action_id": action_id,
                     "steps": [*action.get("steps", []), {
                         "type": "cancelled", "content": "Task cancelled before approval."}]}
@@ -196,9 +199,6 @@ class ApprovalService:
             steps.append({"type": "approval_granted", "scope_id": action.get("approval_scope", ""),
                           "tool": tool_name, "action_id": action.get("action_id", "")})
 
-            def record_tokens(_in: int, _out: int) -> None:
-                pass
-
             return run_langgraph_agent(
                 system_prompt=system_prompt,
                 task=action["task"],
@@ -209,12 +209,12 @@ class ApprovalService:
                 llm_runtime=self.llm_runtime,
                 backend_mode_fn=backend_mode,
                 openai_compatible_fn=openai_compatible_completion,
-                record_token_usage_fn=record_tokens,
+                record_token_usage_fn=record_token_usage,
                 tool_registry=self.tool_registry,
                 tool_gateway=self.tool_gateway,
                 pending_actions=self.pending_actions,
                 pending_lock=self.pending_lock,
-                task_coordinator=task_coordinator,
+                task_coordinator=self.task_coordinator,
                 delegate_fn=delegate,
                 authorise_delegation_fn=authorise_delegation,
                 audit_agent_fn=audit_agent,
@@ -238,7 +238,7 @@ class ApprovalService:
                 granted_fingerprint=fingerprint,
                 LocalAgentGraph=LocalAgentGraph,
                 Specialist=Specialist,
-                A2ARouter=None,
+                a2a_router=None,
                 checkpointer=self._checkpointer,
                 llm_n_ctx=LLM_N_CTX,
                 chars_per_token=CHARS_PER_TOKEN,

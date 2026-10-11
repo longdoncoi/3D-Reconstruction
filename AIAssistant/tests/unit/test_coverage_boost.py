@@ -20,11 +20,12 @@ from ai_assistant.agents.completion import (
     parse_tool_call,
 )
 from ai_assistant.agents.models import AgentApproveRequest
-from ai_assistant.agents.service import TOOL_REGISTRY, AgentService, platform_executors
+from ai_assistant.agents.service import AgentService
 from ai_assistant.bootstrap.container import PlatformContainer, build_container
 from ai_assistant.domain.errors import AuthorizationError, ModelNotLoadedError, NotFoundError
 from ai_assistant.llm.llama_cpp_backend import LlamaCppBackend
 from ai_assistant.llm.model_loader import get_backend, load_model
+from ai_assistant.tools.factory import create_tool_registry, platform_executors
 
 
 class LlamaCppBackendTests(unittest.TestCase):
@@ -360,13 +361,13 @@ class AgentServiceTests(unittest.TestCase):
 
     def test_platform_executors_returns_dict(self) -> None:
         """platform_executors returns a dict of executor functions."""
-        executors = platform_executors()
+        executors = platform_executors(create_tool_registry())
         self.assertIsInstance(executors, dict)
         self.assertGreater(len(executors), 0)
 
     def test_tool_registry_has_tools(self) -> None:
-        """TOOL_REGISTRY contains registered tools."""
-        tools = TOOL_REGISTRY.get_all()
+        """A created tool registry contains registered tools."""
+        tools = create_tool_registry().get_all()
         self.assertGreater(len(tools), 0)
 
 

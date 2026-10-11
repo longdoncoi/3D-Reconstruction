@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 from ai_assistant.agents import service as agents_service
 from ai_assistant.agents.models import AgentCancelRequest, AgentExecuteRequest
 from ai_assistant.agents.service import AgentService
+from ai_assistant.application.coordination import TaskCoordinator
 from ai_assistant.application.tasks import TaskService
 from ai_assistant.domain.errors import ModelNotLoadedError, NotFoundError
 from ai_assistant.domain.tasks import AgentTask, TaskStatus
@@ -193,12 +194,13 @@ class AgentServiceFacadeTests(unittest.TestCase):
             service.cancel(AgentCancelRequest(session_id="does-not-exist"))
 
     def test_cancel_known_session_returns_cancelled(self) -> None:
-        service = AgentService()
+        coordinator = TaskCoordinator()
+        service = AgentService(task_coordinator=coordinator)
         session = f"facade-cancel-{time.time()}"
-        agents_service.task_coordinator.start(session, task="t")
+        coordinator.start(session, task="t")
         result = service.cancel(AgentCancelRequest(session_id=session))
         self.assertEqual(result["status"], "cancelled")
-        agents_service.task_coordinator.finish(session, success=False)
+        coordinator.finish(session, success=False)
 
     def test_execute_without_llm_raises_model_not_loaded(self) -> None:
         service = AgentService(llm_runtime=None)
@@ -222,7 +224,6 @@ class AgentServiceFacadeTests(unittest.TestCase):
             )
         mock_run.assert_called_once()
         self.assertEqual(result["retry_message_index"], 3)
-        agents_service.task_coordinator.finish(session, success=True)
 
     def test_reset_state_clears_pending_and_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

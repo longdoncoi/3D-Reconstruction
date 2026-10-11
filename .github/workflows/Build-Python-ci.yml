@@ -91,10 +91,12 @@ jobs:
       - name: Run test suite with coverage gate
         working-directory: AIAssistant
         # Floor is a regression guard, not a target: the measured baseline for
-        # the offline suite is ~82% of the ai_assistant package (Oct 2026).
+        # the offline suite is ~89.5% of the ai_assistant package (Oct 2026).
+        # CI lacks the optional ``mcp`` package (~0.5pt), so 88 keeps the guard
+        # honest without turning noise into red.
         run: |
           python -m coverage run --source=ai_assistant -m unittest discover -s tests -p "test_*.py"
-          python -m coverage report --fail-under=65
+          python -m coverage report --fail-under=88
 
       - name: Static analysis — import-linter architecture contracts
         working-directory: AIAssistant

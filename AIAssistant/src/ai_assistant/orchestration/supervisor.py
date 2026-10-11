@@ -82,9 +82,11 @@ _RECENT_DELEGATION_LOGS: dict[tuple[str, str], float] = {}
 
 
 def _get_audit_path() -> str:
-    app_data_env = os.environ.get("APP_DATA_DIR")
-    if app_data_env:
-        return os.path.join(app_data_env, "AIAssistant", "agent_audit.jsonl")
+    # ADR 0001: APP_DATA_DIR is parsed only in ``settings``; resolve through it.
+    from ai_assistant.settings import data_dir
+    app_data = data_dir()
+    if app_data is not None:
+        return str(app_data / "AIAssistant" / "agent_audit.jsonl")
     try:
         from ai_assistant.config.paths import get_paths
         return str(get_paths().cache_dir / "agent_audit.jsonl")

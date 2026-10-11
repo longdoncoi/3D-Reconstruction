@@ -12,7 +12,7 @@ import types
 import unittest
 from unittest import mock
 
-from ai_assistant.rag.embeddings import E5LlamaEmbedding
+from ai_assistant.rag.embeddings import E5LlamaEmbedding, EmbeddingEncoder
 
 
 class _Vector:
@@ -77,6 +77,12 @@ class E5LlamaEmbeddingTest(unittest.TestCase):
             return await self.adapter.value._aget_query_embedding("hi")
 
         self.assertEqual(asyncio.run(_run()), [1.0, 2.0])
+
+    def test_encoder_protocol_is_runtime_checkable(self) -> None:
+        """pydantic builds ``isinstance(model, EmbeddingEncoder)``; a plain
+        Protocol would raise ``TypeError`` and abort server startup."""
+        self.assertTrue(isinstance(self.model, EmbeddingEncoder))
+        self.assertFalse(isinstance(object(), EmbeddingEncoder))
 
 
 if __name__ == "__main__":

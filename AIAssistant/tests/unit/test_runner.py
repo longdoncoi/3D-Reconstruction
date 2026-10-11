@@ -389,7 +389,7 @@ class RunnerCallbackTests(unittest.TestCase):
             delegate_fn=lambda task, session_id, tool_name, params, prefer_code: _delegation(
                 remote_endpoint="http://remote"
             ),
-            A2ARouter=_A2ARouter,
+            a2a_router=_A2ARouter(),
         )
         run_langgraph_agent(**kwargs)
         execute = _FakeGraph._last.kwargs["execute"]

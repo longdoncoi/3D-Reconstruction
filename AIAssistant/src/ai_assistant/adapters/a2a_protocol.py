@@ -22,6 +22,7 @@ from ai_assistant.config.logging import get_agent_logger
 from ai_assistant.settings import a2a_card_name, a2a_card_url, a2a_enabled, a2a_remote_agent_urls
 
 from .a2a_client import TrustedA2AClient
+from .a2a_payloads import build_agent_card as _build_agent_card_payload
 
 logger = get_agent_logger("a2a")
 
@@ -229,34 +230,66 @@ def task_payload(task: Any) -> dict[str, Any]:
 
 # ── Agent Card builder ──────────────────────────────────────────────────────
 
+
+def _default_capabilities() -> list[str]:
+    """One skill per ``Specialist`` value — the default card advertisement.
+
+    The platform ships one Supervisor plus one specialist per ``Specialist``
+    value. Deployments may narrow the advertised set through their agents
+    configuration, so the live server card stays config-driven (see
+    ``config/agents.toml``).
+
+    The ``Specialist`` import is deliberately local: ``orchestration.supervisor``
+    imports this module inside a module-scope try/except (graceful no-op when
+    optional deps are missing). A module-level import here would create an
+    import cycle that makes that try/except swallow an ``ImportError`` and
+    silently disable the supervisor's A2A integration (import-order dependent).
+    """
+    from ai_assistant.orchestration.supervisor import Specialist
+
+    return [specialist.value for specialist in Specialist]
+
+
 def build_agent_card(
     *,
     agent_name: str = "3D-Reconstruction AI Agent Platform",
     agent_version: str = "1.0.0",
-    url: str = "http://127.0.0.1:8080",
-    capabilities: list[str] = ["supervisor"],
+    base_url: str = "http://127.0.0.1:8080",
+    capabilities: list[str] | None = None,
 ) -> AgentCard:
-    """Build A2A 0.3 Agent Card for discovery endpoint."""
-    skills: list[AgentSkill] = []
-    # Specialist instructions would be loaded from supervisor here
-    for specialist_name in sorted(capabilities):
-        skills.append(AgentSkill(
-            id=specialist_name,
-            name=specialist_name.replace("_", " ").title(),
-            description=f"Execute {specialist_name} tasks through the 3D-Reconstruction agent platform.",
-            tags=[specialist_name],
-        ))
+    """Build A2A 0.3 Agent Card for discovery endpoint.
 
+    Payload construction is delegated to
+    :mod:`ai_assistant.adapters.a2a_payloads` so the wire card served by the
+    router and this dataclass view share a single source of truth; only the
+    returned object shape differs.
+    """
+    if capabilities is None:
+        capabilities = _default_capabilities()
+    payload = _build_agent_card_payload(
+        agent_name=agent_name,
+        agent_version=agent_version,
+        base_url=base_url,
+        capabilities=list(capabilities),
+    )
     return AgentCard(
-        name=agent_name,
-        description="3D-Reconstruction AI Agent Platform",
-        url=url,
-        version=agent_version,
-        protocolVersion="0.3",
-        skills=skills,
-        capabilities={"streaming": True, "pushNotifications": False},
-        defaultInputModes=["text/plain"],
-        defaultOutputModes=["text/plain"],
+        name=payload["name"],
+        description=payload["description"],
+        url=payload["url"],
+        version=payload["version"],
+        protocolVersion=payload["protocolVersion"],
+        skills=[
+            AgentSkill(
+                id=skill["id"],
+                name=skill["name"],
+                description=skill["description"],
+                tags=[skill["id"]],
+            )
+            for skill in payload["skills"]
+        ],
+        capabilities=payload["capabilities"],
+        defaultInputModes=payload["defaultInputModes"],
+        defaultOutputModes=payload["defaultOutputModes"],
     )
 
 

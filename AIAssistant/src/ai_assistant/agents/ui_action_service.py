@@ -12,13 +12,14 @@ import threading
 import time
 from typing import Any
 
-from ..application.coordination import coordinator as task_coordinator
+from ..application.coordination import TaskCoordinator
 from ..domain.errors import NotFoundError, UnprocessableRequestError
 from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
 from ..llm.inference import backend_mode, openai_compatible_completion
 from ..observability import (
     langsmith_trace,
     record_schema_error,
+    record_token_usage,
     record_tool,
     span,
 )
@@ -41,6 +42,7 @@ from ..orchestration.supervisor import (
 from ..ports import LLMRuntime, ToolGateway
 from ..settings import use_langgraph_agent
 from ..tools.action_manifest import validate_action_params
+from .ids import generate_action_id
 from .models import AgentUiActionResultRequest
 from .pending_store import PendingActionStore
 from .prompts import build_agent_system_prompt
@@ -73,13 +75,15 @@ class UIActionService:
         tool_gateway: ToolGateway | None = None,
         tool_registry=None,
         checkpointer=None,
+        task_coordinator: TaskCoordinator | None = None,
     ) -> None:
         self.llm_runtime = llm_runtime
-        self.pending_actions = pending_actions or PendingActionStore("")
+        self.pending_actions = pending_actions if pending_actions is not None else PendingActionStore("")
         self.pending_lock = pending_lock or threading.Lock()
         self.tool_gateway = tool_gateway
         self.tool_registry = tool_registry
         self._checkpointer = checkpointer
+        self.task_coordinator = task_coordinator if task_coordinator is not None else TaskCoordinator()
 
     def ui_action_result(self, request: AgentUiActionResultRequest) -> dict[str, Any]:
         """Process a desktop UI action result and continue the agent workflow."""
@@ -134,7 +138,7 @@ class UIActionService:
         next_params, error = validate_action_params(queued)
         if error is not None or next_params is None:
             raise UnprocessableRequestError(str(error or "Invalid queued UI action"))
-        next_request_id = _generate_action_id()
+        next_request_id = generate_action_id()
         next_params["request_id"] = next_request_id
         all_steps = action.get("steps", []) + steps + [{
             "type": "tool_call", "tool": "application_action", "params": next_params,
@@ -171,7 +175,7 @@ class UIActionService:
                    else f"Không thể thực thi {action['params']['action']}: unknown error")
         steps.append({"type": "final_answer", "content": content})
         all_steps = action.get("steps", []) + steps
-        task_coordinator.finish(action["session_id"], success=success)
+        self.task_coordinator.finish(action["session_id"], success=success)
         retry_idx_stored = action.get("retry_message_index")
         return {
             "status": "completed" if success else "failed",
@@ -200,9 +204,6 @@ class UIActionService:
             "content": f"Tool `application_action` returned:\n```json\n{result_text}\n```\n\nPhân tích kết quả. NẾU kế hoạch của bạn CÒN bước tiếp theo, hãy bắt buộc GỌI TOOL cho bước đó ngay lập tức (KHÔNG HỎI LẠI NGƯỜI DÙNG). Nếu đã hoàn thành toàn bộ, đưa ra thông báo kết thúc.",
         })
 
-        def record_tokens(_in: int, _out: int) -> None:
-            pass
-
         system_prompt = messages[0]["content"] if messages and messages[0].get("role") == "system" else build_agent_system_prompt(self.tool_registry, language=action.get("language", "vi"))
         return run_langgraph_agent(
             system_prompt=system_prompt,
@@ -214,12 +215,12 @@ class UIActionService:
             llm_runtime=self.llm_runtime,
             backend_mode_fn=backend_mode,
             openai_compatible_fn=openai_compatible_completion,
-            record_token_usage_fn=record_tokens,
+            record_token_usage_fn=record_token_usage,
             tool_registry=self.tool_registry,
             tool_gateway=self.tool_gateway,
             pending_actions=self.pending_actions,
             pending_lock=self.pending_lock,
-            task_coordinator=task_coordinator,
+            task_coordinator=self.task_coordinator,
             delegate_fn=delegate,
             authorise_delegation_fn=authorise_delegation,
             audit_agent_fn=audit_agent,
@@ -239,20 +240,13 @@ class UIActionService:
             prior_step_count=len(action.get("steps", [])),
             LocalAgentGraph=LocalAgentGraph,
             Specialist=Specialist,
-            A2ARouter=None,
+            a2a_router=None,
             checkpointer=self._checkpointer,
             llm_n_ctx=LLM_N_CTX,
             chars_per_token=CHARS_PER_TOKEN,
             generate_action_id_fn=lambda: "",
             save_pending_fn=self._save_pending,
         )
-
-
-def _generate_action_id() -> str:
-    """Generate a unique action ID for UI action requests."""
-    import hashlib
-    seed = f"{time.time()}:{threading.get_ident()}".encode("utf-8")
-    return hashlib.sha256(seed).hexdigest()[:12]
 
 
 __all__ = ["UIActionService"]

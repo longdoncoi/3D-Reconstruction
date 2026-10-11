@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from ai_assistant.adapters import a2a_protocol
+from ai_assistant.adapters.a2a_payloads import build_agent_card as build_agent_card_payload
 from ai_assistant.adapters.a2a_protocol import (
     A2ARouter,
     AgentCard,
@@ -126,11 +127,28 @@ class AgentCardTests(unittest.TestCase):
     """Coverage for Agent Card construction and serialisation."""
 
     def test_build_agent_card_has_skills(self) -> None:
-        card = build_agent_card(url="https://example.com/a2a")
+        card = build_agent_card(base_url="https://example.com")
         self.assertIsInstance(card, AgentCard)
         self.assertEqual(card.url, "https://example.com/a2a")
         self.assertGreater(len(card.skills), 0)
         self.assertIsInstance(card.skills[0], AgentSkill)
+
+    def test_dataclass_card_matches_served_payload(self) -> None:
+        """The dataclass view and the served wire dict share one source."""
+        capabilities = ["research", "supervisor"]
+        card = build_agent_card(base_url="https://example.com", capabilities=capabilities)
+        payload = build_agent_card_payload(
+            agent_name="3D-Reconstruction AI Agent Platform",
+            agent_version="1.0.0",
+            base_url="https://example.com",
+            capabilities=capabilities,
+        )
+        self.assertEqual(card.url, payload["url"])
+        self.assertEqual(card.protocolVersion, payload["protocolVersion"])
+        self.assertEqual(
+            [skill.id for skill in card.skills],
+            [skill["id"] for skill in payload["skills"]],
+        )
 
     def test_agent_card_serialisation_round_trip(self) -> None:
         card = AgentCard(

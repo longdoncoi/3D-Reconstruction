@@ -384,6 +384,20 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         ]
         self.assertEqual(offenders, [])
 
+    def test_no_module_level_gateway_locator_in_adapters(self):
+        """Adapters inject the gateway per instance instead of a module global.
+
+        The MCP adapter previously exposed a mutable ``_tool_gateway`` global
+        mutated by ``configure_tool_gateway(...)`` from the composition root.
+        The gateway must now be bound at construction time only.
+        """
+        offenders = []
+        for path in _iter_python():
+            identifiers = _identifiers(path)
+            if "configure_tool_gateway" in identifiers or "_tool_gateway" in identifiers:
+                offenders.append(str(path.relative_to(PACKAGE)))
+        self.assertEqual(offenders, [])
+
     def test_a2a_reuses_the_canonical_langgraph_engine_through_a_port(self):
         """ADR 0003: the A2A lifecycle delegates to the shared engine via a port."""
         agent_runs_path = PACKAGE / "application" / "agent_runs.py"

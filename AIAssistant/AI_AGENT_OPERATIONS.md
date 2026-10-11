@@ -43,6 +43,39 @@ evaluates the result against the current plan step; a failed reflection is fed
 back to the next Reason turn, which can choose a different valid tool or
 parameters. No request-specific action sequence is hard-coded in the agent.
 
+The Task Coordinator tracks `running`, `waiting_ui_ack`, `waiting_approval`,
+`succeeded`, `failed` and `cancelled` states across JSON/SSE requests. Clients
+can cooperatively stop a session with `POST /v1/agent/cancel`; graph boundaries
+check the cancellation flag before reasoning and tool execution.
+
+Planner output is a version-tolerant structured contract containing `goal`,
+`affected_areas`, `steps`, `acceptance_criteria` and
+`verification_commands`. A mutation approval returns a plan-scoped preview
+and a scope id; approving it grants the remaining mutations in that unchanged
+plan, while a changed plan receives a new scope.
+
+Reflect is selective: deterministic verification handles read-only and other
+strongly-contractual tool results; the LLM critic is reserved for mutations,
+commands, UI acknowledgements and failed/semantically ambiguous outcomes.
+
+## Code Agent toolbox
+
+Code work is handled by one logical specialist selected by the Supervisor. It
+has read-only discovery tools (`find_files`, `list_directory`, `search_text`,
+`read_file`, `analyze_code`, `git_diff`, `get_project_status`, and
+`validate_file`) plus approval-gated mutation/execution tools
+(`write_file`, `patch_file`, `create_directory`, and `run_command`). Every
+tool advertises its JSON Schema, timeout, policy and idempotency contract.
+Approved writes and patches share the same allow-list and atomic-write
+boundary; invalid working directories are rejected instead of silently falling
+back to the repository root.
+
+For repository changes, the Code Agent keeps a generic evidence cursor. It
+requires source inspection before mutation, approval before writes/commands,
+then a post-change `git_diff` and an observed verification command before
+completion. This cursor is based on tool results and does not contain
+feature-specific DICOM/OBJ dispatch rules.
+
 ## Scale and privacy
 
 Do not move inference to vLLM/TGI merely for model quality. Use it when shared

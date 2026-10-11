@@ -17,6 +17,8 @@ from ai_assistant.domain.errors import ServiceUnavailableError
 from ai_assistant.tools.action_manifest import validate_action_params
 from ai_assistant.tools.registry import ToolRegistry
 
+from .ids import generate_action_id
+
 logger = logging.getLogger("ai_assistant.agents.runner")
 
 _AGENT_MAX_ITERATIONS = 12
@@ -68,7 +70,8 @@ def run_langgraph_agent(
     # LangGraph class
     LocalAgentGraph=None,
     Specialist=None,
-    A2ARouter=None,
+    # Remote A2A transport (injected instance; ``None`` keeps dispatch local)
+    a2a_router=None,
     checkpointer=None,
     # Tokens
     llm_n_ctx: int = 8192,
@@ -94,8 +97,7 @@ def run_langgraph_agent(
     def _action_id() -> str:
         if generate_action_id_fn:
             return generate_action_id_fn()
-        import hashlib
-        return hashlib.sha256(f"{time.time()}".encode()).hexdigest()[:12]
+        return generate_action_id()
 
     def _save_pending() -> None:
         if save_pending_fn:
@@ -140,12 +142,12 @@ def run_langgraph_agent(
         if spec is None or spec.handler is None:
             return {"error": f"Tool không tồn tại hoặc không có handler: {tool_name}"}
         tool_started = time.monotonic()
-        if delegation.remote_endpoint and A2ARouter is not None:
+        if delegation.remote_endpoint and a2a_router is not None:
             remote_payload = {"tool": tool_name, "parameters": params,
                               "session_id": session_id,
                               "idempotency_key": delegation.idempotency_key}
             with span_fn("agent.a2a_delegate", tool=tool_name):
-                result = A2ARouter().route(delegation.specialist.value, task, remote_payload)
+                result = a2a_router.route(delegation.specialist.value, task, remote_payload)
             audit_agent_fn("tool_transport", delegation, source=result.get("source", "local"))
         else:
             with span_fn("agent.tool", tool=tool_name, session_id=session_id):

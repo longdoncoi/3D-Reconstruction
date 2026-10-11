@@ -16,8 +16,6 @@ def image_to_data_uri(filepath: str, max_dim: int = 512) -> str:
     """Read an image, scale it down, and return a base64 data URI."""
     import io
 
-    from PIL import Image
-    
     ext = os.path.splitext(filepath)[1].lower()
     mime_map = {
         ".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png",
@@ -26,7 +24,8 @@ def image_to_data_uri(filepath: str, max_dim: int = 512) -> str:
     mime = mime_map.get(ext, "jpeg")
     
     try:
-        img: Image.Image = Image.open(filepath)
+        from PIL import Image
+        img: "Image.Image" = Image.open(filepath)
         w, h = img.size
         if max(w, h) > max_dim:
             ratio = max_dim / max(w, h)
@@ -40,6 +39,8 @@ def image_to_data_uri(filepath: str, max_dim: int = 512) -> str:
         img.save(buf, format=save_fmt, quality=85)
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     except Exception:
+        # PIL is optional: without it (or if decoding fails) fall back to
+        # base64-encoding the raw file so callers keep getting a usable URI.
         with open(filepath, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
             

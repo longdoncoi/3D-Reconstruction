@@ -26,7 +26,6 @@ class ArchitectureSettings:
     capability_scopes: Mapping[str, frozenset[str]]
     allowed_plugins: frozenset[str]
     allowed_origins: tuple[str, ...]
-    a2a_remote_agents: frozenset[str] = frozenset()
     a2a_card_name: str = "3D-Reconstruction AI Assistant"
     a2a_card_url: str = "http://127.0.0.1:8080"
 
@@ -48,7 +47,7 @@ class ArchitectureSettings:
         a2a = payload.get("a2a", {})
         agents = payload.get("agents", {})
         api = payload.get("api", {})
-        data_dir = Path(os.environ.get("APP_DATA_DIR", str(base_dir.parent))) / "AIAssistant"
+        data_dir_value = (data_dir() or Path(base_dir.parent)) / "AIAssistant"
         scopes_raw = agents.get("scopes", {})
         capability_scopes = {
             str(name): frozenset(str(scope) for scope in scopes)
@@ -57,7 +56,7 @@ class ArchitectureSettings:
         }
         return cls(
             profile=profile,
-            data_dir=data_dir,
+            data_dir=data_dir_value,
             enable_mcp=bool(runtime.get("enable_mcp", True)),
             enable_a2a=bool(runtime.get("enable_a2a", True)),
             allow_remote_a2a=bool(runtime.get("allow_remote_a2a", False)),
@@ -67,7 +66,6 @@ class ArchitectureSettings:
             allowed_plugins=frozenset(str(item) for item in plugins.get("enabled", ["builtin.legacy-tools"])),
             allowed_origins=tuple(str(item) for item in api.get("allowed_origins", [])),
             # A2A transport configuration (ADR 0001: centralized in settings, not import-time env reads)
-            a2a_remote_agents=frozenset(str(item) for item in a2a.get("trusted_endpoints", [])),
             a2a_card_name=str(runtime.get("a2a_card_name", "3D-Reconstruction AI Assistant")),
             a2a_card_url=str(runtime.get("a2a_card_url", "http://127.0.0.1:8080")),
         )
@@ -208,3 +206,48 @@ def lsp_binaries(env: Mapping[str, str] | None = None) -> tuple[str, str, int]:
         values.get("AGENT_PYLSP_BIN", "pylsp"),
         timeout,
     )
+
+
+def data_dir(env: Mapping[str, str] | None = None) -> Path | None:
+    """Return ``APP_DATA_DIR`` when set (the user-data root), else ``None``.
+
+    Single owner of the ``APP_DATA_DIR`` read: ``ArchitectureSettings.load``
+    and deploy-time resolvers (e.g. the supervisor audit path) must go through
+    this accessor so the environment variable is parsed in exactly one place
+    (ADR 0001).
+    """
+    values = os.environ if env is None else env
+    raw = values.get("APP_DATA_DIR", "").strip()
+    return Path(raw) if raw else None
+
+
+# ── Inference backend toggles (ADR 0001: parsed in settings, read on demand) ─
+
+def agent_inference_backend(env: Mapping[str, str] | None = None) -> str:
+    """Return the configured inference backend mode (``AGENT_INFERENCE_BACKEND``)."""
+    values = os.environ if env is None else env
+    return values.get("AGENT_INFERENCE_BACKEND", "llama_cpp").casefold()
+
+
+def agent_hybrid_policy(env: Mapping[str, str] | None = None) -> str:
+    """Return the hybrid routing privacy policy (``AGENT_HYBRID_POLICY``)."""
+    values = os.environ if env is None else env
+    return values.get("AGENT_HYBRID_POLICY", "local_only").casefold()
+
+
+def agent_inference_url(env: Mapping[str, str] | None = None) -> str:
+    """Return the OpenAI-compatible remote endpoint (``AGENT_INFERENCE_URL``)."""
+    values = os.environ if env is None else env
+    return values.get("AGENT_INFERENCE_URL", "").rstrip("/")
+
+
+def agent_inference_timeout(env: Mapping[str, str] | None = None) -> int:
+    """Return the remote completion timeout in seconds (``AGENT_INFERENCE_TIMEOUT``)."""
+    values = os.environ if env is None else env
+    return int(values.get("AGENT_INFERENCE_TIMEOUT", "60"))
+
+
+def agent_inference_model(env: Mapping[str, str] | None = None) -> str:
+    """Return the remote completion model id (``AGENT_INFERENCE_MODEL``)."""
+    values = os.environ if env is None else env
+    return values.get("AGENT_INFERENCE_MODEL", "default")

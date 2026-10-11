@@ -19,22 +19,23 @@ from ai_assistant.agents.models import (
     AgentExecuteRequest,
     AgentUiActionResultRequest,
 )
-from ai_assistant.agents.service import (
-    AGENT_TOOLS,
-    TOOL_REGISTRY,
-    AgentService,
-    platform_executors,
-)
+from ai_assistant.agents.service import AgentService
 from ai_assistant.legacy import llm_module as llm_runtime
 from ai_assistant.llm.inference import backend_mode, openai_compatible_completion
-from ai_assistant.observability import record_schema_error
+from ai_assistant.observability import record_schema_error, record_token_usage
+from ai_assistant.tools.factory import create_tool_registry, platform_executors
 from ai_assistant.tools.tool_contract import validate_tool_call
+
+# The legacy bridge owns a private catalog instance; production still builds
+# the single shared registry in the composition root.
+TOOL_REGISTRY = create_tool_registry()
+AGENT_TOOLS = list(TOOL_REGISTRY.get_all())
 
 _TOOL_PARAM_MODELS = TOOL_REGISTRY.models
 _LLAMA_CPP_TOOLS = TOOL_REGISTRY.get_openai_tools()
 _TOOL_GRAMMAR_SCHEMA = TOOL_REGISTRY.grammar
 
-_default_service = AgentService(llm_runtime=llm_runtime)
+_default_service = AgentService(llm_runtime=llm_runtime, tool_registry=TOOL_REGISTRY)
 _pending_actions = _default_service.pending_actions
 _pending_lock = _default_service.pending_lock
 
@@ -49,9 +50,6 @@ def _load_pending_actions() -> None:
 
 def _constrained_agent_completion(messages: list[dict], max_tokens: int, temperature: float) -> str:
     """Compatibility entry point for constrained completion."""
-    def dummy_record(_in: int, _out: int) -> None:
-        pass
-
     return constrained_completion(
         messages=messages,
         max_tokens=max_tokens,
@@ -61,7 +59,7 @@ def _constrained_agent_completion(messages: list[dict], max_tokens: int, tempera
         openai_compatible_fn=openai_compatible_completion,
         openai_tools=_LLAMA_CPP_TOOLS,
         grammar_schema=_TOOL_GRAMMAR_SCHEMA,
-        record_token_usage_fn=dummy_record,
+        record_token_usage_fn=record_token_usage,
     )
 
 

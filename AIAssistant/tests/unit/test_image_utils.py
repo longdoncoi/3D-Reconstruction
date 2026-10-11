@@ -13,6 +13,12 @@ _PNG_1X1 = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg=="
 )
 
+try:
+    from PIL import Image  # noqa: F401
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
+
 
 class IsImageFileTests(unittest.TestCase):
     def test_recognised_extensions(self) -> None:
@@ -55,6 +61,7 @@ class ImageToDataUriTests(unittest.TestCase):
 
 
 class LoadImageForEmbeddingTests(unittest.TestCase):
+    @unittest.skipUnless(_HAS_PIL, "requires Pillow (optional runtime dependency)")
     def test_returns_rgb_thumbnail(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "pix.png"
