@@ -212,17 +212,25 @@ Edge-case test coverage:
   embedding, the IVF corpus path, scan edge cases, encoding/docx/pdf/email
   loader fallbacks, hierarchical markdown sections and the sliding-window
   overlap guard (lifts `rag/index.py` to 100% and `rag/loaders.py` to 99%).
+- `tests/unit/test_reason_node_guards.py` — the ReAct dispatch loop's
+  self-correction guards (empty answer, hallucinated inline answer, malformed
+  tool call, the `transfer_to_toolapp_agent` bounce, the desktop step/action
+  mismatch on both its reject and exhausted-fallthrough paths, and the
+  duplicate-failed-call guard) plus the post-reason router
+  (lifts `orchestration/nodes/reason.py` to 100%).
 
-Statement coverage of `src/ai_assistant/*` is **90%** locally (measured Oct
-2026) and **~89.5%** in the offline CI environment, where the optional runtime
-packages (`mcp`, PIL, …) are absent. The RAG indexing and loader modules are
-covered to 99–100%. Run it with:
+Statement coverage of `src/ai_assistant/*` is **92.5%** locally and **~92.4%**
+in the offline CI environment, where the optional runtime packages (`mcp`,
+PIL, …) are absent (measured Oct 2026). The RAG indexing and loader modules
+are covered to 99–100%, as are the approval policy (`domain/approvals.py`) and
+the ReAct dispatch loop (`orchestration/nodes/reason.py`). Run it with:
 
 ```bash
 PYTHONPATH=src python -m coverage run -m unittest discover -s tests -p "test_*.py"
 PYTHONPATH=src python -m coverage report --include="src/ai_assistant/*" --omit="*/legacy/*"
 ```
 
-CI gates statement coverage at 88% (the offline environment lacks the optional
-`mcp` package, which costs roughly half a point) and runs the lint job and the
+CI gates statement coverage at 90%, set from the measured CI baseline rather
+than the local one (the offline environment lacks the optional `mcp` package,
+so `adapters/mcp.py` is counted at 0% there), and runs the lint job and the
 full test suite in `.github/workflows/Build-Python-ci.yml`.
