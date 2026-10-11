@@ -93,6 +93,8 @@ CMakeLists.txt.user*
 /AIAssistant/Docs/*
 !/AIAssistant/Docs/adr/
 /AIAssistant/logs/
+# Local LLM weights (large; intentionally not tracked, not stored via Git LFS).
+/AIAssistant/Models/
 /AIAssistant/agent_audit.jsonl
 /AIAssistant/tasks.sqlite
 # Runtime pending-approval / UI-ACK state, rewritten on every agent run.
