@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from . import __version__, preflight
 from . import manifest as manifest_mod
@@ -120,7 +121,7 @@ def _export_one(
     cfg: TrainConfig,
     reporter: ProgressReporter,
     index: int,
-    model: TrainedModel,
+    model: TrainedModel[Any],
     backend: TrainingBackend,
 ) -> Path:
     """Export through the backend, then publish atomically at ``spec.output``."""
@@ -139,7 +140,7 @@ def _record_entry(
     spec: ModelSpec,
     cfg: TrainConfig,
     target: Path,
-    model: TrainedModel,
+    model: TrainedModel[Any],
 ) -> None:
     """Append this model's provenance and flush the manifest immediately.
 

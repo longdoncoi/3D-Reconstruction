@@ -39,7 +39,10 @@ TrainModel.py → cli → trainer ─┬→ preflight ─┐
 `trainer` owns *what happens* and never imports `ultralytics`. All framework
 access goes through the `TrainingBackend` protocol (`prepare` / `train` /
 `export`), which production binds to `UltralyticsBackend` — a thin adapter that
-imports the ML stack only when training actually starts. Three consequences:
+imports the ML stack only when training actually starts. The trained model is
+`TrainedModel[H]`, generic over the opaque framework handle `H`: the pipeline
+only ever hands it back to the same backend's `export`, never inspects it.
+Three consequences:
 
 * `--help`, `--check`, `--dry-run`, linting, type checking and the unit suite
   run with no ML dependencies installed;
@@ -157,3 +160,8 @@ exercised, so new code lands together with its test.
 * `tests/test_qt_contract.py` fails if the argv, checkbox labels or
   `pct=` regex used by `AITrainDockWidget.cpp` drift from what the CLI accepts
   and emits.
+
+The offline suite fakes the ML framework, so API drift in the pinned
+`ultralytics` can only be caught by actually training. `.github/workflows/
+cvtrain-nightly.yml` runs the real stack (CPU torch) on a tiny synthetic dataset
+— one epoch, train → ONNX → manifest → verify — nightly and on demand.
