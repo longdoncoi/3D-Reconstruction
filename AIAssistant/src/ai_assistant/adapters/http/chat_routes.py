@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
+from ...domain.specialists import Specialist
 from .security import TransportPolicy, chat_guards
 
 if TYPE_CHECKING:
@@ -106,8 +107,6 @@ def build_chat_router(
             client_host,
             user_query[:60].replace("\n", " "),
         )
-        from ai_assistant.orchestration.supervisor import Specialist
-
         logger.info("[SUPERVISOR] routed chat request to %s", Specialist.CHATBOT.value)
 
         rag_start = time.monotonic()

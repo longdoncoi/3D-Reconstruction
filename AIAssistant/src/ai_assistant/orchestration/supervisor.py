@@ -7,41 +7,55 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from enum import StrEnum
 from typing import Any
 
 from ai_assistant.config.logging import get_agent_logger
+from ai_assistant.domain.specialists import Specialist
 from ai_assistant.orchestration.specialists.code import is_coding_task
 
 logger = logging.getLogger("ai_assistant.orchestration.supervisor")
 
-# A2A protocol integration — graceful no-op when a2a_protocol is unavailable.
-try:
-    from ai_assistant.adapters.a2a_protocol import A2A_ENABLED, a2a_available, get_remote_registry
-    _A2A_IMPORT_OK = True
-except ImportError:
-    _A2A_IMPORT_OK = False
-    A2A_ENABLED = False  # type: ignore[assignment]
+# A2A remote lookup — dependency inversion, no adapter import.
+#
+# The supervisor must never import ``ai_assistant.adapters`` (that created an
+# import cycle with ``a2a_protocol``, which needs ``Specialist`` to advertise
+# skills).  Instead the composition root installs the lookup resolved by the
+# A2A adapter via :func:`set_remote_specialist_lookup`; with nothing installed
+# delegation stays strictly local.
+RemoteSpecialistLookup = Callable[[str], str | None]
 
-    def a2a_available() -> bool:  # type: ignore[misc]
-        return False
-
-    def get_remote_registry() -> dict:  # type: ignore[misc]
-        return {}
+_remote_specialist_lookup: RemoteSpecialistLookup | None = None
+_remote_lookup_lock = threading.Lock()
 
 supervisor_logger = get_agent_logger("supervisor")
 verification_logger = get_agent_logger("verification")
 
 
-class Specialist(StrEnum):
-    SUPERVISOR = "supervisor"
-    CHATBOT = "chatbot"
-    TOOLAPP = "toolapp"
-    RESEARCH = "research"
-    WORKFLOW = "desktop_workflow"
-    CODE = "code"
-    VERIFICATION = "verification"
+def set_remote_specialist_lookup(lookup: RemoteSpecialistLookup | None) -> None:
+    """Install (or clear) the A2A remote-specialist resolver.
+
+    The composition root wires
+    ``adapters.a2a_protocol.resolve_remote_specialist`` here at startup so the
+    orchestration layer stays free of adapter imports (ADR 0002).
+    """
+    global _remote_specialist_lookup
+    with _remote_lookup_lock:
+        _remote_specialist_lookup = lookup
+
+
+def _resolve_remote_endpoint(specialist: Specialist) -> str | None:
+    """Ask the installed lookup for a remote endpoint, failing closed."""
+    with _remote_lookup_lock:
+        lookup = _remote_specialist_lookup
+    if lookup is None:
+        return None
+    try:
+        return lookup(specialist.value)
+    except Exception as error:  # noqa: BLE001 — a remote lookup must never break local routing
+        logger.warning("Remote specialist lookup failed | specialist=%s error=%s", specialist.value, error)
+        return None
 
 
 @dataclass(frozen=True)
@@ -124,17 +138,12 @@ def delegate(
         specialist, reason, basis = Specialist.SUPERVISOR, "direct response or unresolved intent", "supervisor_fallback"
 
     # A2A: check whether a remote agent can handle this specialist role.
-    remote_endpoint: str | None = None
-    if a2a_available():
-        registry = get_remote_registry()
-        for url, agent in registry.items():
-            if specialist.value in agent.skills:
-                remote_endpoint = url
-                reason += f" (A2A remote: {url})"
-                supervisor_logger.info(
-                    "A2A remote match | specialist=%s url=%s", specialist.value, url,
-                )
-                break
+    remote_endpoint = _resolve_remote_endpoint(specialist)
+    if remote_endpoint:
+        reason += f" (A2A remote: {remote_endpoint})"
+        supervisor_logger.info(
+            "A2A remote match | specialist=%s url=%s", specialist.value, remote_endpoint,
+        )
 
     source = json.dumps(
         {"session": session_id, "task": task, "tool": tool, "params": parameters or {}},
@@ -297,6 +306,7 @@ __all__ = [
     "delegate",
     "reflect_result",
     "route_task",
+    "set_remote_specialist_lookup",
     "specialist_instruction",
     "verify_result",
 ]

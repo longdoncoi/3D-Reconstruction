@@ -19,7 +19,15 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ai_assistant.config.logging import get_agent_logger
-from ai_assistant.settings import a2a_card_name, a2a_card_url, a2a_enabled, a2a_remote_agent_urls
+from ai_assistant.domain.specialists import Specialist
+from ai_assistant.settings import (
+    DEFAULT_BASE_URL,
+    a2a_card_name,
+    a2a_card_url,
+    a2a_enabled,
+    a2a_remote_agent_urls,
+    a2a_trusted_endpoints,
+)
 
 from .a2a_client import TrustedA2AClient
 from .a2a_payloads import build_agent_card as _build_agent_card_payload
@@ -168,8 +176,13 @@ class A2ARouter:
 
     def _dispatch(self, agent: Any, specialist_id: str,
                   task: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Send the task through the trusted A2A client (single transport)."""
-        client = self._client or TrustedA2AClient(trusted_endpoints=frozenset({agent.url}))
+        """Send the task through the trusted A2A client (single transport).
+
+        The client is built with the deployment allowlist (ADR 0002), not with
+        the discovered agent's own URL: otherwise the ``submit`` policy check
+        would be vacuously true and any discovered card could be called.
+        """
+        client = self._client or TrustedA2AClient(trusted_endpoints=a2a_trusted_endpoints())
         outcome = client.submit(agent.url, specialist_id, task, metadata=params)
         if outcome.get("routing") != "remote_selected":
             raise RuntimeError(outcome.get("error", "Remote A2A call was rejected"))
@@ -239,22 +252,35 @@ def _default_capabilities() -> list[str]:
     configuration, so the live server card stays config-driven (see
     ``config/agents.toml``).
 
-    The ``Specialist`` import is deliberately local: ``orchestration.supervisor``
-    imports this module inside a module-scope try/except (graceful no-op when
-    optional deps are missing). A module-level import here would create an
-    import cycle that makes that try/except swallow an ``ImportError`` and
-    silently disable the supervisor's A2A integration (import-order dependent).
+    ``Specialist`` lives in the domain, so this module-level import is free of
+    cycles (the orchestration layer no longer imports this adapter).
     """
-    from ai_assistant.orchestration.supervisor import Specialist
-
     return [specialist.value for specialist in Specialist]
+
+
+def resolve_remote_specialist(specialist_id: str) -> str | None:
+    """Return the first trusted remote endpoint advertising ``specialist_id``.
+
+    This is the adapter behind the supervisor's remote-lookup port (ADR 0002).
+    The composition root installs it via
+    ``orchestration.supervisor.set_remote_specialist_lookup`` so the
+    orchestration layer never imports this adapter. Returns ``None`` when A2A is
+    disabled, the SDK is missing, or no discovered agent offers the skill —
+    delegation then stays local.
+    """
+    if not a2a_available():
+        return None
+    for url, agent in _remote_registry.items():
+        if specialist_id in agent.skills:
+            return url
+    return None
 
 
 def build_agent_card(
     *,
     agent_name: str = "3D-Reconstruction AI Agent Platform",
     agent_version: str = "1.0.0",
-    base_url: str = "http://127.0.0.1:8080",
+    base_url: str = DEFAULT_BASE_URL,
     capabilities: list[str] | None = None,
 ) -> AgentCard:
     """Build A2A 0.3 Agent Card for discovery endpoint.
@@ -350,4 +376,5 @@ __all__ = [
     "build_agent_card",
     "discover_remote_agents",
     "get_remote_registry",
+    "resolve_remote_specialist",
 ]

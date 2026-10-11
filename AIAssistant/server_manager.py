@@ -7,9 +7,16 @@ import urllib.error
 import urllib.request
 
 # ── Thông số server ────────────────────────────────────────────────────────────
-HOST     = "127.0.0.1"
-PORT     = 8080
+# Host/port lấy từ hằng chuẩn của settings (ADR 0001) — không hard-code lặp.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_SRC_DIR = os.path.join(BASE_DIR, "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
+from ai_assistant.settings import DEFAULT_HOST, DEFAULT_PORT  # noqa: E402
+
+HOST = DEFAULT_HOST
+PORT = DEFAULT_PORT
 
 # APP_DATA_DIR được Qt truyền qua env — config.py dùng cùng biến này
 # Nếu không có env var thì fallback về AIAssistant/ (chạy tay)

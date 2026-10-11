@@ -140,8 +140,10 @@ OVERLAP_CHARS = _rag_settings.overlap_chars
 
 SIMILARITY_THRESHOLD = _rag_settings.similarity_threshold
 MAX_CONTEXT_CHARS = _rag_settings.max_context_chars
-CHARS_PER_TOKEN = 2.2
-LLM_N_CTX = 8192
+# Single source of truth for LLM budget constants (ADR 0001); re-exported here
+# for legacy importers so the shim keeps its public names.
+from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX  # noqa: E402
+
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 def cleanup_old_logs(logs_dir: str = LOGS_DIR, max_days: int = 7, max_size_mb: int = 100) -> None:

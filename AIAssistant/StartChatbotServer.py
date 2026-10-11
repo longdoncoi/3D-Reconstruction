@@ -39,7 +39,7 @@ if sys.platform == "win32":
         pass
 
 from ai_assistant.adapters.a2a import build_a2a_router
-from ai_assistant.adapters.a2a_protocol import A2ARouter
+from ai_assistant.adapters.a2a_protocol import A2ARouter, resolve_remote_specialist
 from ai_assistant.adapters.http import (
     build_admin_router,
     build_agent_router,
@@ -68,6 +68,7 @@ from ai_assistant.legacy.config import (
     logger,
 )
 from ai_assistant.orchestration.specialists import ChatbotAgent
+from ai_assistant.orchestration.supervisor import set_remote_specialist_lookup
 from ai_assistant.tools import action_manifest
 from ai_assistant.tools.factory import create_tool_registry, platform_executors
 
@@ -213,10 +214,15 @@ app.include_router(build_agent_router(agent_service, policy=transport_policy))
 
 # Optional protocol adapters
 if platform.settings.enable_a2a:
+    # Dependency inversion (ADR 0002): the supervisor never imports the A2A
+    # adapter; the composition root installs its remote-specialist resolver.
+    set_remote_specialist_lookup(resolve_remote_specialist)
     app.include_router(build_a2a_router(
         platform.tasks, "3D-Reconstruction AI Assistant", "3.0.0",
         policy=transport_policy,
     ))
+else:
+    set_remote_specialist_lookup(None)
 if platform.settings.enable_mcp and mcp_server.available:
     mcp_server.register_plugin_tools(platform.plugins)
     app.mount("/mcp", mcp_server.asgi_app())

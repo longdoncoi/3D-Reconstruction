@@ -27,7 +27,12 @@ from ipaddress import ip_address
 
 from fastapi import Depends, HTTPException, Request
 
+from ...settings import DEFAULT_HOST, DEFAULT_PORT
+
 _LOOPBACK_HOSTS = frozenset({"localhost", "::1", "127.0.0.1"})
+# The deployment bind plus the dev-server port are implicitly allowed loopback
+# origins; both derive from the canonical host/port instead of a literal list.
+_ALLOWED_LOOPBACK_PORT = frozenset({DEFAULT_PORT, 8000})
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,9 +87,9 @@ def require_local_origin(request: Request, policy: TransportPolicy, surface: str
     if not origin:
         return  # non-browser caller (Qt, curl, tests) — the peer check applies
     allowed = {item.rstrip("/") for item in policy.allowed_origins}
-    allowed.update(f"http://127.0.0.1:{port}" for port in (8080, 8000))
-    allowed.update(f"http://localhost:{port}" for port in (8080, 8000))
-    allowed.add("http://127.0.0.1")
+    allowed.update(f"http://{DEFAULT_HOST}:{port}" for port in _ALLOWED_LOOPBACK_PORT)
+    allowed.update(f"http://localhost:{port}" for port in _ALLOWED_LOOPBACK_PORT)
+    allowed.add(f"http://{DEFAULT_HOST}")
     allowed.add("http://localhost")
     if origin.rstrip("/") not in allowed:
         _reject(403, f"{surface} does not accept this origin")

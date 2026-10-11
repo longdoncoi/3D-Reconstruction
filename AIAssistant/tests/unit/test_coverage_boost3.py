@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from ai_assistant.agents import service as agents_service
+from ai_assistant.agents import context as agents_context
 from ai_assistant.agents.models import AgentCancelRequest, AgentExecuteRequest
 from ai_assistant.agents.service import AgentService
 from ai_assistant.application.coordination import TaskCoordinator
@@ -213,7 +213,7 @@ class AgentServiceFacadeTests(unittest.TestCase):
         service = AgentService(llm_runtime=mock_llm)
         session = f"facade-exec-{time.time()}"
         with patch.object(
-            agents_service, "run_langgraph_agent", return_value={"status": "completed", "content": "ok"}
+            agents_context, "run_langgraph_agent", return_value={"status": "completed", "content": "ok"}
         ) as mock_run:
             result = service.execute(
                 AgentExecuteRequest(
@@ -223,6 +223,11 @@ class AgentServiceFacadeTests(unittest.TestCase):
                 )
             )
         mock_run.assert_called_once()
+        # The facade must inject its own wiring (LLM, catalog, pending store)
+        # into the runner rather than relying on runner-side defaults.
+        kwargs = mock_run.call_args.kwargs
+        self.assertIs(kwargs["llm_runtime"], mock_llm)
+        self.assertIs(kwargs["tool_registry"], service.tool_registry)
         self.assertEqual(result["retry_message_index"], 3)
 
     def test_reset_state_clears_pending_and_file(self) -> None:

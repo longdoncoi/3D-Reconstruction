@@ -6,6 +6,10 @@ This module provides the main entry point for Agent execution, delegating to:
 
 The facade pattern preserves the existing public interface while enabling
 independent testing and evolution of each sub-service (ADR 0004).
+
+The shared run wiring (LLM, tools, supervisor, observability) lives in
+:class:`~ai_assistant.agents.context.AgentRunContext`, so this facade only
+spells out the arguments that vary per execution (prompt, task, history).
 """
 from __future__ import annotations
 
@@ -18,15 +22,6 @@ from collections.abc import Callable
 from ..application.coordination import TaskCoordinator
 from ..config.paths import get_paths
 from ..domain.errors import ModelNotLoadedError, NotFoundError
-from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
-from ..llm.inference import backend_mode, openai_compatible_completion
-from ..observability import (
-    langsmith_trace,
-    record_schema_error,
-    record_token_usage,
-    record_tool,
-    span,
-)
 from ..orchestration.specialists.code import (
     CodingTaskContext,
     is_coding_task,
@@ -34,24 +29,10 @@ from ..orchestration.specialists.code import (
 from ..orchestration.specialists.code import (
     instruction as coding_instruction,
 )
-from ..orchestration.supervisor import (
-    Specialist,
-    delegate,
-    reflect_result,
-    specialist_instruction,
-    verify_result,
-)
-from ..orchestration.supervisor import (
-    audit as audit_agent,
-)
-from ..orchestration.supervisor import (
-    authorise as authorise_delegation,
-)
 from ..ports import LLMRuntime, ToolGateway
 from ..tools.factory import create_tool_registry
-from ..tools.tool_contract import validate_tool_call
 from .approval_service import ApprovalService
-from .ids import generate_action_id
+from .context import AgentRunContext
 from .models import (
     AgentApproveRequest,
     AgentCancelRequest,
@@ -60,15 +41,7 @@ from .models import (
 )
 from .pending_store import PendingActionStore
 from .prompts import build_agent_system_prompt
-from .runner import run_langgraph_agent
 from .ui_action_service import UIActionService
-
-try:
-    from ..orchestration.graph import LocalAgentGraph
-    LANGGRAPH_AVAILABLE = True
-except ImportError:
-    LocalAgentGraph = None  # type: ignore[assignment,misc]
-    LANGGRAPH_AVAILABLE = False
 
 logger = logging.getLogger("ai_assistant.agents.service")
 
@@ -112,6 +85,20 @@ class AgentService:
         # Durability (ADR 0003): rehydrate approvals/desktop acks persisted by a
         # previous process so cross-restart A2A continuation still resolves.
         self.pending_actions.load()
+
+        # One shared wiring bundle for this facade's run; the A2A router is
+        # only used on the semantic-path delegations of the main execute path,
+        # so the sub-services get their own bundle without it.
+        self._ctx = AgentRunContext(
+            llm_runtime=llm_runtime,
+            pending_actions=self.pending_actions,
+            pending_lock=self.pending_lock,
+            tool_gateway=tool_gateway,
+            tool_registry=self.tool_registry,
+            checkpointer=self._checkpointer,
+            task_coordinator=self.task_coordinator,
+            a2a_router=a2a_router,
+        )
 
         # Sub-services share the same pending state, tool gateway, coordinator
         # and graph persistence; the A2A router stays on the semantic-path
@@ -187,51 +174,18 @@ class AgentService:
             {"role": "user", "content": task_with_attachments},
         ]
 
-        def _run_agent(event_sink: Callable[[dict], None] | None = None) -> dict:
-            return run_langgraph_agent(
-                system_prompt=system_prompt,
-                task=task_with_attachments,
-                session_id=session_id,
-                temperature=request.temperature,
-                language=request.language,
-                request_started=req_start,
-                llm_runtime=self.llm_runtime,
-                backend_mode_fn=backend_mode,
-                openai_compatible_fn=openai_compatible_completion,
-                record_token_usage_fn=record_token_usage,
-                tool_registry=self.tool_registry,
-                tool_gateway=self.tool_gateway,
-                pending_actions=self.pending_actions,
-                pending_lock=self.pending_lock,
-                task_coordinator=self.task_coordinator,
-                delegate_fn=delegate,
-                authorise_delegation_fn=authorise_delegation,
-                audit_agent_fn=audit_agent,
-                verify_result_fn=verify_result,
-                reflect_result_fn=reflect_result,
-                record_tool_fn=record_tool,
-                record_schema_error_fn=record_schema_error,
-                validate_tool_call_fn=validate_tool_call,
-                langsmith_trace_fn=langsmith_trace,
-                span_fn=span,
-                specialist_instruction_fn=specialist_instruction,
-                is_coding_task_fn=is_coding_task,
-                initial_messages=initial_msgs,
-                event_sink=event_sink,
-                supervisor_route=Specialist.SUPERVISOR,
-                LocalAgentGraph=LocalAgentGraph,
-                Specialist=Specialist,
-                a2a_router=self._a2a_router,
-                checkpointer=self._checkpointer,
-                llm_n_ctx=LLM_N_CTX,
-                chars_per_token=CHARS_PER_TOKEN,
-                generate_action_id_fn=generate_action_id,
-                save_pending_fn=self._save_pending,
-            )
-
         # Transport negotiation (JSON vs SSE) belongs to the HTTP adapter; the
         # service returns a plain result and optionally streams steps via event_sink.
-        result = _run_agent(event_sink)
+        result = self._ctx.run(
+            system_prompt=system_prompt,
+            task=task_with_attachments,
+            session_id=session_id,
+            temperature=request.temperature,
+            language=request.language,
+            request_started=req_start,
+            initial_messages=initial_msgs,
+            event_sink=event_sink,
+        )
         if retry_idx is not None:
             result["retry_message_index"] = retry_idx
         return result

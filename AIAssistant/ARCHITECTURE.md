@@ -42,8 +42,18 @@ Qt / HTTP / MCP / A2A
 - A2A owns durable task lifecycle. Its only remote transport is
   `adapters/a2a_client.TrustedA2AClient` (allowlist-only, classification-gated);
   `A2ARouter` is a routing facade over it and reports `remote_selected`,
-  `rejected_*`, or `degraded_dependency` outcomes.
-- LangGraph remains isolated behind its adapter so it stays replaceable.
+  `rejected_*`, or `degraded_dependency` outcomes. The allowlist is the single
+  merged deployment set from `settings.a2a_trusted_endpoints()` (config
+  `[a2a] trusted_endpoints` + `A2A_REMOTE_AGENTS`); with none configured every
+  remote dispatch fails closed (ADR 0012).
+- The supervisor reaches A2A only through dependency inversion: it exposes
+  `set_remote_specialist_lookup`, and the composition root installs
+  `a2a_protocol.resolve_remote_specialist`. No orchestration module imports an
+  adapter (enforced by an AST boundary test), so there is no import cycle.
+- LangGraph stays isolated behind its engine (`orchestration/graph.py`) and
+  checkpointer adapter (`adapters/persistence/checkpointing.py`), and LangSmith
+  behind `observability/langsmith_integration.py`; AST boundary tests fail CI if
+  any other module imports those frameworks (ADR 0012).
 - LangSmith remains optional and must not receive restricted/regulated data.
 - Tool inputs are validated from the catalog schema at the single execution
   gateway, including requests received through MCP.
@@ -87,6 +97,19 @@ Each sub-service receives the same injected dependencies (`llm_runtime`,
 `pending_actions`, `pending_lock`, `tool_gateway`, `tool_registry`) and can be
 tested independently.
 
+### Shared run wiring (`agents/context.py`, ADR 0012)
+
+The three services previously each repeated the same ~26 keyword arguments
+when calling `run_langgraph_agent` (the LLM runtime, tool registry/gateway,
+pending store, and every supervisor/observability/LLM callable) — ~78
+duplicated lines, and a new injected dependency meant editing three call
+sites. `AgentRunContext` now owns that block once: it is a frozen record of
+the wiring a run needs, and each service calls `AgentRunContext.run(...)` with
+only the arguments that vary per invocation. The main execute path keeps the
+real tool validator, action-id generator and A2A router; the approval and
+desktop-ack resume paths use the named no-op `RESUME_*` helpers with
+`a2a_router=None`.
+
 ## A2A adapter decomposition (ADR 0005)
 
 The former monolithic `adapters/a2a.py` (310 lines) has been decomposed into:
@@ -96,7 +119,7 @@ The former monolithic `adapters/a2a.py` (310 lines) has been decomposed into:
 - `adapters/a2a_router.py` — FastAPI router with all standard and legacy endpoints.
 - `adapters/a2a.py` — backward-compatible re-exports.
 
-## Legacy migration (ADR 0006)
+## Legacy migration (ADR 0006, 0012)
 
 The legacy `modules/` package has been **removed**. Implementations live in
 `src/ai_assistant/legacy/`:
@@ -104,10 +127,9 @@ The legacy `modules/` package has been **removed**. Implementations live in
 - `legacy/config.py` — re-exports from `settings` + legacy constants.
 - `legacy/llm_module.py` — re-exports from `llm` + legacy global state.
 - `legacy/rag_module.py` — re-exports from `rag` + legacy global state.
-- `legacy/mcp_server.py` — re-exports `McpToolServer` from `adapters/mcp`
-  (import-compatible shim; the composition root builds its own instance).
-- `legacy/a2a_protocol.py` — re-exports from `adapters/a2a_protocol`.
-- `legacy/agent_module.py` — composition-root compatibility bridge.
+
+The shims `legacy/{a2a_protocol,action_manifest,agent_module,checkpointing,lsp_client,mcp_server}.py`
+were deleted in ADR 0012: each was a one-line re-export with no live importer.
 
 All production code imports from `ai_assistant.*` directly. Two root-level
 compatibility shims remain only for external consumers: `LangGraphAgent.py`

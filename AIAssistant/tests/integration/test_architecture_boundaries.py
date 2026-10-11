@@ -272,6 +272,65 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                         )
         self.assertEqual(violations, [], _format(violations))
 
+    def test_orchestration_does_not_import_any_adapter(self):
+        """ADR 0002: orchestration is inner — adapters depend on it, never back.
+
+        The A2A integration uses dependency inversion: the supervisor exposes
+        ``set_remote_specialist_lookup`` and the composition root installs the
+        adapter's resolver, so no orchestration module imports
+        ``ai_assistant.adapters`` (that was an import cycle).
+        """
+        violations: list[tuple[str, str, str]] = []
+        for path in _iter_python("orchestration"):
+            for module in _imports(path):
+                if module.startswith("ai_assistant.adapters"):
+                    violations.append(
+                        (str(path.relative_to(PACKAGE)), module, "imports an adapter from orchestration")
+                    )
+        self.assertEqual(violations, [], _format(violations))
+
+    def test_langgraph_framework_stays_isolated(self):
+        """The graph framework is replaceable: only two modules may import it.
+
+        ``orchestration/graph.py`` is the decision-loop engine and
+        ``adapters/persistence/checkpointing.py`` is the checkpointer adapter.
+        Every other module reaches the agent loop through ports, so the
+        LangGraph/LangChain stack can be swapped without touching callers.
+        """
+        allowed = {
+            "orchestration/graph.py",
+            "adapters/persistence/checkpointing.py",
+        }
+        frameworks = ("langgraph", "langchain", "langchain_core")
+        violations: list[tuple[str, str, str]] = []
+        for path in _iter_python():
+            rel = path.relative_to(PACKAGE).as_posix()
+            if rel in allowed:
+                continue
+            for module in _imports(path):
+                root = module.split(".")[0]
+                if root in frameworks:
+                    violations.append((rel, module, "imports the graph framework outside its isolation boundary"))
+        self.assertEqual(violations, [], _format(violations))
+
+    def test_langsmith_tracing_stays_isolated(self):
+        """The LangSmith tracing backend is isolated to its observability adapter.
+
+        Tracing is an infrastructure concern; only
+        ``observability/langsmith_integration.py`` may import the SDK, and it
+        does so lazily so the dependency stays optional.
+        """
+        allowed = {"observability/langsmith_integration.py"}
+        violations: list[tuple[str, str, str]] = []
+        for path in _iter_python():
+            rel = path.relative_to(PACKAGE).as_posix()
+            if rel in allowed:
+                continue
+            for module in _imports(path):
+                if module.split(".")[0] == "langsmith":
+                    violations.append((rel, module, "imports the tracing SDK outside its adapter"))
+        self.assertEqual(violations, [], _format(violations))
+
     def test_tool_execution_has_a_single_choke_point(self):
         """ADR 0003: nothing may invoke ``ToolSpec.handler`` directly."""
         violations: list[tuple[str, str, str]] = []

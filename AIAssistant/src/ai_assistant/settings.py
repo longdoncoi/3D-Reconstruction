@@ -6,6 +6,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+# ── Canonical local bind address (single source of truth, ADR 0001) ─────────
+# The server binds loopback only; every default URL and the transport policy's
+# implicit loopback origins derive from these two values instead of repeating
+# "127.0.0.1:8080" across adapters and scripts.
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8080
+DEFAULT_BASE_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
+
 
 @dataclass(frozen=True, slots=True)
 class ArchitectureSettings:
@@ -27,7 +35,7 @@ class ArchitectureSettings:
     allowed_plugins: frozenset[str]
     allowed_origins: tuple[str, ...]
     a2a_card_name: str = "3D-Reconstruction AI Assistant"
-    a2a_card_url: str = "http://127.0.0.1:8080"
+    a2a_card_url: str = DEFAULT_BASE_URL
 
     @classmethod
     def load(cls, base_dir: Path) -> "ArchitectureSettings":
@@ -67,7 +75,7 @@ class ArchitectureSettings:
             allowed_origins=tuple(str(item) for item in api.get("allowed_origins", [])),
             # A2A transport configuration (ADR 0001: centralized in settings, not import-time env reads)
             a2a_card_name=str(runtime.get("a2a_card_name", "3D-Reconstruction AI Assistant")),
-            a2a_card_url=str(runtime.get("a2a_card_url", "http://127.0.0.1:8080")),
+            a2a_card_url=str(runtime.get("a2a_card_url", DEFAULT_BASE_URL)),
         )
 
 
@@ -167,6 +175,53 @@ def a2a_remote_agent_urls(env: Mapping[str, str] | None = None) -> tuple[str, ..
     )
 
 
+def a2a_trusted_endpoints(env: Mapping[str, str] | None = None) -> frozenset[str]:
+    """Deployment-wide A2A endpoint allowlist (ADR 0002).
+
+    Merges the two operator signals into one enforcement set so the allowlist
+    actually reaches :class:`~ai_assistant.adapters.a2a_client.TrustedA2AClient`:
+
+    - ``[a2a] trusted_endpoints`` from ``config/{profile}.toml`` (via the
+      cached :class:`ArchitectureSettings`), and
+    - the ``A2A_REMOTE_AGENTS`` environment override (comma-separated).
+
+    Neither source is trusted by default; the returned set is empty until an
+    operator configures one. The remote A2A adapter refuses any endpoint
+    outside this set.
+    """
+    values = os.environ if env is None else env
+    endpoints = {url.rstrip("/") for url in a2a_remote_agent_urls(values)}
+    endpoints.update(url.rstrip("/") for url in load_settings().trusted_a2a_endpoints)
+    return frozenset(url for url in endpoints if url)
+
+
+# ── Cached platform settings (parsed once through ArchitectureSettings) ─────
+# ADR 0001: the TOML files are parsed in exactly one place. This cache lets
+# on-demand accessors (e.g. a2a_trusted_endpoints) reuse that parser without a
+# composition root, while ``invalidate_settings_cache`` keeps tests honest.
+_settings_cache: ArchitectureSettings | None = None
+
+
+def load_settings() -> ArchitectureSettings:
+    """Return the platform settings, parsed once and cached.
+
+    The base directory is resolved from this file's location
+    (``src/ai_assistant/settings.py`` → package root two levels up), so
+    accessors work whether or not a composition root has run.
+    """
+    global _settings_cache
+    if _settings_cache is None:
+        package_root = Path(__file__).resolve().parents[2]
+        _settings_cache = ArchitectureSettings.load(package_root)
+    return _settings_cache
+
+
+def invalidate_settings_cache() -> None:
+    """Drop the cached settings so the next ``load_settings`` re-reads config."""
+    global _settings_cache
+    _settings_cache = None
+
+
 def a2a_card_name(env: Mapping[str, str] | None = None) -> str:
     """Display name for this server's published Agent Card."""
     values = os.environ if env is None else env
@@ -176,7 +231,7 @@ def a2a_card_name(env: Mapping[str, str] | None = None) -> str:
 def a2a_card_url(env: Mapping[str, str] | None = None) -> str:
     """Public base URL where this server is reachable."""
     values = os.environ if env is None else env
-    return values.get("A2A_CARD_URL", "http://127.0.0.1:8080")
+    return values.get("A2A_CARD_URL", DEFAULT_BASE_URL)
 
 
 def agent_write_roots(env: Mapping[str, str] | None = None) -> frozenset[str]:

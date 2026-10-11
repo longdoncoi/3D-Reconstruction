@@ -9,12 +9,10 @@ adapter still reference them):
 - ``config`` → ``ai_assistant.settings`` + ``ai_assistant.config``
 - ``llm_module`` → ``ai_assistant.llm``
 - ``rag_module`` → ``ai_assistant.rag``
-- ``mcp_server`` → ``ai_assistant.adapters.mcp``
-- ``action_manifest`` → ``ai_assistant.tools.action_manifest``
-- ``agent_module`` → ``ai_assistant.agents.service``
-- ``a2a_protocol`` — legacy A2A message wire format (tests only)
-- ``checkpointing`` — legacy checkpoint format (tests only)
-- ``lsp_client`` — legacy LSP client bridge (tests only)
+
+Shims ``a2a_protocol``, ``action_manifest``, ``agent_module``, ``checkpointing``,
+``lsp_client`` and ``mcp_server`` were removed (ADR 0012): nothing imported them
+anymore, and each only re-exported a single canonical module.
 """
 from __future__ import annotations
 

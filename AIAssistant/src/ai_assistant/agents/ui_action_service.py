@@ -3,6 +3,10 @@
 Extracted from ``AgentService`` (ADR 0004) to separate the desktop UI action
 continuation lifecycle from the main execution path. Owns: UI action result
 processing, queued action chaining, and LangGraph resume after desktop ack.
+
+All shared run wiring (LLM, tools, supervisor, observability) lives in
+:class:`~ai_assistant.agents.context.AgentRunContext`; this service only
+supplies the per-invocation arguments.
 """
 from __future__ import annotations
 
@@ -14,46 +18,15 @@ from typing import Any
 
 from ..application.coordination import TaskCoordinator
 from ..domain.errors import NotFoundError, UnprocessableRequestError
-from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
-from ..llm.inference import backend_mode, openai_compatible_completion
-from ..observability import (
-    langsmith_trace,
-    record_schema_error,
-    record_token_usage,
-    record_tool,
-    span,
-)
-from ..orchestration.specialists.code import (
-    is_coding_task,
-)
-from ..orchestration.supervisor import (
-    Specialist,
-    delegate,
-    reflect_result,
-    specialist_instruction,
-    verify_result,
-)
-from ..orchestration.supervisor import (
-    audit as audit_agent,
-)
-from ..orchestration.supervisor import (
-    authorise as authorise_delegation,
-)
+from ..orchestration.supervisor import audit as audit_agent
+from ..orchestration.supervisor import delegate, verify_result
 from ..ports import LLMRuntime, ToolGateway
 from ..settings import use_langgraph_agent
 from ..tools.action_manifest import validate_action_params
+from .context import RESUME_ACTION_ID, RESUME_VALIDATE_TOOL_CALL, AgentRunContext
 from .ids import generate_action_id
 from .models import AgentUiActionResultRequest
 from .pending_store import PendingActionStore
-from .prompts import build_agent_system_prompt
-from .runner import run_langgraph_agent
-
-try:
-    from ..orchestration.graph import LocalAgentGraph
-    LANGGRAPH_AVAILABLE = True
-except ImportError:
-    LocalAgentGraph = None  # type: ignore[assignment,misc]
-    LANGGRAPH_AVAILABLE = False
 
 logger = logging.getLogger("ai_assistant.agents.ui_action_service")
 
@@ -77,32 +50,61 @@ class UIActionService:
         checkpointer=None,
         task_coordinator: TaskCoordinator | None = None,
     ) -> None:
-        self.llm_runtime = llm_runtime
-        self.pending_actions = pending_actions if pending_actions is not None else PendingActionStore("")
-        self.pending_lock = pending_lock or threading.Lock()
-        self.tool_gateway = tool_gateway
-        self.tool_registry = tool_registry
-        self._checkpointer = checkpointer
-        self.task_coordinator = task_coordinator if task_coordinator is not None else TaskCoordinator()
+        self._ctx = AgentRunContext(
+            llm_runtime=llm_runtime,
+            pending_actions=pending_actions if pending_actions is not None else PendingActionStore(""),
+            pending_lock=pending_lock or threading.Lock(),
+            tool_gateway=tool_gateway,
+            tool_registry=tool_registry,
+            checkpointer=checkpointer,
+            task_coordinator=task_coordinator if task_coordinator is not None else TaskCoordinator(),
+        )
+
+    # ── Shared wiring surfaced for introspection/tests ──────────────────────
+    @property
+    def llm_runtime(self) -> LLMRuntime | None:
+        return self._ctx.llm_runtime
+
+    @property
+    def pending_actions(self) -> PendingActionStore:
+        return self._ctx.pending_actions
+
+    @property
+    def pending_lock(self) -> Any:
+        return self._ctx.pending_lock
+
+    @property
+    def tool_gateway(self) -> ToolGateway | None:
+        return self._ctx.tool_gateway
+
+    @property
+    def tool_registry(self) -> Any:
+        return self._ctx.tool_registry
+
+    @property
+    def task_coordinator(self) -> TaskCoordinator:
+        return self._ctx.task_coordinator
+
+    def _save_pending(self) -> None:
+        self._ctx.save_pending()
 
     def ui_action_result(self, request: AgentUiActionResultRequest) -> dict[str, Any]:
         """Process a desktop UI action result and continue the agent workflow."""
-        with self.pending_lock:
-            action = self.pending_actions.pop(request.request_id, None)
+        with self._ctx.pending_lock:
+            action = self._ctx.pending_actions.pop(request.request_id, None)
             self._save_pending()
         if action is None or not action.get("ui_ack"):
             raise NotFoundError("Unknown or expired UI action request")
 
         params = action["params"]
         result = {"success": request.success, "action": params["action"], **request.result}
-        steps = []
-        steps.append({
+        steps = [{
             "type": "tool_result",
             "tool": "application_action",
             "request_id": request.request_id,
             "result": result,
             "iteration": action.get("iteration", 0),
-        })
+        }]
 
         delegation = delegate(action["task"], action["session_id"], "application_action", params)
         verification = verify_result(delegation, result)
@@ -121,9 +123,6 @@ class UIActionService:
         return self._finalize(action, steps, request.success)
 
     # ── Private helpers ─────────────────────────────────────────────────────
-
-    def _save_pending(self) -> None:
-        self.pending_actions.save()
 
     def _chain_next_action(
         self,
@@ -144,8 +143,8 @@ class UIActionService:
             "type": "tool_call", "tool": "application_action", "params": next_params,
             "iteration": action.get("iteration", 0) + 1,
         }]
-        with self.pending_lock:
-            self.pending_actions[next_request_id] = {
+        with self._ctx.pending_lock:
+            self._ctx.pending_actions[next_request_id] = {
                 "ui_ack": True, "params": next_params, "task": action["task"],
                 "session_id": action["session_id"], "steps": all_steps,
                 "messages": action.get("messages", []), "next_actions": next_actions[1:],
@@ -168,14 +167,15 @@ class UIActionService:
         success: bool,
     ) -> dict[str, Any]:
         """Finalize the UI action workflow, optionally resuming LangGraph."""
-        if action.get("messages") and use_langgraph_agent() and LANGGRAPH_AVAILABLE:
+        langgraph_available = self._ctx.local_agent_graph is not None
+        if action.get("messages") and use_langgraph_agent() and langgraph_available:
             return self._resume_langgraph(action, steps, success)
 
         content = (f"Đã thực thi {action['params']['action']}." if success
                    else f"Không thể thực thi {action['params']['action']}: unknown error")
         steps.append({"type": "final_answer", "content": content})
         all_steps = action.get("steps", []) + steps
-        self.task_coordinator.finish(action["session_id"], success=success)
+        self._ctx.task_coordinator.finish(action["session_id"], success=success)
         retry_idx_stored = action.get("retry_message_index")
         return {
             "status": "completed" if success else "failed",
@@ -193,6 +193,8 @@ class UIActionService:
         success: bool,
     ) -> dict[str, Any]:
         """Resume LangGraph after a desktop UI action acknowledgement."""
+        from .prompts import build_agent_system_prompt
+
         messages = action["messages"]
         tool_call_text = json.dumps({"tool": "application_action", "params": action["params"]}, ensure_ascii=False)
         messages.append({"role": "assistant", "content": f"```tool_call\n{tool_call_text}\n```"})
@@ -204,48 +206,22 @@ class UIActionService:
             "content": f"Tool `application_action` returned:\n```json\n{result_text}\n```\n\nPhân tích kết quả. NẾU kế hoạch của bạn CÒN bước tiếp theo, hãy bắt buộc GỌI TOOL cho bước đó ngay lập tức (KHÔNG HỎI LẠI NGƯỜI DÙNG). Nếu đã hoàn thành toàn bộ, đưa ra thông báo kết thúc.",
         })
 
-        system_prompt = messages[0]["content"] if messages and messages[0].get("role") == "system" else build_agent_system_prompt(self.tool_registry, language=action.get("language", "vi"))
-        return run_langgraph_agent(
+        system_prompt = (messages[0]["content"] if messages and messages[0].get("role") == "system"
+                         else build_agent_system_prompt(self._ctx.tool_registry, language=action.get("language", "vi")))
+        return self._ctx.run(
             system_prompt=system_prompt,
             task=action["task"],
             session_id=action["session_id"],
             temperature=action["temperature"],
             language=action.get("language", "vi"),
             request_started=time.monotonic(),
-            llm_runtime=self.llm_runtime,
-            backend_mode_fn=backend_mode,
-            openai_compatible_fn=openai_compatible_completion,
-            record_token_usage_fn=record_token_usage,
-            tool_registry=self.tool_registry,
-            tool_gateway=self.tool_gateway,
-            pending_actions=self.pending_actions,
-            pending_lock=self.pending_lock,
-            task_coordinator=self.task_coordinator,
-            delegate_fn=delegate,
-            authorise_delegation_fn=authorise_delegation,
-            audit_agent_fn=audit_agent,
-            verify_result_fn=verify_result,
-            reflect_result_fn=reflect_result,
-            record_tool_fn=record_tool,
-            record_schema_error_fn=record_schema_error,
-            validate_tool_call_fn=lambda *a, **kw: None,
-            langsmith_trace_fn=langsmith_trace,
-            span_fn=span,
-            specialist_instruction_fn=specialist_instruction,
-            is_coding_task_fn=is_coding_task,
             initial_messages=messages,
             initial_steps=action.get("steps", []) + steps,
             initial_iteration=action.get("iteration", 0),
             resume_with_reflection=True,
             prior_step_count=len(action.get("steps", [])),
-            LocalAgentGraph=LocalAgentGraph,
-            Specialist=Specialist,
-            a2a_router=None,
-            checkpointer=self._checkpointer,
-            llm_n_ctx=LLM_N_CTX,
-            chars_per_token=CHARS_PER_TOKEN,
-            generate_action_id_fn=lambda: "",
-            save_pending_fn=self._save_pending,
+            validate_tool_call_fn=RESUME_VALIDATE_TOOL_CALL,
+            generate_action_id_fn=RESUME_ACTION_ID,
         )
 
 
