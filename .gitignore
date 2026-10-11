@@ -90,6 +90,8 @@ CMakeLists.txt.user*
 /.ruff_cache/
 /.vs/
 /AIAssistant/Cache/
+# Runtime RAG caches + agent audit log (regenerated while the server runs).
+/Cache/
 /AIAssistant/Docs/*
 !/AIAssistant/Docs/adr/
 /AIAssistant/logs/
