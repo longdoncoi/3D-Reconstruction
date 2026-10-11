@@ -39,6 +39,30 @@ Empty fingerprints (graphs constructed outside the runner, e.g. contract tests)
 fall back to the run-level boolean; production paths always set
 `granted_fingerprint`.
 
+### Where the policy lives (2026-10-11)
+
+The policy above originally sat inline in the reason node, which is the one
+place that consults it. That tied three pure rules to a 480-line orchestration
+decision tree, so they were moved to `domain/approvals.py` alongside
+`approval_fingerprint`:
+
+- `approval_covers_invocation(granted_fingerprint, tool, params)` — the
+  constant-time comparison, including the empty-fingerprint fallback. The
+  node's `approval_covers_run` now only reads run state and consults the
+  optional liveness probe, delegating the rule itself to the domain.
+- `derive_approval_scope(plan, plan_spec, existing)` — the 16-hex scope
+  digest, with an existing state scope winning so a resumed graph keeps the id
+  its approval was minted with.
+- `build_approval_preview(...)` — the consent contract: goal, affected areas,
+  acceptance criteria, the concrete tool and parameters, and remaining work,
+  surfaced together so the preview cannot silently drop a field the user
+  needs. It snapshots the parameters rather than aliasing them, so later
+  mutation of the live dict cannot rewrite what was approved.
+
+`domain` stays pure stdlib (enforced by `test_domain_is_pure`), and the reason
+node still depends inward. The gate's *behaviour* is unchanged — the existing
+`ApprovalCoversRunTests` pass unmodified.
+
 ## Consequences
 
 - One approval cannot be spent on a different tool, different parameters, or

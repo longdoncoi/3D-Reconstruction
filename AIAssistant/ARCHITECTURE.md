@@ -38,6 +38,11 @@ Qt / HTTP / MCP / A2A
   bound with `bind_principal` for the call and read by `PlatformToolGateway`.
 - Pending approvals are rehydrated from the file-backed store when
   `AgentService` starts, so A2A resume survives a process restart.
+- The HITL approval *policy* is domain-owned (`domain/approvals.py`):
+  `approval_covers_invocation` (constant-time fingerprint comparison),
+  `derive_approval_scope` and `build_approval_preview`. The reason node
+  consults it and reads run state, but holds no approval rule of its own
+  (ADR 0009).
 - MCP is an external adapter; agent execution does not call `/mcp` locally.
 - A2A owns durable task lifecycle. Its only remote transport is
   `adapters/a2a_client.TrustedA2AClient` (allowlist-only, classification-gated);

@@ -11,14 +11,16 @@ stays a decision tree.
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from ai_assistant.config.logging import get_agent_logger
-from ai_assistant.domain.approvals import approval_fingerprint
+from ai_assistant.domain.approvals import (
+    approval_covers_invocation,
+    build_approval_preview,
+    derive_approval_scope,
+)
 from ai_assistant.llm.inference import strip_think_tags
 from ai_assistant.observability import record_step_guard
 from ai_assistant.orchestration.specialists.code import coding_workflow_guidance
@@ -74,16 +76,16 @@ def approval_covers_run(state: AgentState, tool_name: str, params: dict[str, Any
     ``approval_granted`` alone is no longer sufficient: the grant is bound to
     the fingerprint of the tool call the user saw in the preview, so a resumed
     run can not spend its approval on a different tool or different parameters.
+
+    The fingerprint policy itself is domain-owned
+    (:func:`~ai_assistant.domain.approvals.approval_covers_invocation`); this
+    orchestration-side wrapper only reads the run state and consults the
+    optional live grant probe.
     """
     if not state.get("approval_granted"):
         return False
-    granted = state.get("granted_fingerprint") or ""
-    if not hmac.compare_digest(granted, approval_fingerprint(tool_name, params)):
-        # Empty ``granted_fingerprint`` (graph constructed outside the runner,
-        # e.g. contract tests) falls back to the run-level grant, which the
-        # gateway still refuses without a live capability.
-        if granted:
-            return False
+    if not approval_covers_invocation(state.get("granted_fingerprint"), tool_name, params):
+        return False
     if ctx.approval_covers is not None and not ctx.approval_covers(tool_name, params):
         return False
     return True
@@ -413,22 +415,18 @@ def reason_node(state: AgentState, ctx: ReasonContext) -> dict[str, Any]:
     updated_messages = list(state["messages"])
     updated_messages.append({"role": "assistant", "content": answer})
 
-    approval_scope = state.get("approval_scope")
-    if not approval_scope:
-        scope_payload = json.dumps({"plan": plan, "spec": state.get("plan_spec")},
-                                   ensure_ascii=False, sort_keys=True)
-        approval_scope = hashlib.sha256(scope_payload.encode()).hexdigest()[:16]
+    approval_scope = derive_approval_scope(
+        plan, state.get("plan_spec"), state.get("approval_scope"),
+    )
 
     if ctx.needs_approval(tool_name) and not approval_covers_run(state, tool_name, params, ctx):
-        spec = state.get("plan_spec") or {}
-        preview = {
-            "scope_id": approval_scope,
-            "goal": spec.get("goal", ""),
-            "affected_areas": spec.get("affected_areas", []),
-            "acceptance_criteria": spec.get("acceptance_criteria", []),
-            "tool": tool_name, "params": params,
-            "remaining_steps": plan[done_count:] if plan and done_count < len(plan) else [],
-        }
+        preview = build_approval_preview(
+            scope_id=approval_scope,
+            spec=state.get("plan_spec"),
+            tool_name=tool_name,
+            parameters=params,
+            remaining_steps=plan[done_count:] if plan and done_count < len(plan) else [],
+        )
         return {
             "iteration":    iteration,
             "steps":        steps,
