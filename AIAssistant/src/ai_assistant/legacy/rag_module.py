@@ -1,4 +1,3 @@
-# ruff: noqa: F401
 """
 Compatibility shim for the legacy rag_module.
 New code should use ai_assistant.rag package directly.
@@ -10,7 +9,7 @@ import threading
 # --- NEW PLATFORM INTEGRATION ---
 from ai_assistant.llm.hardware import release_ml_memory as _release_ml_memory
 from ai_assistant.rag import (
-    ChunkResult,
+    ChunkResult,  # noqa: F401
     DocumentLoaderRegistry,
     RetrievalPipeline,
     scan_documents,
@@ -19,22 +18,22 @@ from ai_assistant.rag import (
     E5LlamaEmbedding as _E5LlamaEmbedding,
 )
 from ai_assistant.rag import (
-    image_to_data_uri as _image_to_data_uri,
+    image_to_data_uri as _image_to_data_uri,  # noqa: F401
 )
 from ai_assistant.rag import (
-    is_image_file as _is_image_file,
+    is_image_file as _is_image_file,  # noqa: F401
 )
 from ai_assistant.rag.nlp_utils import tokenize_vn as _tokenize_vn
 
 # Import configurations
 from .config import (
     CACHE_DIR,
-    CHUNK_CHARS,
+    CHUNK_CHARS,  # noqa: F401
     EMBED_CACHE,
     EMBED_MODEL_NAME,
     EMBEDDING_DIMENSION,
     ENABLE_RAG,
-    MAX_CONTEXT_CHARS,
+    MAX_CONTEXT_CHARS,  # noqa: F401
     RERANKER_MODEL,
     RERANKER_TOP_K,
     SIMILARITY_THRESHOLD,
@@ -53,7 +52,6 @@ knowledge_chunks: list = []
 bm25_index = None
 embed_model_ref = None
 _reranker = None
-is_vision_model = False
 
 _pipeline: RetrievalPipeline | None = None
 

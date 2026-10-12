@@ -1,4 +1,3 @@
-# ruff: noqa: F401
 """
 Compatibility shim for the legacy llm_module.
 New code should use ai_assistant.llm package directly.
@@ -8,34 +7,34 @@ import threading
 
 # --- NEW PLATFORM INTEGRATION ---
 from ai_assistant.llm import (
-    CHARACTER_QUERY_PATTERNS as _CHARACTER_QUERY_PATTERNS,
+    CHARACTER_QUERY_PATTERNS as _CHARACTER_QUERY_PATTERNS,  # noqa: F401
 )
 from ai_assistant.llm import (
-    PROJECT_CHARACTER_NAMES as _PROJECT_CHARACTER_NAMES,
+    PROJECT_CHARACTER_NAMES as _PROJECT_CHARACTER_NAMES,  # noqa: F401
 )
 from ai_assistant.llm import (
-    ROLE_QUERY_PATTERN as _ROLE_QUERY_PATTERN,
+    ROLE_QUERY_PATTERN as _ROLE_QUERY_PATTERN,  # noqa: F401
 )
 from ai_assistant.llm import (
     DefaultPromptBuilder,
-    estimate_tokens,
-    trim_history,
+    estimate_tokens,  # noqa: F401
+    trim_history,  # noqa: F401
 )
 from ai_assistant.llm import (
-    download_if_missing as _new_download,
+    download_if_missing as _new_download,  # noqa: F401
 )
 from ai_assistant.llm import (
     load_model as _new_load,
 )
 from ai_assistant.llm import (
-    release_ml_memory as _release_ml_memory,
+    release_ml_memory as _release_ml_memory,  # noqa: F401
 )
 from ai_assistant.llm import (
     reload_model as _new_reload,
 )
 from ai_assistant.ports import LockLike
-from ai_assistant.rag.image_utils import image_to_data_uri as _image_to_data_uri
-from ai_assistant.rag.image_utils import is_image_file as _is_image_file
+from ai_assistant.rag.image_utils import image_to_data_uri as _image_to_data_uri  # noqa: F401
+from ai_assistant.rag.image_utils import is_image_file as _is_image_file  # noqa: F401
 
 # Configuration is imported from the shim
 from .config import (
@@ -44,21 +43,24 @@ from .config import (
     MODEL_IDX,
     MODELS_DIR,
     _registry,
-    active_model_desc,
-    logger,
+    active_model_desc,  # noqa: F401
+    logger,  # noqa: F401
     startup_step,
 )
 
-# Global state mirroring for backward compatibility
+# Global state mirroring for backward compatibility.
+#
+# ``llm``/``is_vision_model``/``active_model_desc`` are the live model state
+# the HTTP routers read and swap under ``llm_lock`` — ``LLMModuleLike`` in
+# ``adapters/http/_types`` declares all three — so they stay here where
+# ``load_model`` owns them. ``_chat_handler`` and the eagerly-computed
+# ``_RAG_SYSTEM_PROMPT`` had no reader anywhere and are gone (ADR 0014).
 llm = None
 # Annotated with the structural port so this module keeps satisfying
 # ``ports.LLMRuntime`` regardless of whether it owns a Lock or an RLock.
 llm_lock: LockLike = threading.RLock()
 is_vision_model = False
-_chat_handler = None
 _prompt_builder = DefaultPromptBuilder()
-
-_RAG_SYSTEM_PROMPT = _prompt_builder._build_system_prompt("", "", False, "vi")
 
 def load_model(model_idx: int | None = None):
     global llm, is_vision_model, active_model_desc

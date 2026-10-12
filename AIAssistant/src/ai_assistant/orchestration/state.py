@@ -47,6 +47,22 @@ ReflectResult    = Callable[[str, dict[str, Any], dict[str, Any], dict[str, Any]
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 MAX_STEP_MISMATCH_REJECTIONS = 2
+
+# ── Context-budget sentinel (ADR 0013) ──────────────────────────────────────
+#: Returned by the runner's ``complete`` adapter when the conversation no
+#: longer fits the model context window. This is a protocol between the runner
+#: and the reason node, so the literal lives here and both import it — the
+#: reason node must no longer guess the meaning from its own prefix list.
+CONTEXT_EXHAUSTED_MESSAGE = "Context quá dài, dừng Agent."
+#: Variants a model may emit on its own when it hits the budget.
+CONTEXT_EXHAUSTED_PREFIXES = ("context quá dài", "context qua dai", "context too long")
+
+
+def is_context_exhausted(answer: str) -> bool:
+    """True when *answer* signals the model context budget is exhausted."""
+    return answer.casefold().startswith(CONTEXT_EXHAUSTED_PREFIXES)
+
+
 COMPLETION_TOOLS = {"application_action"}
 LOW_RISK_TOOLS = {
     "read_file", "list_directory", "find_files", "search_text", "analyze_code",

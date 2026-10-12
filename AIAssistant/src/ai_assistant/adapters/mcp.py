@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Callable
 
 from ..ports import ToolGateway
+from ..tools.tool_contract import RUNTIME_UNCONFIGURED_RESULT
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -20,7 +21,7 @@ except ImportError:
     try:
         from mcp.server.mcpserver import MCPServer as FastMCP
     except ImportError:
-        FastMCP = None  # type: ignore[misc,assignment]
+        FastMCP = None
 
 MCP_AVAILABLE = FastMCP is not None
 
@@ -79,11 +80,7 @@ class McpToolServer:
         """Adapt an MCP call to the platform's single policy-enforced tool path."""
         parameters = {name: value for name, value in parameters.items() if value is not None}
         if self._gateway is None:
-            return json.dumps(
-                {"success": False, "error_code": "runtime_unconfigured",
-                 "error": "AI Agent Platform is not bootstrapped"},
-                ensure_ascii=False,
-            )
+            return json.dumps(RUNTIME_UNCONFIGURED_RESULT, ensure_ascii=False)
         return json.dumps(self._gateway.execute(tool_name, parameters), ensure_ascii=False)
 
     @asynccontextmanager

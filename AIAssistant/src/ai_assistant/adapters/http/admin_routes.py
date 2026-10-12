@@ -62,7 +62,7 @@ def build_admin_router(
     )
 
     @router.post("/release-vram")
-    def release_vram():  # noqa: ANN201
+    def release_vram():
         try:
             with llm_module.llm_lock:
                 old_llm, llm_module.llm = llm_module.llm, None
@@ -76,7 +76,7 @@ def build_admin_router(
             raise HTTPException(status_code=500, detail=str(error)) from error
 
     @router.post("/reload-model")
-    def reload_model():  # noqa: ANN201
+    def reload_model():
         try:
             logger.info(
                 "[MODEL SWITCH] Reload requested — current index=%d (%s)",
@@ -106,7 +106,7 @@ def build_admin_router(
             raise HTTPException(status_code=500, detail=str(error)) from error
 
     @router.post("/reload-rag")
-    def reload_rag():  # noqa: ANN201
+    def reload_rag():
         from ai_assistant.legacy.config import ENABLE_RAG
         if not ENABLE_RAG:
             return {"status": "skipped", "message": "RAG is disabled"}
@@ -138,7 +138,7 @@ def build_admin_router(
             raise HTTPException(status_code=500, detail=str(error)) from error
 
     @router.post("/reload-agent")
-    def reload_agent():  # noqa: ANN201
+    def reload_agent():
         try:
             reset_agent_state_fn()
             import LangGraphAgent
@@ -153,7 +153,7 @@ def build_admin_router(
             raise HTTPException(status_code=500, detail=str(error)) from error
 
     @router.post("/shutdown")
-    def shutdown_server():  # noqa: ANN201
+    def shutdown_server():
         """Terminate this AI Server process.
 
         Runs the actual exit from a background thread with a tiny delay so

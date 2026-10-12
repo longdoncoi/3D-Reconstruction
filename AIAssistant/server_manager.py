@@ -1,3 +1,12 @@
+"""Process manager the Qt desktop app launches to start/restart the AI server.
+
+Output contract: every ``print(..., flush=True)`` here is the *transport*,
+not debug logging. The Qt client reads this process's stdout (see
+``tail_log_forever``) and mirrors it into its own console, so the status
+lines — including the ``[SUCCESS]`` sentinel it keys on — must go to stdout
+verbatim. Sending them through ``logging`` would break that integration.
+Operational diagnostics that nobody parses stay in the server's own log file.
+"""
 import json
 import os
 import subprocess
@@ -13,7 +22,7 @@ _SRC_DIR = os.path.join(BASE_DIR, "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
-from ai_assistant.settings import DEFAULT_HOST, DEFAULT_PORT  # noqa: E402
+from ai_assistant.settings import DEFAULT_HOST, DEFAULT_PORT
 
 HOST = DEFAULT_HOST
 PORT = DEFAULT_PORT
@@ -130,6 +139,19 @@ def get_active_model_index() -> int | None:
         return None
 
 
+def _detached_popen_kwargs() -> dict:
+    """Extra ``subprocess.Popen`` kwargs that detach the child from our console.
+
+    ``creationflags`` is Windows-only: passing a non-zero value on POSIX makes
+    ``Popen`` raise ``ValueError``, so the flag set is chosen per platform.
+    POSIX gets ``start_new_session`` for the equivalent "survive the parent
+    exiting" behaviour.
+    """
+    if sys.platform == "win32":
+        return {"creationflags": 0x00000008 | 0x00000200}  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    return {"start_new_session": True}
+
+
 def main():
     model_idx_str = sys.argv[1] if len(sys.argv) > 1 else "0"
     try:
@@ -207,14 +229,13 @@ def main():
         # Truyền lại APP_DATA_DIR cho child process để config.py biết đúng đường dẫn
         env = os.environ.copy()
 
-        # Detached + no console window — server sẽ sống sót khi Qt tắt
-        flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        # Detached + no console window — server sẽ sống sót khi Qt tắt.
         server_process = subprocess.Popen(
             [sys.executable, "-u", server_script, str(model_idx)],
             cwd=BASE_DIR,
             env=env,
-            creationflags=flags,
             close_fds=True,
+            **_detached_popen_kwargs(),
         )
 
         # ── Bước 3: Poll HTTP cho đến khi server sẵn sàng ────────────────────

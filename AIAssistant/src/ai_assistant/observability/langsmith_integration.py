@@ -34,7 +34,7 @@ def _get_client() -> Any:
                     api_key=_client_settings["api_key"],
                     api_url=_client_settings["endpoint"],
                 )
-            except Exception:  # noqa: BLE001  — observability must never block startup
+            except Exception:
                 _langsmith_client = None
     return _langsmith_client
 
@@ -77,9 +77,9 @@ def start_langsmith_run(name: str, run_type: str, inputs: dict[str, Any],
         try:
             client.create_run(**payload)
             return run_id
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -98,9 +98,9 @@ def finish_langsmith_run(run_id: str, outputs: dict[str, Any],
         payload["id"] = payload.pop("run_id")
         try:
             client.update_run(**payload)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -124,5 +124,5 @@ def record_langsmith_feedback(key: str, score: float | None = None,
     try:
         client.create_feedback(**payload)
         return True
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False

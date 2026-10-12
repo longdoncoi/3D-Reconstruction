@@ -1,48 +1,46 @@
-# ruff: noqa: BLE001, S110, F401
 """
 StartChatbotServer.py — 3D-Reconstruction AI Server v2.2
 =========================================================
 Compatibility shim for legacy config module. New features should use src/ai_assistant/config/*.
 """
 
-import ast
-import base64
-import ctypes
-import gc
-import glob
-import hashlib
-import io
-import json
+import ast  # noqa: F401
+import base64  # noqa: F401
+import ctypes  # noqa: F401
+import gc  # noqa: F401
+import glob  # noqa: F401
+import hashlib  # noqa: F401
+import io  # noqa: F401
+import json  # noqa: F401
 import logging
-import logging.handlers
+import logging.handlers  # noqa: F401
 import os
-import pickle
-import re
+import pickle  # noqa: F401
+import re  # noqa: F401
 import sys
-import threading
+import threading  # noqa: F401
 import time
-import unicodedata
-import warnings
-from abc import ABC, abstractmethod
-from contextlib import asynccontextmanager, contextmanager
-from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
+import unicodedata  # noqa: F401
+import warnings  # noqa: F401
+from abc import ABC, abstractmethod  # noqa: F401
+from contextlib import asynccontextmanager, contextmanager  # noqa: F401
+from dataclasses import dataclass, field  # noqa: F401
+from datetime import datetime  # noqa: F401
+from pathlib import Path  # noqa: F401
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from fastapi import FastAPI, HTTPException, Request  # noqa: F401
+from fastapi.middleware.cors import CORSMiddleware  # noqa: F401
+from pydantic import BaseModel, Field, field_validator  # noqa: F401
 
 # --- NEW PLATFORM INTEGRATION ---
-# Temporary sys.path modification to ensure ai_assistant is found during migration
-# without requiring developers to run `pip install -e .` immediately.
-_src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if _src_dir not in sys.path:
-    sys.path.insert(0, _src_dir)
-
+# The former ``sys.path`` mutation that lived here is gone: importing
+# ``ai_assistant.legacy.config`` already requires the ``ai_assistant`` package
+# to be findable, so the insert could never help and only mutated global
+# interpreter state at import time (ADR 0001). ``StartChatbotServer.py`` puts
+# ``src`` on the path for the compatibility entrypoint.
 from ai_assistant.config import (
-    AppPaths,
-    ModelRegistry,
+    AppPaths,  # noqa: F401
+    ModelRegistry,  # noqa: F401
     RAGSettings,
     load_model_registry,
     resolve_paths,
@@ -56,6 +54,13 @@ from ai_assistant.config import (
 from ai_assistant.config import (
     setup_logging as _new_setup_logging,
 )
+from ai_assistant.settings import (
+    apply_startup_environment_defaults,
+    force_langgraph_agent,
+    load_local_dotenv,
+    use_langgraph_agent,
+    vision_llm_enabled,
+)
 
 # LangGraph is imported by ``agent_module`` only after this configuration
 # module has finished initialising.
@@ -63,39 +68,19 @@ LocalAgentGraph = None
 LANGGRAPH_AVAILABLE = False
 LANGGRAPH_IMPORT_ERROR = ""
 
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
-os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
-USE_LANGGRAPH_AGENT = os.environ.get("USE_LANGGRAPH_AGENT", "1") != "0"
-FORCE_LANGGRAPH_AGENT = os.environ.get("FORCE_LANGGRAPH_AGENT", "1") == "1"
-
-warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", module="keras")
+# Process-wide env defaults, ``.env`` merging and the warning filters are
+# owned by ``settings`` (ADR 0001); this shim only triggers them.
+apply_startup_environment_defaults()
+USE_LANGGRAPH_AGENT = use_langgraph_agent()
+FORCE_LANGGRAPH_AGENT = force_langgraph_agent()
 
 # ─── Path Resolution ──────────────────────────────────────────────────────────
 MODULES_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.abspath(os.path.join(MODULES_DIR, "..", "..", ".."))
 
-def _load_local_env() -> None:
-    env_path = os.path.join(BASE_DIR, ".env")
-    try:
-        with open(env_path, encoding="utf-8") as handle:
-            for raw_line in handle:
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                if key and key.replace("_", "").isalnum():
-                    os.environ.setdefault(key, value)
-    except OSError:
-        pass
-
-_load_local_env()
+# ``.env`` parsing is owned by ``settings.load_local_dotenv`` (ADR 0001); the
+# inline copy that lived here ran at import time and duplicated the parser.
+load_local_dotenv(BASE_DIR)
 
 # Initialize paths using the new module
 _paths = resolve_paths(BASE_DIR)
@@ -133,7 +118,7 @@ USE_RERANKER = _rag_settings.use_reranker
 RERANKER_MODEL = _rag_settings.reranker_model
 RERANKER_TOP_K = _rag_settings.reranker_top_k
 
-ENABLE_VISION_LLM = os.environ.get("AI_ENABLE_VISION_LLM", "1").strip().lower() in {"1", "true", "yes", "on"}
+ENABLE_VISION_LLM = vision_llm_enabled()
 ENABLE_RAG = _rag_settings.enabled
 CHUNK_CHARS = _rag_settings.chunk_chars
 OVERLAP_CHARS = _rag_settings.overlap_chars
@@ -142,7 +127,7 @@ SIMILARITY_THRESHOLD = _rag_settings.similarity_threshold
 MAX_CONTEXT_CHARS = _rag_settings.max_context_chars
 # Single source of truth for LLM budget constants (ADR 0001); re-exported here
 # for legacy importers so the shim keeps its public names.
-from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX  # noqa: E402
+from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX  # noqa: F401
 
 
 # ─── Logging ──────────────────────────────────────────────────────────────────

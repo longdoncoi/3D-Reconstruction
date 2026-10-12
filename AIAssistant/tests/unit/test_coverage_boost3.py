@@ -226,8 +226,9 @@ class AgentServiceFacadeTests(unittest.TestCase):
         # The facade must inject its own wiring (LLM, catalog, pending store)
         # into the runner rather than relying on runner-side defaults.
         kwargs = mock_run.call_args.kwargs
-        self.assertIs(kwargs["llm_runtime"], mock_llm)
-        self.assertIs(kwargs["tool_registry"], service.tool_registry)
+        deps = kwargs["deps"]
+        self.assertIs(deps.llm_runtime, mock_llm)
+        self.assertIs(deps.tool_registry, service.tool_registry)
         self.assertEqual(result["retry_message_index"], 3)
 
     def test_reset_state_clears_pending_and_file(self) -> None:

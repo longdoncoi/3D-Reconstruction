@@ -128,6 +128,82 @@ def use_langgraph_agent(env: Mapping[str, str] | None = None) -> bool:
     return values.get("USE_LANGGRAPH_AGENT", "1") != "0"
 
 
+def force_langgraph_agent(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether the LangGraph loop is forced on regardless of routing.
+
+    Counterpart of :func:`use_langgraph_agent`; parsed here so both halves of
+    the same toggle live in one module (ADR 0001).
+    """
+    values = os.environ if env is None else env
+    return values.get("FORCE_LANGGRAPH_AGENT", "1") == "1"
+
+
+def vision_llm_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether the vision LLM path is active (``AI_ENABLE_VISION_LLM``)."""
+    values = os.environ if env is None else env
+    return values.get("AI_ENABLE_VISION_LLM", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+
+# ── One-time process environment bootstrap ──────────────────────────────────
+# ``.env`` parsing and the library-quieting defaults used to be inlined in
+# ``legacy/config.py`` and ran as import-time side effects there, which made
+# the shim a second environment owner (ADR 0001). They now live here, behind
+# functions the composition root calls explicitly.
+
+#: Environment keys that get a safe default when the operator did not set them.
+_STARTUP_ENV_DEFAULTS: dict[str, str] = {
+    "TOKENIZERS_PARALLELISM": "false",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "HF_HUB_DISABLE_PROGRESS_BARS": "1",
+    "TF_CPP_MIN_LOG_LEVEL": "3",
+    "TF_ENABLE_ONEDNN_OPTS": "0",
+}
+
+_startup_env_applied = False
+
+
+def load_local_dotenv(base_dir: str | Path) -> None:
+    """Merge ``<base_dir>/.env`` into ``os.environ`` without overwriting.
+
+    Pure parser kept in one place so no other module re-implements ``KEY=value``
+    splitting. Missing files and unreadable lines are ignored: the file is a
+    convenience for local runs, never a required input.
+    """
+    env_path = Path(base_dir) / ".env"
+    try:
+        raw_lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for raw_line in raw_lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key.replace("_", "").isalnum():
+            os.environ.setdefault(key, value)
+
+
+def apply_startup_environment_defaults(*, reload: bool = False) -> None:
+    """Apply the process-wide env defaults and warning filters exactly once.
+
+    Idempotent so calling it from more than one bootstrap path is safe; pass
+    ``reload`` to force a re-run (tests that reset ``os.environ``).
+    """
+    global _startup_env_applied
+    if _startup_env_applied and not reload:
+        return
+    for key, value in _STARTUP_ENV_DEFAULTS.items():
+        os.environ.setdefault(key, value)
+    import warnings
+
+    warnings.filterwarnings("ignore", category=UserWarning, module="transformers")
+    warnings.filterwarnings("ignore", category=FutureWarning)
+    warnings.filterwarnings("ignore", module="keras")
+    _startup_env_applied = True
+
+
 # ── Runtime toggles read on demand ───────────────────────────────────────────
 # ADR 0001 forbids reading the environment at import time anywhere except this
 # module and ``bootstrap``. These accessors keep that boundary explicit while

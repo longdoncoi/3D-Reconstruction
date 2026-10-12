@@ -75,7 +75,7 @@ def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
         result = ctx.execute(tool_name, params)
         logger.info("[NODE: tool] Kết quả: %s", str(result)[:500])
         logger.debug(f"[LOG: TOOL NODE] Ket qua: {result}")
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         result = {"error": f"Tool exception: {error}"}
         logger.error("[NODE: tool] Exception khi thực thi '%s': %s", tool_name, error)
         logger.debug(f"[LOG: TOOL NODE] Loi: {result}")

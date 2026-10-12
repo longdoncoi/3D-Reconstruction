@@ -374,15 +374,23 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                         )
         self.assertEqual(violations, [], _format(violations))
 
-    def test_no_framework_free_layer_imports_the_compatibility_adapter(self):
-        """The ``legacy_agent`` adapter is for adapters and the composition root only."""
+    def test_no_framework_free_layer_imports_the_removed_compatibility_adapter(self):
+        """ADR 0013: ``adapters.legacy_agent`` is gone; nothing may resurrect it.
+
+        The bridge built a second ``AgentService`` and a second tool catalog at
+        import time and had no production importer. The boundary test now pins
+        the deletion the same way ADR 0012 pins the removed ``modules``
+        package.
+        """
+        removed = PACKAGE / "adapters" / "legacy_agent.py"
+        self.assertFalse(removed.exists(), "adapters/legacy_agent.py must stay removed (ADR 0013)")
         violations: list[tuple[str, str, str]] = []
         for layer in ("agents", "application", "domain", "orchestration", "ports", "tools", "llm"):
             for path in _iter_python(layer):
                 for module in _imports(path):
                     if module == "ai_assistant.adapters.legacy_agent":
                         violations.append(
-                            (str(path.relative_to(PACKAGE)), module, "imports compatibility adapter")
+                            (str(path.relative_to(PACKAGE)), module, "imports removed compatibility adapter")
                         )
         self.assertEqual(violations, [], _format(violations))
 
@@ -391,14 +399,17 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
         ``os.getenv``/``os.environ[key]`` at module/class scope or in function
         defaults run at import time and are forbidden outside the two approved
-        owners (``legacy`` remains a compatibility shim). Reads inside function
-        bodies are allowed — that is the on-demand pattern.
+        owners. ``legacy`` used to need an exemption here because its shim
+        parsed ``.env``, set library defaults and read the toggles inline; it
+        now delegates all of that to ``settings`` (ADR 0014) and is scanned
+        like every other module. Reads inside function bodies are allowed —
+        that is the on-demand pattern.
         """
         excluded = {"settings.py"}
         violations: list[str] = []
         for path in _iter_python():
             rel = path.relative_to(PACKAGE).as_posix()
-            if rel in excluded or path.parts[-2] in {"bootstrap", "legacy"}:
+            if rel in excluded or path.parts[-2] == "bootstrap":
                 continue
             reader = _ImportTimeEnvReader()
             reader.visit(ast.parse(path.read_text(encoding="utf-8")))
@@ -412,9 +423,12 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         deterministic_calls = _call_targets(PACKAGE / "adapters" / "orchestration" / "deterministic.py")
         agent_runs = (PACKAGE / "application" / "agent_runs.py").read_text(encoding="utf-8")
 
-        self.assertIn("tool_gateway.execute", runner_calls)
-        self.assertIn("tool_gateway.execute_approved", runner_calls)
-        self.assertIn("tool_gateway.approval_covers", runner_calls)
+        # The runner reaches the gateway through the injected ``RunDeps``
+        # bundle (ADR 0013), so the call targets are ``deps.tool_gateway.*``
+        # (or the ``gateway`` local that narrows it for the approval probe).
+        self.assertIn("deps.tool_gateway.execute", runner_calls)
+        self.assertIn("deps.tool_gateway.execute_approved", runner_calls)
+        self.assertIn("gateway.approval_covers", runner_calls)
         self.assertIsNotNone(
             _defined_names(PACKAGE / "application" / "tools.py") & {"ToolExecutionService"}
         )

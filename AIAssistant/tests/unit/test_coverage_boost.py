@@ -60,8 +60,8 @@ class LlamaCppBackendTests(unittest.TestCase):
             self.assertIn("Test model", backend.model_description)
 
 
-class ModelLoaderTests(unittest.TestCase):
-    """Test model_loader coverage."""
+class ModelLoaderBackendStateTests(unittest.TestCase):
+    """Backend singleton accessors: ``get_backend`` before/after publish."""
 
     def test_get_backend_returns_none_when_not_loaded(self) -> None:
         """get_backend returns None when no model is loaded."""

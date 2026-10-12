@@ -1,65 +1,109 @@
-# ruff: noqa: I001, S101
-"""Regression checks for grammar-constrained tool envelopes."""
-import sys
+"""Regression checks for grammar-constrained tool envelopes.
+
+Originally driven through ``adapters.legacy_agent`` — a compatibility bridge
+that built a second ``AgentService`` and a second tool catalog at import time
+and was removed in ADR 0013. The canonical decoding path is
+``agents.completion.parse_tool_call`` over the real registry, which is exactly
+what ``agents.runner`` wires in production.
+"""
+from __future__ import annotations
+
+import threading
+import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
-sys.path.insert(0, '..')   # f:\PROJECTS\QT\3D-Reconstruction\AIAssistant is cwd
-sys.path.insert(0, '.')
 
-from ai_assistant.adapters import legacy_agent as agent_module
-from ai_assistant.adapters.legacy_agent import _parse_tool_call
+from ai_assistant.agents.completion import constrained_completion, parse_tool_call
+from ai_assistant.observability import record_schema_error
+from ai_assistant.tools.factory import create_tool_registry
+from ai_assistant.tools.tool_contract import validate_tool_call
 
-def test(name, text, expected_tool, expected_action=None):
-    t, p = _parse_tool_call(text)
-    assert t == expected_tool, f"[FAIL] {name}: tool='{t}' expected='{expected_tool}'"
-    if expected_action and p:
-        assert p.get("action") == expected_action, f"[FAIL] {name}: action='{p.get('action')}' expected='{expected_action}'"
-    print(f"[PASS] {name}: tool={t}, action={p.get('action') if p else None}")
+_TOOL_REGISTRY = create_tool_registry()
 
-# 1. Canonical grammar envelope
-test("canonical tool call",
-     '{"kind": "tool", "tool": "application_action", "params": {"action": "reconstruction.load_images"}}',
-     "application_action", "reconstruction.load_images")
 
-# 2. Backward-compatible tool alias, still inside a constrained envelope
-test("app action alias",
-     '{"kind": "tool", "tool": "app_action_reconstruction", "params": {"action": "reconstruction.load_images"}}',
-     "application_action", "reconstruction.load_images")
+def _parse(response_text: str) -> tuple[str | None, dict | None]:
+    return parse_tool_call(response_text, _TOOL_REGISTRY.models, validate_tool_call, record_schema_error)
 
-# 3. Manifest alias is canonicalised before execution
-test("manifest action alias",
-     '{"kind": "tool", "tool": "application_action", "params": {"action": "mail.inbox"}}',
-     "application_action", "mail.open")
 
-# 4. Final envelope is not a tool call
-t, p = _parse_tool_call('{"kind": "final", "content": "Done"}')
-assert t is None, f"[FAIL] no tool: got '{t}'"
-print(f"[PASS] no tool call: t={t}")
-
-# 5. Invalid parameter values cannot become a tool call
-test("invalid desktop params",
-     '{"kind": "tool", "tool": "application_action", "params": {"action": "language.change", "language": "fr"}}',
-     "_validation_error")
-
-# 6. start_reconstruction
-test("start_reconstruction",
-     '{"kind": "tool", "tool": "application_action", "params": {"action": "reconstruction.start_reconstruction"}}',
-     "application_action", "reconstruction.start_reconstruction")
-
-# 7. The constrained llama.cpp adapter must preserve a step-answer envelope.
-# Otherwise LangGraph receives raw text and repeatedly executes the same plan step.
 class _StepAnswerModel:
     def create_chat_completion(self, **_kwargs):
         return {"choices": [{"message": {"content":
                 '{"kind":"step_answer","content":"Teamlead điều phối dự án."}'}}]}
 
 
-with (patch.object(agent_module, "backend_mode", return_value="llama_cpp"),
-      patch.object(agent_module.llm_runtime, "llm", _StepAnswerModel()),
-      patch.dict(agent_module.os.environ, {"AGENT_NATIVE_TOOL_CALLS": "1"})):
-    response = agent_module._constrained_agent_completion([], max_tokens=32, temperature=0.0)
+class _FakeRuntime:
+    """Minimal LLMRuntime stand-in: concrete ``llm`` + ``llm_lock``."""
 
-assert response == '{"kind": "step_answer", "content": "Teamlead điều phối dự án."}', response
-assert _parse_tool_call(response)[0] == "_step_answer"
-print("[PASS] constrained step_answer envelope is preserved")
+    def __init__(self, model) -> None:
+        self.llm = model
+        self.llm_lock = threading.Lock()
 
-print("\nALL TESTS PASSED")
+
+class ParseToolCallTests(unittest.TestCase):
+    def test_canonical_tool_call(self) -> None:
+        tool, params = _parse(
+            '{"kind": "tool", "tool": "application_action",'
+            ' "params": {"action": "reconstruction.load_images"}}'
+        )
+        self.assertEqual(tool, "application_action")
+        self.assertEqual((params or {}).get("action"), "reconstruction.load_images")
+
+    def test_app_action_alias_is_canonicalised(self) -> None:
+        tool, params = _parse(
+            '{"kind": "tool", "tool": "app_action_reconstruction",'
+            ' "params": {"action": "reconstruction.load_images"}}'
+        )
+        self.assertEqual(tool, "application_action")
+        self.assertEqual((params or {}).get("action"), "reconstruction.load_images")
+
+    def test_manifest_action_alias_is_canonicalised(self) -> None:
+        tool, params = _parse(
+            '{"kind": "tool", "tool": "application_action",'
+            ' "params": {"action": "mail.inbox"}}'
+        )
+        self.assertEqual(tool, "application_action")
+        self.assertEqual((params or {}).get("action"), "mail.open")
+
+    def test_final_envelope_is_not_a_tool_call(self) -> None:
+        self.assertEqual(_parse('{"kind": "final", "content": "Done"}'), (None, None))
+
+    def test_invalid_parameters_become_validation_error(self) -> None:
+        tool, params = _parse(
+            '{"kind": "tool", "tool": "application_action",'
+            ' "params": {"action": "language.change", "language": "fr"}}'
+        )
+        self.assertEqual(tool, "_validation_error")
+        self.assertIn("error", params or {})
+
+    def test_start_reconstruction(self) -> None:
+        tool, params = _parse(
+            '{"kind": "tool", "tool": "application_action",'
+            ' "params": {"action": "reconstruction.start_reconstruction"}}'
+        )
+        self.assertEqual(tool, "application_action")
+        self.assertEqual((params or {}).get("action"), "reconstruction.start_reconstruction")
+
+
+class ConstrainedCompletionTests(unittest.TestCase):
+    def test_step_answer_envelope_is_preserved(self) -> None:
+        """The llama.cpp adapter must keep a step-answer envelope intact.
+
+        Otherwise LangGraph receives raw text and repeatedly executes the same
+        plan step.
+        """
+        runtime = _FakeRuntime(_StepAnswerModel())
+        with patch("ai_assistant.agents.completion.load_agent_runtime_settings",
+                   return_value=SimpleNamespace(native_tool_calls=True)):
+            response = constrained_completion(
+                [], 32, 0.0, runtime, lambda: "llama_cpp", lambda messages, **kw: {},
+                [], "{}", lambda i, o: None,
+            )
+        self.assertEqual(
+            response,
+            '{"kind": "step_answer", "content": "Teamlead điều phối dự án."}',
+        )
+        self.assertEqual(_parse(response)[0], "_step_answer")
+
+
+if __name__ == "__main__":
+    unittest.main()

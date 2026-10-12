@@ -35,7 +35,7 @@ def _stream_langgraph_execution(run: Callable[[Callable[[dict], None]], dict]):
     def worker() -> None:
         try:
             events.put(("result", run(lambda step: events.put(("step", step)))))
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             events.put(("error", str(error)))
 
     threading.Thread(target=worker, daemon=True, name="agent-sse").start()

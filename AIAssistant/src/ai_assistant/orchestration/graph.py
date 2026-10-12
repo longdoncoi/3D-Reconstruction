@@ -234,7 +234,7 @@ class LocalAgentGraph:
             try:
                 prior = self._graph.get_state(config)
                 prior_values = prior.values if prior else {}
-            except Exception as error:  # noqa: BLE001
+            except Exception as error:
                 logger.warning(
                     "[run] Không thể đọc checkpoint trước đó để khôi phục required_ui_actions (session=%s): %s",
                     session_id,

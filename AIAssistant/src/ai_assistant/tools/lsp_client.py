@@ -225,7 +225,7 @@ def _lsp_call(
 
         return {"result": resp.get("result")}
 
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {"error": f"LSP subprocess failed: {exc}"}
 
     finally:

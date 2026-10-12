@@ -67,7 +67,7 @@ def build_chat_router(
     router = APIRouter(tags=["chat"], dependencies=chat_guards(policy))
 
     @router.post("/v1/chat/completions")
-    def chat_completions(request: ChatRequest, http_req: Request):  # noqa: ANN201
+    def chat_completions(request: ChatRequest, http_req: Request):
         if llm_module.llm is None:
             raise HTTPException(status_code=503, detail="LLM is not initialized")
 

@@ -104,7 +104,7 @@ def require_token(request: Request, token: str, surface: str) -> None:
 
 
 def _guards(policy: TransportPolicy, *, surface: str, token: str, allow_remote: bool) -> list:
-    def guard(request: Request) -> None:  # noqa: ANN202
+    def guard(request: Request) -> None:
         if not allow_remote:
             require_loopback(request, surface)
         elif not token:

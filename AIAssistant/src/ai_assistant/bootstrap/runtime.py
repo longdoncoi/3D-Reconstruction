@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from ..application.tools import ToolExecutionService
 from ..domain.security import Principal, current_principal
+from ..tools.tool_contract import RUNTIME_UNCONFIGURED_RESULT
 
 # Trusted in-process desktop callers do not bind a principal; they keep the
 # historical broad scope set. Remote transports bind a least-privilege principal
@@ -19,12 +20,6 @@ _LOCAL_PRINCIPAL = Principal(
     "legacy-local",
     frozenset({"project.read", "project.write", "project.execute", "desktop.action"}),
 )
-
-_UNCONFIGURED_RESULT = {
-    "success": False,
-    "error_code": "runtime_unconfigured",
-    "error": "AI Agent Platform is not bootstrapped",
-}
 
 
 class PlatformToolGateway:
@@ -43,7 +38,7 @@ class PlatformToolGateway:
 
     def execute(self, tool_name: str, parameters: dict) -> dict:
         if self._service is None:
-            return dict(_UNCONFIGURED_RESULT)
+            return dict(RUNTIME_UNCONFIGURED_RESULT)
         return self._service.execute(tool_name, parameters, self._principal()).to_dict()
 
     def execute_approved(self, tool_name: str, parameters: dict, approval_token: str = "") -> dict:
@@ -54,7 +49,7 @@ class PlatformToolGateway:
         permission.
         """
         if self._service is None:
-            return dict(_UNCONFIGURED_RESULT)
+            return dict(RUNTIME_UNCONFIGURED_RESULT)
         return self._service.execute(
             tool_name, parameters, self._principal(), approval_token=approval_token,
         ).to_dict()

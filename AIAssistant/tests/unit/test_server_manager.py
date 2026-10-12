@@ -106,6 +106,25 @@ class ServerManagerTests(unittest.TestCase):
                 patch.object(server_manager.time, "monotonic", side_effect=[0.0, 1e9]):
             self.assertFalse(server_manager.wait_until_ready())
 
+    def test_detached_kwargs_use_creationflags_only_on_windows(self) -> None:
+        """``creationflags`` is a Windows-only ``Popen`` kwarg.
+
+        Passing a non-zero value on POSIX raises ``ValueError``, so the flag
+        set must be chosen per platform rather than passed unconditionally.
+        """
+        with patch.object(server_manager.sys, "platform", "win32"):
+            kwargs = server_manager._detached_popen_kwargs()
+        self.assertEqual(
+            kwargs,
+            {"creationflags": 0x00000008 | 0x00000200},
+        )
+
+    def test_detached_kwargs_use_a_new_session_on_posix(self) -> None:
+        with patch.object(server_manager.sys, "platform", "linux"):
+            kwargs = server_manager._detached_popen_kwargs()
+        self.assertEqual(kwargs, {"start_new_session": True})
+        self.assertNotIn("creationflags", kwargs)
+
 
 if __name__ == "__main__":
     unittest.main()

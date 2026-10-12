@@ -28,7 +28,7 @@ if sys.platform == "win32":
 
         _orig_call_connection_lost = _ProactorBasePipeTransport._call_connection_lost
 
-        def _silenced_call_connection_lost(self, exc):  # noqa: ANN001, ANN202
+        def _silenced_call_connection_lost(self, exc):
             try:
                 _orig_call_connection_lost(self, exc)
             except ConnectionResetError:
@@ -144,10 +144,16 @@ async def lifespan(_: FastAPI):
     logger.info("Server ready in %.1fs — http://127.0.0.1:8080", total)
     print(f"[SUCCESS] AI Server started successfully ({total:.1f}s)", flush=True)
     try:
-        if platform.settings.enable_mcp and mcp_server.available:
+        if not platform.settings.enable_mcp:
+            # MCP disabled by deployment profile: still yield, otherwise the
+            # asynccontextmanager would raise "generator didn't yield" and the
+            # server could not start with enable_mcp = false.
+            logger.info("MCP endpoint disabled by configuration")
+            yield
+        elif mcp_server.available:
             async with mcp_server.lifespan():
                 yield
-        elif platform.settings.enable_mcp:
+        else:
             logger.warning("MCP SDK is not installed; MCP endpoint is unavailable")
             yield
     finally:

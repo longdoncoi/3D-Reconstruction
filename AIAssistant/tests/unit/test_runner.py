@@ -12,6 +12,7 @@ from enum import Enum
 from types import SimpleNamespace
 from unittest import mock
 
+from ai_assistant.agents.deps import RunDeps
 from ai_assistant.agents.runner import run_langgraph_agent
 from ai_assistant.domain.errors import ServiceUnavailableError
 
@@ -83,14 +84,9 @@ def _tool_registry(handler=lambda t, p: {"success": True}):
     )
 
 
-def _base_kwargs(**overrides):
+def _deps_kwargs(**overrides):
+    """Wiring that lives in the frozen ``RunDeps`` bundle (ADR 0013)."""
     kwargs = dict(
-        system_prompt="sys",
-        task="do the thing",
-        session_id="session-1",
-        temperature=0.3,
-        language="vi",
-        request_started=time.monotonic(),
         llm_runtime=None,
         backend_mode_fn=lambda: "openai",
         openai_compatible_fn=lambda messages, **kw: {
@@ -117,18 +113,42 @@ def _base_kwargs(**overrides):
         reflect_result_fn=lambda d, result, verification: {"passed": True, "reason": "reflected"},
         record_tool_fn=lambda t, ok, duration: None,
         record_schema_error_fn=lambda t: None,
-        validate_tool_call_fn=lambda name, params, models: (params, None),
         langsmith_trace_fn=lambda *a, **k: _LSContext(),
         span_fn=lambda *a, **k: _Span(),
         specialist_instruction_fn=lambda d: "instruction",
         is_coding_task_fn=lambda t: True,
-        generate_action_id_fn=lambda: "id-123",
         save_pending_fn=lambda: None,
-        LocalAgentGraph=_FakeGraph,
-        Specialist=_Specialist,
+        local_agent_graph=_FakeGraph,
+        specialist=_Specialist,
+        a2a_router=None,
+        checkpointer=None,
     )
     kwargs.update(overrides)
     return kwargs
+
+
+def _base_kwargs(**overrides):
+    """Per-invocation kwargs for ``run_langgraph_agent`` plus its deps bundle.
+
+    Dependency-only overrides (anything in ``RunDeps``) are routed into the
+    bundle; the rest stay as per-invocation keyword arguments.
+    """
+    per_invocation = dict(
+        system_prompt="sys",
+        task="do the thing",
+        session_id="session-1",
+        temperature=0.3,
+        language="vi",
+        request_started=time.monotonic(),
+        validate_tool_call_fn=lambda name, params, models: (params, None),
+        generate_action_id_fn=lambda: "id-123",
+    )
+    dep_keys = set(_deps_kwargs())
+    dep_overrides = {k: v for k, v in overrides.items() if k in dep_keys}
+    run_overrides = {k: v for k, v in overrides.items() if k not in dep_keys}
+    per_invocation.update(run_overrides)
+    per_invocation["deps"] = RunDeps(**_deps_kwargs(**dep_overrides))
+    return per_invocation
 
 
 class RunLanggraphAgentTests(unittest.TestCase):
@@ -144,7 +164,7 @@ class RunLanggraphAgentTests(unittest.TestCase):
 
     def test_requires_langgraph(self):
         with self.assertRaises(ServiceUnavailableError):
-            run_langgraph_agent(**_base_kwargs(LocalAgentGraph=None))
+            run_langgraph_agent(**_base_kwargs(local_agent_graph=None))
 
     def test_completed_run(self):
         _FakeGraph.state = {
@@ -205,7 +225,7 @@ class RunLanggraphAgentTests(unittest.TestCase):
         result, kwargs = self._run()
         self.assertEqual(result["status"], "pending_ui_action")
         self.assertEqual(result["ui_action"]["request_id"], "rq-9")
-        self.assertEqual(kwargs["pending_actions"]["rq-9"]["tool"], "application_action")
+        self.assertEqual(kwargs["deps"].pending_actions["rq-9"]["tool"], "application_action")
 
     def test_pending_approval_request(self):
         _FakeGraph.state = {
@@ -224,7 +244,7 @@ class RunLanggraphAgentTests(unittest.TestCase):
         result, kwargs = self._run()
         self.assertEqual(result["status"], "pending_approval")
         self.assertEqual(result["action_id"], "id-123")
-        self.assertEqual(kwargs["pending_actions"]["id-123"]["tool"], "run_command")
+        self.assertEqual(kwargs["deps"].pending_actions["id-123"]["tool"], "run_command")
         self.assertEqual(result["steps"][0]["type"], "pending_approval")
 
     def test_graph_exception_propagates_and_trace_closed(self):

@@ -101,6 +101,10 @@ CMakeLists.txt.user*
 /AIAssistant/tasks.sqlite
 # Runtime pending-approval / UI-ACK state, rewritten on every agent run.
 /AIAssistant/pending_agent_actions.json
+# Eval run output — rewritten by `evals/run_*.py` and uploaded as a CI artifact
+# by the agent-evals workflow; never a source file.
+/AIAssistant/evals/latest_tool_call_report.json
+/AIAssistant/evals/agentic_eval_report.json
 # Coverage artifacts (Python)
 /AIAssistant/.coverage
 /AIAssistant/htmlcov/

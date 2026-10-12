@@ -28,7 +28,7 @@ from ai_assistant.config.model_registry import ModelDefinition, ModelRegistry
 from ai_assistant.llm import model_loader
 
 
-class ModelLoaderTests(unittest.TestCase):
+class ModelLoaderLifecycleTests(unittest.TestCase):
     """Coverage for download/load/reload singleton lifecycle."""
 
     def setUp(self) -> None:
@@ -212,7 +212,7 @@ class RemoteDiscoveryTests(unittest.TestCase):
         self.assertIn(".well-known/agent.json", request.full_url)
 
 
-class A2ARouterTests(unittest.TestCase):
+class A2ARouterFacadeTests(unittest.TestCase):
     """Coverage for the A2ARouter facade."""
 
     class _FakeClient:

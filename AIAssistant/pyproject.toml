@@ -19,7 +19,7 @@ target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "BLE", "S", "RUF"]
+select = ["E", "W", "F", "I", "BLE", "S", "RUF", "C90"]
 
 ignore = [
     "BLE001", "S110", "RUF012",
@@ -28,12 +28,33 @@ ignore = [
     "B905", "B007",
     "E501",   # long lines acceptable in this codebase
     "E402",   # module-level imports after code (post-install, post-init patterns)
-    "RUF100", # existing noqa directives may reference globally-ignored rules
 ]
+
+[tool.ruff.lint.mccabe]
+# Every function stays at or below 20 branches (ADR 0014). The gate was
+# enabled debt-free: the three functions that exceeded it were decomposed
+# rather than suppressed, so nothing in the tree carries a ``# noqa: C901``.
+max-complexity = 20
 
 [tool.ruff.lint.per-file-ignores]
 # Test fixtures intentionally embed sample secrets and grant tokens.
 "tests/**" = ["S105", "S106"]
+
+[tool.coverage.run]
+# Branch coverage is enabled so every conditional in the ReAct loop, the
+# approval policy and the transport adapters is counted, not just statements.
+# Measured baseline: 91% statements+branches locally (Oct 2026, ADR 0013).
+branch = true
+source = ["ai_assistant"]
+
+[tool.coverage.report]
+# Floor is a regression guard, not a target. The measured CI baseline is
+# ~89% (branch-inclusive) in the offline environment where the optional ``mcp``
+# package is absent, so the gate sits 1pt below that to turn genuine
+# regressions red without turning test noise into red.
+fail_under = 88
+omit = ["*/legacy/*"]
+show_missing = true
 
 [tool.mypy]
 python_version = "3.11"

@@ -6,7 +6,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+# The package lives under ``src/`` (ADR 0010 layout); pointing at the project
+# root alone leaves ``ai_assistant`` unimportable, which is how the eval job
+# used to fail with ``ModuleNotFoundError`` in CI.
+sys.path.insert(0, str(ROOT / "src"))
 
 from ai_assistant.tools.tool_contract import build_tool_models, validate_tool_call
 

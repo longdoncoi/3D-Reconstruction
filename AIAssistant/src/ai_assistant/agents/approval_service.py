@@ -24,6 +24,7 @@ from ..orchestration.supervisor import audit as audit_agent
 from ..orchestration.supervisor import delegate, verify_result
 from ..ports import LLMRuntime, ToolGateway
 from ..settings import use_langgraph_agent
+from ..tools.tool_contract import RUNTIME_UNCONFIGURED_RESULT
 from .context import RESUME_ACTION_ID, RESUME_VALIDATE_TOOL_CALL, AgentRunContext
 from .models import AgentApproveRequest
 from .pending_store import PendingActionStore
@@ -232,8 +233,7 @@ class ApprovalService:
 
     def _execute_approved(self, tool_name: str, tool_params: dict, approval_token: str) -> dict[str, Any]:
         if self._ctx.tool_gateway is None:
-            return {"success": False, "error_code": "runtime_unconfigured",
-                    "error": "AI Agent Platform is not bootstrapped"}
+            return dict(RUNTIME_UNCONFIGURED_RESULT)
         return self._ctx.tool_gateway.execute_approved(tool_name, tool_params, approval_token)
 
 

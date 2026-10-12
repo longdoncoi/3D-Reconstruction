@@ -35,6 +35,7 @@ from ..orchestration.supervisor import audit as audit_agent
 from ..orchestration.supervisor import authorise as authorise_delegation
 from ..ports import LLMRuntime, ToolGateway
 from ..tools.tool_contract import validate_tool_call
+from .deps import RunDeps
 from .ids import generate_action_id
 from .pending_store import PendingActionStore
 from .runner import run_langgraph_agent
@@ -109,29 +110,11 @@ class AgentRunContext:
 
         Only the per-invocation arguments are passed by the caller; every
         dependency (LLM, tools, supervisor, observability, persistence) is
-        filled in from the context, and the graph engine/``Specialist`` are
-        supplied here so no service repeats them.
+        packed once into a frozen :class:`~ai_assistant.agents.deps.RunDeps`
+        bundle, and the graph engine/``Specialist`` are supplied here so no
+        service repeats them.
         """
-        return run_langgraph_agent(
-            system_prompt=system_prompt,
-            task=task,
-            session_id=session_id,
-            temperature=temperature,
-            language=language,
-            request_started=request_started,
-            initial_messages=initial_messages,
-            initial_steps=initial_steps,
-            initial_iteration=initial_iteration,
-            resume_with_reflection=resume_with_reflection,
-            event_sink=event_sink,
-            prior_step_count=prior_step_count,
-            approval_granted=approval_granted,
-            approval_scope=approval_scope,
-            approval_token=approval_token,
-            granted_fingerprint=granted_fingerprint,
-            supervisor_route=supervisor_route if supervisor_route is not None else Specialist.SUPERVISOR,
-            validate_tool_call_fn=validate_tool_call_fn,
-            generate_action_id_fn=generate_action_id_fn,
+        deps = RunDeps(
             # ── shared wiring owned by the context ──────────────────────────
             llm_runtime=self.llm_runtime,
             backend_mode_fn=backend_mode,
@@ -153,13 +136,35 @@ class AgentRunContext:
             span_fn=span,
             specialist_instruction_fn=specialist_instruction,
             is_coding_task_fn=is_coding_task,
-            LocalAgentGraph=self.local_agent_graph,
-            Specialist=Specialist,
+            local_agent_graph=self.local_agent_graph,
+            specialist=Specialist,
             a2a_router=self.a2a_router,
             checkpointer=self.checkpointer,
             llm_n_ctx=LLM_N_CTX,
             chars_per_token=CHARS_PER_TOKEN,
             save_pending_fn=self.save_pending,
+        )
+        return run_langgraph_agent(
+            deps=deps,
+            system_prompt=system_prompt,
+            task=task,
+            session_id=session_id,
+            temperature=temperature,
+            language=language,
+            request_started=request_started,
+            initial_messages=initial_messages,
+            initial_steps=initial_steps,
+            initial_iteration=initial_iteration,
+            resume_with_reflection=resume_with_reflection,
+            event_sink=event_sink,
+            prior_step_count=prior_step_count,
+            approval_granted=approval_granted,
+            approval_scope=approval_scope,
+            approval_token=approval_token,
+            granted_fingerprint=granted_fingerprint,
+            supervisor_route=supervisor_route if supervisor_route is not None else Specialist.SUPERVISOR,
+            validate_tool_call_fn=validate_tool_call_fn,
+            generate_action_id_fn=generate_action_id_fn,
         )
 
 

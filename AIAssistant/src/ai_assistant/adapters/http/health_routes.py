@@ -33,7 +33,7 @@ def build_health_router(
     router = APIRouter()
 
     @router.get("/health")
-    async def health():  # noqa: ANN201
+    async def health():
         return {
             "status": "ok",
             "uptime_sec": round(time.monotonic() - server_start_time, 1),
@@ -57,7 +57,7 @@ def build_health_router(
         }
 
     @router.get("/metrics")
-    async def metrics():  # noqa: ANN201
+    async def metrics():
         """Prometheus exposition endpoint; enabled with AGENT_OBSERVABILITY=1."""
         from ai_assistant.observability import prometheus_payload
 
@@ -67,7 +67,7 @@ def build_health_router(
         return Response(payload, media_type="text/plain; version=0.0.4")
 
     @router.get("/v1/models")
-    async def list_models():  # noqa: ANN201
+    async def list_models():
         return {
             "data": [
                 {

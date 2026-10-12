@@ -82,7 +82,7 @@ class CodingAgentCompletionTests(unittest.TestCase):
     def test_requested_coding_tasks_complete_from_observed_lifecycle_evidence(self) -> None:
         tasks = (
             ("Phân tích và giải thích chức năng của hàm _build_code_citation_result trong "
-             "src/ai_assistant/adapters/legacy_agent.py", ["READ"]),
+             "src/ai_assistant/tools/builtin/file_tools.py", ["READ"]),
             ("Fix lỗi khi tải ảnh DICOM trong project, bổ sung unit test và kiểm tra build.",
              ["READ", "PATCH", "DIFF", "CHECK"]),
             ("Bổ sung chức năng export kết quả reconstruction sang file OBJ.",

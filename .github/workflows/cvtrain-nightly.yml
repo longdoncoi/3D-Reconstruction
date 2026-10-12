@@ -44,8 +44,12 @@ jobs:
         run: python .github/scripts/make_toy_dataset.py --output "$GITHUB_WORKSPACE/Dataset"
 
       - name: Train + export detection model (1 epoch, CPU)
+        # --min-metric smoke-tests the quality gate against the metric names the
+        # real framework reports (a renamed key turns this job red). The bar is
+        # 0 on purpose: a one-epoch toy model would never clear a real one, and
+        # the point here is the plumbing, not the score.
         run: |
-          python AIComputerVision/TrainModel.py --yes --det --epochs 1 --imgsz 64 --batch 2 --workers 0 --device cpu
+          python AIComputerVision/TrainModel.py --yes --det --epochs 1 --imgsz 64 --batch 2 --workers 0 --device cpu --min-metric 'metrics/mAP50(B)=0'
           python AIComputerVision/TrainModel.py --verify-manifest
           test -f AIComputerVision/Models/yolo11n.onnx
 

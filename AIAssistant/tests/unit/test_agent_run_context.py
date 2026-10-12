@@ -16,15 +16,15 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ai_assistant.agents import context as agents_context  # noqa: E402
-from ai_assistant.agents.context import (  # noqa: E402
+from ai_assistant.agents import context as agents_context
+from ai_assistant.agents.context import (
     RESUME_ACTION_ID,
     RESUME_VALIDATE_TOOL_CALL,
     AgentRunContext,
 )
-from ai_assistant.agents.pending_store import PendingActionStore  # noqa: E402
-from ai_assistant.application.coordination import TaskCoordinator  # noqa: E402
-from ai_assistant.orchestration.supervisor import Specialist  # noqa: E402
+from ai_assistant.agents.pending_store import PendingActionStore
+from ai_assistant.application.coordination import TaskCoordinator
+from ai_assistant.orchestration.supervisor import Specialist
 
 
 def _capture(**overrides) -> dict:
@@ -50,15 +50,17 @@ class AgentRunContextWiringTests(unittest.TestCase):
             llm_runtime=llm, tool_gateway=gateway, tool_registry=registry,
             pending_actions=store, pending_lock=lock, task_coordinator=coordinator,
         )
-        self.assertIs(kwargs["llm_runtime"], llm)
-        self.assertIs(kwargs["tool_gateway"], gateway)
-        self.assertIs(kwargs["tool_registry"], registry)
-        self.assertIs(kwargs["pending_actions"], store)
-        self.assertIs(kwargs["pending_lock"], lock)
-        self.assertIs(kwargs["task_coordinator"], coordinator)
+        deps = kwargs["deps"]
+        self.assertIs(deps.llm_runtime, llm)
+        self.assertIs(deps.tool_gateway, gateway)
+        self.assertIs(deps.tool_registry, registry)
+        self.assertIs(deps.pending_actions, store)
+        self.assertIs(deps.pending_lock, lock)
+        self.assertIs(deps.task_coordinator, coordinator)
 
     def test_injects_supervisor_and_observability_callables(self) -> None:
         kwargs = _capture()
+        deps = kwargs["deps"]
         # Every supervisor/observability/LLM callable the runner needs must be
         # supplied by the context, not left to runner-side defaults.
         for name in (
@@ -67,7 +69,7 @@ class AgentRunContextWiringTests(unittest.TestCase):
             "record_tool_fn", "record_schema_error_fn", "langsmith_trace_fn", "span_fn",
             "backend_mode_fn", "openai_compatible_fn", "record_token_usage_fn",
         ):
-            self.assertTrue(callable(kwargs[name]), f"{name} must be callable")
+            self.assertTrue(callable(getattr(deps, name)), f"{name} must be callable")
 
     def test_defaults_to_specialist_supervisor_route(self) -> None:
         self.assertIs(_capture()["supervisor_route"], Specialist.SUPERVISOR)
@@ -84,8 +86,9 @@ class AgentRunContextWiringTests(unittest.TestCase):
     def test_graph_engine_and_specialist_are_injected(self) -> None:
         graph = object()
         kwargs = _capture(local_agent_graph=graph)
-        self.assertIs(kwargs["LocalAgentGraph"], graph)
-        self.assertIs(kwargs["Specialist"], Specialist)
+        deps = kwargs["deps"]
+        self.assertIs(deps.local_agent_graph, graph)
+        self.assertIs(deps.specialist, Specialist)
 
     def test_defaults_to_real_tool_validator_and_action_id(self) -> None:
         kwargs = _capture()
@@ -145,7 +148,7 @@ class AgentRunContextPendingTests(unittest.TestCase):
     def test_save_pending_is_wired_as_runner_hook(self) -> None:
         store = MagicMock(spec=PendingActionStore)
         kwargs = _capture(pending_actions=store)
-        kwargs["save_pending_fn"]()
+        kwargs["deps"].save_pending_fn()
         store.save.assert_called_once()
 
     def test_defaults_build_own_store_lock_and_coordinator(self) -> None:
@@ -192,12 +195,13 @@ class ServiceContextWiringTests(unittest.TestCase):
                 generate_action_id_fn=RESUME_ACTION_ID,
             )
         kwargs = runner.call_args.kwargs
-        self.assertIsNone(kwargs["a2a_router"])
-        self.assertIs(kwargs["llm_runtime"], llm)
-        self.assertIs(kwargs["tool_gateway"], gateway)
-        self.assertIs(kwargs["tool_registry"], registry)
-        self.assertIs(kwargs["pending_actions"], store)
-        self.assertIs(kwargs["task_coordinator"], coordinator)
+        deps = kwargs["deps"]
+        self.assertIsNone(deps.a2a_router)
+        self.assertIs(deps.llm_runtime, llm)
+        self.assertIs(deps.tool_gateway, gateway)
+        self.assertIs(deps.tool_registry, registry)
+        self.assertIs(deps.pending_actions, store)
+        self.assertIs(deps.task_coordinator, coordinator)
 
     def test_ui_action_service_run_uses_resume_noops_and_no_a2a(self) -> None:
         from ai_assistant.agents.ui_action_service import UIActionService
@@ -210,10 +214,11 @@ class ServiceContextWiringTests(unittest.TestCase):
                 generate_action_id_fn=RESUME_ACTION_ID,
             )
         kwargs = runner.call_args.kwargs
-        self.assertIsNone(kwargs["a2a_router"])
-        self.assertIs(kwargs["llm_runtime"], llm)
-        self.assertIs(kwargs["pending_actions"], store)
-        self.assertIs(kwargs["task_coordinator"], coordinator)
+        deps = kwargs["deps"]
+        self.assertIsNone(deps.a2a_router)
+        self.assertIs(deps.llm_runtime, llm)
+        self.assertIs(deps.pending_actions, store)
+        self.assertIs(deps.task_coordinator, coordinator)
 
     def test_agent_service_run_keeps_a2a_router(self) -> None:
         from ai_assistant.agents.service import AgentService
@@ -227,8 +232,8 @@ class ServiceContextWiringTests(unittest.TestCase):
             )
         kwargs = runner.call_args.kwargs
         # The main execute path keeps the A2A router; sub-services do not.
-        self.assertIs(kwargs["a2a_router"], router)
-        self.assertIs(kwargs["llm_runtime"], llm)
+        self.assertIs(kwargs["deps"].a2a_router, router)
+        self.assertIs(kwargs["deps"].llm_runtime, llm)
         self.assertIs(kwargs["validate_tool_call_fn"], agents_context.validate_tool_call)
 
     def test_sub_services_share_facade_pending_state(self) -> None:

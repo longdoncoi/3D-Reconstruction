@@ -45,7 +45,7 @@ def build_checkpointer() -> Any:
             return saver
         if backend != "memory":
             logger.warning("Checkpoint backend %s is not configured; using MemorySaver", backend)
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         logger.exception("Checkpoint backend unavailable; using MemorySaver: %s", error)
     return MemorySaver()
 
@@ -67,7 +67,7 @@ def cleanup_old_checkpoints(max_days: int = 30, max_size_mb: int = 50) -> None:
         if size_mb > max_size_mb:
             logger.info("Checkpoint database size (%.1fMB) exceeds limit (%.1fMB); running VACUUM", size_mb, max_size_mb)
             _vacuum_database(db_path)
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         logger.warning("Could not clean up checkpoints: %s", error)
 
 

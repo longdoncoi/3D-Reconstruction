@@ -6,6 +6,7 @@ from .completion import (
     parse_tool_call,
     structured_completion,
 )
+from .deps import RunDeps
 from .models import (
     AgentApproveRequest,
     AgentCancelRequest,
@@ -26,6 +27,8 @@ __all__ = [
     "AgentUiActionResultRequest",
     # Store
     "PendingActionStore",
+    # Dependency bundle (ADR 0013)
+    "RunDeps",
     # Prompts
     "build_agent_system_prompt",
     # Completion

@@ -28,12 +28,27 @@ TOOL_CONTRACT_OVERRIDES: dict[str, dict[str, Any]] = {
     "multi_replace_file_content": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
     "create_directory": {"timeout_seconds": 10, "policy": "code_write", "requires_approval": True},
     "run_command": {"timeout_seconds": 120, "policy": "code_execute", "requires_approval": True},
+    # LSP queries spawn a language server on first use and index the project;
+    # 30s covers a cold clangd/pylsp start without hanging the ReAct loop.
+    "go_to_definition": {"timeout_seconds": 30, "policy": "read_only"},
+    "find_references": {"timeout_seconds": 30, "policy": "read_only"},
 }
 
 
 def tool_contract_for(name: str) -> dict[str, Any]:
     """Resolve the effective policy contract for a tool name."""
     return {**DEFAULT_CONTRACT, **TOOL_CONTRACT_OVERRIDES.get(name, {})}
+
+
+#: Structured refusal returned by every execution surface when the platform
+#: gateway is not bootstrapped yet (ADR 0003/0013). Declared once and imported
+#: by the gateway adapter, the MCP adapter, the runner and the approval
+#: service, so the ``runtime_unconfigured`` wire shape cannot drift.
+RUNTIME_UNCONFIGURED_RESULT: dict[str, Any] = {
+    "success": False,
+    "error_code": "runtime_unconfigured",
+    "error": "AI Agent Platform is not bootstrapped",
+}
 
 
 def _to_tool_specs(tool_definitions: list[dict[str, Any]]) -> list[ToolDefinition]:

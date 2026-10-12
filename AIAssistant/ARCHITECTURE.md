@@ -18,6 +18,18 @@ Qt / HTTP / MCP / A2A
 ## Runtime rules
 
 - `ToolExecutionService` is the sole tool policy and execution gateway.
+- `settings.py` is the sole owner of the process environment (ADR 0001, 0014):
+  it parses `.env` (`load_local_dotenv`), applies the library-quieting
+  defaults and warning filters (`apply_startup_environment_defaults`), and
+  exposes every toggle as an on-demand accessor. No other module reads the
+  environment at import time, and no module re-implements the `KEY=value`
+  parser. `legacy/config.py` — the last second owner — now delegates.
+- Coverage and complexity are gated in `pyproject.toml` (ADR 0014), not in
+  the CI command line: branch coverage is on with an 88 floor against a 91%
+  measured baseline, and `C90` caps every function at complexity 20. The gate
+  is debt-free — the three functions that exceeded it when it was enabled
+  (`build_a2a_router`, `run_langgraph_agent`, `prepare_reasoning`) were
+  decomposed, so nothing carries a `# noqa: C901`.
 - Every transport and orchestration strategy reaches tools through an injected
   `PlatformToolGateway` (`bootstrap/runtime.py`). The gateway is built by the DI
   container and constructor-injected into the agent service, MCP adapter and A2A
@@ -31,6 +43,8 @@ Qt / HTTP / MCP / A2A
   (`adapters/orchestration/langgraph.py`); the application layer never imports
   LangGraph and holds no loop of its own. The framework-independent fallback is
   an adapter (`adapters/orchestration/deterministic.py`) injected by tests/embeds.
+  The runner receives its wiring as one frozen `RunDeps` bundle
+  (`agents/deps.py`, ADR 0013) plus the per-invocation arguments.
 - There is exactly one `ToolSpec` type — the policy record in `domain/tools.py`.
   The executable catalog entry is `tools/definition.py:ToolDefinition`; the old
   `ai_assistant.core` package is gone.
@@ -115,6 +129,35 @@ real tool validator, action-id generator and A2A router; the approval and
 desktop-ack resume paths use the named no-op `RESUME_*` helpers with
 `a2a_router=None`.
 
+### Runner dependency bundle (`agents/deps.py`, ADR 0013)
+
+`run_langgraph_agent` itself used to accept 46 keyword-only parameters — the
+LLM runtime, the tool catalog/gateway, the pending store and lock, the task
+coordinator, ~20 supervisor/observability/LLM callables, the graph engine
+class and the A2A transport. `AgentRunContext` deduplicated the *call sites*,
+but the runner signature was still a DI container as an argument list.
+
+`RunDeps` (a frozen dataclass) now owns that block once. The runner takes
+`deps: RunDeps` plus only the per-invocation arguments (prompt, task, resume
+state, approval grant, event sink) — 21 parameters instead of 46. Adding one
+injected dependency means adding one field to `RunDeps`; no call site changes.
+`validate_tool_call_fn` and `generate_action_id_fn` stay per-invocation so the
+resume paths can swap them for the named no-op helpers.
+
+### Reason node decomposition (ADR 0013)
+
+`orchestration/nodes/reason.py:reason_node` was a single 353-line function
+with 19 top-level branches. It is now a 78-line dispatch sequence; each
+outcome the model can produce is handled by one focused private function
+(`_handle_step_answer`, `_handle_final_answer`, `_handle_validation_error`,
+`_handle_forbidden_transfer`, `_guard_step_action_mismatch`,
+`_guard_duplicate_failed_call`, `_dispatch_tool_call`) that receives the
+shared `_Turn` record and returns the partial state update or `None` to fall
+through. The context-budget protocol is now typed: `orchestration/state.py`
+owns `CONTEXT_EXHAUSTED_MESSAGE` and `is_context_exhausted()`; the runner's
+`complete` callback returns the constant and the reason node calls the
+predicate — the literal no longer exists in two places.
+
 ## A2A adapter decomposition (ADR 0005)
 
 The former monolithic `adapters/a2a.py` (310 lines) has been decomposed into:
@@ -124,23 +167,53 @@ The former monolithic `adapters/a2a.py` (310 lines) has been decomposed into:
 - `adapters/a2a_router.py` — FastAPI router with all standard and legacy endpoints.
 - `adapters/a2a.py` — backward-compatible re-exports.
 
-## Legacy migration (ADR 0006, 0012)
+## Legacy migration (ADR 0006, 0012, 0013, 0014)
 
 The legacy `modules/` package has been **removed**. Implementations live in
 `src/ai_assistant/legacy/`:
 
-- `legacy/config.py` — re-exports from `settings` + legacy constants.
-- `legacy/llm_module.py` — re-exports from `llm` + legacy global state.
-- `legacy/rag_module.py` — re-exports from `rag` + legacy global state.
+- `legacy/config.py` — re-exports from `settings` + legacy constants. It is no
+  longer an environment owner: the `.env` parser, the startup env defaults and
+  the warning filters moved to `settings` (ADR 0014), and its `sys.path`
+  mutation — which could never help, since importing this module already
+  requires `ai_assistant` to be findable — is gone. Its public names
+  (`USE_LANGGRAPH_AGENT`, `FORCE_LANGGRAPH_AGENT`, `ENABLE_VISION_LLM`) are
+  unchanged.
+- `legacy/llm_module.py` — re-exports from `llm` + the live model state.
+  `llm`, `is_vision_model`, `active_model_desc` and `llm_lock` are what the
+  HTTP routers actually read and swap (`LLMModuleLike` in
+  `adapters/http/_types` declares them), so they stay where `load_model`
+  owns them. The two globals with no reader anywhere — `_chat_handler` and
+  the eagerly-computed `_RAG_SYSTEM_PROMPT`, which built a system prompt at
+  import time for nobody — are gone (ADR 0014).
+- `legacy/rag_module.py` — re-exports from `rag` + the live index state
+  (`knowledge_index`, `knowledge_chunks`, `bm25_index`, `embed_model_ref`,
+  `_reranker`, guarded by `rag_lock`) that `initialize_rag` owns and the
+  admin routes reset. Its `is_vision_model` had no reader and is gone.
 
 The shims `legacy/{a2a_protocol,action_manifest,agent_module,checkpointing,lsp_client,mcp_server}.py`
 were deleted in ADR 0012: each was a one-line re-export with no live importer.
+`adapters/legacy_agent.py` was deleted in ADR 0013: it was a compatibility
+bridge for a removed package that built a second `AgentService` and a second
+`ToolRegistry` at import time and had zero production importers.
 
 All production code imports from `ai_assistant.*` directly. Two root-level
 compatibility shims remain only for external consumers: `LangGraphAgent.py`
 re-exports `orchestration.graph` and `server_manager.py` is the process manager
 the Qt desktop app launches. An import-linter contract and the AST boundary
 tests keep `modules` from being resurrected.
+
+`server_manager.py` is console-facing by contract: its `print(..., flush=True)`
+lines *are* the transport the Qt client reads (it keys on the `[SUCCESS]`
+sentinel), so they are not candidates for `logging`. Its child-process detach
+flags are platform-guarded — `creationflags` on Windows, `start_new_session`
+elsewhere — because a non-zero `creationflags` raises `ValueError` on POSIX
+(ADR 0014).
+
+The AST boundary test that forbids import-time environment reads used to skip
+`legacy/` because of `config.py`. That exemption is **removed** (ADR 0014): the
+shim now delegates to `settings`, so `legacy/` is scanned like every other
+module and a reintroduced inline read fails CI.
 
 ## Streaming endpoints (ADR 0005)
 
@@ -177,14 +250,27 @@ Sprint hardening is pinned by dedicated ADRs:
   `redact_value`) for A2A payloads, task events and logs.
 - ADR 0011 — the command sandbox rejects inline interpreter code (`-c`, `-m`,
   `-`) and shell substitution (`$(`/backticks).
+- ADR 0013 — `RunDeps` bundle, reason-node decomposition, typed
+  context-exhausted sentinel, single `runtime_unconfigured` wire shape,
+  dead-code removal (`a2a_protocol` payload copies, `legacy_agent` adapter),
+  LSP tools activated.
+- ADR 0014 — branch-coverage and cyclomatic-complexity gates live in
+  `pyproject.toml` (one home, so local and CI runs measure the same thing);
+  `settings` is the sole environment owner and `legacy/config.py` delegates to
+  it; the Qt process manager's detach flags are platform-guarded; the
+  supervisor's tool groups are public API.
 
 ## Verification
 
 ```bash
 cd AIAssistant
 ruff check .
+python -m mypy src/ai_assistant
 python -m compileall -q StartChatbotServer.py evals src
-python -m unittest discover -s tests -p "test_*.py"
+PYTHONPATH=src lint-imports --no-logo
+PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"
+python -m coverage run -m unittest discover -s tests -p "test_*.py"
+python -m coverage report   # branch coverage, floor 88, baseline ~91
 ```
 
 `tests/integration/test_architecture_boundaries.py` enforces the layer rules
@@ -219,18 +305,38 @@ Edge-case test coverage:
   duplicate-failed-call guard) plus the post-reason router
   (lifts `orchestration/nodes/reason.py` to 100%).
 
-Statement coverage of `src/ai_assistant/*` is **92.5%** locally and **~92.4%**
-in the offline CI environment, where the optional runtime packages (`mcp`,
-PIL, …) are absent (measured Oct 2026). The RAG indexing and loader modules
-are covered to 99–100%, as are the approval policy (`domain/approvals.py`) and
-the ReAct dispatch loop (`orchestration/nodes/reason.py`). Run it with:
+Coverage of `src/ai_assistant/*` is **91%** with branch coverage enabled
+(6 898 statements, 1 850 branches, measured Oct 2026). The modules called out
+above sit at 99–100%: `rag/index.py` and `rag/loaders.py` at 99% with every
+statement reached, `domain/approvals.py` at 100%, and the ReAct dispatch loop
+(`orchestration/nodes/reason.py`) at 99%. Run it with:
 
 ```bash
 PYTHONPATH=src python -m coverage run -m unittest discover -s tests -p "test_*.py"
-PYTHONPATH=src python -m coverage report --include="src/ai_assistant/*" --omit="*/legacy/*"
+PYTHONPATH=src python -m coverage report
 ```
 
-CI gates statement coverage at 90%, set from the measured CI baseline rather
-than the local one (the offline environment lacks the optional `mcp` package,
-so `adapters/mcp.py` is counted at 0% there), and runs the lint job and the
-full test suite in `.github/workflows/Build-Python-ci.yml`.
+There are deliberately no flags: `pyproject.toml` owns the whole coverage
+configuration (`branch = true`, `source`, the `*/legacy/*` omit and the
+`fail_under = 88` floor), so a local run and CI measure the same thing.
+`.github/workflows/Build-Python-ci.yml` enforces it next to the lint job and
+the full test suite.
+
+## Agent evals
+
+Two deterministic evals run in `.github/workflows/agent-evals.yml` on every
+push and PR touching `AIAssistant/**`:
+
+- `evals/run_tool_eval.py` — constrained tool-call envelopes: schema
+  validation, the `_validation_error` path and the resume shapes.
+- `evals/run_agentic_eval.py` — supervisor policy: routing to the right
+  specialist, authorisation boundaries, verification and reflection across
+  17 scenarios (106 cases), plus the A2A and LangSmith integration points.
+
+Both are offline and exit non-zero on the first failing case, so they are
+regression tests rather than scored benchmarks. Neither imports a real LLM.
+
+Each script puts `src/` — not the project root — on `sys.path`. Pointing at
+the root left `ai_assistant` unimportable and made the whole eval job fail
+with `ModuleNotFoundError`; the wiring is now pinned by running both scripts
+in CI (ADR 0014).

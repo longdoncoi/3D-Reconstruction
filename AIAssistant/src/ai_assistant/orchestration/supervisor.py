@@ -53,7 +53,7 @@ def _resolve_remote_endpoint(specialist: Specialist) -> str | None:
         return None
     try:
         return lookup(specialist.value)
-    except Exception as error:  # noqa: BLE001 — a remote lookup must never break local routing
+    except Exception as error:
         logger.warning("Remote specialist lookup failed | specialist=%s error=%s", specialist.value, error)
         return None
 
@@ -77,16 +77,16 @@ _SPECIALIST_INSTRUCTIONS = {
     Specialist.SUPERVISOR: "Clarify intent, enforce policy, and coordinate the next specialist handoff.",
 }
 
-_RESEARCH_TOOLS = {"read_file", "list_directory", "find_files", "search_text", "analyze_code", "git_diff", "rag_search"}
-_VERIFICATION_TOOLS = {"validate_file", "get_project_status"}
-_CODE_TOOLS = {"write_file", "patch_file", "replace_file_content", "multi_replace_file_content", "create_directory", "run_command"}
+RESEARCH_TOOLS = {"read_file", "list_directory", "find_files", "search_text", "analyze_code", "git_diff", "rag_search"}
+VERIFICATION_TOOLS = {"validate_file", "get_project_status"}
+CODE_TOOLS = {"write_file", "patch_file", "replace_file_content", "multi_replace_file_content", "create_directory", "run_command"}
 CODE_AGENT_TOOLS = frozenset({
     "find_files", "list_directory", "search_text", "read_file", "analyze_code", "git_diff",
     "get_project_status", "validate_file", "write_file", "patch_file",
     "replace_file_content", "multi_replace_file_content", "create_directory", "run_command",
 })
-_WORKFLOW_TOOLS = {"application_action"}
-_TRANSFER_TARGETS = {
+WORKFLOW_TOOLS = {"application_action"}
+TRANSFER_TARGETS = {
     "transfer_to_code_agent": Specialist.CODE,
     "transfer_to_toolapp_agent": Specialist.TOOLAPP,
     "transfer_to_chatbot_agent": Specialist.CHATBOT,
@@ -121,18 +121,18 @@ def delegate(
     prefer_code: bool = False,
 ) -> Delegation:
     """Select exactly one worker role. Workers never delegate further."""
-    if tool in _TRANSFER_TARGETS:
-        specialist = _TRANSFER_TARGETS[tool]
+    if tool in TRANSFER_TARGETS:
+        specialist = TRANSFER_TARGETS[tool]
         reason, basis = f"explicit supervisor handoff to {specialist.value}", "explicit_transfer"
-    elif prefer_code and tool in (_RESEARCH_TOOLS | _VERIFICATION_TOOLS | _CODE_TOOLS):
+    elif prefer_code and tool in (RESEARCH_TOOLS | VERIFICATION_TOOLS | CODE_TOOLS):
         specialist, reason, basis = Specialist.CODE, "coding task requires isolated repository context", "coding_preference"
-    elif tool in _RESEARCH_TOOLS:
+    elif tool in RESEARCH_TOOLS:
         specialist, reason, basis = Specialist.RESEARCH, "tool is read/RAG-only", "research_tool"
-    elif tool in _VERIFICATION_TOOLS:
+    elif tool in VERIFICATION_TOOLS:
         specialist, reason, basis = Specialist.VERIFICATION, "tool validates an observable result", "verification_tool"
-    elif tool in _CODE_TOOLS:
+    elif tool in CODE_TOOLS:
         specialist, reason, basis = Specialist.CODE, "tool can change project state and requires approval", "code_tool"
-    elif tool in _WORKFLOW_TOOLS:
+    elif tool in WORKFLOW_TOOLS:
         specialist, reason, basis = Specialist.WORKFLOW, "tool dispatches a Qt desktop workflow", "workflow_tool"
     else:
         specialist, reason, basis = Specialist.SUPERVISOR, "direct response or unresolved intent", "supervisor_fallback"
@@ -199,7 +199,7 @@ def authorise(delegation: Delegation, needs_approval: bool) -> tuple[bool, str |
     """Enforce least privilege before calling a tool."""
     if delegation.tool is None:
         return True, None
-    if delegation.specialist is Specialist.CODE and delegation.tool in _CODE_TOOLS and not needs_approval:
+    if delegation.specialist is Specialist.CODE and delegation.tool in CODE_TOOLS and not needs_approval:
         return False, "Code tools must be routed through the approval workflow."
     if delegation.specialist is Specialist.SUPERVISOR:
         return False, f"No specialist policy exists for tool: {delegation.tool}"
@@ -294,11 +294,11 @@ def audit(event: str, delegation: Delegation, **details: Any) -> None:
 
 __all__ = [
     "CODE_AGENT_TOOLS",
-    "_CODE_TOOLS",
-    "_RESEARCH_TOOLS",
-    "_TRANSFER_TARGETS",
-    "_VERIFICATION_TOOLS",
-    "_WORKFLOW_TOOLS",
+    "CODE_TOOLS",
+    "RESEARCH_TOOLS",
+    "TRANSFER_TARGETS",
+    "VERIFICATION_TOOLS",
+    "WORKFLOW_TOOLS",
     "Delegation",
     "Specialist",
     "audit",

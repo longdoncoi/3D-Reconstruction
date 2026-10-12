@@ -162,7 +162,7 @@ class A2ARouter:
             logger.info("A2A remote call succeeded: specialist=%s url=%s",
                         specialist_id, remote.url)
             return {"source": "remote", "agent_url": remote.url, **result}
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             logger.warning(
                 "A2A remote call failed (specialist=%s url=%s): %s",
                 specialist_id, remote.url, error,
@@ -206,39 +206,12 @@ def a2a_available() -> bool:
     return a2a_enabled() and _sdk_available
 
 
-# ── Payload builders ─────────────────────────────────────────────────────────
-
-def _text_message(task: Any, text: str) -> dict[str, Any]:
-    return {
-        "role": "ROLE_AGENT", "messageId": f"status-{getattr(task, 'id', 'unknown')}-{int(getattr(task, 'updated_at', 0) * 1000)}",
-        "contextId": getattr(task, 'context_id', None), "taskId": getattr(task, 'id', 'unknown'), "parts": [{"text": text}],
-    }
-
-
-def _safe_value(value: Any, key: str = "") -> Any:
-    """Never expose credentials or internal continuations through A2A artifacts."""
-    if key.lower() in {"password", "token", "secret", "api_key", "authorization", "continuation"}:
-        return "[redacted]"
-    if isinstance(value, dict):
-        return {str(item_key): _safe_value(item_value, str(item_key)) for item_key, item_value in value.items()}
-    if isinstance(value, list):
-        return [_safe_value(item) for item in value]
-    return value
-
-
-def task_payload(task: Any) -> dict[str, Any]:
-    """Serialize an AgentTask into A2A 0.3 task payload format."""
-    status: dict[str, Any] = {
-        "state": "submitted",  # simplified
-        "timestamp": json.dumps({"key": "timestamp"}),  # placeholder
-    }
-    return {
-        "id": getattr(task, 'id', 'unknown'),
-        "contextId": getattr(task, 'context_id', None),
-        "status": status,
-        "metadata": _safe_value({}),
-        "artifacts": [] if not getattr(task, 'result', None) else [{"artifactId": f"result-{getattr(task, 'id', 'unknown')}", "name": "result", "parts": [{"data": _safe_value(task.result)}]}],
-    }
+# NOTE (ADR 0013): this module used to carry its own ``_text_message`` /
+# ``_safe_value`` / ``task_payload`` copies left behind by the ADR 0005 split.
+# They had no caller, hardcoded ``"state": "submitted"``, used a placeholder
+# timestamp and applied a second redaction key set that bypassed the domain
+# policy (ADR 0010). ``ai_assistant.adapters.a2a_payloads`` owns payload
+# building and redaction for every A2A surface.
 
 
 # ── Agent Card builder ──────────────────────────────────────────────────────
@@ -350,7 +323,7 @@ def discover_remote_agents(urls: list[str] | None = None) -> dict[str, Any]:
                 last_discovered=__import__("time").time(),
             )
             logger.info("Discovered remote agent: %s (%d skills)", base_url, len(skills))
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             logger.warning("Failed to discover agent at %s: %s", card_url, error)
 
     return _remote_registry

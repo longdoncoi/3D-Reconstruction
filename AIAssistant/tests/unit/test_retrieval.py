@@ -52,7 +52,7 @@ class _FakeReranker:
         self._error = error
         self.pairs: list = []
 
-    def predict(self, pairs, show_progress_bar=False):  # noqa: ARG002
+    def predict(self, pairs, show_progress_bar=False):
         self.pairs = pairs
         if self._error:
             raise RuntimeError("reranker boom")

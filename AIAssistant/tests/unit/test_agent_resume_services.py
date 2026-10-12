@@ -17,15 +17,15 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ai_assistant.agents import context as agents_context  # noqa: E402
-from ai_assistant.agents.approval_service import ApprovalService  # noqa: E402
-from ai_assistant.agents.models import (  # noqa: E402
+from ai_assistant.agents import context as agents_context
+from ai_assistant.agents.approval_service import ApprovalService
+from ai_assistant.agents.models import (
     AgentApproveRequest,
     AgentUiActionResultRequest,
 )
-from ai_assistant.agents.pending_store import PendingActionStore  # noqa: E402
-from ai_assistant.agents.ui_action_service import UIActionService  # noqa: E402
-from ai_assistant.domain.errors import (  # noqa: E402
+from ai_assistant.agents.pending_store import PendingActionStore
+from ai_assistant.agents.ui_action_service import UIActionService
+from ai_assistant.domain.errors import (
     AuthorizationError,
     NotFoundError,
     UnprocessableRequestError,

@@ -28,6 +28,7 @@ from .builtin import (
     tool_write_file,
 )
 from .definition import ToolDefinition
+from .lsp_client import tool_find_references, tool_go_to_definition
 from .registry import ToolRegistry
 from .tool_contract import tool_contract_for
 
@@ -55,6 +56,8 @@ def builtin_handlers() -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
         "app_action_ai": tool_application_action,
         "app_action_general": tool_application_action,
         "rag_search": tool_rag_search,
+        "go_to_definition": tool_go_to_definition,
+        "find_references": tool_find_references,
         "transfer_to_code_agent": tool_transfer_to_code_agent,
         "transfer_to_toolapp_agent": tool_transfer_to_toolapp_agent,
         "transfer_to_chatbot_agent": tool_transfer_to_chatbot_agent,

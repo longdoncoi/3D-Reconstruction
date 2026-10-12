@@ -7,6 +7,7 @@ runtime toggles consumed by the rest of the platform. They pass explicit
 """
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,11 +21,15 @@ from ai_assistant.settings import (
     a2a_enabled,
     a2a_remote_agent_urls,
     agent_write_roots,
+    apply_startup_environment_defaults,
+    force_langgraph_agent,
     langsmith_settings,
     load_agent_runtime_settings,
+    load_local_dotenv,
     lsp_binaries,
     observability_enabled,
     use_langgraph_agent,
+    vision_llm_enabled,
 )
 
 
@@ -225,6 +230,93 @@ class LspBinariesTests(unittest.TestCase):
 
     def test_invalid_timeout_falls_back(self):
         self.assertEqual(lsp_binaries({"AGENT_LSP_TIMEOUT": "not-int"})[2], 15)
+
+
+class StartupEnvironmentBootstrapTests(unittest.TestCase):
+    """The process-wide bootstrap that used to be inlined in ``legacy/config.py``.
+
+    ADR 0001 moved the ``.env`` parser, the library-default env keys and the
+    warning filters into ``settings`` so the legacy shim is no longer a second
+    environment owner. These tests pin each of those behaviours.
+    """
+
+    def test_vision_llm_defaults_on(self):
+        self.assertTrue(vision_llm_enabled({}))
+
+    def test_vision_llm_parses_every_truthy_spelling(self):
+        for value in ("1", "true", "TRUE", " Yes ", "on"):
+            self.assertTrue(vision_llm_enabled({"AI_ENABLE_VISION_LLM": value}), value)
+
+    def test_vision_llm_rejects_every_other_value(self):
+        for value in ("0", "no", "off", "", "maybe"):
+            self.assertFalse(vision_llm_enabled({"AI_ENABLE_VISION_LLM": value}), value)
+
+    def test_force_langgraph_defaults_on(self):
+        self.assertTrue(force_langgraph_agent({}))
+
+    def test_force_langgraph_reads_only_the_explicit_toggle(self):
+        self.assertFalse(force_langgraph_agent({"FORCE_LANGGRAPH_AGENT": "0"}))
+        self.assertTrue(force_langgraph_agent({"FORCE_LANGGRAPH_AGENT": "1"}))
+        # ``USE_LANGGRAPH_AGENT`` must not bleed into the force toggle.
+        self.assertTrue(force_langgraph_agent({"USE_LANGGRAPH_AGENT": "0"}))
+
+    def test_load_local_dotenv_parses_keys_and_ignores_junk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, ".env").write_text(
+                "# a comment\n"
+                "AI_DOTENV_A=value_a\n"
+                "AI_DOTENV_B='quoted'\n"
+                "line without an equals sign\n"
+                "=missing_key\n"
+                "  AI_DOTENV_C = spaced  \n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict("os.environ", {}, clear=False):
+                load_local_dotenv(tmp)
+                self.assertEqual(os.environ["AI_DOTENV_A"], "value_a")
+                self.assertEqual(os.environ["AI_DOTENV_B"], "quoted")
+                self.assertEqual(os.environ["AI_DOTENV_C"], "spaced")
+                self.assertNotIn("missing_key", os.environ)
+
+    def test_load_local_dotenv_never_overwrites_existing_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, ".env").write_text("AI_DOTENV_KEEP=from_file\n", encoding="utf-8")
+            with mock.patch.dict("os.environ", {"AI_DOTENV_KEEP": "preset"}):
+                load_local_dotenv(tmp)
+                self.assertEqual(os.environ["AI_DOTENV_KEEP"], "preset")
+
+    def test_load_local_dotenv_treats_a_missing_file_as_a_no_op(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict("os.environ", {}, clear=False):
+                # Must not raise: the .env file is a local convenience, not a
+                # required input.
+                load_local_dotenv(Path(tmp) / "nope")
+                self.assertNotIn("AI_DOTENV_ABSENT", os.environ)
+
+    def test_startup_defaults_apply_the_library_quieting_keys(self):
+        expected = {
+            "TOKENIZERS_PARALLELISM": "false",
+            "HF_HUB_DISABLE_TELEMETRY": "1",
+            "HF_HUB_DISABLE_PROGRESS_BARS": "1",
+            "TF_CPP_MIN_LOG_LEVEL": "3",
+            "TF_ENABLE_ONEDNN_OPTS": "0",
+        }
+        with mock.patch.dict("os.environ", {}, clear=True):
+            apply_startup_environment_defaults(reload=True)
+            for key, value in expected.items():
+                self.assertEqual(os.environ[key], value)
+
+    def test_startup_defaults_never_clobber_an_operator_override(self):
+        with mock.patch.dict("os.environ", {"TF_CPP_MIN_LOG_LEVEL": "0"}):
+            apply_startup_environment_defaults(reload=True)
+            self.assertEqual(os.environ["TF_CPP_MIN_LOG_LEVEL"], "0")
+
+    def test_startup_defaults_are_idempotent(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            apply_startup_environment_defaults(reload=True)
+            os.environ["TOKENIZERS_PARALLELISM"] = "operator_value"
+            apply_startup_environment_defaults()  # second call is a no-op
+            self.assertEqual(os.environ["TOKENIZERS_PARALLELISM"], "operator_value")
 
 
 if __name__ == "__main__":

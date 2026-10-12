@@ -4,21 +4,19 @@ Phần mềm y tế tích hợp hiển thị ảnh DICOM MPR, tái tạo 3D từ
 
 ---
 
-## 🏗️ Kiến trúc Tổng quan
-
 ## 🤖 Hệ sinh thái AI Agent Workflow
-Dự án được thiết lập sẵn một hệ thống quy trình chuẩn hóa dành riêng cho AI Agent (Copilot, Gemini, Cursor) khi tham gia lập trình:
 
-- **`Instructions.md`**: Đóng vai trò là "System Prompt" cốt lõi. AI Agent khi mở project sẽ đọc file này để hiểu tổng quan kiến trúc (Service-Oriented, Plugin), các quy tắc SOLID bắt buộc, coding standards và những Anti-patterns bị cấm.
-- **`.github/`**: Chứa CI/CD pipeline (`build.yml`). Hệ thống tự động kiểm tra cú pháp (Syntax check với chuẩn C++20) mỗi khi có Push/PR, đảm bảo code do người dùng hay AI sinh ra đều chuẩn xác.
-- **`.prompts/`**: Chứa các template hướng dẫn cụ thể cho AI theo từng loại task (`bugfix.md`, `feature.md`, `refactor.md`). AI tuân theo các bước trong này để lập kế hoạch và viết code có hệ thống.
-- **`.review/`**: Chứa `checklist.md` quy định tiêu chí đánh giá code (memory leak, thread safety, SOLID). AI sẽ dựa vào đây để tự kiểm tra (verify) lại code của mình trước khi hoàn thành task.
-- **`.tasks/`**: Thư mục quản lý tiến độ. Gồm `README.md` hướng dẫn quy trình làm việc 8 bước và `task-template.md` chứa form khai báo Goal, Requirements cho từng task cụ thể, giúp AI làm việc tập trung và không đi lạc đề.
-- **`scripts/`**: Chứa các đoạn script tự động hóa (vd: `agent_pipeline.ps1`, `agent_pipeline.sh`). AI Agent có thể gọi trực tiếp các script này để tự động build, chạy test và sinh commit mà không cần gõ lệnh thủ công lặp đi lặp lại.
+Dự án cung cấp sẵn ngữ cảnh và quy trình tự động hoá để AI Agent (Codex, Copilot, Cursor, OpenCode) làm việc đúng kiến trúc mà không cần giải thích lại mỗi lần:
 
----
-
-## END      
+- **`AGENTS.md`** — "System Prompt" cấp repo: chỉ rõ ranh giới (`src/` C++, `AIAssistant/` Python, `AIComputerVision/` YOLO), tập lệnh kiểm tra bắt buộc cho từng loại thay đổi, và danh sách output được sinh ra không được phép sửa.
+- **`.codex/`** — định nghĩa vai trò và quy trình: `WORKFLOW.md` plus `agents/python.md` và `agents/ci.md` cho từng nhánh công việc.
+- **`.github/workflows/`** — 5 pipeline CI chạy trên Push/PR:
+  - `Build-C++-ci.yml` — build & test C++/Qt (C++20)
+  - `Build-Python-ci.yml` — ruff, mypy, import-linter, unittest với coverage gate cho `AIAssistant/`
+  - `agent-evals.yml` — hai eval agent: tool-call envelope và chính sách supervisor (routing / uỷ quyền / verification)
+  - `cvtrain-nightly.yml` — huấn luyện YOLO nightly với deps thật
+  - `Build-Release-Ver-ci.yml` — đóng gói release
+- **`AIAssistant/ARCHITECTURE.md`** — kiến trúc runtime của AI server, kèm `AIAssistant/Docs/adr/` (14 Architecture Decision Records) ghi lại các quyết định thiết kế và hệ quả của chúng.
 
 ### Service-Oriented Modular Plugin
 
@@ -246,17 +244,23 @@ MainWindow (Shell)
 │       └── CMakeLists.txt                  ← Cấu hình CMake cho thư viện utils (static lib)
 │
 ├── tests/                      ← Unit tests (Google Test)
-│   │   CMakeLists.txt                  ← Cấu hình CMake cho test runner
-│   │   TestAppConfig.cpp               ← Test quản lý đường dẫn hệ thống
-│   │   TestCameraParamsParser.cpp      ← Test đọc/ghi camera parameters
-│   │   TestLanguageManager.cpp         ← Test chuyển đổi ngôn ngữ EN/VI
-│   │   TestMailMimeParser.cpp          ← Test phân tích cấu trúc MIME email
-│   │   TestPointCloudFilter.cpp        ← Test lọc nhiễu đám mây điểm 3D
-│   │   TestReconstructionPipeline.cpp  ← Test pipeline SfM end-to-end
-│   │   TestServiceRegistry.cpp         ← Test đăng ký/tra cứu service type-safe
+│   ├── CMakeLists.txt                  ← Cấu hình CMake cho test runner
+│   ├── TestAppConfig.cpp               ← Test quản lý đường dẫn hệ thống
+│   ├── TestCameraParamsParser.cpp      ← Test đọc/ghi camera parameters
+│   ├── TestLanguageManager.cpp         ← Test chuyển đổi ngôn ngữ EN/VI
+│   ├── TestMailMimeParser.cpp          ← Test phân tích cấu trúc MIME email
+│   ├── TestPointCloudFilter.cpp        ← Test lọc nhiễu đám mây điểm 3D
+│   ├── TestReconstructionPipeline.cpp  ← Test pipeline SfM end-to-end
+│   ├── TestServiceRegistry.cpp         ← Test đăng ký/tra cứu service type-safe
 │   └── TestSignalBus.cpp               ← Test Event Bus phát/nhận signal
 │
-├── AIAssistant/                ← Hệ thống AI Server, Agent và RAG (Python)
+├── AIAssistant/                ← AI Server: Agent, RAG, LLM cục bộ (Python, FastAPI)
+│   ├── ARCHITECTURE.md         ← Kiến trúc runtime + danh sách module và ranh giới layer
+│   ├── Docs/adr/               ← 14 Architecture Decision Records
+│   ├── StartChatbotServer.py   ← Composition root: dựng FastAPI app và wire dependencies
+│   ├── src/ai_assistant/       ← Code nguồn (adapters / agents / orchestration / tools / rag / llm)
+│   ├── tests/                  ← unittest (unit, integration, contract) + coverage gate
+│   └── evals/                  ← Eval agent: tool-call envelope và chính sách supervisor
 ├── AIComputerVision/           ← Huấn luyện YOLO, models và kết quả training
 │   ├── cvtrain/                ← Package huấn luyện/xuất ONNX (CLI: TrainModel.py)
 │   ├── Models/                 ← ONNX đã xuất (Git LFS) + manifest.json

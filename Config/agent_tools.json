@@ -396,5 +396,47 @@
         "required": false
       }
     }
+  },
+  {
+    "name": "go_to_definition",
+    "description": "Jump to the definition of the symbol at the given file position using the language server (clangd for C/C++, python-lsp-server for Python). Use when the Code Agent needs to see where a function, class, or variable is defined before modifying it.",
+    "parameters": {
+      "path": {
+        "type": "string",
+        "description": "Relative or absolute path to the source file",
+        "required": true
+      },
+      "line": {
+        "type": "integer",
+        "description": "1-based line number of the symbol",
+        "required": true
+      },
+      "character": {
+        "type": "integer",
+        "description": "0-based character offset within the line",
+        "required": true
+      }
+    }
+  },
+  {
+    "name": "find_references",
+    "description": "Find all references to the symbol at the given file position using the language server (clangd for C/C++, python-lsp-server for Python). Use when the Code Agent needs to see every call site before refactoring or renaming.",
+    "parameters": {
+      "path": {
+        "type": "string",
+        "description": "Relative or absolute path to the source file",
+        "required": true
+      },
+      "line": {
+        "type": "integer",
+        "description": "1-based line number of the symbol",
+        "required": true
+      },
+      "character": {
+        "type": "integer",
+        "description": "0-based character offset within the line",
+        "required": true
+      }
+    }
   }
 ]

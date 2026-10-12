@@ -12,14 +12,16 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+# The package lives under ``src/`` (ADR 0010 layout); pointing at the project
+# root alone leaves ``ai_assistant`` unimportable.
+sys.path.insert(0, str(ROOT / "src"))
 
-from ai_assistant.orchestration.supervisor import (  # noqa: E402
-    _CODE_TOOLS,
-    _RESEARCH_TOOLS,
-    _TRANSFER_TARGETS,
-    _VERIFICATION_TOOLS,
-    _WORKFLOW_TOOLS,
+from ai_assistant.orchestration.supervisor import (
+    CODE_TOOLS,
+    RESEARCH_TOOLS,
+    TRANSFER_TARGETS,
+    VERIFICATION_TOOLS,
+    WORKFLOW_TOOLS,
     Specialist,
     authorise,
     delegate,
@@ -76,15 +78,15 @@ def _build_evidence(tool: str, specialist: Specialist) -> dict[str, Any]:
 # test case.
 
 _TOOL_TO_SPECIALIST: dict[str, Specialist] = {}
-for _tool in _RESEARCH_TOOLS:
+for _tool in RESEARCH_TOOLS:
     _TOOL_TO_SPECIALIST[_tool] = Specialist.RESEARCH
-for _tool in _VERIFICATION_TOOLS:
+for _tool in VERIFICATION_TOOLS:
     _TOOL_TO_SPECIALIST[_tool] = Specialist.VERIFICATION
-for _tool in _CODE_TOOLS:
+for _tool in CODE_TOOLS:
     _TOOL_TO_SPECIALIST[_tool] = Specialist.CODE
-for _tool in _WORKFLOW_TOOLS:
+for _tool in WORKFLOW_TOOLS:
     _TOOL_TO_SPECIALIST[_tool] = Specialist.WORKFLOW
-for _tool, _specialist in _TRANSFER_TARGETS.items():
+for _tool, _specialist in TRANSFER_TARGETS.items():
     _TOOL_TO_SPECIALIST[_tool] = _specialist
 
 
@@ -130,7 +132,7 @@ def _eval_authorisation() -> list[EvalResult]:
     results: list[EvalResult] = []
     for tool, expected_specialist in _TOOL_TO_SPECIALIST.items():
         delegation = delegate("eval-auth", "eval", tool, {})
-        is_code_write = tool in _CODE_TOOLS
+        is_code_write = tool in CODE_TOOLS
         # Code write tools: needs_approval=False should be DENIED.
         # All other tools: auto-allowed.
         allowed, _ = authorise(delegation, needs_approval=False)
@@ -146,7 +148,7 @@ def _eval_authorisation() -> list[EvalResult]:
             detail="" if ok else f"allowed={allowed}",
         ))
     # Code write tools WITH approval should be allowed.
-    for tool in _CODE_TOOLS:
+    for tool in CODE_TOOLS:
         delegation = delegate("eval-auth-approved", "eval", tool, {})
         allowed, _ = authorise(delegation, needs_approval=True)
         ok = allowed
@@ -204,7 +206,7 @@ def _eval_verification_failure() -> list[EvalResult]:
 def _eval_prefer_code_override() -> list[EvalResult]:
     """When prefer_code=True, research/verification tools route to CODE."""
     results: list[EvalResult] = []
-    eligible = _RESEARCH_TOOLS | _VERIFICATION_TOOLS | _CODE_TOOLS
+    eligible = RESEARCH_TOOLS | VERIFICATION_TOOLS | CODE_TOOLS
     for tool in eligible:
         delegation = delegate("eval-prefer-code", "eval", tool, {}, prefer_code=True)
         ok = delegation.specialist is Specialist.CODE
@@ -214,7 +216,7 @@ def _eval_prefer_code_override() -> list[EvalResult]:
             detail="" if ok else f"expected code, got {delegation.specialist.value}",
         ))
     # Workflow tools should NOT be affected by prefer_code.
-    for tool in _WORKFLOW_TOOLS:
+    for tool in WORKFLOW_TOOLS:
         delegation = delegate("eval-prefer-code-wf", "eval", tool, {}, prefer_code=True)
         ok = delegation.specialist is Specialist.WORKFLOW
         results.append(EvalResult(
@@ -311,7 +313,7 @@ def _eval_langsmith_fallback() -> list[EvalResult]:
         with span("eval-test-span", test="true"):
             pass
         span_ok = True
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         span_ok = False
         results.append(EvalResult(
             tool="(observability)", scenario="langsmith-span-fallback",
@@ -329,7 +331,7 @@ def _eval_langsmith_fallback() -> list[EvalResult]:
         with langsmith_trace("eval-test", run_type="chain") as ctx:
             ctx["outputs"] = {"test": True}
         trace_ok = True
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         trace_ok = False
         results.append(EvalResult(
             tool="(observability)", scenario="langsmith-trace-fallback",

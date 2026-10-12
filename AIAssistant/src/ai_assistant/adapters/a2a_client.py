@@ -64,7 +64,7 @@ class TrustedA2AClient:
             headers={"Content-Type": "application/json", "Accept": "application/json"}, method="POST",
         )
         try:
-            with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310 - trusted endpoint allowlist.
+            with urlopen(request, timeout=self._timeout_seconds) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except (OSError, URLError, json.JSONDecodeError) as error:
             return {"routing": "degraded_dependency", "error": str(error), "agent_url": endpoint}
@@ -72,7 +72,7 @@ class TrustedA2AClient:
 
     def _read_card(self, endpoint: str) -> RemoteAgentCard:
         request = Request(urljoin(endpoint + "/", ".well-known/agent.json"), headers={"Accept": "application/json"})
-        with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310 - trusted endpoint allowlist.
+        with urlopen(request, timeout=self._timeout_seconds) as response:
             payload = json.loads(response.read().decode("utf-8"))
         if not isinstance(payload.get("name"), str) or not isinstance(payload.get("skills"), list):
             raise ValueError("Invalid A2A Agent Card")

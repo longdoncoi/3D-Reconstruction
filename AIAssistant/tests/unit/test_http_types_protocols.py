@@ -15,9 +15,9 @@ from typing import Any, get_type_hints
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-import unittest  # noqa: E402
+import unittest
 
-from ai_assistant.adapters.http import _types  # noqa: E402
+from ai_assistant.adapters.http import _types
 
 PROTOCOLS = (
     _types.LoggerLike,

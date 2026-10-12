@@ -90,14 +90,17 @@ jobs:
 
       - name: Run test suite with coverage gate
         working-directory: AIAssistant
-        # Floor is a regression guard, not a target. The measured CI baseline
-        # is ~91.5% of the ai_assistant package (Oct 2026), measured with the
+        # ``pyproject.toml`` is the single source of truth: ``branch = true``,
+        # ``source = ["ai_assistant"]`` and ``fail_under = 88`` live there, so
+        # local runs and this job measure exactly the same thing. The floor is
+        # a regression guard, not a target: the measured baseline is ~91% of
+        # statements *and* branches (Oct 2026, ADR 0013), measured with the
         # optional ``mcp`` package absent exactly as this job installs it, so
-        # the ~1.5pt of headroom turns genuine regressions red without turning
+        # the ~3pt of headroom turns genuine regressions red without turning
         # test noise into red.
         run: |
-          python -m coverage run --source=ai_assistant -m unittest discover -s tests -p "test_*.py"
-          python -m coverage report --fail-under=90
+          python -m coverage run -m unittest discover -s tests -p "test_*.py"
+          python -m coverage report
 
       - name: Static analysis — import-linter architecture contracts
         working-directory: AIAssistant

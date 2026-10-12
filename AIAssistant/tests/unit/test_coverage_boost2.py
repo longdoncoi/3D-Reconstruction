@@ -64,7 +64,7 @@ def _remote_message(*, content: str | None = None, tool_calls: list | None = Non
     return message
 
 
-class ConstrainedCompletionTests(unittest.TestCase):
+class ConstrainedCompletionEnvelopeTests(unittest.TestCase):
     """Coverage for the constrained tool envelope decoder."""
 
     def _run(self, response: dict, *, llama: bool = False) -> str:

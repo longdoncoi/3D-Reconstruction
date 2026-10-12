@@ -53,7 +53,7 @@ def openai_compatible_completion(messages: list[dict[str, Any]], **params: Any) 
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urlopen(request, timeout=timeout) as response:  # noqa: S310 -- configured endpoint
+    with urlopen(request, timeout=timeout) as response:
         return json.loads(response.read())
 
 

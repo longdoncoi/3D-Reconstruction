@@ -105,5 +105,51 @@ class OrchestrationDoesNotImportAdaptersTest(unittest.TestCase):
         self.assertEqual(advertised, {member.value for member in Specialist})
 
 
+class CompositionRootWiresTheRemoteLookupTest(unittest.TestCase):
+    """Dependency inversion only helps if the composition root installs it.
+
+    Nothing else in the suite reads ``StartChatbotServer.py``, so deleting the
+    install call would leave every test here green while A2A remote delegation
+    silently stopped working — the resolver would exist, satisfy the port test
+    above, and never be reachable.
+    """
+
+    SERVER = Path(__file__).resolve().parents[2] / "StartChatbotServer.py"
+
+    def _install_calls(self) -> list[ast.Call]:
+        tree = ast.parse(self.SERVER.read_text(encoding="utf-8"))
+        return [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "set_remote_specialist_lookup"
+        ]
+
+    def test_startup_installs_the_adapter_resolver(self) -> None:
+        """The server wires ``resolve_remote_specialist`` at startup."""
+        calls = self._install_calls()
+        self.assertTrue(calls, "StartChatbotServer.py never installs the remote-specialist lookup")
+        installed = {
+            arg.id
+            for call in calls
+            for arg in call.args
+            if isinstance(arg, ast.Name)
+        }
+        self.assertIn("resolve_remote_specialist", installed)
+
+    def test_shutdown_clears_the_lookup(self) -> None:
+        """A restart must not reuse a resolver bound to a torn-down adapter."""
+        self.assertTrue(
+            any(
+                len(call.args) == 1
+                and isinstance(call.args[0], ast.Constant)
+                and call.args[0].value is None
+                for call in self._install_calls()
+            ),
+            "the server must clear the lookup on shutdown",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

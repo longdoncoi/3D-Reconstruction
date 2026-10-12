@@ -7,7 +7,7 @@ from ..domain.approvals import approval_fingerprint
 from ..domain.security import DataClassification, Principal
 from ..domain.tools import ToolRequest, ToolResult
 from ..plugins.registry import PluginRegistry
-from ..ports import ToolEventSink  # noqa: I001
+from ..ports import ToolEventSink
 from .approvals import InMemoryApprovalGrantStore
 from .validation import validate_input
 

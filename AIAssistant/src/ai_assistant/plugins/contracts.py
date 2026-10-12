@@ -18,4 +18,4 @@ class ToolPlugin(Plugin, Protocol):
     def executor_for(self, tool_name: str) -> ToolExecutor: ...
 
 
-from .registry import PluginRegistry  # noqa: E402
+from .registry import PluginRegistry
