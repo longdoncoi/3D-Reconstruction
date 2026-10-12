@@ -110,7 +110,8 @@ class BuildCheckpointerTests(unittest.TestCase):
 
     def test_backend_failure_falls_back_to_memory(self):
         def boom():
-            raise RuntimeError("connection refused")
+            msg = "connection refused"
+            raise RuntimeError(msg)
 
         settings = _settings(checkpoint_backend="postgres", checkpoint_url="postgres://x")
         with self._patch_settings(settings):

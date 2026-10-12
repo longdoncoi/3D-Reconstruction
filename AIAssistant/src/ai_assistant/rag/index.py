@@ -83,10 +83,11 @@ def is_cache_valid(paths: AppPaths, settings: RAGSettings) -> bool:
         else:
             logger.info("Cache valid: built_at=%s, chunks=%d",
                         meta.get("built_at", "?"), meta.get("chunk_count", 0))
-        return valid
     except Exception as e:
         logger.warning("Cache read error: %s", e)
         return False
+    else:
+        return valid
 
 
 def save_cache(index: Any, chunks: list[ChunkResult], bm25: Any, paths: AppPaths, settings: RAGSettings, model_idx: int = 0) -> None:
@@ -122,23 +123,92 @@ def save_cache(index: Any, chunks: list[ChunkResult], bm25: Any, paths: AppPaths
 def load_cache(paths: AppPaths, settings: RAGSettings) -> tuple[Any, list[ChunkResult], Any]:
     import faiss as _faiss
     t = time.monotonic()
-    try:
+
+    def _read() -> tuple[Any, list[ChunkResult], Any]:
         index = _faiss.read_index(str(paths.cache_index))
         if index.d != settings.embedding_dimension:
-            raise ValueError(f"FAISS dimension {index.d} does not match {settings.embedding_dimension}")
-            
+            msg = f"FAISS dimension {index.d} does not match {settings.embedding_dimension}"
+            raise ValueError(msg)
+
         with paths.cache_chunks.open("rb") as f:
             chunks = pickle.load(f)  # noqa: S301
-            
+
         with paths.cache_bm25.open("rb") as f:
             bm25 = pickle.load(f)  # noqa: S301
-            
+
         logger.info("Cache loaded: %.1fs | chunks=%d", time.monotonic()-t, len(chunks))
         logger.debug(f"       chunks={len(chunks)}  (from Cache/)")
         return index, chunks, bm25
-    except Exception as e:
-        logger.error("Cache load failed: %s", e)
+
+    try:
+        loaded = _read()
+    except Exception:
+        logger.exception("Cache load failed")
         return None, [], None
+    else:
+        return loaded
+
+
+def _embed_image_batches(embed_model: Any, chunks: list[ChunkResult],
+                         image_items: list[tuple[int, str]],
+                         final_embeddings: list) -> None:
+    """Encode image chunks in small batches with per-image fallback.
+
+    A failed batch retries image by image; an image that fails alone keeps a
+    slot the text fallback fills later. Opened images are always closed so no
+    handle survives on Windows.
+    """
+    image_batch_size = 4
+    logger.debug(f"Encoding {len(image_items)} image chunks")
+    for start in range(0, len(image_items), image_batch_size):
+        batch_items = image_items[start:start + image_batch_size]
+        batch_indices = []
+        batch_images = []
+        for idx, image_path in batch_items:
+            try:
+                batch_images.append(load_image_for_embedding(image_path))
+                batch_indices.append(idx)
+            except Exception as e:
+                logger.warning("Image load skipped for embedding: %s | %s", image_path, e)
+
+        if not batch_images:
+            continue
+
+        try:
+            img_embs = embed_model.encode(
+                batch_images,
+                show_progress_bar=False,
+                normalize_embeddings=True,
+                batch_size=len(batch_images)
+            )
+            for idx, emb in zip(batch_indices, img_embs):
+                final_embeddings[idx] = emb
+        except Exception as e:
+            logger.warning(
+                "Image embedding batch failed (%d-%d): %s; retrying one by one",
+                start + 1, start + len(batch_items), e
+            )
+            for idx, img in zip(batch_indices, batch_images):
+                try:
+                    emb = embed_model.encode(
+                        [img],
+                        show_progress_bar=False,
+                        normalize_embeddings=True,
+                        batch_size=1
+                    )[0]
+                    final_embeddings[idx] = emb
+                except Exception as single_e:
+                    logger.warning(
+                        "Image embedding skipped for %s: %s",
+                        getattr(chunks[idx], "source_path", idx), single_e
+                    )
+        finally:
+            for img in batch_images:
+                try:
+                    img.close()
+                except Exception:
+                    pass
+            release_ml_memory()
 
 
 def build_index_from_scratch(chunks: list[ChunkResult], embed_model: Any, settings: RAGSettings) -> tuple[Any, list[ChunkResult], Any]:
@@ -170,57 +240,7 @@ def build_index_from_scratch(chunks: list[ChunkResult], embed_model: Any, settin
             final_embeddings[idx] = emb
             
     if image_items:
-        image_batch_size = 4
-        logger.debug(f"Encoding {len(image_items)} image chunks")
-        for start in range(0, len(image_items), image_batch_size):
-            batch_items = image_items[start:start + image_batch_size]
-            batch_indices = []
-            batch_images = []
-            for idx, image_path in batch_items:
-                try:
-                    batch_images.append(load_image_for_embedding(image_path))
-                    batch_indices.append(idx)
-                except Exception as e:
-                    logger.warning("Image load skipped for embedding: %s | %s", image_path, e)
-
-            if not batch_images:
-                continue
-
-            try:
-                img_embs = embed_model.encode(
-                    batch_images,
-                    show_progress_bar=False,
-                    normalize_embeddings=True,
-                    batch_size=len(batch_images)
-                )
-                for idx, emb in zip(batch_indices, img_embs):
-                    final_embeddings[idx] = emb
-            except Exception as e:
-                logger.warning(
-                    "Image embedding batch failed (%d-%d): %s; retrying one by one",
-                    start + 1, start + len(batch_items), e
-                )
-                for idx, img in zip(batch_indices, batch_images):
-                    try:
-                        emb = embed_model.encode(
-                            [img],
-                            show_progress_bar=False,
-                            normalize_embeddings=True,
-                            batch_size=1
-                        )[0]
-                        final_embeddings[idx] = emb
-                    except Exception as single_e:
-                        logger.warning(
-                            "Image embedding skipped for %s: %s",
-                            getattr(chunks[idx], "source_path", idx), single_e
-                        )
-            finally:
-                for img in batch_images:
-                    try:
-                        img.close()
-                    except Exception:
-                        pass
-                release_ml_memory()
+        _embed_image_batches(embed_model, chunks, image_items, final_embeddings)
 
     missing_indices = [i for i, emb in enumerate(final_embeddings) if emb is None]
     if missing_indices:
@@ -241,7 +261,8 @@ def build_index_from_scratch(chunks: list[ChunkResult], embed_model: Any, settin
     emb = np.array(embeddings, dtype="float32")
     dim, n = emb.shape[1], len(emb)
     if dim != settings.embedding_dimension:
-        raise ValueError(f"Embedding model returned {dim} dimensions; expected {settings.embedding_dimension}")
+        msg = f"Embedding model returned {dim} dimensions; expected {settings.embedding_dimension}"
+        raise ValueError(msg)
 
     if n < 1000:
         index = _faiss.IndexFlatIP(dim)

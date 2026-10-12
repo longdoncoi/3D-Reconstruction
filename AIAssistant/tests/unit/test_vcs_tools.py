@@ -48,7 +48,8 @@ class ProjectStatusTests(unittest.TestCase):
 
     def test_git_failure_falls_back_to_empty(self):
         def fake_run(command, **kwargs):
-            raise OSError("git missing")
+            msg = "git missing"
+            raise OSError(msg)
 
         with mock.patch.object(vcs_tools, "get_paths", return_value=SimpleNamespace(project_root=self.root)):
             with mock.patch.object(vcs_tools.subprocess, "run", side_effect=fake_run):

@@ -1,5 +1,5 @@
 """
-StartChatbotServer.py — 3D-Reconstruction AI Server v2.2
+AI Assistant server configuration compatibility shim.
 =========================================================
 Compatibility shim for legacy config module. New features should use src/ai_assistant/config/*.
 """
@@ -36,8 +36,8 @@ from pydantic import BaseModel, Field, field_validator  # noqa: F401
 # The former ``sys.path`` mutation that lived here is gone: importing
 # ``ai_assistant.legacy.config`` already requires the ``ai_assistant`` package
 # to be findable, so the insert could never help and only mutated global
-# interpreter state at import time (ADR 0001). ``StartChatbotServer.py`` puts
-# ``src`` on the path for the compatibility entrypoint.
+# interpreter state at import time (ADR 0001). The executable bootstrap module
+# puts ``src`` on the path when it is launched directly.
 from ai_assistant.config import (
     AppPaths,  # noqa: F401
     ModelRegistry,  # noqa: F401
@@ -148,9 +148,9 @@ def startup_step(name: str):
     t = time.monotonic()
     try:
         yield
-    except Exception as e:
+    except Exception:
         elapsed = time.monotonic() - t
-        logger.error("FAIL step: %s — %.1fs — %s", name, elapsed, e)
+        logger.exception("FAIL step: %s — %.1fs", name, elapsed)
         raise
     else:
         elapsed = time.monotonic() - t

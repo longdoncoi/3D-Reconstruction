@@ -16,7 +16,8 @@ def load_entrypoint_plugins(registry: PluginRegistry, group: str = "ai_assistant
             continue
         register = getattr(plugin, "register", None)
         if not callable(register):
-            raise TypeError(f"Plugin {plugin_id} has no register method")
+            msg = f"Plugin {plugin_id} has no register method"
+            raise TypeError(msg)
         register(registry)
         loaded.append(plugin_id)
     return tuple(loaded)

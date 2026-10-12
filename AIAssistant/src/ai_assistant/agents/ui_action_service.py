@@ -94,7 +94,8 @@ class UIActionService:
             action = self._ctx.pending_actions.pop(request.request_id, None)
             self._save_pending()
         if action is None or not action.get("ui_ack"):
-            raise NotFoundError("Unknown or expired UI action request")
+            msg = "Unknown or expired UI action request"
+            raise NotFoundError(msg)
 
         params = action["params"]
         result = {"success": request.success, "action": params["action"], **request.result}
@@ -133,7 +134,8 @@ class UIActionService:
         """Queue the next UI action in a multi-step desktop workflow."""
         queued = next_actions[0]
         if not isinstance(queued, dict):
-            raise UnprocessableRequestError("Invalid queued UI action")
+            msg = "Invalid queued UI action"
+            raise UnprocessableRequestError(msg)
         next_params, error = validate_action_params(queued)
         if error is not None or next_params is None:
             raise UnprocessableRequestError(str(error or "Invalid queued UI action"))

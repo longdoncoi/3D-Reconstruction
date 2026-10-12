@@ -239,6 +239,22 @@ def _completed_response(*, pending_status: str, session_id: str, state: dict,
     }
 
 
+def _approval_cover_probe(gateway, approval_token: str):
+    """Build the single-use grant probe for the graph, if one applies.
+
+    The reason node asks again as soon as the grant for the approved
+    invocation is spent, instead of looping on a tool the gateway will
+    refuse. No token or no covering gateway means no probe.
+    """
+    if not approval_token or gateway is None or not hasattr(gateway, "approval_covers"):
+        return None
+
+    def _covers(tool_name: str, tool_params: dict) -> bool:
+        return bool(gateway.approval_covers(tool_name, tool_params, approval_token))
+
+    return _covers
+
+
 def run_langgraph_agent(
     *,
     # Injected wiring that never varies between invocations (ADR 0013)
@@ -269,9 +285,8 @@ def run_langgraph_agent(
 ) -> dict:
     """Run the tool loop via LangGraph while keeping Qt API response shape."""
     if deps.local_agent_graph is None:
-        raise ServiceUnavailableError(
-            "LangGraph is required for Agent mode. Run: pip install -r AIAssistant/requirements.txt"
-        )
+        msg = "LangGraph is required for Agent mode. Run: pip install -r AIAssistant/requirements.txt"
+        raise ServiceUnavailableError(msg)
     if supervisor_route is None and deps.specialist is not None:
         supervisor_route = deps.specialist.SUPERVISOR
 
@@ -350,12 +365,7 @@ def run_langgraph_agent(
     # Single-use approval grant: the reason node asks again as soon as the
     # grant for the approved invocation is spent, instead of looping on a
     # tool the gateway will refuse.
-    approval_covers_fn: Callable[[str, dict], bool] | None = None
-    if approval_token and deps.tool_gateway is not None and hasattr(deps.tool_gateway, "approval_covers"):
-        gateway = deps.tool_gateway
-        def _covers(tool_name: str, tool_params: dict) -> bool:
-            return bool(gateway.approval_covers(tool_name, tool_params, approval_token))
-        approval_covers_fn = _covers
+    approval_covers_fn = _approval_cover_probe(deps.tool_gateway, approval_token)
 
     graph = deps.local_agent_graph(
         complete=complete,

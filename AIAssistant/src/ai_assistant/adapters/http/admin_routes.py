@@ -1,6 +1,6 @@
 """Admin routes: model reload, RAG rebuild, agent reset, VRAM release, shutdown.
 
-Extracted from StartChatbotServer.py. These are privileged management endpoints
+Extracted from the composition root. These are privileged management endpoints
 that MUST NOT be exposed on the public network interface.
 """
 from __future__ import annotations
@@ -25,6 +25,45 @@ if TYPE_CHECKING:
         LoggerLike,
         RAGModuleLike,
     )
+
+
+def _rebuild_rag_index(
+    rag_module: "RAGModuleLike",
+    llm_module: "LLMModuleLike",
+    rebuild_chatbot_agent_fn: Callable[[], None],
+    logger: "LoggerLike",
+) -> dict:
+    """Rebuild the RAG index; raises ``HTTPException`` on failure."""
+    from ai_assistant.legacy.config import ENABLE_RAG
+    if not ENABLE_RAG:
+        return {"status": "skipped", "message": "RAG is disabled"}
+    try:
+        with rag_module.rag_lock:
+            rag_module.knowledge_index = None
+            rag_module.knowledge_chunks = []
+            rag_module.bm25_index = None
+            rag_module.embed_model_ref = None
+            rag_module._reranker = None
+        gc.collect()
+        rag_module._release_ml_memory()
+        importlib.reload(cast("ModuleType", rag_module))
+        rebuild_chatbot_agent_fn()
+        chunks = rag_module.initialize_rag(
+            force_rebuild=True,
+            enable_reranker=not llm_module.is_vision_model,
+        )
+        if llm_module.is_vision_model:
+            rag_module.release_embedding_for_vision()
+        logger.info("RAG index rebuilt successfully")
+    except Exception as error:
+        logger.exception("RAG reload failed")
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    else:
+        return {
+            "status": "ok",
+            "chunks": chunks,
+            "message": "RAG index rebuilt successfully",
+        }
 
 
 def build_admin_router(
@@ -70,10 +109,11 @@ def build_admin_router(
                 gc.collect()
                 rag_module._release_ml_memory()
             logger.info("VRAM released successfully")
-            return {"status": "ok", "message": "VRAM and models unloaded"}
         except Exception as error:
-            logger.error("Failed to release VRAM: %s", error)
+            logger.exception("Failed to release VRAM")
             raise HTTPException(status_code=500, detail=str(error)) from error
+        else:
+            return {"status": "ok", "message": "VRAM and models unloaded"}
 
     @router.post("/reload-model")
     def reload_model():
@@ -96,61 +136,36 @@ def build_admin_router(
                 "[MODEL SWITCH] Model reloaded successfully: %s (vision=%s)",
                 llm_module.active_model_desc, llm_module.is_vision_model,
             )
+        except Exception as error:
+            logger.exception("LLM reload failed")
+            raise HTTPException(status_code=500, detail=str(error)) from error
+        else:
             return {
                 "status": "ok",
                 "model": llm_module.active_model_desc,
                 "message": "Model reloaded successfully",
             }
-        except Exception as error:
-            logger.exception("LLM reload failed")
-            raise HTTPException(status_code=500, detail=str(error)) from error
 
     @router.post("/reload-rag")
     def reload_rag():
-        from ai_assistant.legacy.config import ENABLE_RAG
-        if not ENABLE_RAG:
-            return {"status": "skipped", "message": "RAG is disabled"}
-        try:
-            with rag_module.rag_lock:
-                rag_module.knowledge_index = None
-                rag_module.knowledge_chunks = []
-                rag_module.bm25_index = None
-                rag_module.embed_model_ref = None
-                rag_module._reranker = None
-            gc.collect()
-            rag_module._release_ml_memory()
-            importlib.reload(cast("ModuleType", rag_module))
-            rebuild_chatbot_agent_fn()
-            chunks = rag_module.initialize_rag(
-                force_rebuild=True,
-                enable_reranker=not llm_module.is_vision_model,
-            )
-            if llm_module.is_vision_model:
-                rag_module.release_embedding_for_vision()
-            logger.info("RAG index rebuilt successfully")
-            return {
-                "status": "ok",
-                "chunks": chunks,
-                "message": "RAG index rebuilt successfully",
-            }
-        except Exception as error:
-            logger.exception("RAG reload failed")
-            raise HTTPException(status_code=500, detail=str(error)) from error
+        return _rebuild_rag_index(rag_module, llm_module, rebuild_chatbot_agent_fn, logger)
 
     @router.post("/reload-agent")
     def reload_agent():
         try:
             reset_agent_state_fn()
-            import LangGraphAgent
-            importlib.reload(LangGraphAgent)
+            from ai_assistant.orchestration import compat
+
+            importlib.reload(compat)
             refresh_agent_routes_fn()
             reset_agent_state_fn()
             action_manifest_module.reload_manifest()
             logger.info("Agent code and state reloaded successfully")
-            return {"status": "ok", "message": "Agent code and state reloaded successfully"}
         except Exception as error:
             logger.exception("Agent reload failed")
             raise HTTPException(status_code=500, detail=str(error)) from error
+        else:
+            return {"status": "ok", "message": "Agent code and state reloaded successfully"}
 
     @router.post("/shutdown")
     def shutdown_server():

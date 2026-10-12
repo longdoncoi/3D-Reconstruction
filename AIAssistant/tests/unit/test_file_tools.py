@@ -322,5 +322,212 @@ class BuildCodeCitationTests(FileToolsBase):
         self.assertTrue(hint.endswith("src/core/util.py"))
 
 
+class FileToolGuardPathTests(FileToolsBase):
+    """Every reject/except arm of the read, patch, replace and citation tools."""
+
+    # -- tool_read_file
+
+    def test_read_file_reports_when_no_encoding_fits(self) -> None:
+        """All four encodings are tried; exhausting them is an error, not a crash."""
+        self._write("data.py", "value = 1\n")
+        with mock.patch("builtins.open", side_effect=ValueError("bad codec")):
+            result = tool_read_file({"path": "data.py"})
+        self.assertIn("Không đọc được encoding", result["error"])
+
+    def test_read_file_reports_an_unexpected_failure(self) -> None:
+        """Anything the encoding loop cannot handle falls to the outer guard."""
+        self._write("data.py", "value = 1\n")
+        with mock.patch("builtins.open", side_effect=RuntimeError("descriptor lost")):
+            result = tool_read_file({"path": "data.py"})
+        self.assertIn("Lỗi đọc file", result["error"])
+
+    def test_reading_a_class_member_walks_the_ast_class_node(self) -> None:
+        """The AST path only runs on a real file, so ``''.join`` stays valid."""
+        self._write("model.py", "class Widget:\n    def render(self):\n        return 1\n")
+        result = tool_read_file({"path": "model.py", "symbol": "Widget.render"})
+        self.assertNotIn("error", result)
+        self.assertIn("return 1", result["content"])
+
+    # -- _find_symbol_range / _expand_function_end
+
+    def test_symbol_range_skips_a_qualification_the_line_does_not_carry(self) -> None:
+        """The unqualified name matches, so neither candidate list can fill."""
+        lines = ["void foo(", ");"]
+        self.assertIsNone(_find_symbol_range(lines, "ns::foo"))
+
+    def test_symbol_range_keeps_the_open_range_when_braces_never_close(self) -> None:
+        lines = ["void foo() {", "  int x;"]
+        self.assertEqual(_find_symbol_range(lines, "foo"), (1, 2))
+
+    def test_expand_function_end_keeps_the_original_when_braces_never_close(self) -> None:
+        lines = ["void f() {", "    x();", "    y();"]
+        self.assertEqual(_expand_function_end(lines, 0, 1), 1)
+
+    # -- tool_patch_file
+
+    def test_patch_rejects_a_missing_file(self) -> None:
+        result = tool_patch_file({"path": "ghost.txt", "find": "a", "replace": "b"})
+        self.assertIn("Invalid or missing file", result["error"])
+
+    def test_patch_propagates_a_sandbox_refusal(self) -> None:
+        self._write("a.txt", "hello world")
+        with mock.patch(
+            "ai_assistant.tools.builtin.file_tools.write_sandboxed_file",
+            return_value={"error": "outside the sandbox"},
+        ):
+            result = tool_patch_file({"path": "a.txt", "find": "hello", "replace": "bye"})
+        self.assertEqual(result["error"], "outside the sandbox")
+
+    def test_patch_reports_a_read_failure(self) -> None:
+        self._write("a.txt", "hello world")
+        with mock.patch("builtins.open", side_effect=PermissionError("locked")):
+            result = tool_patch_file({"path": "a.txt", "find": "hello", "replace": "bye"})
+        self.assertIn("Unable to patch file", result["error"])
+
+    # -- tool_replace_file_content
+
+    def test_replace_rejects_a_missing_file(self) -> None:
+        result = tool_replace_file_content(
+            {"path": "ghost.txt", "targetContent": "a", "replacementContent": "b"},
+        )
+        self.assertIn("Invalid or missing file", result["error"])
+
+    def test_replace_rejects_an_empty_target(self) -> None:
+        self._write("a.txt", "hello")
+        result = tool_replace_file_content(
+            {"path": "a.txt", "targetContent": "", "replacementContent": "b"},
+        )
+        self.assertEqual(result["error"], "Target content must not be empty.")
+
+    def test_replace_propagates_a_sandbox_refusal(self) -> None:
+        self._write("a.txt", "hello world")
+        with mock.patch(
+            "ai_assistant.tools.builtin.file_tools.write_sandboxed_file",
+            return_value={"error": "read-only volume"},
+        ):
+            result = tool_replace_file_content(
+                {"path": "a.txt", "targetContent": "hello", "replacementContent": "bye"},
+            )
+        self.assertEqual(result["error"], "read-only volume")
+
+    def test_replace_reports_a_read_failure(self) -> None:
+        self._write("a.txt", "hello world")
+        with mock.patch("builtins.open", side_effect=PermissionError("locked")):
+            result = tool_replace_file_content(
+                {"path": "a.txt", "targetContent": "hello", "replacementContent": "bye"},
+            )
+        self.assertIn("Unable to replace file content", result["error"])
+
+    # -- tool_multi_replace_file_content
+
+    def test_multi_replace_rejects_a_missing_file(self) -> None:
+        result = tool_multi_replace_file_content(
+            {"path": "ghost.txt", "replacements": [{"targetContent": "a"}]},
+        )
+        self.assertIn("Invalid or missing file", result["error"])
+
+    def test_multi_replace_names_the_index_with_an_empty_target(self) -> None:
+        self._write("a.txt", "hello world")
+        result = tool_multi_replace_file_content(
+            {"path": "a.txt", "replacements": [
+                {"targetContent": "hello", "replacementContent": "bye"},
+                {"targetContent": "", "replacementContent": "x"},
+            ]},
+        )
+        self.assertIn("at index 1", result["error"])
+
+    def test_multi_replace_names_the_index_with_an_ambiguous_target(self) -> None:
+        self._write("a.txt", "aa aa")
+        result = tool_multi_replace_file_content(
+            {"path": "a.txt", "replacements": [
+                {"targetContent": "aa", "replacementContent": "b"},
+            ]},
+        )
+        self.assertIn("at index 0", result["error"])
+        self.assertIn("found 2", result["error"])
+
+    def test_multi_replace_propagates_a_sandbox_refusal(self) -> None:
+        self._write("a.txt", "hello world")
+        with mock.patch(
+            "ai_assistant.tools.builtin.file_tools.write_sandboxed_file",
+            return_value={"error": "read-only volume"},
+        ):
+            result = tool_multi_replace_file_content(
+                {"path": "a.txt", "replacements": [
+                    {"targetContent": "hello", "replacementContent": "bye"},
+                ]},
+            )
+        self.assertEqual(result["error"], "read-only volume")
+
+    def test_multi_replace_reports_a_read_failure(self) -> None:
+        self._write("a.txt", "hello world")
+        with mock.patch("builtins.open", side_effect=PermissionError("locked")):
+            result = tool_multi_replace_file_content(
+                {"path": "a.txt", "replacements": [
+                    {"targetContent": "hello", "replacementContent": "bye"},
+                ]},
+            )
+        self.assertIn("Unable to multi-replace file content", result["error"])
+
+    # -- tool_create_directory
+
+    def test_create_directory_rejects_an_unsafe_path(self) -> None:
+        result = tool_create_directory({"path": "../escape"})
+        self.assertIn("Invalid directory path", result["error"])
+
+
+class CitationFallbackTests(FileToolsBase):
+    """The citation flow's reject arms: no hint, unreadable, empty."""
+
+    @staticmethod
+    def _task() -> str:
+        # ``def`` makes this a Python citation; there is no ``*.py`` path in it,
+        # so the lookup has to fall back to scanning the AIAssistant tree.
+        return "trích dẫn mã nguồn def compute()"
+
+    def test_path_hint_is_none_without_a_python_path(self) -> None:
+        self.assertIsNone(_citation_path_hint(self._task()))
+
+    def test_a_python_citation_without_a_hint_scans_the_ai_assistant_tree(self) -> None:
+        with (
+            mock.patch("ai_assistant.tools.builtin.search_tools.tool_search_text") as search,
+            mock.patch("ai_assistant.tools.builtin.file_tools.tool_read_file") as read,
+        ):
+            search.return_value = {
+                "results": [{"file": "pkg/mod.py", "content": "def compute():", "line": 1}],
+            }
+            read.return_value = {
+                "path": "pkg/mod.py",
+                "content": "def compute():\n    return 1\n",
+                "showing": "lines 1-2",
+            }
+            result = _build_code_citation_result(self._task(), "s9", 0.0)
+        self.assertIsNotNone(result)
+        self.assertEqual(search.call_args.args[0]["path"], "AIAssistant")
+        self.assertEqual(search.call_args.args[0]["file_pattern"], "*.py")
+
+    def test_a_citation_whose_definition_cannot_be_read_is_dropped(self) -> None:
+        with (
+            mock.patch("ai_assistant.tools.builtin.search_tools.tool_search_text") as search,
+            mock.patch("ai_assistant.tools.builtin.file_tools.tool_read_file") as read,
+        ):
+            search.return_value = {
+                "results": [{"file": "pkg/mod.py", "content": "def compute():", "line": 1}],
+            }
+            read.return_value = {"error": "File không tồn tại: pkg/mod.py"}
+            self.assertIsNone(_build_code_citation_result(self._task(), "s10", 0.0))
+
+    def test_a_citation_with_an_empty_definition_is_dropped(self) -> None:
+        with (
+            mock.patch("ai_assistant.tools.builtin.search_tools.tool_search_text") as search,
+            mock.patch("ai_assistant.tools.builtin.file_tools.tool_read_file") as read,
+        ):
+            search.return_value = {
+                "results": [{"file": "pkg/mod.py", "content": "def compute():", "line": 1}],
+            }
+            read.return_value = {"path": "pkg/mod.py", "content": "   \n", "showing": ""}
+            self.assertIsNone(_build_code_citation_result(self._task(), "s11", 0.0))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,8 +2,8 @@
 
 The server is a **policy-first Clean Architecture platform** with enforced
 layer boundaries, a single execution gateway, and protocol isolation. The
-compatibility entrypoint is `StartChatbotServer.py`; the production package is
-`src/ai_assistant`.
+The composition root is `src/ai_assistant/bootstrap/server.py`; the production
+package is `src/ai_assistant`.
 
 ```text
 Qt / HTTP / MCP / A2A
@@ -25,11 +25,20 @@ Qt / HTTP / MCP / A2A
   environment at import time, and no module re-implements the `KEY=value`
   parser. `legacy/config.py` — the last second owner — now delegates.
 - Coverage and complexity are gated in `pyproject.toml` (ADR 0014), not in
-  the CI command line: branch coverage is on with an 88 floor against a 91%
-  measured baseline, and `C90` caps every function at complexity 20. The gate
-  is debt-free — the three functions that exceeded it when it was enabled
-  (`build_a2a_router`, `run_langgraph_agent`, `prepare_reasoning`) were
-  decomposed, so nothing carries a `# noqa: C901`.
+  the CI command line: branch coverage is on with a 100 floor at a 100%
+  measured baseline, and `C90` caps every function at complexity 15. The gate
+  is debt-free — the nine functions that exceeded it across both tightenings
+  (`build_a2a_router`, `run_langgraph_agent`, `prepare_reasoning`,
+  `build_chat_router`, `constrained_completion`, `plan_node`, `tool_node`,
+  `build_index_from_scratch`, `tool_list_directory`) were decomposed into
+  named helpers, so nothing carries a `# noqa: C901`.
+- Lint breadth is `E/W/F/I/BLE/S/RUF/C90/N/TRY` (ADR 0014, extended ADR 0016):
+  `N` pins the few names that mirror external APIs (A2A wire fields, faiss
+  doubles, the PascalCase entry point) via reasoned `# noqa`s, and `TRY`
+  keeps `return` out of `try` bodies, logs tracebacks where they are caught
+  and hoists long raise messages — except where the exception type itself is
+  a tested contract (`discover()` catches `ValueError`, the decoders raise
+  `RuntimeError`), which stays `noqa`d with the reason attached.
 - Every transport and orchestration strategy reaches tools through an injected
   `PlatformToolGateway` (`bootstrap/runtime.py`). The gateway is built by the DI
   container and constructor-injected into the agent service, MCP adapter and A2A
@@ -197,13 +206,12 @@ were deleted in ADR 0012: each was a one-line re-export with no live importer.
 bridge for a removed package that built a second `AgentService` and a second
 `ToolRegistry` at import time and had zero production importers.
 
-All production code imports from `ai_assistant.*` directly. Two root-level
-compatibility shims remain only for external consumers: `LangGraphAgent.py`
-re-exports `orchestration.graph` and `server_manager.py` is the process manager
-the Qt desktop app launches. An import-linter contract and the AST boundary
-tests keep `modules` from being resurrected.
+All production code imports from `ai_assistant.*` directly. The former
+`LangGraphAgent` exports now live in `orchestration.compat`, and the Qt process
+manager is `bootstrap.server_manager`. An import-linter contract and the AST
+boundary tests keep `modules` from being resurrected.
 
-`server_manager.py` is console-facing by contract: its `print(..., flush=True)`
+`bootstrap/server_manager.py` is console-facing by contract: its `print(..., flush=True)`
 lines *are* the transport the Qt client reads (it keys on the `[SUCCESS]`
 sentinel), so they are not candidates for `logging`. Its child-process detach
 flags are platform-guarded — `creationflags` on Windows, `start_new_session`
@@ -266,11 +274,11 @@ Sprint hardening is pinned by dedicated ADRs:
 cd AIAssistant
 ruff check .
 python -m mypy src/ai_assistant
-python -m compileall -q StartChatbotServer.py evals src
+python -m compileall -q evals src
 PYTHONPATH=src lint-imports --no-logo
 PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"
 python -m coverage run -m unittest discover -s tests -p "test_*.py"
-python -m coverage report   # branch coverage, floor 88, baseline ~91
+python -m coverage report   # branch coverage, floor 100, baseline 100
 ```
 
 `tests/integration/test_architecture_boundaries.py` enforces the layer rules
@@ -290,10 +298,13 @@ Edge-case test coverage:
 - `tests/unit/test_plugin_reentry.py` — plugin loader idempotency and duplicate handling.
 - `tests/unit/test_a2a_streaming.py` — SSE streaming, payload safety, redaction.
 - `tests/unit/test_checkpoint_recovery.py` — backend selection and fallback.
-- `tests/unit/test_coverage_boost*.py`, `tests/unit/test_llm_backend.py` —
+- `tests/unit/test_completion_envelopes.py`, `tests/unit/test_completion_guard_paths.py`,
+  `tests/unit/test_a2a_client.py`, `tests/unit/test_a2a_protocol_guards.py`,
+  `tests/unit/test_task_lifecycle_guards.py`, `tests/unit/test_llm_backend.py` —
   targeted coverage for the completion decoders, the A2A client routing
   policy, the task worker lifecycle, model loading, the llama.cpp backend and
-  the FastAPI composition boundary.
+  the FastAPI composition boundary. (The old `test_coverage_boost*.py` batches
+  were split verbatim into these topic files; no batch file remains.)
 - `tests/unit/test_index.py`, `tests/unit/test_loaders.py` — image-aware
   embedding, the IVF corpus path, scan edge cases, encoding/docx/pdf/email
   loader fallbacks, hierarchical markdown sections and the sliding-window
@@ -318,7 +329,7 @@ PYTHONPATH=src python -m coverage report
 
 There are deliberately no flags: `pyproject.toml` owns the whole coverage
 configuration (`branch = true`, `source`, the `*/legacy/*` omit and the
-`fail_under = 88` floor), so a local run and CI measure the same thing.
+`fail_under = 100` floor), so a local run and CI measure the same thing.
 `.github/workflows/Build-Python-ci.yml` enforces it next to the lint job and
 the full test suite.
 

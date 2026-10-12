@@ -28,7 +28,9 @@ def manifest() -> dict[str, Any]:
     with manifest_path.open(encoding="utf-8") as source:
         data = json.load(source)
     if not isinstance(data.get("actions"), list):
-        raise ValueError("agent_action_manifest.json requires an actions array")
+        # ValueError (not TypeError): malformed config, and the message is asserted by tests.
+        msg = "agent_action_manifest.json requires an actions array"
+        raise ValueError(msg)  # noqa: TRY004
     return data
 
 

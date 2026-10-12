@@ -70,17 +70,19 @@ def start_langsmith_run(name: str, run_type: str, inputs: dict[str, Any],
         payload["extra"] = {"metadata": metadata}
     try:
         client.create_run(**payload)
-        return run_id
     except TypeError:
         # Compatibility with older clients that accepted ``run_id`` instead.
         payload["run_id"] = payload.pop("id")
         try:
             client.create_run(**payload)
-            return run_id
         except Exception:
             return None
+        else:
+            return run_id
     except Exception:
         return None
+    else:
+        return run_id
 
 
 def finish_langsmith_run(run_id: str, outputs: dict[str, Any],
@@ -123,6 +125,7 @@ def record_langsmith_feedback(key: str, score: float | None = None,
         payload["comment"] = comment
     try:
         client.create_feedback(**payload)
-        return True
     except Exception:
         return False
+    else:
+        return True

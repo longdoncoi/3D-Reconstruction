@@ -1,7 +1,7 @@
 import unittest
 
 from ai_assistant.application.coordination import TaskCoordinator
-from LangGraphAgent import LocalAgentGraph
+from ai_assistant.orchestration.compat import LocalAgentGraph
 
 
 class AgentArchitectureTests(unittest.TestCase):

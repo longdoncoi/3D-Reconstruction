@@ -110,6 +110,11 @@ CMakeLists.txt.user*
 /AIAssistant/htmlcov/
 /AIAssistant/AIAssistant/
 /AIAssistant/.env
+/AIAssistant/.import_linter_cache/
+/AIAssistant/.mypy_cache/
+/AIAssistant/.ruff_cache/
+/AIAssistant/Models/.cache/
+**/__pycache__/
 /AIComputerVision/runs/
 # Coverage artifacts (AIComputerVision) — produced by `coverage run`.
 /AIComputerVision/.coverage

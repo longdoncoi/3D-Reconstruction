@@ -36,7 +36,8 @@ def openai_compatible_completion(messages: list[dict[str, Any]], **params: Any) 
     """Call a separately deployed vLLM/TGI OpenAI-compatible server."""
     endpoint = agent_inference_url()
     if not endpoint:
-        raise RuntimeError("AGENT_INFERENCE_URL is required for remote inference")
+        msg = "AGENT_INFERENCE_URL is required for remote inference"
+        raise RuntimeError(msg)
 
     clean_messages = scrub_messages(messages)
     timeout = agent_inference_timeout()

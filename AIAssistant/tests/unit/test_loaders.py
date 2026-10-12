@@ -427,7 +427,8 @@ def _fake_pdf_modules(pdfplumber_text=None, pdfplumber_raises=False, pdfminer_te
 
     def _extract(fp):
         if pdfminer_raises:
-            raise RuntimeError("pdfminer boom")
+            msg = "pdfminer boom"
+            raise RuntimeError(msg)
         return pdfminer_text
 
     high_level = SimpleNamespace(extract_text=_extract)

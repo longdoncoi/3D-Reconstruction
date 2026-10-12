@@ -11,14 +11,14 @@ HTTP adapters, modules, and services. Business logic lives in sub-modules:
   - /mcp                → ai_assistant/adapters/legacy/mcp_server (legacy adapter)
 """
 
-import os
 import sys
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 
-_PACKAGE_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
+_PACKAGE_ROOT = str(Path(__file__).resolve().parents[2])
 if _PACKAGE_ROOT not in sys.path:
     sys.path.insert(0, _PACKAGE_ROOT)
 
@@ -93,7 +93,8 @@ def _rebuild_chatbot_agent() -> None:
 def _execute_a2a_task(task: AgentTask) -> dict:
     """Run the shared LangGraph agent engine inside the durable A2A lifecycle."""
     if llm_module.llm is None:
-        raise RuntimeError("LLM is not initialized")
+        msg = "LLM is not initialized"
+        raise RuntimeError(msg)
     return _agent_run_service.run(task)
 
 

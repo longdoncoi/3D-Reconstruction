@@ -195,8 +195,9 @@ def _handle_step_answer(turn: _Turn) -> dict[str, Any] | None:
                    "reason": "General-knowledge step answered inline without tool."},
         "iteration": turn.iteration,
     }
-    if turn.current_plan_step is not None:
-        reflection_entry["plan_step_index"] = turn.done_count
+    # ``current_plan_step`` is never ``None`` here: the guard above returned
+    # early for the plan-less shape, so the index is always recorded.
+    reflection_entry["plan_step_index"] = turn.done_count
     turn.steps.append(reflection_entry)
     return turn.continue_update(
         messages=_messages_with(turn, {"role": "assistant", "content": turn.answer}),

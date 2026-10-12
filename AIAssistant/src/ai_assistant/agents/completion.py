@@ -116,6 +116,28 @@ def parse_tool_call(response_text: str, tool_models: dict[str, type],
     return tool_name, validated
 
 
+def _record_and_decode_content(response: dict, record_token_usage_fn, label: str) -> str:
+    """Record token usage and decode one constrained response to text.
+
+    Both transports (remote OpenAI-compatible and local llama.cpp) answer
+    with the same shape, so the usage recording and the tool-call/content
+    split live here instead of twice in ``constrained_completion``.
+    """
+    usage = response.get("usage", {})
+    in_tok, out_tok = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
+    if in_tok or out_tok:
+        record_token_usage_fn(in_tok, out_tok)
+    message = response.get("choices", [{}])[0].get("message", {})
+    if message.get("tool_calls"):
+        call = message["tool_calls"][0]["function"]
+        content = json.dumps({"kind": "tool", "tool": call["name"],
+                              "params": json.loads(call.get("arguments", "{}"))}, ensure_ascii=False)
+    else:
+        content = message.get("content", "")
+    logger.info("Constrained LLM response%s: %s", f" ({label})" if label else "", content)
+    return content
+
+
 def constrained_completion(messages: list[dict], max_tokens: int, temperature: float,
                            llm_runtime, backend_mode_fn, openai_compatible_fn,
                            openai_tools: list[dict], grammar_schema: str,
@@ -128,20 +150,7 @@ def constrained_completion(messages: list[dict], max_tokens: int, temperature: f
                 tools=openai_tools, tool_choice="auto",
                 response_format={"type": "json_object"},
             )
-            usage = response.get("usage", {})
-            in_tok, out_tok = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
-            if in_tok or out_tok:
-                record_token_usage_fn(in_tok, out_tok)
-            message = response.get("choices", [{}])[0].get("message", {})
-            if message.get("tool_calls"):
-                call = message["tool_calls"][0]["function"]
-                content = json.dumps({"kind": "tool", "tool": call["name"],
-                                      "params": json.loads(call.get("arguments", "{}"))}, ensure_ascii=False)
-                logger.info("Constrained LLM response (remote): %s", content)
-                return content
-            content = message.get("content", "")
-            logger.info("Constrained LLM response (remote): %s", content)
-            return content
+            return _record_and_decode_content(response, record_token_usage_fn, "remote")
 
         # Local llama.cpp path
         _precompiled_grammar = _get_precompiled_grammar(grammar_schema)
@@ -158,24 +167,16 @@ def constrained_completion(messages: list[dict], max_tokens: int, temperature: f
             response = llm_runtime.llm.create_chat_completion(**kwargs)
 
     except Exception as error:
-        raise RuntimeError(f"Constrained tool decoding failed: {error}") from error
+        msg = f"Constrained tool decoding failed: {error}"
+        raise RuntimeError(msg) from error
 
-    usage = response.get("usage", {})
-    in_tok, out_tok = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
-    if in_tok or out_tok:
-        record_token_usage_fn(in_tok, out_tok)
+    content = _record_and_decode_content(response, record_token_usage_fn, "")
 
-    message = response.get("choices", [{}])[0].get("message", {})
-    if message.get("tool_calls"):
-        call = message["tool_calls"][0]["function"]
-        content = json.dumps({"kind": "tool", "tool": call["name"],
-                              "params": json.loads(call.get("arguments", "{}"))}, ensure_ascii=False)
-        logger.info("Constrained LLM response: %s", content)
-        return content
-
-    content = message.get("content", "")
     if not isinstance(content, str):
-        raise RuntimeError("Constrained decoder returned no text content")
+        # RuntimeError (not TypeError): the decoder contract breach is a runtime
+        # failure, and the message is asserted by contract tests.
+        msg = "Constrained decoder returned no text content"
+        raise RuntimeError(msg)  # noqa: TRY004
     content = _strip_think_tags(content)
     logger.info("Constrained LLM response: %s", content)
 
@@ -228,11 +229,14 @@ def structured_completion(messages: list[dict], max_tokens: int, temperature: fl
                     grammar=LlamaGrammar.from_json_schema(json.dumps(schema)),
                 )
     except Exception as error:
-        raise RuntimeError(f"Structured JSON decoding failed: {error}") from error
+        msg = f"Structured JSON decoding failed: {error}"
+        raise RuntimeError(msg) from error
 
     content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
     if not isinstance(content, str):
-        raise RuntimeError("Structured decoder returned no text content")
+        # RuntimeError (not TypeError): same decoder contract as above.
+        msg = "Structured decoder returned no text content"
+        raise RuntimeError(msg)  # noqa: TRY004
     content = _strip_think_tags(content)
     logger.info("Structured LLM response: %s", content)
     return content

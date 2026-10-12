@@ -7,8 +7,8 @@ import unittest
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from ai_assistant.orchestration.compat import LocalAgentGraph
 from ai_assistant.orchestration.supervisor import delegate, reflect_result, verify_result
-from LangGraphAgent import LocalAgentGraph
 
 
 class CodingAgentCompletionTests(unittest.TestCase):

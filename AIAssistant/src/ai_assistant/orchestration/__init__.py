@@ -1,8 +1,7 @@
 """Orchestration package for LangGraph-based agent loop.
 
-This package re-organises LangGraphAgent.py (1,731 LOC) into focused modules.
-The root LangGraphAgent.py file remains as a compatibility shim that re-exports
-``LocalAgentGraph`` and ``AgentState`` so existing imports are not broken.
+This package re-organises the former LangGraphAgent module into focused modules.
+``compat.py`` preserves its public exports for package consumers.
 """
 from .graph import LocalAgentGraph
 from .state import AgentState

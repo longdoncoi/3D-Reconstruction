@@ -106,7 +106,8 @@ class TaskService:
         thread = threading.Thread(target=worker, daemon=True, name=f"a2a-{task_id[-8:]}")
         with self._worker_lock:
             if self._closing:
-                raise RuntimeError("Task service is shutting down")
+                msg = "Task service is shutting down"
+                raise RuntimeError(msg)
             self._workers.add(thread)
         thread.start()
 

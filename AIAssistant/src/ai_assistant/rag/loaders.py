@@ -105,7 +105,8 @@ class PdfLoader(BaseDocumentLoader):
     def load(self, fp: str, project_dir: str) -> list[ChunkResult]:
         text = self._extract_pdf_text(fp)
         if not text:
-            raise ValueError(f"Không đọc được PDF: {fp}")
+            msg = f"Không đọc được PDF: {fp}"
+            raise ValueError(msg)
         return self._sliding_window_chunks(text, fp, project_dir, label="Tai lieu PDF")
 
     def _extract_pdf_text(self, fp: str) -> str:
@@ -133,7 +134,8 @@ class TxtLoader(BaseDocumentLoader):
     def load(self, fp: str, project_dir: str) -> list[ChunkResult]:
         content = self._read_text_file(fp)
         if not content or len(content.strip()) < self.min_chunk_chars:
-            raise ValueError(f"File rỗng: {fp}")
+            msg = f"File rỗng: {fp}"
+            raise ValueError(msg)
         return self._sliding_window_chunks(content, fp, project_dir, label="Tai lieu TXT")
 
 
@@ -160,7 +162,8 @@ class EmailLoader(BaseDocumentLoader):
                 parts.append(body)
         content = "\n\n".join(parts)
         if len(content) < self.min_chunk_chars:
-            raise ValueError(f"Email rong hoac khong co text: {fp}")
+            msg = f"Email rong hoac khong co text: {fp}"
+            raise ValueError(msg)
         return self._sliding_window_chunks(content, fp, project_dir, label="Email")
 
 
@@ -171,7 +174,8 @@ class MarkdownLoader(BaseDocumentLoader):
     def load(self, fp: str, project_dir: str) -> list[ChunkResult]:
         content = self._read_text_file(fp)
         if not content or len(content.strip()) < self.min_chunk_chars:
-            raise ValueError(f"File rỗng: {fp}")
+            msg = f"File rỗng: {fp}"
+            raise ValueError(msg)
 
         rel = safe_relpath(fp, project_dir)
         matches = list(self.HEADING_RE.finditer(content))
@@ -247,7 +251,8 @@ class CppHeaderLoader(BaseDocumentLoader):
     def load(self, fp: str, project_dir: str) -> list[ChunkResult]:
         content = self._read_text_file(fp)
         if not content or len(content.strip()) < self.min_chunk_chars:
-            raise ValueError(f"File rỗng: {fp}")
+            msg = f"File rỗng: {fp}"
+            raise ValueError(msg)
         ext = os.path.splitext(fp)[1].lower()
         return self._load_python(content, fp, project_dir) if ext == ".py" else self._load_cpp(content, fp, project_dir)
 
@@ -344,8 +349,8 @@ class ImageLoader(BaseDocumentLoader):
                 loader_type="image",
                 is_image=True,
             )]
-        except Exception as e:
-            logger.error("Error loading image %s: %s", fp, e)
+        except Exception:
+            logger.exception("Error loading image %s", fp)
             return []
 
 
@@ -372,8 +377,8 @@ class DocumentLoaderRegistry:
             return []
         try:
             return loader.load(fp, project_dir)
-        except Exception as e:
-            logger.error("Error loading %s: %s", fp, e)
+        except Exception:
+            logger.exception("Error loading %s", fp)
             return []
 
     @classmethod

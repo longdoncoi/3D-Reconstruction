@@ -14,10 +14,11 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 # ── Thông số server ────────────────────────────────────────────────────────────
 # Host/port lấy từ hằng chuẩn của settings (ADR 0001) — không hard-code lặp.
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = str(Path(__file__).resolve().parents[3])
 _SRC_DIR = os.path.join(BASE_DIR, "src")
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
@@ -120,10 +121,11 @@ def shutdown_running_server() -> bool:
         with urllib.request.urlopen(req, timeout=5) as resp:
             body = resp.read().decode("utf-8", errors="replace")
             print(f"[ServerManager] Shutdown response: {body}", flush=True)
-        return True
     except Exception as e:
         print(f"[ServerManager] Không thể gửi shutdown request: {e}", flush=True)
         return False
+    else:
+        return True
 
 
 def get_active_model_index() -> int | None:
@@ -224,7 +226,7 @@ def main():
             f"[ServerManager] Đang khởi động AI Server với model index={model_idx}...",
             flush=True,
         )
-        server_script = os.path.join(BASE_DIR, "StartChatbotServer.py")
+        server_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server.py")
 
         # Truyền lại APP_DATA_DIR cho child process để config.py biết đúng đường dẫn
         env = os.environ.copy()

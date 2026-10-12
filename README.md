@@ -257,7 +257,7 @@ MainWindow (Shell)
 ├── AIAssistant/                ← AI Server: Agent, RAG, LLM cục bộ (Python, FastAPI)
 │   ├── ARCHITECTURE.md         ← Kiến trúc runtime + danh sách module và ranh giới layer
 │   ├── Docs/adr/               ← 14 Architecture Decision Records
-│   ├── StartChatbotServer.py   ← Composition root: dựng FastAPI app và wire dependencies
+│   ├── src/ai_assistant/bootstrap/  ← Composition root và Qt process manager
 │   ├── src/ai_assistant/       ← Code nguồn (adapters / agents / orchestration / tools / rag / llm)
 │   ├── tests/                  ← unittest (unit, integration, contract) + coverage gate
 │   └── evals/                  ← Eval agent: tool-call envelope và chính sách supervisor
@@ -304,7 +304,7 @@ MainWindow (Shell)
 2. **Build**: Dùng Kit **MSVC 2022 64-bit** — khuyến nghị **Release mode** để đạt hiệu suất GPU và render tốt nhất.
    > ⚠️ Nếu thay đổi bất kỳ file nào trong `src/core/`, hãy thực hiện **Clean & Rebuild** toàn bộ project.
 3. **Plugin output**: Sau khi build, các `.dll` plugin tự động được copy vào `plugins/` cạnh file thực thi.
-4. **AI Server**: Chạy `AIAssistant/StartChatbotServer.py` để khởi động server LLM trước khi dùng AI Assistant.
+4. **AI Server**: Chạy `AIAssistant/src/ai_assistant/bootstrap/server.py` để khởi động server LLM trước khi dùng AI Assistant.
 
 ---
 

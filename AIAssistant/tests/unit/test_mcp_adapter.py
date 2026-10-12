@@ -156,5 +156,139 @@ class McpToolServerTest(unittest.TestCase):
         self.assertTrue(asyncio.run(_run()))
 
 
+class BuiltinWrapperDispatchTests(unittest.TestCase):
+    """Every builtin wrapper must forward its exact payload to the gateway.
+
+    Only ``read_file`` was reached by the original suite, leaving the other
+    nine wrappers — and the parameter shape they hand to the gateway —
+    unverified. These are plain methods, so they need no ``mcp`` package.
+    """
+
+    def setUp(self) -> None:
+        self.gateway = _FakeGateway({"success": True, "result": "ok"})
+        self.server = mcp_module.McpToolServer(self.gateway)
+
+    def _call(self, name: str, *args, **kwargs) -> dict:
+        payload = json.loads(getattr(self.server, name)(*args, **kwargs))
+        self.assertTrue(payload["success"])
+        self.assertEqual(self.gateway.calls[-1][0], name)
+        return self.gateway.calls[-1][1]
+
+    def test_list_directory_forwards_its_depth_controls(self) -> None:
+        params = self._call("list_directory", "src", True, 7)
+        self.assertEqual(params, {"path": "src", "recursive": True, "max_depth": 7})
+
+    def test_find_files_forwards_its_glob_and_cap(self) -> None:
+        params = self._call("find_files", "*.py", "src", 42)
+        self.assertEqual(params, {"pattern": "*.py", "path": "src", "max_results": 42})
+
+    def test_search_text_forwards_every_filter(self) -> None:
+        params = self._call("search_text", "query", "src", "*.py", True, 5)
+        self.assertEqual(params, {
+            "query": "query", "path": "src", "file_pattern": "*.py",
+            "case_sensitive": True, "max_results": 5,
+        })
+
+    def test_analyze_code_forwards_the_path(self) -> None:
+        self.assertEqual(self._call("analyze_code", "src/main.py"), {"path": "src/main.py"})
+
+    def test_get_project_status_dispatches_an_empty_request(self) -> None:
+        self.assertEqual(self._call("get_project_status"), {})
+
+    def test_git_diff_forwards_its_refinement_flags(self) -> None:
+        params = self._call("git_diff", "src", True)
+        self.assertEqual(params, {"path": "src", "staged": True})
+
+    def test_validate_file_forwards_the_path(self) -> None:
+        self.assertEqual(self._call("validate_file", "config.json"), {"path": "config.json"})
+
+    def test_rag_search_forwards_its_result_limit(self) -> None:
+        params = self._call("rag_search", "how to build", 3)
+        self.assertEqual(params, {"query": "how to build", "top_k": 3})
+
+    def test_application_action_forwards_the_desktop_credentials(self) -> None:
+        params = self._call("application_action", "login", "vi", "user", "secret")
+        self.assertEqual(params, {
+            "action": "login", "language": "vi",
+            "username": "user", "password": "secret",
+        })
+
+
+class BindPluginToolsEdgeTests(unittest.TestCase):
+    """The two guard arms of the dynamic-tool binder the happy path skips."""
+
+    def test_a_server_without_the_tool_decorator_registers_nothing(self) -> None:
+        class _Plain:
+            def get_tool(self, _name):
+                return None
+
+        count = mcp_module.bind_plugin_tools(
+            _Plain(), lambda _name, _params: "{}", _FakePlugins([_Spec("demo")]),
+        )
+        self.assertEqual(count, 0)
+
+    def test_a_registration_failure_is_swallowed_and_stops_the_loop(self) -> None:
+        class _Broken:
+            def get_tool(self, _name):
+                return None
+
+            def tool(self):
+                msg = "server shutting down"
+                raise RuntimeError(msg)
+
+        count = mcp_module.bind_plugin_tools(
+            _Broken(), lambda _name, _params: "{}", _FakePlugins([_Spec("demo")]),
+        )
+        self.assertEqual(count, 0)
+
+    def test_a_registered_plugin_tool_dispatches_when_invoked(self) -> None:
+        """The generated closure is what actually reaches the gateway."""
+        server = _FakeServer()
+        seen: list[tuple[str, dict]] = []
+
+        def _dispatch(name, params):
+            seen.append((name, params))
+            return "{}"
+
+        mcp_module.bind_plugin_tools(server, _dispatch, _FakePlugins([_Spec("demo")]))
+        server.registered[0](x=1, y="two")
+        self.assertEqual(seen, [("demo", {"x": 1, "y": "two"})])
+
+
+class McpAbsentFallbackTests(unittest.TestCase):
+    """Pin the branch taken when *neither* mcp import location exists.
+
+    ``mcp.server.fastmcp`` is already missing in this environment (the outer
+    ``except`` runs), but ``mcp.server.mcpserver`` still resolves, so the
+    innermost fallback is only reached on an offline install with no ``mcp``
+    at all. Reloading with every ``mcp`` entry masked as ``None`` reproduces
+    exactly that, and the ``finally`` restores the real module so no other
+    test inherits a degraded adapter.
+    """
+
+    def test_both_import_failures_leave_the_adapter_unavailable(self) -> None:
+        import importlib
+        import sys
+
+        saved = {
+            name: module for name, module in sys.modules.items()
+            if name == "mcp" or name.startswith("mcp.")
+        }
+        available_before = mcp_module.MCP_AVAILABLE
+        try:
+            for name in saved:
+                sys.modules[name] = None  # None in sys.modules makes `import` raise
+            reloaded = importlib.reload(mcp_module)
+            self.assertFalse(reloaded.MCP_AVAILABLE)
+            self.assertIsNone(reloaded.FastMCP)
+        finally:
+            for name in saved:
+                sys.modules.pop(name, None)
+            sys.modules.update(saved)
+            importlib.reload(mcp_module)
+        # The adapter must come back exactly as it was for every later test.
+        self.assertEqual(mcp_module.MCP_AVAILABLE, available_before)
+
+
 if __name__ == "__main__":
     unittest.main()

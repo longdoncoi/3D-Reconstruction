@@ -45,8 +45,8 @@ def build_checkpointer() -> Any:
             return saver
         if backend != "memory":
             logger.warning("Checkpoint backend %s is not configured; using MemorySaver", backend)
-    except Exception as error:
-        logger.exception("Checkpoint backend unavailable; using MemorySaver: %s", error)
+    except Exception:
+        logger.exception("Checkpoint backend unavailable; using MemorySaver")
     return MemorySaver()
 
 

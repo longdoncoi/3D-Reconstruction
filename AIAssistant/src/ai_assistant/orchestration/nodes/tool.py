@@ -32,6 +32,114 @@ class ToolContext:
     cancel_checker: Callable[[], bool]
 
 
+def _rag_synthesis_update(state: AgentState, steps: list[dict[str, Any]],
+                          tool_name: str, result: dict[str, Any],
+                          last_step: dict[str, Any], error_count: int) -> dict[str, Any] | None:
+    """Build the step_answer synthesis request for verified RAG evidence.
+
+    Returns the state update when the executed tool was ``rag_search``,
+    else ``None`` so the caller continues with the generic routing.
+    """
+    if tool_name != "rag_search":
+        return None
+    evidence = json.dumps(result, ensure_ascii=False, indent=2)
+    evidence_limit = 6000
+    evidence_snippet = evidence[:evidence_limit] + ("\n... [truncated]" if len(evidence) > evidence_limit else "")
+
+    rag_plan_step = ""
+    if isinstance(last_step.get("plan_step_index"), int):
+        rag_step_idx = last_step["plan_step_index"]
+        plan_now = state.get("plan") or []
+        if 0 <= rag_step_idx < len(plan_now):
+            rag_plan_step = plan_now[rag_step_idx]
+    step_directive = (
+        f' Trả lời ngắn gọn ĐÚNG bước: "{rag_plan_step}"'
+        " — không lặp lại ý đã nêu ở các bước trước."
+        if rag_plan_step else ""
+    )
+    role_answer_directive = (
+        " Chỉ nêu thông tin trong phạm vi bước hiện tại; KHÔNG lặp lại nội dung"
+        " đã trả lời ở các bước trước. Trình bày tự nhiên, mạch lạc như đang giải"
+        " thích cho người dùng; KHÔNG ép câu trả lời vào khung mục"
+        " 'Thông tin / Vai trò / Nhiệm vụ-Trách nhiệm', và nếu thiếu dữ liệu thì"
+        " nói rõ dữ liệu chưa có thay vì bịa đặt."
+    )
+
+    messages = summarize_messages(list(state["messages"]))
+    messages.append({
+        "role": "user",
+        "content": (
+            "RAG evidence đã được xác minh." + step_directive + role_answer_directive
+            + " Dùng bằng chứng dưới đây để trả lời ngắn gọn, tự nhiên."
+            " KHÔNG đề cập tiêu đề nguồn, tên file, số trích dẫn,"
+            " 'TÀI LIỆU THAM KHẢO' hay 'MÃ NGUỒN LIÊN QUAN'."
+            ' Trả về {"kind":"step_answer","content":"..."} — KHÔNG dùng final.\n\n'
+            f"Bằng chứng:\n```json\n{evidence_snippet}\n```"
+        ),
+    })
+    logger.info("[NODE: tool] Project RAG evidence ready; requesting step_answer synthesis.")
+    return {"steps": steps, "messages": messages,
+            "tool_call_count": state.get("tool_call_count", 0) + 1,
+            "error_count": error_count, "synthesize_after_rag": True}
+
+
+def _completion_announcement_update(state: AgentState, steps: list[dict[str, Any]],
+                                      tool_name: str, result: dict[str, Any],
+                                      error_count: int) -> dict[str, Any] | None:
+    """Announce a dispatched desktop action instead of reflecting on it.
+
+    Returns the state update when the tool completed a user-visible action,
+    else ``None`` so the caller continues with the generic routing.
+    """
+    if tool_name not in COMPLETION_TOOLS or not result.get("success"):
+        return None
+    messages = list(state["messages"])
+    messages.append({
+        "role":    "user",
+        "content": (
+            f"Tool `{tool_name}` đã thực thi thành công (action: {result.get('action', tool_name)}). "
+            f"Hãy thông báo kết quả ngắn gọn cho người dùng."
+        ),
+    })
+    return {
+        "steps":            steps,
+        "messages":         messages,
+        "tool_call_count":  state.get("tool_call_count", 0) + 1,
+        "error_count":      error_count,
+    }
+
+
+def _verified_reflection_update(state: AgentState, steps: list[dict[str, Any]],
+                                  messages: list[dict[str, str]], tool_name: str,
+                                  verification: dict[str, Any], result: dict[str, Any],
+                                  last_step: dict[str, Any], error_count: int,
+                                  allowed_tools: Any, reason: str,
+                                  require_membership: bool = True) -> dict[str, Any] | None:
+    """Shortcut a verified result with a contract reflection, when eligible.
+
+    The low-risk shortcut fires for members of its tool set; the
+    semantic-not-required shortcut fires for everyone *outside* its set.
+    Returns the state update on eligibility, else ``None``.
+    """
+    member = (tool_name in allowed_tools) if require_membership else (tool_name not in allowed_tools)
+    if not member or not verification.get("passed") or "error" in result:
+        return None
+    steps.append({
+        "type": "reflection", "tool": tool_name,
+        "result": {"passed": True, "decision": "continue", "reason": reason},
+        "iteration": state["iteration"],
+    })
+    if isinstance(last_step.get("plan_step_index"), int):
+        steps[-1]["plan_step_index"] = last_step["plan_step_index"]
+    return {
+        "steps":           steps,
+        "messages":        messages,
+        "tool_call_count": state.get("tool_call_count", 0) + 1,
+        "error_count":     error_count,
+        "skip_reflect":    True,
+    }
+
+
 def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
     """Execute the chosen tool and verify its result."""
     logger.info("[NODE: tool] Bắt đầu thực thi tool.")
@@ -67,8 +175,6 @@ def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
         })
         return {"steps": steps, "done": True}
 
-    is_project_research = (tool_name == "rag_search")
-
     logger.info("[NODE: tool] Thực thi: %s, params: %s", tool_name, str(params)[:200])
     logger.debug(f"\n--- [LOG: TOOL NODE] Thuc thi: {tool_name} ---")
     try:
@@ -77,7 +183,7 @@ def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
         logger.debug(f"[LOG: TOOL NODE] Ket qua: {result}")
     except Exception as error:
         result = {"error": f"Tool exception: {error}"}
-        logger.error("[NODE: tool] Exception khi thực thi '%s': %s", tool_name, error)
+        logger.exception("[NODE: tool] Exception khi thực thi '%s'", tool_name)
         logger.debug(f"[LOG: TOOL NODE] Loi: {result}")
 
     error_count = state.get("error_count", 0)
@@ -112,66 +218,17 @@ def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
         steps.append({"type": "verification", "tool": tool_name, "result": verification,
                       "iteration": state["iteration"]})
 
-    if is_project_research:
-        evidence = json.dumps(result, ensure_ascii=False, indent=2)
-        evidence_limit = 6000
-        evidence_snippet = evidence[:evidence_limit] + ("\n... [truncated]" if len(evidence) > evidence_limit else "")
-
-        rag_plan_step = ""
-        if isinstance(last_step.get("plan_step_index"), int):
-            rag_step_idx = last_step["plan_step_index"]
-            plan_now = state.get("plan") or []
-            if 0 <= rag_step_idx < len(plan_now):
-                rag_plan_step = plan_now[rag_step_idx]
-        step_directive = (
-            f' Trả lời ngắn gọn ĐÚNG bước: "{rag_plan_step}"'
-            " — không lặp lại ý đã nêu ở các bước trước."
-            if rag_plan_step else ""
-        )
-        role_answer_directive = (
-            " Chỉ nêu thông tin trong phạm vi bước hiện tại; KHÔNG lặp lại nội dung"
-            " đã trả lời ở các bước trước. Trình bày tự nhiên, mạch lạc như đang giải"
-            " thích cho người dùng; KHÔNG ép câu trả lời vào khung mục"
-            " 'Thông tin / Vai trò / Nhiệm vụ-Trách nhiệm', và nếu thiếu dữ liệu thì"
-            " nói rõ dữ liệu chưa có thay vì bịa đặt."
-        )
-
-        messages = summarize_messages(list(state["messages"]))
-        messages.append({
-            "role": "user",
-            "content": (
-                "RAG evidence đã được xác minh." + step_directive + role_answer_directive
-                + " Dùng bằng chứng dưới đây để trả lời ngắn gọn, tự nhiên."
-                " KHÔNG đề cập tiêu đề nguồn, tên file, số trích dẫn,"
-                " 'TÀI LIỆU THAM KHẢO' hay 'MÃ NGUỒN LIÊN QUAN'."
-                ' Trả về {"kind":"step_answer","content":"..."} — KHÔNG dùng final.\n\n'
-                f"Bằng chứng:\n```json\n{evidence_snippet}\n```"
-            ),
-        })
-        logger.info("[NODE: tool] Project RAG evidence ready; requesting step_answer synthesis.")
-        return {"steps": steps, "messages": messages,
-                "tool_call_count": state.get("tool_call_count", 0) + 1,
-                "error_count": error_count, "synthesize_after_rag": True}
+    rag_synthesis = _rag_synthesis_update(state, steps, tool_name, result, last_step, error_count)
+    if rag_synthesis is not None:
+        return rag_synthesis
 
     result_text = json.dumps(result, ensure_ascii=False, indent=2)
     if len(result_text) > 8000:
         result_text = result_text[:8000] + "\n... [truncated]"
 
-    if tool_name in COMPLETION_TOOLS and result.get("success"):
-        messages = list(state["messages"])
-        messages.append({
-            "role":    "user",
-            "content": (
-                f"Tool `{tool_name}` đã thực thi thành công (action: {result.get('action', tool_name)}). "
-                f"Hãy thông báo kết quả ngắn gọn cho người dùng."
-            ),
-        })
-        return {
-            "steps":            steps,
-            "messages":         messages,
-            "tool_call_count":  state.get("tool_call_count", 0) + 1,
-            "error_count":      error_count,
-        }
+    completion = _completion_announcement_update(state, steps, tool_name, result, error_count)
+    if completion is not None:
+        return completion
 
     messages = list(state["messages"])
     messages.append({
@@ -184,36 +241,19 @@ def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
         ),
     })
     
-    if tool_name in LOW_RISK_TOOLS and verification.get("passed") and "error" not in result:
-        steps.append({
-            "type": "reflection", "tool": tool_name,
-            "result": {"passed": True, "decision": "continue",
-                        "reason": "Verified low-risk read-only tool result."},
-            "iteration": state["iteration"],
-        })
-        if isinstance(last_step.get("plan_step_index"), int):
-            steps[-1]["plan_step_index"] = last_step["plan_step_index"]
-        return {
-            "steps":           steps,
-            "messages":        messages,
-            "tool_call_count": state.get("tool_call_count", 0) + 1,
-            "error_count":     error_count,
-            "skip_reflect":    True,
-        }
-        
-    if (tool_name not in SEMANTIC_REFLECTION_TOOLS
-            and verification.get("passed") and "error" not in result):
-        steps.append({
-            "type": "reflection", "tool": tool_name,
-            "result": {"passed": True, "decision": "continue",
-                        "reason": "Verified result contract; semantic critic not required."},
-            "iteration": state["iteration"],
-        })
-        if isinstance(last_step.get("plan_step_index"), int):
-            steps[-1]["plan_step_index"] = last_step["plan_step_index"]
-        return {"steps": steps, "messages": messages,
-                "tool_call_count": state.get("tool_call_count", 0) + 1,
-                "error_count": error_count, "skip_reflect": True}
+    low_risk = _verified_reflection_update(
+        state, steps, messages, tool_name, verification, result, last_step,
+        error_count, LOW_RISK_TOOLS, "Verified low-risk read-only tool result.")
+    if low_risk is not None:
+        return low_risk
+
+    semantic_free = _verified_reflection_update(
+        state, steps, messages, tool_name, verification, result, last_step,
+        error_count, SEMANTIC_REFLECTION_TOOLS,
+        "Verified result contract; semantic critic not required.",
+        require_membership=False)
+    if semantic_free is not None:
+        return semantic_free
                 
     return {
         "steps":           steps,

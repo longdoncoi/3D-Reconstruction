@@ -29,7 +29,8 @@ class _NullLock:
 
 class _FailLock:
     def __enter__(self):
-        raise RuntimeError("lock failed")
+        msg = "lock failed"
+        raise RuntimeError(msg)
 
     def __exit__(self, *exc) -> bool:
         return False
@@ -207,6 +208,18 @@ class AdminRoutesTest(unittest.TestCase):
         self.assertTrue(rag.released_memory)
         self.assertEqual(state["rebuild_calls"], 1)
 
+    def test_reload_rag_releases_embeddings_for_vision(self) -> None:
+        llm = _FakeLLMModule(is_vision=True)
+        rag = _FakeRAGModule()
+        client, _ = _build_client(llm=llm, rag=rag)
+        with (
+            mock.patch("ai_assistant.legacy.config.ENABLE_RAG", True),
+            mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True),
+        ):
+            response = client.post("/admin/reload-rag")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(rag.release_embedding_calls, 1)
+
     def test_reload_rag_error_returns_500(self) -> None:
         rag = _FakeRAGModule(init_error=RuntimeError("index boom"))
         client, _ = _build_client(rag=rag)
@@ -221,9 +234,9 @@ class AdminRoutesTest(unittest.TestCase):
     def test_reload_agent_resets_state_and_refreshes(self) -> None:
         manifest = _FakeActionManifest()
         client, state = _build_client(manifest=manifest)
-        fake_langgraph = types.ModuleType("LangGraphAgent")
+        fake_langgraph = types.ModuleType("ai_assistant.orchestration.compat")
         with (
-            mock.patch.dict(sys.modules, {"LangGraphAgent": fake_langgraph}),
+            mock.patch.dict(sys.modules, {"ai_assistant.orchestration.compat": fake_langgraph}),
             mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True),
         ):
             response = client.post("/admin/reload-agent")
@@ -236,11 +249,15 @@ class AdminRoutesTest(unittest.TestCase):
     def test_reload_agent_error_returns_500(self) -> None:
         class _ExplodingManifest(_FakeActionManifest):
             def reload_manifest(self) -> None:
-                raise RuntimeError("manifest boom")
+                msg = "manifest boom"
+                raise RuntimeError(msg)
 
         client, _ = _build_client(manifest=_ExplodingManifest())
         with (
-            mock.patch.dict(sys.modules, {"LangGraphAgent": types.ModuleType("LangGraphAgent")}),
+            mock.patch.dict(
+                sys.modules,
+                {"ai_assistant.orchestration.compat": types.ModuleType("ai_assistant.orchestration.compat")},
+            ),
             mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True),
         ):
             response = client.post("/admin/reload-agent")

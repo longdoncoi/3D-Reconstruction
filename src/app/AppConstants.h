@@ -68,8 +68,7 @@ namespace AppConstants {
         }
 
         inline QString chatbotScript() {
-            return QStringLiteral("server_manager.py");
-            // return QStringLiteral("StartChatbotServer.py");
+            return QStringLiteral("src/ai_assistant/bootstrap/server_manager.py");
         }
     }
 

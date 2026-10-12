@@ -321,5 +321,177 @@ class LspToolsTests(unittest.TestCase):
         self.assertEqual(result["error"], "boom")
 
 
+class ReadResponseEdgeCaseTests(unittest.TestCase):
+    """The framing reader's four reject/loop paths.
+
+    These drive :func:`_read_response` directly with a scripted stream and a
+    scripted clock, because every one of them is a timing or malformed-header
+    condition that a live subprocess cannot be made to produce reliably.
+    """
+
+    @staticmethod
+    def _reader(lines: list[bytes], reads: list[bytes]):
+        line_iter = iter(lines)
+        read_iter = iter(reads)
+        stdout = mock.MagicMock()
+        stdout.readline.side_effect = lambda: next(line_iter, b"")
+        stdout.read.side_effect = lambda _n: next(read_iter, b"")
+        return SimpleNamespace(stdout=stdout, poll=lambda: None)
+
+    @staticmethod
+    def _clock(values: list[float]):
+        """A monotonic stand-in that stays valid after the script runs out."""
+        ticks = iter(values)
+        return mock.patch.object(
+            lsp_client.time, "monotonic", side_effect=lambda: next(ticks, 1e9),
+        )
+
+    def test_a_non_content_length_header_is_skipped(self):
+        """An unrelated header must fall back to the top of the read loop."""
+        proc = self._reader(
+            [b"X-Other: 1\r\n", b"Content-Length: 2\r\n", b"\r\n"], [b"{}"],
+        )
+        with self._clock([0.0, 0.0, 0.0, 0.0, 0.0]):
+            self.assertEqual(lsp_client._read_response(proc, timeout=5.0), {})
+
+    def test_a_zero_content_length_is_rejected(self):
+        """``Content-Length: 0`` is malformed framing, not an empty message."""
+        proc = self._reader([b"Content-Length: 0\r\n", b"\r\n"], [])
+        with self._clock([0.0, 0.0, 0.0]):
+            self.assertIsNone(lsp_client._read_response(proc, timeout=5.0))
+
+    def test_a_body_that_never_arrives_gives_up_at_the_deadline(self):
+        proc = self._reader([b"Content-Length: 4\r\n", b"\r\n"], [])
+        # Header reads stay inside the window; the first body read does not.
+        with self._clock([0.0, 0.0, 0.0, 100.0]):
+            self.assertIsNone(lsp_client._read_response(proc, timeout=5.0))
+
+    def test_an_empty_chunk_is_retried_instead_of_endless_framing(self):
+        proc = self._reader([b"Content-Length: 2\r\n", b"\r\n"], [b"", b"{}"])
+        with self._clock([0.0, 0.0, 0.0, 0.0, 0.0]):
+            self.assertEqual(lsp_client._read_response(proc, timeout=5.0), {})
+
+    def test_a_body_that_is_not_json_is_rejected(self):
+        proc = self._reader([b"Content-Length: 5\r\n", b"\r\n"], [b"notjs"])
+        with self._clock([0.0, 0.0, 0.0, 0.0]):
+            self.assertIsNone(lsp_client._read_response(proc, timeout=5.0))
+
+
+class ProjectDirFallbackTests(unittest.TestCase):
+    """Pin the repo-root fallback computed by ``_get_project_dir``."""
+
+    @staticmethod
+    def _resolve_without_config() -> Path:
+        with mock.patch("ai_assistant.tools.lsp_client.get_paths",
+                        side_effect=RuntimeError("no config")):
+            return Path(lsp_client._get_project_dir())
+
+    def test_an_unreadable_path_config_falls_back_to_the_repo_root(self):
+        resolved = self._resolve_without_config()
+        self.assertTrue(resolved.is_absolute())
+        # The fallback is four levels above ``src/ai_assistant/tools``, so the
+        # repository checkout must be reachable from the result.
+        self.assertTrue((resolved / "AIAssistant" / "src" / "ai_assistant").is_dir())
+
+    def test_a_uri_that_cannot_be_made_relative_falls_back_to_the_raw_path(self):
+        """``os.path.relpath`` can reject a path (cross-drive, unreadable base).
+
+        The conversion is best-effort, so the raw path must survive rather than
+        the location lookup failing the whole reference list.
+        """
+        from urllib.request import url2pathname
+        uri = Path("D:/elsewhere/module.py").as_uri()
+        with mock.patch("ai_assistant.tools.lsp_client._get_project_dir",
+                        return_value="C:/"), \
+                mock.patch.object(lsp_client.os.path, "relpath",
+                                  side_effect=ValueError("different drives")):
+            resolved = lsp_client._uri_to_rel_path(uri)
+        self.assertEqual(resolved, url2pathname(uri[7:]))
+
+
+class LspCallHardeningTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        (self.root / "src").mkdir()
+        (self.root / "src" / "main.py").write_text("def f(): pass\n", encoding="utf-8")
+        for target, value in (
+            ("ai_assistant.tools.lsp_client.get_paths",
+             SimpleNamespace(project_root=str(self.root))),
+            ("ai_assistant.tools.lsp_client.shutil.which", "pylsp"),
+        ):
+            patcher = mock.patch(target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _proc(*responses: bytes) -> mock.MagicMock:
+        proc = mock.MagicMock()
+        lines: list[bytes] = []
+        reads: list[bytes] = []
+        for body in responses:
+            lines += [f"Content-Length: {len(body)}\r\n".encode("ascii"), b"\r\n"]
+            reads.append(body)
+        line_iter = iter(lines)
+        read_iter = iter(reads)
+        proc.stdout.readline.side_effect = lambda: next(line_iter, b"")
+        proc.stdout.read.side_effect = lambda _n: next(read_iter, b"")
+        proc.poll.return_value = None
+        return proc
+
+    def test_an_unreadable_document_is_reported_not_raised(self):
+        init = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode()
+        with mock.patch("ai_assistant.tools.lsp_client.subprocess.Popen",
+                        return_value=self._proc(init, b"{}")):
+            with mock.patch("builtins.open", side_effect=OSError("permission denied")):
+                result = lsp_client._lsp_call(
+                    "pylsp", [], str(self.root / "src/main.py"), 1, 0,
+                    "textDocument/definition",
+                )
+        self.assertIn("Could not read", result["error"])
+        self.assertIn("permission denied", result["error"])
+
+    def test_extra_request_params_are_merged_into_the_position_payload(self):
+        init = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode()
+        final = json.dumps({"jsonrpc": "2.0", "id": 2, "result": []}).encode()
+        proc = self._proc(init, final)
+        with mock.patch("ai_assistant.tools.lsp_client.subprocess.Popen", return_value=proc):
+            result = lsp_client._lsp_call(
+                "pylsp", [], str(self.root / "src/main.py"), 3, 2,
+                "textDocument/references",
+                extra_params={"context": {"includeDeclaration": True}},
+            )
+        self.assertEqual(result, {"result": []})
+        # The second write is the request itself, carrying the merged params.
+        request = proc.stdin.write.call_args_list[-1].args[0]
+        payload = json.loads(request.split(b"\r\n\r\n", 1)[1])
+        self.assertEqual(payload["params"]["context"], {"includeDeclaration": True})
+        self.assertEqual(payload["params"]["position"], {"line": 2, "character": 2})
+
+    def test_a_failure_while_closing_the_channel_falls_back_to_kill(self):
+        init = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode()
+        proc = self._proc(init, b"{}")
+        proc.stdin.close.side_effect = RuntimeError("pipe already gone")
+        with mock.patch("ai_assistant.tools.lsp_client.subprocess.Popen", return_value=proc):
+            lsp_client._lsp_call("pylsp", [], str(self.root / "src/main.py"), 1, 0,
+                                 "textDocument/definition")
+        proc.kill.assert_called_once()
+        proc.terminate.assert_not_called()
+
+    def test_a_kill_that_also_fails_is_swallowed(self):
+        """Cleanup must never mask the response the caller is about to read."""
+        init = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode()
+        proc = self._proc(init, b"{}")
+        proc.stdin.close.side_effect = RuntimeError("pipe already gone")
+        proc.kill.side_effect = RuntimeError("already reaped")
+        with mock.patch("ai_assistant.tools.lsp_client.subprocess.Popen", return_value=proc):
+            result = lsp_client._lsp_call(
+                "pylsp", [], str(self.root / "src/main.py"), 1, 0,
+                "textDocument/definition",
+            )
+        self.assertIn("result", result)
+
+
 if __name__ == "__main__":
     unittest.main()

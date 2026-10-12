@@ -19,16 +19,16 @@ from ..state import AgentState, Completion
 logger = get_agent_logger("reasoning")
 
 
-def plan_node(state: AgentState, plan_complete: Completion) -> dict[str, Any]:
-    """Sinh ke hoach cac buoc. Skip neu cau ngan (likely UI action)."""
-    logger.info("[NODE: plan] Bắt đầu sinh kế hoạch.")
-    logger.debug(f"[NODE: plan] State hiện tại (iteration: {state.get('iteration')}): messages={len(state.get('messages', []))} steps={len(state.get('steps', []))}")
-    messages = state["messages"]
+def _reuse_prior_plan(state: AgentState) -> dict[str, Any] | None:
+    """Reuse a prior plan or skip a mid-task loop without calling the planner.
 
+    Returns the state update when planning can be skipped, else ``None`` so
+    the caller proceeds to the planner.
+    """
     previous_review = next(
         (step.get("result", {}) for step in reversed(state.get("steps", []))
          if step.get("type") == "plan_reflection"), None)
-    
+
     if previous_review and previous_review.get("passed") is True:
         for step in reversed(state.get("steps", [])):
             if step.get("type") == "plan":
@@ -46,6 +46,18 @@ def plan_node(state: AgentState, plan_complete: Completion) -> dict[str, Any]:
     # Skip planning nếu đang ở giữa task (đã có tool_call từ vòng lặp trước)
     if any(step.get("type") == "tool_call" for step in state.get("steps", [])) and previous_review is None:
         return {"plan": None}
+    return None
+
+
+def plan_node(state: AgentState, plan_complete: Completion) -> dict[str, Any]:
+    """Sinh ke hoach cac buoc. Skip neu cau ngan (likely UI action)."""
+    logger.info("[NODE: plan] Bắt đầu sinh kế hoạch.")
+    logger.debug(f"[NODE: plan] State hiện tại (iteration: {state.get('iteration')}): messages={len(state.get('messages', []))} steps={len(state.get('steps', []))}")
+    messages = state["messages"]
+
+    reused = _reuse_prior_plan(state)
+    if reused is not None:
+        return reused
 
     # Tìm tin nhắn thực sự của người dùng (tin nhắn 'user' đầu tiên)
     # để tránh nhầm lẫn với các tool result được đóng giả thành 'user' ở cuối.

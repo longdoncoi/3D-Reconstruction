@@ -89,7 +89,7 @@ void AIAssistant::stopServer() {
     disconnect(aiServerProcess, nullptr, this, nullptr);
 
     if (aiServerProcess->state() != QProcess::NotRunning) {
-        // Keep the detached StartChatbotServer.py process running after Qt exits.
+        // Keep the detached AI-server process running after Qt exits.
         aiServerProcess->terminate();
         if (!aiServerProcess->waitForFinished(1000)) {
             aiServerProcess->kill();
@@ -188,7 +188,7 @@ void AIAssistant::restartServer() {
         m_serverReadyEmitted = false;
         m_serverRecoveryAttempts = 0;
 
-        // Kill aiServerProcess — the ServerManager wrapper (server_manager.py).
+        // Kill aiServerProcess — the server-manager wrapper.
         disconnect(aiServerProcess, nullptr, this, nullptr);
         if (aiServerProcess->state() != QProcess::NotRunning) {
             aiServerProcess->terminate();

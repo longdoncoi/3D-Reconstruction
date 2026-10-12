@@ -1,9 +1,4 @@
-"""Unit tests for the Qt-facing ``server_manager`` supervisor script.
-
-``server_manager.py`` lives at the package root (Qt launches it directly), so
-it is not part of the ``ai_assistant`` package; the tests load it by path and
-mock ``urllib.request.urlopen`` so no real HTTP traffic is generated.
-"""
+"""Unit tests for the Qt-facing server-manager supervisor script."""
 from __future__ import annotations
 
 import importlib.util
@@ -14,13 +9,17 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 _ROOT = Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_SRC = _ROOT / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
-_spec = importlib.util.spec_from_file_location("server_manager", _ROOT / "server_manager.py")
+_spec = importlib.util.spec_from_file_location(
+    "server_manager", _SRC / "ai_assistant" / "bootstrap" / "server_manager.py"
+)
 server_manager = importlib.util.module_from_spec(_spec)
 if _spec.loader is None:  # pragma: no cover — spec_from_file_location always sets a loader for a real file
-    raise RuntimeError("could not load server_manager.py for testing")
+    msg = "could not load the server-manager entry point for testing"
+    raise RuntimeError(msg)
 _spec.loader.exec_module(server_manager)
 
 

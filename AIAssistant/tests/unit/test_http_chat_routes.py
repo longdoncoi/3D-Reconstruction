@@ -29,7 +29,8 @@ class _NullLock:
 
 class _FailLock:
     def __enter__(self):
-        raise RuntimeError("lock failed")
+        msg = "lock failed"
+        raise RuntimeError(msg)
 
     def __exit__(self, *exc) -> bool:
         return False
@@ -175,6 +176,60 @@ class ChatRoutesTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+    def test_attachments_scan_until_the_first_image(self) -> None:
+        """A non-image attachment moves the scan on; the first real image wins."""
+        client, agent = _build_client()
+        response = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{
+                "role": "user",
+                "content": "see these",
+                "attachments": ["notes.txt", "photo.png"],
+            }]},
+        )
+        self.assertEqual(response.status_code, 200)
+        # photo.png does not exist on disk, so the encoder fails and no image
+        # is attached — but the scan itself ran through both attachments.
+        self.assertIsNone(agent.last_kwargs["query_image_b64"])
+
+    def test_missing_image_utils_falls_back_to_no_images(self) -> None:
+        """Without the RAG extras and without legacy helpers, nothing is an image."""
+        import sys
+        from unittest.mock import patch
+
+        rag = SimpleNamespace(_reranker=None)
+        with patch.dict(sys.modules, {"ai_assistant.rag.image_utils": None}):
+            client, agent = _build_client(rag_module=rag)
+            response = client.post(
+                "/v1/chat/completions",
+                json={"messages": [{
+                    "role": "user",
+                    "content": "see",
+                    "attachments": ["photo.png"],
+                }]},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(agent.last_kwargs["query_image_b64"])
+
+    def test_legacy_data_uri_helper_is_used_as_a_last_resort(self) -> None:
+        """A legacy ``_image_to_data_uri`` is missing, so the empty fallback runs."""
+        import sys
+        from unittest.mock import patch
+
+        rag = SimpleNamespace(_reranker=None, _is_image_file=lambda _p: True)
+        with patch.dict(sys.modules, {"ai_assistant.rag.image_utils": None}):
+            client, agent = _build_client(rag_module=rag)
+            response = client.post(
+                "/v1/chat/completions",
+                json={"messages": [{
+                    "role": "user",
+                    "content": "see",
+                    "attachments": ["photo.png"],
+                }]},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(agent.last_kwargs["query_image_b64"], "")
+
     def test_vision_model_counts_tokens_per_part(self) -> None:
         messages = [
             {
@@ -209,7 +264,8 @@ class ChatRoutesTest(unittest.TestCase):
 
     def test_inference_error_returns_500(self) -> None:
         def _explode(messages, max_tokens, temperature, repeat_penalty, stream=False):
-            raise RuntimeError("inference boom")
+            msg = "inference boom"
+            raise RuntimeError(msg)
             yield  # pragma: no cover
 
         llm = SimpleNamespace(generate=_explode)

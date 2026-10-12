@@ -55,7 +55,8 @@ class _FakeReranker:
     def predict(self, pairs, show_progress_bar=False):
         self.pairs = pairs
         if self._error:
-            raise RuntimeError("reranker boom")
+            msg = "reranker boom"
+            raise RuntimeError(msg)
         return self._scores
 
 

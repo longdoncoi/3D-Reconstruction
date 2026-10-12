@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ai_assistant.orchestration.nodes.reason import (
     ReasonContext,
+    _failed_call_fingerprints,
     after_reason,
     reason_node,
 )
@@ -116,6 +117,45 @@ class HallucinatedStepAnswerTests(unittest.TestCase):
         # The correction is fed back so the model retries with rag_search.
         self.assertIn("rag_search", out["messages"][-1]["content"])
         self.assertEqual(out["error_count"], 1)
+
+    def test_inline_answer_for_a_planned_step_carries_its_index(self) -> None:
+        """General knowledge answered inline still records which step it ends."""
+        out = reason_node(
+            _state(plan=["Thủ đô của nước Pháp là gì"]),
+            _ctx(parse=("_step_answer", {"content": "Paris"})),
+        )
+        reflections = [s for s in out["steps"] if s["type"] == "reflection"]
+        self.assertTrue(reflections)
+        self.assertEqual(reflections[-1]["plan_step_index"], 0)
+
+    def test_inline_answer_without_a_plan_step_becomes_the_final_answer(self) -> None:
+        """With no active plan step, the inline answer ends the run directly."""
+        out = reason_node(
+            _state(messages=[{"role": "user", "content": "Thủ đô của nước Pháp là gì"}]),
+            _ctx(parse=("_step_answer", {"content": "Paris"})),
+        )
+        self.assertEqual(out["steps"][-1]["type"], "final_answer")
+        self.assertEqual(out["steps"][-1]["content"], "Paris")
+
+
+class FailedFingerprintTests(unittest.TestCase):
+    def test_a_rejection_without_any_prior_call_fingerprints_nothing(self) -> None:
+        steps = [{"type": "reflection", "result": {"passed": False}}]
+        self.assertEqual(_failed_call_fingerprints(steps), set())
+
+    def test_a_rejected_call_is_fingerprinted(self) -> None:
+        call = {"type": "tool_call", "tool": "read_file", "params": {"path": "a"}}
+        steps = [call, {"type": "reflection", "result": {"passed": False}}]
+        fingerprints = _failed_call_fingerprints(steps)
+        self.assertEqual(len(fingerprints), 1)
+        self.assertIn("read_file", next(iter(fingerprints)))
+
+    def test_non_call_steps_before_a_rejection_are_skipped(self) -> None:
+        steps = [
+            {"type": "step_answer", "content": "x"},
+            {"type": "reflection", "result": {"passed": False}},
+        ]
+        self.assertEqual(_failed_call_fingerprints(steps), set())
 
 
 class ValidationErrorResponseTests(unittest.TestCase):

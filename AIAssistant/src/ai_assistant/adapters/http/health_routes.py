@@ -1,6 +1,6 @@
 """Health, metrics, and model listing routes.
 
-Extracted from StartChatbotServer.py. These are read-only endpoints that
+Extracted from the composition root. These are read-only endpoints that
 expose server state — no LLM inference is performed here.
 """
 from __future__ import annotations

@@ -85,11 +85,12 @@ class AgentCard:
         description: str,
         url: str,
         version: str = "1.0.0",
-        protocolVersion: str = "0.3.0",
+        # A2A wire names (camelCase per the protocol schema), not locals.
+        protocolVersion: str = "0.3.0",  # noqa: N803
         skills: list["AgentSkill"] | None = None,
         capabilities: dict[str, bool] | None = None,
-        defaultInputModes: list[str] | None = None,
-        defaultOutputModes: list[str] | None = None,
+        defaultInputModes: list[str] | None = None,  # noqa: N803
+        defaultOutputModes: list[str] | None = None,  # noqa: N803
     ) -> None:
         self.name = name
         self.description = description
@@ -159,9 +160,6 @@ class A2ARouter:
 
         try:
             result = self._dispatch(remote, specialist_id, task, params or {})
-            logger.info("A2A remote call succeeded: specialist=%s url=%s",
-                        specialist_id, remote.url)
-            return {"source": "remote", "agent_url": remote.url, **result}
         except Exception as error:
             logger.warning(
                 "A2A remote call failed (specialist=%s url=%s): %s",
@@ -173,6 +171,10 @@ class A2ARouter:
                 "status": "failed",
                 "error": str(error),
             }
+        else:
+            logger.info("A2A remote call succeeded: specialist=%s url=%s",
+                        specialist_id, remote.url)
+            return {"source": "remote", "agent_url": remote.url, **result}
 
     def _dispatch(self, agent: Any, specialist_id: str,
                   task: str, params: dict[str, Any]) -> dict[str, Any]:

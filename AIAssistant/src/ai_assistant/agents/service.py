@@ -124,7 +124,8 @@ class AgentService:
 
     def _require_llm(self) -> None:
         if self.llm_runtime is None or self.llm_runtime.llm is None:
-            raise ModelNotLoadedError("LLM chưa khởi tạo")
+            msg = "LLM chưa khởi tạo"
+            raise ModelNotLoadedError(msg)
 
     def _save_pending(self) -> None:
         self.pending_actions.save()
@@ -193,7 +194,8 @@ class AgentService:
     def cancel(self, request: AgentCancelRequest) -> dict:
         cancelled = self.task_coordinator.cancel(request.session_id, request.request_id)
         if cancelled is None:
-            raise NotFoundError("Unknown or already finished agent task")
+            msg = "Unknown or already finished agent task"
+            raise NotFoundError(msg)
         return {"status": "cancelled", **cancelled}
 
     def approve(self, request: AgentApproveRequest) -> dict:

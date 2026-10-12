@@ -13,6 +13,42 @@ from .path_utils import _AGENT_BLOCKED_DIRS, agent_safe_path
 _agent_safe_path = agent_safe_path
 
 
+def _walk_directory_recursive(abs_path: str, project_root: str,
+                              max_depth: int, max_entries: int) -> list[dict[str, Any]]:
+    """Depth-capped recursive walk, skipping blocked directories and capping output."""
+    entries: list[dict[str, Any]] = []
+    count = 0
+    for root, dirs, files in os.walk(abs_path):
+        dirs[:] = sorted(d for d in dirs if d not in _AGENT_BLOCKED_DIRS)
+        depth = root.replace(abs_path, "").count(os.sep)
+        if depth >= max_depth:
+            dirs.clear()
+            continue
+        rel_root = os.path.relpath(root, project_root)
+        for d in sorted(dirs):
+            if count >= max_entries:
+                break
+            entries.append({"name": os.path.join(rel_root, d), "type": "directory"})
+            count += 1
+        for f in sorted(files):
+            if count >= max_entries:
+                break
+            fp = os.path.join(root, f)
+            try:
+                size = os.path.getsize(fp)
+            except OSError:
+                size = 0
+            entries.append({
+                "name": os.path.join(rel_root, f),
+                "type": "file",
+                "size_bytes": size,
+            })
+            count += 1
+        if count >= max_entries:
+            break
+    return entries
+
+
 def tool_list_directory(params: dict[str, Any]) -> dict[str, Any]:
     """List directory contents."""
     path = params.get("path", ".")
@@ -31,34 +67,7 @@ def tool_list_directory(params: dict[str, Any]) -> dict[str, Any]:
 
     try:
         if recursive:
-            for root, dirs, files in os.walk(abs_path):
-                dirs[:] = sorted(d for d in dirs if d not in _AGENT_BLOCKED_DIRS)
-                depth = root.replace(abs_path, "").count(os.sep)
-                if depth >= max_depth:
-                    dirs.clear()
-                    continue
-                rel_root = os.path.relpath(root, project_root)
-                for d in sorted(dirs):
-                    if count >= max_entries:
-                        break
-                    entries.append({"name": os.path.join(rel_root, d), "type": "directory"})
-                    count += 1
-                for f in sorted(files):
-                    if count >= max_entries:
-                        break
-                    fp = os.path.join(root, f)
-                    try:
-                        size = os.path.getsize(fp)
-                    except OSError:
-                        size = 0
-                    entries.append({
-                        "name": os.path.join(rel_root, f),
-                        "type": "file",
-                        "size_bytes": size,
-                    })
-                    count += 1
-                if count >= max_entries:
-                    break
+            entries = _walk_directory_recursive(abs_path, project_root, max_depth, max_entries)
         else:
             for item in sorted(os.listdir(abs_path)):
                 if item in _AGENT_BLOCKED_DIRS:

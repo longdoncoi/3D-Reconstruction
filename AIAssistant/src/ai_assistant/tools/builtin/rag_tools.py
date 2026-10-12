@@ -27,6 +27,7 @@ def tool_rag_search(params: dict[str, Any]) -> dict[str, Any]:
             results.append({"source": "source_code", "content": code_ctx[:3000]})
         if not results:
             return {"query": query, "found": False, "message": "Không tìm thấy kết quả phù hợp."}
-        return {"query": query, "found": True, "top_k": top_k, "results": results}
     except Exception as e:
         return {"error": f"Lỗi RAG search: {e}"}
+    else:
+        return {"query": query, "found": True, "top_k": top_k, "results": results}

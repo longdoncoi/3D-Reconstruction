@@ -64,7 +64,8 @@ class RagSearchToolTests(unittest.TestCase):
 
     def test_engine_error_is_reported(self):
         def boom(query, result_k):
-            raise RuntimeError("index crashed")
+            msg = "index crashed"
+            raise RuntimeError(msg)
 
         fake = SimpleNamespace(get_context=boom)
         self._patch_rag(fake)

@@ -75,12 +75,16 @@ class TrustedA2AClient:
         with urlopen(request, timeout=self._timeout_seconds) as response:
             payload = json.loads(response.read().decode("utf-8"))
         if not isinstance(payload.get("name"), str) or not isinstance(payload.get("skills"), list):
-            raise ValueError("Invalid A2A Agent Card")
+            # ValueError (not TypeError): discover() skips bad cards by catching it.
+            msg = "Invalid A2A Agent Card"
+            raise ValueError(msg)  # noqa: TRY004
         skills = frozenset(
             str(skill["id"]) for skill in payload["skills"] if isinstance(skill, dict) and isinstance(skill.get("id"), str)
         )
         if not skills:
-            raise ValueError("A2A Agent Card contains no capabilities")
+            # ValueError (not TypeError): discover() skips bad cards by catching it.
+            msg = "A2A Agent Card contains no capabilities"
+            raise ValueError(msg)
         return RemoteAgentCard(
             endpoint=endpoint, name=payload["name"], version=str(payload.get("version", "unknown")), skills=skills,
             streaming=bool(payload.get("capabilities", {}).get("streaming", False)),

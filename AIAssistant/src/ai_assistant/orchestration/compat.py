@@ -1,7 +1,8 @@
-"""Compatibility shim for LangGraphAgent.
+"""Compatibility exports for the former ``LangGraphAgent`` module.
 
 The implementation has been migrated to `ai_assistant.orchestration.graph`.
-This module remains for backwards compatibility with existing consumers and tests.
+This module provides the old public names without leaving source files at the
+project root.
 """
 from __future__ import annotations
 

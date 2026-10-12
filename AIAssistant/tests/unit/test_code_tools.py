@@ -83,6 +83,21 @@ class CodeToolsTests(unittest.TestCase):
         self.assertNotIn("return", names)
         self.assertNotIn("if", names)
 
+    def test_cpp_keyword_at_line_start_is_not_a_function(self) -> None:
+        """``void if(x)`` matches the function regex; the keyword filter drops it."""
+        name = self._write("kw.h", "void if(x) {}\nint real() { return 0; }\n")
+        result = tool_analyze_code({"path": name})
+        names = [f["name"] for f in result["functions"]]
+        self.assertIn("real", names)
+        self.assertNotIn("if", names)
+
+    def test_unreadable_file_error(self) -> None:
+        name = self._write("locked.py", "x = 1\n")
+        with mock.patch("builtins.open", side_effect=PermissionError("denied")):
+            result = tool_analyze_code({"path": name})
+        self.assertIn("error", result)
+        self.assertIn("denied", result["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

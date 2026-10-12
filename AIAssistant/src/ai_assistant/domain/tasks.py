@@ -49,9 +49,11 @@ class AgentTask:
     def transition(self, status: TaskStatus, *, result: dict[str, Any] | None = None,
                    error: str | None = None) -> "AgentTask":
         if self.status in _TERMINAL:
-            raise ValueError(f"Task {self.id} is terminal ({self.status})")
+            msg = f"Task {self.id} is terminal ({self.status})"
+            raise ValueError(msg)
         if status == TaskStatus.SUBMITTED:
-            raise ValueError("A task cannot transition back to submitted")
+            msg = "A task cannot transition back to submitted"
+            raise ValueError(msg)
         return AgentTask(
             id=self.id, capability=self.capability, message=self.message, context_id=self.context_id,
             metadata=dict(self.metadata), classification=self.classification, status=status, origin=self.origin,

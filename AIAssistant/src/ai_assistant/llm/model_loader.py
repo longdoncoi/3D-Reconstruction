@@ -86,5 +86,6 @@ def reload_model(
     """Release the active model before reloading it."""
     with _global_lock:
         if _global_backend is None:
-            raise RuntimeError("LLM has not been initialized")
+            msg = "LLM has not been initialized"
+            raise RuntimeError(msg)
         return load_model(registry, models_dir, model_idx, enable_vision, n_ctx)

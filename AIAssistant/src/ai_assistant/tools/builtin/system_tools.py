@@ -27,9 +27,10 @@ def tool_validate_file(params: dict[str, Any]) -> dict[str, Any]:
             json.loads(content)
         else:
             return {"error": "Only .py and .json files can be validated."}
-        return {"success": True, "path": path, "validation": "syntax_valid"}
     except (SyntaxError, ValueError) as error:
         return {"success": False, "path": path, "error": str(error)}
+    else:
+        return {"success": True, "path": path, "validation": "syntax_valid"}
 
 
 def tool_run_command(params: dict[str, Any]) -> dict[str, Any]:

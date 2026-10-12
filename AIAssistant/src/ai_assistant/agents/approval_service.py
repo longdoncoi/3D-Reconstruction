@@ -100,7 +100,8 @@ class ApprovalService:
 
         if action is None:
             record_approval("missing")
-            raise NotFoundError(f"Action not found: {action_id}")
+            msg = f"Action not found: {action_id}"
+            raise NotFoundError(msg)
         action["action_id"] = action_id
 
         if self._ctx.task_coordinator.is_cancelled(action.get("session_id", "")):
@@ -117,7 +118,8 @@ class ApprovalService:
                 self._ctx.pending_actions[action_id] = action
                 self._save_pending()
             record_approval("unauthorized")
-            raise AuthorizationError("Action does not belong to this session")
+            msg = "Action does not belong to this session"
+            raise AuthorizationError(msg)
 
         if not request.approved:
             record_approval("rejected")
@@ -130,7 +132,8 @@ class ApprovalService:
 
     def _require_llm(self) -> None:
         if self._ctx.llm_runtime is None or self._ctx.llm_runtime.llm is None:
-            raise ModelNotLoadedError("LLM chưa khởi tạo")
+            msg = "LLM chưa khởi tạo"
+            raise ModelNotLoadedError(msg)
 
     def _rejected(self, action: dict[str, Any]) -> dict[str, Any]:
         return {

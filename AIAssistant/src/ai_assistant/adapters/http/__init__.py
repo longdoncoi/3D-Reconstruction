@@ -1,7 +1,7 @@
 """HTTP adapters package for the AI Assistant server.
 
 This package contains the FastAPI route modules extracted from the
-monolithic StartChatbotServer.py and agent_module.py entry points.
+former monolithic server and agent-module entry points.
 """
 from .admin_routes import build_admin_router
 from .agent_routes import build_agent_router

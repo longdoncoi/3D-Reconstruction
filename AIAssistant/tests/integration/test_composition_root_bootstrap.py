@@ -26,7 +26,7 @@ class CompositionRootImportTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        import StartChatbotServer as server_module
+        from ai_assistant.bootstrap import server as server_module
 
         cls.server = server_module
 
@@ -69,7 +69,7 @@ class BootstrapRuntimeLoadTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        import StartChatbotServer as server_module
+        from ai_assistant.bootstrap import server as server_module
 
         cls.server = server_module
 

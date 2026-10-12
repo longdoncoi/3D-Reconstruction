@@ -125,5 +125,131 @@ class SearchToolsTests(unittest.TestCase):
         self.assertEqual(result["count"], 0)
 
 
+    # ---- guard paths the happy-path listings never reach
+
+    def test_list_non_recursive_skips_a_blocked_child(self) -> None:
+        result = tool_list_directory({"path": "src"})
+        names = [e["name"] for e in result["entries"]]
+        self.assertNotIn(self._fwd("src/.git"), [self._fwd(n) for n in names])
+        self.assertIn(self._fwd("src/main.py"), [self._fwd(n) for n in names])
+
+    def test_list_recursive_stops_at_max_depth(self) -> None:
+        deep = self.root / "a" / "b" / "c"
+        deep.mkdir(parents=True)
+        (deep / "leaf.txt").write_text("x", encoding="utf-8")
+        result = tool_list_directory({"path": ".", "recursive": True, "max_depth": 1})
+        names = [e["name"] for e in result["entries"]]
+        # Depth 1 is visited, everything under it is pruned before descending.
+        self.assertIn("./a", [self._fwd(n) for n in names])
+        self.assertNotIn("./a/b", [self._fwd(n) for n in names])
+
+    def test_recursive_listing_stops_at_the_entry_cap_in_the_directory_loop(self) -> None:
+        for index in range(160):
+            (self.root / "wide" / f"dir{index:03d}").mkdir(parents=True, exist_ok=True)
+        result = tool_list_directory({"path": "wide", "recursive": True})
+        self.assertEqual(result["count"], 150)
+
+    def test_recursive_listing_stops_at_the_entry_cap_in_the_file_loop(self) -> None:
+        folder = self.root / "flat"
+        folder.mkdir()
+        for index in range(160):
+            (folder / f"file{index:03d}.txt").write_text("x", encoding="utf-8")
+        result = tool_list_directory({"path": "flat", "recursive": True})
+        self.assertEqual(result["count"], 150)
+
+    def test_a_listing_entry_whose_size_cannot_be_read_is_still_listed(self) -> None:
+        with mock.patch(
+            "ai_assistant.tools.builtin.search_tools.os.path.getsize",
+            side_effect=OSError("vanished mid-walk"),
+        ):
+            flat = tool_list_directory({"path": "src"})
+            recursive = tool_list_directory({"path": ".", "recursive": True})
+        files = [e for e in flat["entries"] if e["type"] == "file"]
+        self.assertTrue(files)
+        self.assertTrue(all(entry["size_bytes"] == 0 for entry in files))
+        self.assertTrue(all(
+            entry["size_bytes"] == 0
+            for entry in recursive["entries"] if entry["type"] == "file"
+        ))
+
+    def test_a_shallow_directory_stops_listing_at_the_entry_cap(self) -> None:
+        folder = self.root / "many"
+        folder.mkdir()
+        for index in range(160):
+            (folder / f"item{index:03d}.txt").write_text("x", encoding="utf-8")
+        result = tool_list_directory({"path": "many"})
+        self.assertEqual(result["count"], 150)
+
+    def test_an_unreadable_directory_is_reported_not_raised(self) -> None:
+        with mock.patch(
+            "ai_assistant.tools.builtin.search_tools.os.listdir",
+            side_effect=PermissionError("denied"),
+        ):
+            result = tool_list_directory({"path": "."})
+        self.assertIn("Lỗi liệt kê thư mục", result["error"])
+
+    def test_an_unreadable_walk_is_reported_not_raised(self) -> None:
+        with mock.patch(
+            "ai_assistant.tools.builtin.search_tools.os.walk",
+            side_effect=PermissionError("denied"),
+        ):
+            result = tool_list_directory({"path": ".", "recursive": True})
+        self.assertIn("Lỗi liệt kê thư mục", result["error"])
+
+    def test_find_files_reports_a_walk_that_fails(self) -> None:
+        with mock.patch(
+            "ai_assistant.tools.builtin.search_tools.os.walk",
+            side_effect=PermissionError("denied"),
+        ):
+            result = tool_find_files({"pattern": "*.py"})
+        self.assertIn("Unable to find files", result["error"])
+
+    def test_search_rejects_a_path_outside_the_project(self) -> None:
+        result = tool_search_text({"query": "hello", "path": "../outside"})
+        self.assertIn("Đường dẫn không hợp lệ", result["error"])
+
+    def test_search_rejects_a_path_that_does_not_exist(self) -> None:
+        result = tool_search_text({"query": "hello", "path": "ghost_dir"})
+        self.assertIn("Đường dẫn không tồn tại", result["error"])
+
+    def test_a_separator_only_file_pattern_falls_back_to_everything(self) -> None:
+        """``","`` splits to nothing, which must not filter every file away."""
+        result = tool_search_text({"query": "hello", "path": "src", "file_pattern": ","})
+        self.assertEqual(result["count"], 1)
+        self.assertTrue(result["results"][0]["file"].endswith("notes.txt"))
+
+    def test_search_stops_at_the_result_cap(self) -> None:
+        (self.root / "src" / "many_hits.py").write_text(
+            "".join(f"target line {index}\n" for index in range(10)), encoding="utf-8",
+        )
+        result = tool_search_text({"query": "target", "path": "src", "max_results": 3})
+        self.assertTrue(result["truncated"])
+        self.assertEqual(result["count"], 3)
+
+    def test_an_unreadable_file_is_skipped_and_the_rest_still_searched(self) -> None:
+        import builtins
+        real_open = builtins.open
+
+        def _guarded_open(name, *args, **kwargs):
+            if str(name).endswith("notes.txt"):
+                msg = "locked by another process"
+                raise OSError(msg)
+            return real_open(name, *args, **kwargs)
+
+        with mock.patch("builtins.open", side_effect=_guarded_open):
+            result = tool_search_text({"query": "def", "path": "src"})
+        self.assertFalse(result.get("error"))
+        self.assertTrue(result["results"])
+        self.assertTrue(all(r["file"].endswith("main.py") for r in result["results"]))
+
+    def test_search_reports_a_walk_that_fails(self) -> None:
+        with mock.patch(
+            "ai_assistant.tools.builtin.search_tools.os.walk",
+            side_effect=PermissionError("denied"),
+        ):
+            result = tool_search_text({"query": "hello"})
+        self.assertIn("Lỗi tìm kiếm", result["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

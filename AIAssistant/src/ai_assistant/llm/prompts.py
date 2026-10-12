@@ -179,8 +179,8 @@ class DefaultPromptBuilder:
                     data_uri = image_to_data_uri(att)
                     content_parts.append({"type": "image_url", "image_url": {"url": data_uri}})
                     has_images = True
-                except Exception as e:
-                    logger.error("Failed to encode image %s: %s", att, e)
+                except Exception:
+                    logger.exception("Failed to encode image %s", att)
                     content_parts.append({"type": "text", "text": f"[Lỗi đọc ảnh: {os.path.basename(att)}]"})
             else:
                 content_parts.append({"type": "text", "text": f"[File đính kèm: {os.path.basename(att)}]"})

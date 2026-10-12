@@ -3,8 +3,8 @@ Compatibility shim for the legacy rag_module.
 New code should use ai_assistant.rag package directly.
 """
 
-import os
 import threading
+from types import SimpleNamespace
 
 # --- NEW PLATFORM INTEGRATION ---
 from ai_assistant.llm.hardware import release_ml_memory as _release_ml_memory
@@ -12,10 +12,11 @@ from ai_assistant.rag import (
     ChunkResult,  # noqa: F401
     DocumentLoaderRegistry,
     RetrievalPipeline,
+    build_index_from_scratch,
+    is_cache_valid,
+    load_cache,
+    save_cache,
     scan_documents,
-)
-from ai_assistant.rag import (
-    E5LlamaEmbedding as _E5LlamaEmbedding,
 )
 from ai_assistant.rag import (
     image_to_data_uri as _image_to_data_uri,  # noqa: F401
@@ -27,11 +28,9 @@ from ai_assistant.rag.nlp_utils import tokenize_vn as _tokenize_vn
 
 # Import configurations
 from .config import (
-    CACHE_DIR,
     CHUNK_CHARS,  # noqa: F401
     EMBED_CACHE,
     EMBED_MODEL_NAME,
-    EMBEDDING_DIMENSION,
     ENABLE_RAG,
     MAX_CONTEXT_CHARS,  # noqa: F401
     RERANKER_MODEL,
@@ -55,27 +54,67 @@ _reranker = None
 
 _pipeline: RetrievalPipeline | None = None
 
-def build_llamaindex_runtime(chunks: list, encoder):
-    import faiss
-    from llama_index.core import StorageContext, VectorStoreIndex
-    from llama_index.core.schema import TextNode
-    from llama_index.retrievers.bm25 import BM25Retriever
-    from llama_index.vector_stores.faiss import FaissVectorStore
+class _FaissRetriever:
+    """Expose a cached FAISS index through the retriever protocol."""
 
-    nodes = [TextNode(text=chunk.text, metadata={"chunk_index": index})
-             for index, chunk in enumerate(chunks) if not chunk.is_image]
-    vector_store = FaissVectorStore(faiss_index=faiss.IndexFlatIP(EMBEDDING_DIMENSION))
-    storage = StorageContext.from_defaults(vector_store=vector_store)
-    index = VectorStoreIndex(nodes, storage_context=storage,
-                             embed_model=_E5LlamaEmbedding(
-                                 encoder,
-                                 _rag_settings.embedding_query_prefix,
-                                 _rag_settings.embedding_passage_prefix
-                             ).value,
-                             show_progress=False)
-    storage.persist(persist_dir=os.path.join(CACHE_DIR, "llamaindex"))
-    return index, index.as_retriever(similarity_top_k=30), BM25Retriever.from_defaults(
-        docstore=index.docstore, similarity_top_k=30, tokenizer=_tokenize_vn, skip_stemming=True)
+    def __init__(self, index, encoder, query_prefix: str, top_k: int = 30):
+        self._index = index
+        self._encoder = encoder
+        self._query_prefix = query_prefix
+        self._top_k = top_k
+
+    def retrieve(self, query: str) -> list[SimpleNamespace]:
+        import faiss
+        import numpy as np
+
+        vector = np.asarray(
+            self._encoder.encode(
+                [self._query_prefix + query],
+                show_progress_bar=False,
+                normalize_embeddings=True,
+            ),
+            dtype="float32",
+        )
+        faiss.normalize_L2(vector)
+        scores, identifiers = self._index.search(
+            vector, min(self._top_k, self._index.ntotal)
+        )
+        return [
+            SimpleNamespace(
+                node=SimpleNamespace(metadata={"chunk_index": int(identifier)}),
+                score=float(score),
+            )
+            for score, identifier in zip(scores[0], identifiers[0])
+            if identifier >= 0
+        ]
+
+
+class _Bm25Retriever:
+    """Expose a cached rank_bm25 index through the retriever protocol."""
+
+    def __init__(self, index, top_k: int = 30):
+        self._index = index
+        self._top_k = top_k
+
+    def retrieve(self, query: str) -> list[SimpleNamespace]:
+        scores = self._index.get_scores(_tokenize_vn(query))
+        ranked = sorted(
+            enumerate(scores), key=lambda item: item[1], reverse=True
+        )[:self._top_k]
+        return [
+            SimpleNamespace(
+                node=SimpleNamespace(metadata={"chunk_index": chunk_index}),
+                score=float(score),
+            )
+            for chunk_index, score in ranked
+        ]
+
+
+def _build_retrievers(index, bm25, encoder):
+    return (
+        _FaissRetriever(index, encoder, _rag_settings.embedding_query_prefix),
+        _Bm25Retriever(bm25),
+    )
 
 def initialize_rag(force_rebuild: bool = False, enable_reranker: bool = True) -> int:
     global knowledge_index, knowledge_chunks, bm25_index, embed_model_ref, _reranker, vector_retriever, bm25_retriever, _pipeline
@@ -100,22 +139,33 @@ def initialize_rag(force_rebuild: bool = False, enable_reranker: bool = True) ->
         except Exception as error:
             logger.warning("Reranker load failed (%s); continuing without it", error)
 
-    with startup_step("Scanning documents"):
-        registry = DocumentLoaderRegistry.create_default(
-            chunk_chars=_rag_settings.chunk_chars,
-            overlap_chars=_rag_settings.overlap_chars
-        )
-        raw_chunks = scan_documents(_paths, registry)
-        
-    if raw_chunks:
-        with startup_step("Rebuilding RAG index" if force_rebuild else "Loading/building RAG index"):
-            # During migration, we still use the legacy llama_index integration for index building
-            # to preserve compatibility with existing disk caches. This can be completely replaced later.
-            index, dense, sparse = build_llamaindex_runtime(raw_chunks, embed_model)
-            chunks, bm25 = raw_chunks, sparse
+    index, chunks, bm25 = None, [], None
+    if not force_rebuild and is_cache_valid(_paths, _rag_settings):
+        with startup_step("Loading RAG index cache"):
+            index, chunks, bm25 = load_cache(_paths, _rag_settings)
+
+    if index is None:
+        with startup_step("Scanning documents"):
+            registry = DocumentLoaderRegistry.create_default(
+                chunk_chars=_rag_settings.chunk_chars,
+                overlap_chars=_rag_settings.overlap_chars,
+            )
+            raw_chunks = scan_documents(_paths, registry)
+
+        if raw_chunks:
+            step_name = "Rebuilding RAG index" if force_rebuild else "Building RAG index"
+            with startup_step(step_name):
+                index, chunks, bm25 = build_index_from_scratch(
+                    raw_chunks, embed_model, _rag_settings
+                )
+                save_cache(index, chunks, bm25, _paths, _rag_settings)
+        else:
+            logger.warning("No documents found; RAG context will be empty")
+
+    if index is not None:
+        dense, sparse = _build_retrievers(index, bm25, embed_model)
     else:
-        index, chunks, bm25, dense, sparse = None, [], None, None, None
-        logger.warning("No documents found; RAG context will be empty")
+        dense, sparse = None, None
 
     with rag_lock:
         knowledge_index, knowledge_chunks, bm25_index = index, chunks, bm25

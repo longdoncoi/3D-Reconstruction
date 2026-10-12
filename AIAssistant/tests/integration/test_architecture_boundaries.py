@@ -477,7 +477,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIn("AgentOrchestrator", _identifiers(agent_runs_path))
         self.assertIn("self._orchestrator.run", _call_targets(agent_runs_path))
 
-        root_path = SRC.parent / "StartChatbotServer.py"
+        root_path = PACKAGE / "bootstrap" / "server.py"
         root_kwargs = _keyword_values(root_path)
         self.assertIn("LangGraphAgentOrchestrator", root_kwargs.get("orchestrator", set()))
         self.assertNotIn("LegacyConstrainedCompletion", root_path.read_text(encoding="utf-8"))

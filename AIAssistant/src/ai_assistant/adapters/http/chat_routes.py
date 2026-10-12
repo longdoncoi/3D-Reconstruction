@@ -1,6 +1,6 @@
 """Chat completion route (/v1/chat/completions).
 
-Extracted from StartChatbotServer.py. Handles the chatbot conversational
+Extracted from the composition root. Handles the chatbot conversational
 endpoint — RAG retrieval, vision, context limit check, and streaming inference.
 """
 from __future__ import annotations
@@ -29,7 +29,8 @@ class ChatMessage(BaseModel):
     @classmethod
     def validate_role(cls, value: str) -> str:
         if value not in ("user", "assistant", "system", "assistant_agent"):
-            raise ValueError("role must be user, assistant, system, or assistant_agent")
+            msg = "role must be user, assistant, system, or assistant_agent"
+            raise ValueError(msg)
         return value
 
 
@@ -40,6 +41,38 @@ class ChatRequest(BaseModel):
     temperature: float = Field(0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(2048, ge=1, le=4096)
     language: str = Field(default="vi", pattern="^(vi|en)$")
+
+
+def _scan_attachments_for_image(
+    attachments: list[str], rag_module: "RAGModuleLike", logger: "LoggerLike",
+) -> str | None:
+    """Return the first attached image as a data URI, else ``None``.
+
+    ``image_utils`` ships with the full runtime; fall back to the rag_module
+    helpers when the RAG extras are not installed (offline CI).
+    """
+    def fallback_is_image(_path: str) -> bool:
+        return False
+
+    def fallback_to_data_uri(_path: str) -> str:
+        return ""
+
+    try:
+        from ai_assistant.rag.image_utils import image_to_data_uri, is_image_file
+
+        image_check: Callable[[str], bool] = is_image_file
+        data_uri_fn: Callable[[str], str] = image_to_data_uri
+    except ImportError:
+        image_check = getattr(rag_module, "_is_image_file", fallback_is_image)
+        data_uri_fn = getattr(rag_module, "_image_to_data_uri", fallback_to_data_uri)
+
+    for attachment in attachments:
+        if image_check(attachment):
+            try:
+                return data_uri_fn(attachment)
+            except Exception as error:
+                logger.warning("Failed to read attachment for retrieval: %s", error)
+    return None
 
 
 def build_chat_router(
@@ -74,32 +107,7 @@ def build_chat_router(
         req_start = time.monotonic()
         user_query = request.messages[-1].content
         attachments = request.messages[-1].attachments or []
-        query_image_b64: str | None = None
-
-        # image_utils ships with the full runtime; fall back to the rag_module
-        # helpers when the RAG extras are not installed (offline CI).
-        def fallback_is_image(_path: str) -> bool:
-            return False
-
-        def fallback_to_data_uri(_path: str) -> str:
-            return ""
-
-        try:
-            from ai_assistant.rag.image_utils import image_to_data_uri, is_image_file
-
-            image_check: Callable[[str], bool] = is_image_file
-            data_uri_fn: Callable[[str], str] = image_to_data_uri
-        except ImportError:
-            image_check = getattr(rag_module, "_is_image_file", fallback_is_image)
-            data_uri_fn = getattr(rag_module, "_image_to_data_uri", fallback_to_data_uri)
-
-        for attachment in attachments:
-            if image_check(attachment):
-                try:
-                    query_image_b64 = data_uri_fn(attachment)
-                    break
-                except Exception as error:
-                    logger.warning("Failed to read attachment for retrieval: %s", error)
+        query_image_b64 = _scan_attachments_for_image(attachments, rag_module, logger)
 
         client_host = http_req.client.host if http_req.client else "unknown"
         logger.info(

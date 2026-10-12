@@ -241,14 +241,16 @@ class _FakeLsClient:
         if self.client_fail:
             raise RuntimeError("nope")
         if self.create_signature not in payload:
-            raise TypeError(f"{self.create_signature} required")
+            msg = f"{self.create_signature} required"
+            raise TypeError(msg)
         self.runs.append(payload)
 
     def update_run(self, **payload):
         if self.client_fail:
             raise RuntimeError("nope")
         if self.update_signature not in payload:
-            raise TypeError(f"{self.update_signature} required")
+            msg = f"{self.update_signature} required"
+            raise TypeError(msg)
         self.updated.append(payload)
 
     def create_feedback(self, **payload):
@@ -308,7 +310,8 @@ class LangsmithIntegrationTests(unittest.TestCase):
     def test_client_build_failure_is_swallowed(self):
         class _Client:
             def __init__(self, **kwargs):
-                raise RuntimeError("cannot connect")
+                msg = "cannot connect"
+                raise RuntimeError(msg)
 
         with mock.patch.object(
             ls_module, "langsmith_settings",

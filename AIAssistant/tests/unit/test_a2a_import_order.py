@@ -86,7 +86,8 @@ class OrchestrationDoesNotImportAdaptersTest(unittest.TestCase):
         """A broken remote lookup must never break local delegation."""
 
         def _boom(_sid: str) -> str:
-            raise RuntimeError("registry offline")
+            msg = "registry offline"
+            raise RuntimeError(msg)
 
         with patch.object(supervisor, "_remote_specialist_lookup", _boom):
             delegation = supervisor.delegate("read the config", "s3", tool="read_file")
@@ -108,13 +109,13 @@ class OrchestrationDoesNotImportAdaptersTest(unittest.TestCase):
 class CompositionRootWiresTheRemoteLookupTest(unittest.TestCase):
     """Dependency inversion only helps if the composition root installs it.
 
-    Nothing else in the suite reads ``StartChatbotServer.py``, so deleting the
+    Nothing else in the suite reads the composition root, so deleting the
     install call would leave every test here green while A2A remote delegation
     silently stopped working — the resolver would exist, satisfy the port test
     above, and never be reachable.
     """
 
-    SERVER = Path(__file__).resolve().parents[2] / "StartChatbotServer.py"
+    SERVER = Path(__file__).resolve().parents[2] / "src" / "ai_assistant" / "bootstrap" / "server.py"
 
     def _install_calls(self) -> list[ast.Call]:
         tree = ast.parse(self.SERVER.read_text(encoding="utf-8"))
@@ -129,7 +130,7 @@ class CompositionRootWiresTheRemoteLookupTest(unittest.TestCase):
     def test_startup_installs_the_adapter_resolver(self) -> None:
         """The server wires ``resolve_remote_specialist`` at startup."""
         calls = self._install_calls()
-        self.assertTrue(calls, "StartChatbotServer.py never installs the remote-specialist lookup")
+        self.assertTrue(calls, "the composition root never installs the remote-specialist lookup")
         installed = {
             arg.id
             for call in calls

@@ -112,7 +112,8 @@ def _dispatch_json_rpc(service: TaskService, method: str, params: dict[str, Any]
     if method == "tasks/get":
         fetched = service.get(str(params.get("id", "")))
         if fetched is None:
-            raise KeyError("A2A task not found")
+            msg = "A2A task not found"
+            raise KeyError(msg)
         return {"task": task_payload(fetched)}
     if method == "tasks/list":
         return {"tasks": [task_payload(task) for task in service.list(
@@ -120,12 +121,14 @@ def _dispatch_json_rpc(service: TaskService, method: str, params: dict[str, Any]
     if method == "tasks/cancel":
         cancelled = service.cancel(str(params.get("id", "")))
         if cancelled is None:
-            raise ValueError("A2A task cannot be cancelled")
+            msg = "A2A task cannot be cancelled"
+            raise ValueError(msg)
         return {"task": task_payload(cancelled)}
     if method == "tasks/resume":
         resumed = service.resume(str(params.get("id", "")), dict(params.get("input", {})))
         if resumed is None:
-            raise ValueError("A2A task cannot be resumed")
+            msg = "A2A task cannot be resumed"
+            raise ValueError(msg)
         return {"task": task_payload(resumed)}
     raise NotImplementedError(f"Unsupported A2A method: {method}")
 
@@ -172,7 +175,8 @@ def _add_standard_task_routes(router: APIRouter, service: TaskService) -> None:
         return {"task": task_payload(task)}
 
     @router.get("/tasks")
-    def standard_list_tasks(request: Request, contextId: str | None = None, limit: int = 100) -> dict[str, Any]:
+    # ``contextId`` is the A2A query-parameter name, not a local.
+    def standard_list_tasks(request: Request, contextId: str | None = None, limit: int = 100) -> dict[str, Any]:  # noqa: N803
         _require_a2a_version(request)
         return {"tasks": [task_payload(task) for task in service.list(context_id=contextId, limit=limit)]}
 
@@ -262,9 +266,10 @@ def _add_json_rpc_route(router: APIRouter, service: TaskService) -> None:
         request_id = payload.get("id")
         try:
             result = _dispatch_json_rpc(service, payload.get("method"), payload.get("params", {}))
-            return {"jsonrpc": "2.0", "id": request_id, "result": result}
         except (KeyError, ValueError, NotImplementedError) as error:
             return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": str(error)}}
+        else:
+            return {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
 def build_a2a_router(service: TaskService, agent_name: str, agent_version: str,

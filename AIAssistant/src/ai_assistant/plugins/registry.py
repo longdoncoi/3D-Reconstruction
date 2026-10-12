@@ -21,9 +21,11 @@ class PluginRegistry:
 
     def register_tool(self, spec: ToolSpec, executor: ToolExecutor) -> None:
         if spec.plugin_id not in self._allowed_plugins:
-            raise PermissionError(f"Plugin is not enabled: {spec.plugin_id}")
+            msg = f"Plugin is not enabled: {spec.plugin_id}"
+            raise PermissionError(msg)
         if spec.name in self._tools:
-            raise ValueError(f"Duplicate tool registration: {spec.name}")
+            msg = f"Duplicate tool registration: {spec.name}"
+            raise ValueError(msg)
         self._tools[spec.name] = RegisteredTool(spec, executor)
 
     def tool(self, name: str) -> RegisteredTool | None:

@@ -93,7 +93,8 @@ class _FakeNp:
     def array(self, data, dtype=None):
         return _FakeArr(data)
 
-    def normalize_L2(self, arr):
+    # faiss API names, mirrored so the doubles stay faithful.
+    def normalize_L2(self, arr):  # noqa: N802
         return None
 
 
@@ -123,13 +124,13 @@ class _FakeFaiss:
     def read_index(self, path):
         return _FakeFaissIndex(self.index_d)
 
-    def IndexFlatIP(self, dim):
+    def IndexFlatIP(self, dim):  # noqa: N802
         return _FakeFaissIndex(dim)
 
-    def IndexIVFFlat(self, quantizer, dim, nlist, metric):
+    def IndexIVFFlat(self, quantizer, dim, nlist, metric):  # noqa: N802
         return _FakeFaissIndex(dim)
 
-    def normalize_L2(self, arr):
+    def normalize_L2(self, arr):  # noqa: N802
         return None
 
 
@@ -359,7 +360,8 @@ class _ImageFailEmbed:
     def encode(self, data, **kwargs):
         tagged = list(data)
         if any(not isinstance(item, str) for item in tagged):
-            raise RuntimeError("image encode failed")
+            msg = "image encode failed"
+            raise RuntimeError(msg)
         return [[float(i) for i in range(self.dim)] for _ in tagged]
 
 
@@ -403,7 +405,8 @@ class ImageIndexTests(unittest.TestCase):
                 data = list(data)
                 if any(not isinstance(d, str) for d in data):
                     if len(data) > 1:
-                        raise RuntimeError("batch failed")
+                        msg = "batch failed"
+                        raise RuntimeError(msg)
                     self.image_encodes += 1
                 return [[0.0, 1.0, 2.0]]
 

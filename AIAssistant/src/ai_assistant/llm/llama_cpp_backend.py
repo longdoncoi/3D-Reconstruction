@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from .contracts import LLMBackend
 from .hardware import release_ml_memory
@@ -46,9 +46,8 @@ class LlamaCppBackend(LLMBackend):
         from llama_cpp import Llama
 
         if self._is_vision and not mmproj_path:
-            raise ValueError(
-                "A vision model requires mmproj_path (clip/mmproj weights)."
-            )
+            msg = "A vision model requires mmproj_path (clip/mmproj weights)."
+            raise ValueError(msg)
 
         release_ml_memory()
         logger.info("loading model: %s", self.model_path)
@@ -56,9 +55,10 @@ class LlamaCppBackend(LLMBackend):
         try:
             if self._is_vision:
                 from llama_cpp.llama_chat_format import Qwen25VLChatHandler
-                if mmproj_path is None:
-                    raise ValueError("Vision model requires mmproj_path")
-                self._chat_handler = Qwen25VLChatHandler(clip_model_path=mmproj_path)
+                # ``mmproj_path`` is guaranteed by the guard above, so the
+                # handler is always built with real clip weights here.
+                self._chat_handler = Qwen25VLChatHandler(
+                    clip_model_path=cast(str, mmproj_path))
                 self._llm = Llama(
                     model_path=self.model_path,
                     chat_handler=self._chat_handler,
@@ -89,9 +89,10 @@ class LlamaCppBackend(LLMBackend):
             if self._is_vision:
                 from llama_cpp.llama_chat_format import Qwen25VLChatHandler
                 if self._chat_handler is None:
-                    if mmproj_path is None:
-                        raise ValueError("Vision model requires mmproj_path")
-                    self._chat_handler = Qwen25VLChatHandler(clip_model_path=mmproj_path)
+                    # Same guarantee as above: a vision load never reaches
+                    # this retry without clip weights, so just build it.
+                    self._chat_handler = Qwen25VLChatHandler(
+                        clip_model_path=cast(str, mmproj_path))
                 self._llm = Llama(
                     model_path=self.model_path,
                     chat_handler=self._chat_handler,
@@ -129,7 +130,8 @@ class LlamaCppBackend(LLMBackend):
         **kwargs: Any
     ) -> Any:
         if self._llm is None:
-            raise RuntimeError("LLM not initialized")
+            msg = "LLM not initialized"
+            raise RuntimeError(msg)
         return self._llm.create_chat_completion(
             messages=messages,
             temperature=temperature,
@@ -147,4 +149,5 @@ class LlamaCppBackend(LLMBackend):
         """Proxy missing attributes to the underlying Llama instance for backward compatibility."""
         if self._llm and hasattr(self._llm, name):
             return getattr(self._llm, name)
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        msg = f"'{type(self).__name__}' object has no attribute '{name}'"
+        raise AttributeError(msg)
