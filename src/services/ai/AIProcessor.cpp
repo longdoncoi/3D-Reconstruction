@@ -74,13 +74,20 @@ void AIProcessor::tryInitGPUProvider() {
 
 AIProcessor::~AIProcessor() {}
 
+cv::Size AIProcessor::inputSizeOf(const Ort::Session& session) {
+  const auto info = session.GetInputTypeInfo(0).GetTensorTypeAndShapeInfo();
+  return AIYoloPostProcessor::modelInputSize(info.GetShape());
+}
+
 bool AIProcessor::loadDetectionModel(const QString &modelPath) {
   try {
     std::wstring w_modelPath = modelPath.toStdWString();
     detSession = std::make_unique<Ort::Session>(*env, w_modelPath.c_str(),
                                                 *sessionOptions);
+    m_detInputSize = inputSizeOf(*detSession);
     isDetModelLoaded = true;
-    qDebug() << "Detection model loaded successfully with ORT:" << modelPath;
+    qDebug() << "Detection model loaded successfully with ORT:" << modelPath
+             << "input" << m_detInputSize.width << "x" << m_detInputSize.height;
     return true;
   } catch (const Ort::Exception &e) {
     qWarning() << "ORT Exception during loading detection model:" << e.what();
@@ -94,8 +101,10 @@ bool AIProcessor::loadSegmentationModel(const QString &modelPath) {
     std::wstring w_modelPath = modelPath.toStdWString();
     segSession = std::make_unique<Ort::Session>(*env, w_modelPath.c_str(),
                                                 *sessionOptions);
+    m_segInputSize = inputSizeOf(*segSession);
     isSegModelLoaded = true;
-    qDebug() << "Segmentation model loaded successfully with ORT:" << modelPath;
+    qDebug() << "Segmentation model loaded successfully with ORT:" << modelPath
+             << "input" << m_segInputSize.width << "x" << m_segInputSize.height;
     return true;
   } catch (const Ort::Exception &e) {
     qWarning() << "ORT Exception during loading segmentation model:"
@@ -110,8 +119,10 @@ bool AIProcessor::loadTrackingModel(const QString &modelPath) {
     std::wstring w_modelPath = modelPath.toStdWString();
     trackingSession = std::make_unique<Ort::Session>(*env, w_modelPath.c_str(),
                                                 *sessionOptions);
+    m_trackingInputSize = inputSizeOf(*trackingSession);
     isTrackingLoaded = true;
-    qDebug() << "Tracking model loaded successfully with ORT:" << modelPath;
+    qDebug() << "Tracking model loaded successfully with ORT:" << modelPath
+             << "input" << m_trackingInputSize.width << "x" << m_trackingInputSize.height;
     return true;
   } catch (const Ort::Exception &e) {
     qWarning() << "ORT Exception during loading tracking model:" << e.what();
@@ -128,8 +139,8 @@ cv::Mat AIProcessor::runObjectDetection(const cv::Mat &inputImage) {
 
   const float SCORE_THRESHOLD = m_confidenceThreshold;
   const float NMS_THRESHOLD = 0.45f;
-  const int INPUT_WIDTH = 640;
-  const int INPUT_HEIGHT = 640;
+  const int INPUT_WIDTH = m_detInputSize.width;
+  const int INPUT_HEIGHT = m_detInputSize.height;
   const int CHANNELS = 3;
 
   std::vector<float> inputTensorValues;
@@ -185,11 +196,11 @@ cv::Mat AIProcessor::runSegmentation(const cv::Mat &inputImage) {
     return inputImage;
   }
 
-  const float SCORE_THRESHOLD = 0.5f;
+  const float SCORE_THRESHOLD = m_confidenceThreshold;
   const float NMS_THRESHOLD = 0.45f;
   const float MASK_THRESHOLD = 0.5f;
-  const int INPUT_WIDTH = 640;
-  const int INPUT_HEIGHT = 640;
+  const int INPUT_WIDTH = m_segInputSize.width;
+  const int INPUT_HEIGHT = m_segInputSize.height;
   const int CHANNELS = 3;
 
   std::vector<float> inputTensorValues;
@@ -290,10 +301,10 @@ cv::Mat AIProcessor::runTracking(const cv::Mat &inputImage) {
     return inputImage;
   }
 
-  const float SCORE_THRESHOLD = 0.5f;
+  const float SCORE_THRESHOLD = m_confidenceThreshold;
   const float NMS_THRESHOLD = 0.45f;
-  const int INPUT_WIDTH = 640;
-  const int INPUT_HEIGHT = 640;
+  const int INPUT_WIDTH = m_trackingInputSize.width;
+  const int INPUT_HEIGHT = m_trackingInputSize.height;
   const int CHANNELS = 3;
 
   std::vector<float> inputTensorValues;
@@ -341,8 +352,11 @@ cv::Mat AIProcessor::runTracking(const cv::Mat &inputImage) {
           cv::Rect curr_box = current_frame_boxes[i];
           float inter_area = (prev_box & curr_box).area();
           float union_area = prev_box.area() + curr_box.area() - inter_area;
-          float iou = inter_area / union_area;
-          
+          float iou = 0.0f;
+          if (union_area > 0.0f) {
+              iou = inter_area / union_area;
+          }
+
           if (iou > best_iou && iou > IOU_THRESHOLD) {
               best_iou = iou;
               best_match = i;

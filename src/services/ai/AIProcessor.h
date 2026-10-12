@@ -10,6 +10,7 @@
 #include <map>
 
 #include "Global.h"
+#include "AIYoloPostProcessor.h"
 
 struct AIResult {
     int class_id;
@@ -49,6 +50,9 @@ private:
     void tryInitGPUProvider();
     Ort::Value prepareInputTensor(const cv::Mat& img, int width, int height, std::vector<float>& tensorValues);
 
+    /// Spatial extent the given session expects, read from its input tensor.
+    static cv::Size inputSizeOf(const Ort::Session& session);
+
     std::unique_ptr<Ort::Env> env;
     std::unique_ptr<Ort::SessionOptions> sessionOptions;
     std::unique_ptr<Ort::Session> detSession;
@@ -59,6 +63,16 @@ private:
     bool isSegModelLoaded;
     bool isTrackingLoaded;
     float m_confidenceThreshold = 0.5f;
+
+    // Input size of each loaded model, read from the ONNX graph at load time.
+    // A model exported with a non-default `--imgsz` is therefore driven with
+    // its own shape instead of the historical hard-coded 640x640.
+    cv::Size m_detInputSize{AIYoloPostProcessor::kDefaultModelInputSize,
+                            AIYoloPostProcessor::kDefaultModelInputSize};
+    cv::Size m_segInputSize{AIYoloPostProcessor::kDefaultModelInputSize,
+                            AIYoloPostProcessor::kDefaultModelInputSize};
+    cv::Size m_trackingInputSize{AIYoloPostProcessor::kDefaultModelInputSize,
+                                 AIYoloPostProcessor::kDefaultModelInputSize};
 
     // Tracking state
     std::mutex m_trackingMutex;

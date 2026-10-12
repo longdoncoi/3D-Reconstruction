@@ -109,3 +109,14 @@ target_include_directories(TestAgentActions PRIVATE ../src/core ../src/utils)
 target_link_libraries(TestAgentActions PRIVATE Qt6::Test Qt6::Core)
 target_compile_definitions(TestAgentActions PRIVATE APP_LIBRARY)
 add_test(NAME TestAgentActions COMMAND TestAgentActions)
+
+# Test AI Yolo PostProcessor
+qt_add_executable(TestAIYoloPostProcessor
+    TestAIYoloPostProcessor.cpp
+    ../src/services/ai/AIYoloPostProcessor.cpp
+)
+target_include_directories(TestAIYoloPostProcessor PRIVATE
+    ../src/services/ai
+)
+target_link_libraries(TestAIYoloPostProcessor PRIVATE Qt6::Test Qt6::Core ${OpenCV_LIBS})
+add_test(NAME TestAIYoloPostProcessor COMMAND TestAIYoloPostProcessor)

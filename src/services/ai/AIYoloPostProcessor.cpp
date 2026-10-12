@@ -5,6 +5,15 @@
 
 namespace AIYoloPostProcessor {
 
+cv::Size modelInputSize(const std::vector<int64_t> &shape)
+{
+    // NCHW: dimensions 2/3 are the spatial extent the network actually sees.
+    if (shape.size() == 4 && shape[2] > 0 && shape[3] > 0) {
+        return cv::Size(static_cast<int>(shape[3]), static_cast<int>(shape[2]));
+    }
+    return cv::Size(kDefaultModelInputSize, kDefaultModelInputSize);
+}
+
 YoloDetections parsePredictions(const cv::Mat &predictions,
                                 cv::Size imageSize,
                                 cv::Size modelSize,
