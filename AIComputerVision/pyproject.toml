@@ -28,12 +28,26 @@ files = ["cvtrain", "tests", "TrainModel.py"]
 ignore_missing_imports = true
 show_error_codes = true
 disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+disallow_any_generics = true
 check_untyped_defs = true
 no_implicit_optional = true
+no_implicit_reexport = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 warn_unused_configs = true
+warn_return_any = true
 strict_equality = true
+
+# ``ultralytics`` re-exports ``YOLO`` from a submodule in its ``__init__``
+# without listing it in ``__all__``. That is the framework's packaging choice,
+# not a re-export of ours: ``no_implicit_reexport`` is a rule about *this*
+# package's module boundaries, and applying it to site-packages would only
+# produce a suppression comment that rots when the dependency is absent.
+[[tool.mypy.overrides]]
+module = ["ultralytics", "ultralytics.*"]
+no_implicit_reexport = false
 
 # Every statement *and* branch of cvtrain is exercised. The package carries two
 # contracts — the ONNX file names the Qt app hard-codes, and the stdout protocol

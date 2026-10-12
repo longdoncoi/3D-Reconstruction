@@ -1,59 +1,68 @@
-"""Preflight checks: fail fast with an actionable message instead of a traceback."""
+"""Preflight checks: fail fast with an actionable message instead of a traceback.
+
+Everything the pipeline needs to be true *before* work starts is validated
+here, whichever entry point produced the configuration: the environment and the
+hyper-parameters themselves. A run that reaches the framework has already been
+told its inputs are sane.
+
+The module is deliberately an *aggregator* over two concerns kept elsewhere:
+
+* :mod:`cvtrain.dataset` — the ``data.yaml`` document and the paths it names;
+* :mod:`cvtrain.checks` — the :class:`Check`/:class:`PreflightReport` vocabulary
+  every contributor shares.
+
+It does not import them through each other, so a new kind of check can be added
+without touching either neighbour.
+"""
 
 from __future__ import annotations
 
-import importlib.util
+import math
+import re
 import sys
 from collections.abc import Sequence
-from dataclasses import dataclass, field
-from pathlib import Path
 
+from .checks import Check, PreflightReport, module_available
 from .config import BASE_DIR, MODEL_SPECS, TrainConfig
+from .dataset import check_data_yaml
+
+__all__ = [
+    "AUTO_BATCH",
+    "MAX_OPSET",
+    "MIN_IMGSZ",
+    "MIN_OPSET",
+    "MIN_PYTHON",
+    "check_dependencies",
+    "check_device",
+    "check_hyperparameters",
+    "check_metric_thresholds",
+    "check_python",
+    "check_weights",
+    "run",
+]
 
 MIN_PYTHON = (3, 11)
 
+MIN_IMGSZ = 32
+"""Smallest image size YOLO can consume (its coarsest stride is 32)."""
 
-@dataclass
-class Check:
-    name: str
-    ok: bool
-    detail: str
-    fatal: bool = True
+MIN_OPSET = 11
+MAX_OPSET = 21
+"""ONNX opset window the export is allowed to request.
 
-    def line(self) -> str:
-        if self.ok:
-            status = "OK  "
-        elif self.fatal:
-            status = "FAIL"
-        else:
-            status = "WARN"
-        return f"[{status}] {self.name}: {self.detail}"
+The ceiling is the important one: ONNX Runtime 1.20 implements **opset 21**
+(its published compatibility table), and ``ONNXRUNTIME_VERSION`` in the
+repository ``CMakeLists.txt`` pins 1.20.1 — an artifact stamped higher than
+that would fail only when someone loads it in the Qt app, long after a run
+that produced it looked successful. The floor is this pipeline's policy: the
+shipped models were exported at opset 12 (see ``Models/manifest.json``), and
+asking for something far older produces a graph nobody has validated."""
 
+AUTO_BATCH = -1
+"""Ultralytics' "size the batch automatically" sentinel for ``--batch``."""
 
-@dataclass
-class PreflightReport:
-    checks: list[Check] = field(default_factory=list)
-
-    @property
-    def ok(self) -> bool:
-        return all(check.ok or not check.fatal for check in self.checks)
-
-    @property
-    def failures(self) -> list[Check]:
-        return [check for check in self.checks if not check.ok and check.fatal]
-
-    def add(self, check: Check) -> None:
-        self.checks.append(check)
-
-    def lines(self) -> list[str]:
-        return [check.line() for check in self.checks]
-
-
-def _module_available(name: str) -> bool:
-    try:
-        return importlib.util.find_spec(name) is not None
-    except (ImportError, ValueError):
-        return False
+_DEVICE_TOKEN = re.compile(r"^(?:cpu|mps|metal|cuda(?::\d+)?|\d+)$")
+"""One acceptable comma-separated component of ``--device``."""
 
 
 def check_python() -> Check:
@@ -75,7 +84,7 @@ def check_dependencies(*, fatal: bool, modules: Sequence[str]) -> list[Check]:
 
     checks: list[Check] = []
     for module in modules:
-        available = _module_available(module)
+        available = module_available(module)
         detail = "installed" if available else "missing"
         if not available and fatal:
             detail = f"missing - run: pip install -r {BASE_DIR / 'requirements.txt'}"
@@ -83,103 +92,107 @@ def check_dependencies(*, fatal: bool, modules: Sequence[str]) -> list[Check]:
     return checks
 
 
-def _dataset_base(parsed: dict[object, object], yaml_dir: Path) -> Path:
-    """Directory that relative ``train``/``val`` references resolve against.
+def check_hyperparameters(cfg: TrainConfig) -> list[Check]:
+    """Validate the resolved hyper-parameters before any work starts.
 
-    Mirrors Ultralytics: an explicit top-level ``path:`` key relocates the
-    dataset root (resolved relative to ``data.yaml``), and without it references
-    are relative to the folder holding ``data.yaml``.
+    The dataset is checked exhaustively, so leaving the numbers unchecked would
+    be an odd asymmetry: ``--epochs 0`` or ``--opset 99`` otherwise travels into
+    the framework and dies there with a traceback, which is exactly what
+    preflight exists to prevent. Every rule is stated in terms of the flag the
+    operator used, so a ``FAIL`` line says what to change.
     """
 
-    root = parsed.get("path")
-    if isinstance(root, str) and root:
-        candidate = Path(root).expanduser()
-        return candidate if candidate.is_absolute() else yaml_dir / candidate
-    return yaml_dir
+    checks = [
+        Check(
+            "param.models",
+            bool(cfg.models),
+            f"{', '.join(cfg.models) or 'none'} (at least one of det/seg/track must be selected)",
+        ),
+        Check(
+            "param.epochs",
+            cfg.epochs >= 1,
+            f"{cfg.epochs} (must be >= 1; pass --epochs N)",
+        ),
+        Check(
+            "param.imgsz",
+            cfg.imgsz >= MIN_IMGSZ,
+            f"{cfg.imgsz} (must be >= {MIN_IMGSZ}; pass --imgsz N)",
+        ),
+        Check(
+            "param.batch",
+            cfg.batch == AUTO_BATCH or cfg.batch >= 1,
+            f"{cfg.batch} (must be >= 1, or {AUTO_BATCH} for the automatic batch size)",
+        ),
+        Check(
+            "param.workers",
+            cfg.workers >= 0,
+            f"{cfg.workers} (must be >= 0; pass --workers N)",
+        ),
+        Check(
+            "param.opset",
+            MIN_OPSET <= cfg.opset <= MAX_OPSET,
+            f"{cfg.opset} (must be {MIN_OPSET}..{MAX_OPSET}; pass --opset N)",
+        ),
+        check_device(cfg),
+    ]
+    checks.extend(check_metric_thresholds(cfg.min_metrics))
+    return checks
 
 
-def _ref_exists(value: str, base: Path) -> bool:
-    """Whether a single ``train``/``val`` reference points at something on disk.
+def check_device(cfg: TrainConfig) -> Check:
+    """Validate ``--device`` with the same fail-fast policy as every number.
 
-    Globs (``images/*.jpg``) are checked at their static prefix: a wildcard has
-    no literal path to test, so validating ``images/`` is the useful subset.
+    Left unchecked, a typo like ``--device gpu`` is only rejected deep inside
+    the framework's device selector — after the environment checks have all
+    passed and a traceback has replaced the actionable message preflight exists
+    to deliver. The accepted grammar is the one the backend forwards verbatim:
+    ``cpu``, ``mps``/``metal``, ``cuda``/``cuda:N``, a GPU index, any of those
+    comma-separated, or empty for "let the framework choose".
     """
 
-    raw = Path(value)
-    if raw.is_absolute():
-        return raw.exists()
-    if (base / raw).exists():
-        return True
-    if any(char in value for char in "*?["):
-        head = value.split("?")[0].split("*")[0].split("[")[0].rstrip("\\/")
-        return (base / head).exists() if head else base.exists()
-    return False
-
-
-def _missing_dataset_paths(parsed: dict[object, object], yaml_dir: Path) -> list[str]:
-    """Human-readable ``train``/``val`` references that are not on disk.
-
-    Only string entries are validated: ``train`` can legitimately be a text file
-    listing or a remote URL that the framework resolves, so anything that is not
-    a plain path is left to the framework instead of being rejected here.
-    """
-
-    base = _dataset_base(parsed, yaml_dir)
-    missing: list[str] = []
-    for key in ("train", "val"):
-        value = parsed.get(key)
-        if not isinstance(value, str):
-            continue
-        if not _ref_exists(value, base):
-            missing.append(f"{key}='{value}' (resolved under {base})")
-    return missing
-
-
-def check_data_yaml(path: Path) -> Check:
-    if not path.exists():
+    raw = cfg.device
+    if raw is None or not raw.strip():
+        return Check("param.device", True, "auto (let the framework choose)")
+    tokens = [token.strip() for token in raw.split(",")]
+    bad = [token for token in tokens if not _DEVICE_TOKEN.match(token)]
+    if bad:
         return Check(
-            "dataset",
+            "param.device",
             False,
-            f"not found: {path} - create it with 'train', 'val' and 'names' keys",
+            f"{raw!r}: unsupported component(s) {', '.join(repr(token) for token in bad)}; "
+            "use cpu, mps, cuda:N, a GPU index such as 0, or a list like 0,1",
         )
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return Check("dataset", False, f"unreadable: {path} ({exc})")
-
-    if not text.strip():
-        return Check("dataset", False, f"empty file: {path}")
-
-    if not _module_available("yaml"):
-        return Check("dataset", True, f"{path} found (PyYAML missing, content not validated)")
-
-    import yaml
-
-    try:
-        parsed = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        return Check("dataset", False, f"invalid YAML: {exc}")
-
-    if not isinstance(parsed, dict):
-        return Check("dataset", False, "top level of data.yaml must be a mapping")
-    # Both splits are required, exactly as README ("Setup") documents: a dataset
-    # without ``val`` would pass preflight and then fail (or train without ever
-    # validating) deep inside the framework, which is what this check exists to
-    # prevent.
-    missing = [key for key in ("train", "val", "names") if key not in parsed]
-    if missing:
-        return Check("dataset", False, f"missing required key(s): {', '.join(missing)} in {path}")
-    missing_paths = _missing_dataset_paths(parsed, path.parent)
-    if missing_paths:
-        return Check("dataset", False, "missing path(s): " + "; ".join(missing_paths))
-    return Check("dataset", True, f"{path} ({len(parsed.get('names') or [])} classes)")
+    return Check("param.device", True, raw)
 
 
-def check_weights(models: tuple[str, ...]) -> list[Check]:
+def check_metric_thresholds(min_metrics: tuple[tuple[str, float], ...]) -> list[Check]:
+    """One check per ``--min-metric`` threshold.
+
+    Thresholds are validated here rather than only at the command line so that
+    every entry point is held to the same rule: a threshold the pipeline cannot
+    evaluate (an empty name, a ``nan``, a value outside the metric's range) must
+    fail as a *configuration* error, not as a surprise halfway through training.
+    Whether the backend actually reports that metric can only be known once it
+    has run — that is the gate's job in :mod:`cvtrain.gate`. ``0..1`` covers
+    the metrics the framework reports — precision, recall, mAP and fitness are
+    all ratios; this gate is for higher-is-better metrics, not for losses.
+    """
+
     checks: list[Check] = []
-    for key in models:
+    for name, threshold in min_metrics:
+        ok = bool(name) and math.isfinite(threshold) and 0.0 <= threshold <= 1.0
+        detail = f"{name} >= {threshold} (finite, within 0..1)"
+        if not ok:
+            detail = f"{name!r}={threshold}: pass a metric name and a finite threshold within 0..1"
+        checks.append(Check(f"param.min_metric.{name or '<unnamed>'}", ok, detail))
+    return checks
+
+
+def check_weights(cfg: TrainConfig) -> list[Check]:
+    checks: list[Check] = []
+    for key in cfg.models:
         spec = MODEL_SPECS[key]
-        weights = spec.weights_path
+        weights = cfg.weights_path(spec)
         present = weights.exists()
         detail = "present" if present else f"{spec.ckpt} missing — ultralytics will download it (needs network)"
         # Missing base weights are recoverable (auto-download), so never fatal.
@@ -196,9 +209,11 @@ def run(cfg: TrainConfig, *, deps_fatal: bool, modules: Sequence[str]) -> Prefli
 
     report = PreflightReport()
     report.add(check_python())
+    for check in check_hyperparameters(cfg):
+        report.add(check)
     for check in check_dependencies(fatal=deps_fatal, modules=modules):
         report.add(check)
     report.add(check_data_yaml(cfg.data_yaml))
-    for check in check_weights(cfg.models):
+    for check in check_weights(cfg):
         report.add(check)
     return report

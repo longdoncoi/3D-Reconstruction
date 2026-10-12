@@ -1,0 +1,166 @@
+"""Publication policy: is the published artifact current, and is it good enough?
+
+Two rules, one module — they answer the same question from the two directions
+an operator can ask it about an artifact already sitting in ``Models/``:
+
+* :func:`already_current` — "would this invocation build exactly what is
+  published?" (the ``--skip-unchanged`` contract);
+* :func:`enforce_quality_gate` — "is that artifact good enough to keep
+  there?" (the ``--min-metric`` contract).
+
+Both are *verdicts about an artifact*, not steps of a pipeline, so they live
+here rather than in :mod:`cvtrain.trainer`: the orchestrator asks for a verdict
+and obeys it, it does not decide what the verdict means. Both are documented as
+their own sections in the README, and this module is the single spelling of
+each. :mod:`cvtrain.manifest` keeps the *recording* half of the same contract;
+this module is the *comparing* half.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from . import manifest as manifest_mod
+from .config import ModelSpec, TrainConfig
+from .errors import QualityGateError
+from .fsio import sha256_file
+
+LOG = logging.getLogger("cvtrain.gate")
+
+__all__ = ["already_current", "dataset_digest", "enforce_quality_gate", "weights_digest"]
+
+
+def weights_digest(spec: ModelSpec, cfg: TrainConfig) -> str | None:
+    """Digest of the base checkpoint ``spec`` would train from, if it exists.
+
+    Provenance has to record what the model was *started from*: the file name
+    ``yolo11x.pt`` says nothing about which weights are inside it, and a
+    replaced or re-downloaded checkpoint is a different training run waiting to
+    happen. ``None`` means "not on disk" — a state :func:`already_current` must
+    read as *cannot prove*, never as *matches*.
+    """
+
+    path = cfg.weights_path(spec)
+    return sha256_file(path) if path.exists() else None
+
+
+def dataset_digest(cfg: TrainConfig) -> str | None:
+    """Digest of ``data.yaml``, if it exists.
+
+    The path alone is not provenance either: the YAML decides the classes, the
+    splits and where the images live, so an edited ``data.yaml`` behind an
+    unchanged file name is a different experiment. ``None`` (the file is gone)
+    is again "cannot prove", and :func:`already_current` retracts the skip.
+
+    Deliberately the *definition*, not the images: hashing a dataset is
+    O(dataset) and would make every re-run pay for gigabytes the operator did
+    not touch. Re-shuffled images under an unchanged ``data.yaml`` are a
+    documented blind spot of ``--skip-unchanged`` (see README, "Manifest").
+    """
+
+    path = cfg.data_yaml
+    return sha256_file(path) if path.exists() else None
+
+
+def already_current(spec: ModelSpec, cfg: TrainConfig, manifest: manifest_mod.Manifest, backend_version: str) -> bool:
+    """Whether the published ONNX already *is* the artifact this run would build.
+
+    The rule is deliberately strict, because "skip" must never hide work the
+    operator asked for. Every one of these has to hold:
+
+    * the artifact exists at the path the Qt app loads;
+    * every recorded hyper-parameter matches this invocation — ``epochs``,
+      ``imgsz``, ``seed``, ``opset``, ``batch`` and ``workers``, plus the
+      dataset. Omitting ``batch``/``workers`` would let a differently-trained
+      run hide behind an identical file name;
+    * the dataset *definition* still hashes the same (``dataset_sha256``) and
+      the ``device`` class matches — a re-pointed dataset or a CPU-vs-GPU run
+      is a different artifact behind the same parameters;
+    * the backend that produced it is the backend that would produce it now —
+      a framework upgrade changes the export, so it invalidates the claim;
+    * its digest matches what the manifest recorded for it (a tampered or
+      half-replaced file is retrained, not trusted);
+    * the base checkpoint on disk still has the digest that was recorded when
+      the artifact was trained. Different starting weights are a different
+      model, even with every other parameter identical.
+
+    An entry adopted from disk (``--write-manifest``) has no hyper-parameters,
+    so it never satisfies the second condition and is retrained: provenance we
+    do not have cannot be assumed to match. An entry written before a factor
+    was recorded fails the same way, for the same reason.
+
+    The checks run cheapest-first — the two digests (the published artifact and
+    a checkpoint that can be hundreds of megabytes) are only computed once
+    everything free already agrees.
+    """
+
+    target = cfg.output_path(spec)
+    if not target.exists():
+        return False
+    entry = (manifest.get("entries") or {}).get(spec.output)
+    if entry is None:
+        return False
+    recorded = (
+        entry.get("epochs"),
+        entry.get("imgsz"),
+        entry.get("seed"),
+        entry.get("opset"),
+        entry.get("batch"),
+        entry.get("workers"),
+        entry.get("dataset"),
+        entry.get("backend_version"),
+        entry.get("device"),
+    )
+    requested = (
+        cfg.epochs,
+        cfg.imgsz,
+        cfg.seed,
+        cfg.opset,
+        cfg.batch,
+        cfg.workers,
+        str(cfg.data_yaml),
+        backend_version,
+        str(cfg.device or "auto"),
+    )
+    if recorded != requested:
+        return False
+    recorded_dataset = dataset_digest(cfg)
+    if recorded_dataset is None or entry.get("dataset_sha256") != recorded_dataset:
+        return False
+    if entry.get("sha256") != sha256_file(target):
+        return False
+    weights_sha = weights_digest(spec, cfg)
+    return weights_sha is not None and entry.get("source_weights_sha256") == weights_sha
+
+
+def enforce_quality_gate(cfg: TrainConfig, spec: ModelSpec, metrics: dict[str, float]) -> None:
+    """Refuse to publish (or keep) an artifact below the requested bar.
+
+    Called right after training — *before* the export is published, so a model
+    nobody would want never reaches the Qt app — and again against the metrics
+    recorded for a model :func:`already_current` just decided to skip. Without
+    the second call ``--skip-unchanged --min-metric ...`` would quietly pass on
+    a model that never met the bar, which is precisely the "skip hides work"
+    failure this pipeline refuses to allow elsewhere.
+
+    A metric the backend did not report is a failure, not a pass: the operator
+    asked to gate on it, so silently not checking would defeat the request. The
+    message lists what *was* reported, which is usually a typo in the name.
+    """
+
+    if not cfg.min_metrics:
+        return
+    for name, minimum in cfg.min_metrics:
+        actual = metrics.get(name)
+        if actual is None:
+            reported = ", ".join(sorted(metrics)) or "none"
+            raise QualityGateError(
+                f"{spec.output}: metric {name!r} was not reported (reported: {reported}); "
+                "fix or drop that --min-metric threshold"
+            )
+        if actual < minimum:
+            raise QualityGateError(
+                f"{spec.output}: {name}={actual:.4f} is below the required minimum {minimum:.4f}; "
+                "train longer, improve the dataset, or lower --min-metric"
+            )
+        LOG.info("Quality gate ok: %s %s=%.4f >= %.4f", spec.output, name, actual, minimum)

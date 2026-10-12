@@ -2,8 +2,13 @@
 
 This module is the single source of truth for:
 
-* where datasets, training runs and exported models live, and
-* which base weights map to which exported ONNX file name.
+* where datasets, base checkpoints, training runs and exported models live,
+* which base weights map to which exported ONNX file name,
+* every default the command line starts from.
+
+It deliberately holds no command-line *syntax*: turning a string such as
+``metrics/mAP50(B)=0.5`` into a value is :func:`cvtrain.cli.parse_metric_threshold`,
+and deciding whether that value is meaningful is :mod:`cvtrain.preflight`.
 
 The exported file names are a contract with the Qt application. Keep them in
 sync with ``src/app/AppConstants.h``; ``tests/test_contract.py`` enforces the
@@ -22,6 +27,7 @@ PROJECT_ROOT = BASE_DIR.parent
 
 DEFAULT_MODELS_DIR = BASE_DIR / "Models"
 DEFAULT_RUNS_DIR = BASE_DIR / "runs"
+DEFAULT_WEIGHTS_DIR = BASE_DIR
 DEFAULT_DATA_YAML = PROJECT_ROOT / "Dataset" / "data.yaml"
 MANIFEST_NAME = "manifest.json"
 
@@ -30,6 +36,7 @@ DEFAULT_IMGSZ = 640
 DEFAULT_BATCH = 16
 DEFAULT_WORKERS = 0
 DEFAULT_SEED = 0
+DEFAULT_OPSET = 12
 
 
 @dataclass(frozen=True)
@@ -54,15 +61,11 @@ class ModelSpec:
     label: str
     """Human readable label, mirrors the Qt training dialog."""
 
-    @property
-    def weights_path(self) -> Path:
-        """Absolute path of the base checkpoint this model trains from.
 
-        Single way to resolve a checkpoint: preflight, the backend and any test
-        must agree on it, so it is derived from :data:`BASE_DIR` in one place.
-        """
-
-        return BASE_DIR / self.ckpt
+# The checkpoint a spec trains from is resolved through ``TrainConfig`` (which
+# owns ``weights_dir``) — see :meth:`TrainConfig.weights_path`. Keeping it off
+# the spec means the input directory is overridable exactly like the output
+# directories, and a test can point the whole pipeline at a sandbox.
 
 
 # Order is significant: it defines the training order and the UI listing order.
@@ -121,6 +124,12 @@ class TrainConfig:
     data_yaml: Path = DEFAULT_DATA_YAML
     models_dir: Path = DEFAULT_MODELS_DIR
     runs_dir: Path = DEFAULT_RUNS_DIR
+    weights_dir: Path = DEFAULT_WEIGHTS_DIR
+    """Directory holding the base checkpoints (``yolo11n.pt``, ...).
+
+    Overridable like ``models_dir``/``runs_dir`` so inputs and outputs move
+    together: preflight, the backend and the provenance digest all resolve a
+    checkpoint through :meth:`weights_path` and can therefore never disagree."""
 
     epochs: int = DEFAULT_EPOCHS
     imgsz: int = DEFAULT_IMGSZ
@@ -128,7 +137,7 @@ class TrainConfig:
     workers: int = DEFAULT_WORKERS
     seed: int = DEFAULT_SEED
     device: str | None = None
-    opset: int = 12
+    opset: int = DEFAULT_OPSET
 
     auto_confirm: bool = False
     tensorboard: bool = False
@@ -139,12 +148,28 @@ class TrainConfig:
     """Skip models whose published ONNX already satisfies this exact invocation.
 
     Makes a run idempotent: re-running the same command trains nothing. See
-    :func:`cvtrain.trainer._already_current` for what "satisfies" means."""
+    :func:`cvtrain.gate.already_current` for what "satisfies" means."""
+
+    min_metrics: tuple[tuple[str, float], ...] = ()
+    """Quality gate: ``(metric_name, minimum)`` pairs that a model must meet.
+
+    Empty by default, so the gate is opt-in. Applied to the metrics a training
+    run just produced *and* to the metrics recorded for a model skipped by
+    ``skip_unchanged`` — skipping must never be a way around the gate."""
 
     def output_path(self, spec: ModelSpec) -> Path:
         """Where ``spec``'s exported ONNX is published for this invocation."""
 
         return self.models_dir / spec.output
+
+    def weights_path(self, spec: ModelSpec) -> Path:
+        """Where ``spec``'s base checkpoint lives for this invocation.
+
+        The single way to resolve a checkpoint: preflight, the backend and the
+        provenance digest must all agree, so they all go through here.
+        """
+
+        return self.weights_dir / spec.ckpt
 
     @property
     def manifest_path(self) -> Path:

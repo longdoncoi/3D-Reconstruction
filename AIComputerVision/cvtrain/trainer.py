@@ -3,16 +3,23 @@
 Responsibilities are deliberately narrow and each one is a named function so the
 flow reads top-down in :func:`run`:
 
-1. validate the environment (:mod:`cvtrain.preflight`), fail fast with an
-   actionable message;
+1. validate the environment and the hyper-parameters
+   (:mod:`cvtrain.preflight`), fail fast with an actionable message;
 2. decide whether to proceed (``--check`` / ``--dry-run`` / retrain prompt);
-3. for every selected model train -> export -> publish -> record provenance;
+3. for every selected model train -> gate the metrics -> export -> publish ->
+   record provenance;
 4. verify the manifest it just wrote.
 
 The heavy ML framework is reached only through :class:`TrainingBackend
-<cvtrain.backend.TrainingBackend>`, injected as ``backend``. Production passes
-``None`` and gets :class:`UltralyticsBackend`; tests pass a fake and run the
-whole pipeline offline.
+<cvtrain.backend.TrainingBackend>`, which the *composition root* —
+:func:`cvtrain.cli.main` — constructs and injects as ``backend``. This module
+therefore never names a concrete backend; tests pass a fake and run the whole
+pipeline offline.
+
+The two *verdicts* this flow obeys — "is the published artifact already what we
+would build" and "is it good enough to keep" — are not decided here: they come
+from :mod:`cvtrain.gate`, so the orchestrator orchestrates and the policy stays
+in one place.
 """
 
 from __future__ import annotations
@@ -22,13 +29,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import __version__, preflight
+from . import __version__, gate, preflight
 from . import manifest as manifest_mod
-from .backend import EpochCallback, TrainedModel, TrainingBackend, UltralyticsBackend
+from .backend import EpochCallback, TrainedModel, TrainingBackend
 from .config import BASE_DIR, MODEL_SPECS, ModelSpec, TrainConfig
 from .errors import ExitCode
 from .fsio import atomic_replace_with_backup, sha256_file
-from .logging_setup import ProgressReporter
+from .progress import ProgressReporter
 
 LOG = logging.getLogger("cvtrain.trainer")
 
@@ -43,6 +50,8 @@ def print_plan(cfg: TrainConfig) -> None:
     LOG.info("  models  : %s", ", ".join(cfg.models))
     LOG.info("  epochs  : %d | imgsz: %d | batch: %d | seed: %d", cfg.epochs, cfg.imgsz, cfg.batch, cfg.seed)
     LOG.info("  device  : %s", cfg.device or "auto")
+    gate = ", ".join(f"{name}>={minimum:g}" for name, minimum in cfg.min_metrics) or "none"
+    LOG.info("  gate    : %s", gate)
     LOG.info("  runs    : %s", cfg.runs_dir)
     LOG.info("  output  : %s", cfg.models_dir)
 
@@ -67,7 +76,7 @@ def confirm_retrain(cfg: TrainConfig) -> bool:
     return answer == "Y"
 
 
-def _run_preflight(cfg: TrainConfig, reporter: ProgressReporter, backend: TrainingBackend) -> ExitCode | None:
+def _run_preflight(cfg: TrainConfig, reporter: ProgressReporter, backend: TrainingBackend[Any]) -> ExitCode | None:
     """Log every check; return an exit code when a fatal one failed."""
 
     report = preflight.run(
@@ -124,7 +133,7 @@ def _export_one(
     reporter: ProgressReporter,
     index: int,
     model: TrainedModel[Any],
-    backend: TrainingBackend,
+    backend: TrainingBackend[Any],
 ) -> Path:
     """Export through the backend, then publish atomically at ``spec.output``."""
 
@@ -144,6 +153,7 @@ def _record_entry(
     cfg: TrainConfig,
     target: Path,
     model: TrainedModel[Any],
+    backend_version: str,
 ) -> None:
     """Append this model's provenance and flush the manifest immediately.
 
@@ -151,86 +161,78 @@ def _record_entry(
     leaves a verified manifest for models 1 and 2.
     """
 
-    manifest_mod.upsert_entry(
-        manifest,
-        spec.output,
-        manifest_mod.ManifestEntry(
-            role=spec.role,
-            source_weights=spec.ckpt,
-            sha256=sha256_file(target),
-            size_bytes=target.stat().st_size,
-            epochs=cfg.epochs,
-            imgsz=cfg.imgsz,
-            seed=cfg.seed,
-            opset=cfg.opset,
-            trained_at=manifest_mod.now_utc_iso(),
-            dataset=str(cfg.data_yaml),
-            run_dir=str(model.run_dir),
-            metrics=model.metrics,
-        ),
+    entry = manifest_mod.ManifestEntry(
+        role=spec.role,
+        source_weights=spec.ckpt,
+        sha256=sha256_file(target),
+        size_bytes=target.stat().st_size,
+        epochs=cfg.epochs,
+        imgsz=cfg.imgsz,
+        seed=cfg.seed,
+        opset=cfg.opset,
+        batch=cfg.batch,
+        workers=cfg.workers,
+        backend_version=backend_version,
+        # Normalised exactly the way ``gate.already_current`` compares it: "no
+        # ``--device``" and "``--device auto``" are the same experiment.
+        device=str(cfg.device or "auto"),
+        trained_at=manifest_mod.now_utc_iso(),
+        dataset=str(cfg.data_yaml),
+        run_dir=str(model.run_dir),
+        metrics=model.metrics,
     )
+    # Both digests are taken through the gate module so that what is written
+    # down here and compared there can never disagree. Absent when the file is
+    # not on disk: leaving the field out is honest, and ``gate.already_current``
+    # re-reads that as "unproven" and retrains.
+    weights_sha = gate.weights_digest(spec, cfg)
+    if weights_sha is not None:
+        entry["source_weights_sha256"] = weights_sha
+    dataset_sha = gate.dataset_digest(cfg)
+    if dataset_sha is not None:
+        entry["dataset_sha256"] = dataset_sha
+    manifest_mod.upsert_entry(manifest, spec.output, entry)
     manifest_mod.save_manifest(cfg.models_dir, manifest)
-
-
-def _already_current(spec: ModelSpec, cfg: TrainConfig, manifest: manifest_mod.Manifest) -> bool:
-    """Whether the published ONNX already *is* the artifact this run would build.
-
-    The rule is deliberately strict, because "skip" must never hide work the
-    operator asked for. Every one of these has to hold:
-
-    * the artifact exists at the path the Qt app loads;
-    * its digest matches what the manifest recorded for it (a tampered or
-      half-replaced file is retrained, not trusted);
-    * that entry carries the *same* dataset and hyper-parameters as this
-      invocation — a model trained with different epochs/imgsz/seed is stale
-      with respect to the request even though the file name is identical.
-
-    An entry adopted from disk (``--write-manifest``) has no hyper-parameters,
-    so it never satisfies the last condition and is retrained: provenance we do
-    not have cannot be assumed to match.
-    """
-
-    target = cfg.output_path(spec)
-    if not target.exists():
-        return False
-    entry = (manifest.get("entries") or {}).get(spec.output)
-    if entry is None:
-        return False
-    if entry.get("sha256") != sha256_file(target):
-        return False
-    recorded = (entry.get("epochs"), entry.get("imgsz"), entry.get("seed"), entry.get("opset"), entry.get("dataset"))
-    requested = (cfg.epochs, cfg.imgsz, cfg.seed, cfg.opset, str(cfg.data_yaml))
-    return recorded == requested
 
 
 def _train_all(
     cfg: TrainConfig,
     reporter: ProgressReporter,
-    backend: TrainingBackend,
+    backend: TrainingBackend[Any],
     manifest: manifest_mod.Manifest,
 ) -> list[str]:
-    """Run train -> export -> publish -> record for every selected model."""
+    """Run train -> gate -> export -> publish -> record for every selected model.
+
+    The quality gate sits *between* training and publishing: nothing is written
+    to ``Models/`` until the metrics clear the requested bar, and a model kept
+    by ``--skip-unchanged`` is gated against the metrics recorded when it was
+    trained rather than waved through.
+    """
 
     total = len(cfg.models)
     for index, key in enumerate(cfg.models):
         spec = MODEL_SPECS[key]
-        if cfg.skip_unchanged and _already_current(spec, cfg, manifest):
+        if cfg.skip_unchanged and gate.already_current(spec, cfg, manifest, backend.version):
             LOG.info("[%d/%d] %s already matches this invocation; skipping", index + 1, total, spec.output)
+            kept = (manifest.get("entries") or {}).get(spec.output) or {}
+            gate.enforce_quality_gate(cfg, spec, kept.get("metrics") or {})
             reporter.skipped(index, spec.key)
             continue
         LOG.info("[%d/%d] Training %s from %s", index + 1, total, spec.label, spec.ckpt)
         model = backend.train(spec, cfg, _epoch_reporter(reporter, index, spec.key))
+        gate.enforce_quality_gate(cfg, spec, model.metrics)
         target = _export_one(spec, cfg, reporter, index, model, backend)
-        _record_entry(manifest, spec, cfg, target, model)
+        _record_entry(manifest, spec, cfg, target, model, backend.version)
     return [MODEL_SPECS[key].output for key in cfg.models]
 
 
-def _execute(cfg: TrainConfig, reporter: ProgressReporter, backend: TrainingBackend | None) -> ExitCode:
+def _execute(cfg: TrainConfig, reporter: ProgressReporter, backend: TrainingBackend[Any]) -> ExitCode:
     # Resolved before preflight: even a ``--check`` run has to know which
-    # framework it is checking for. The constructor never imports anything.
-    active = backend if backend is not None else UltralyticsBackend()
+    # framework it is checking for. The adapter's constructor never imports
+    # anything, so building it is free — but *choosing* it is not this module's
+    # business; ``cli.main`` is the composition root.
 
-    failed = _run_preflight(cfg, reporter, active)
+    failed = _run_preflight(cfg, reporter, backend)
     if failed is not None:
         return failed
 
@@ -247,23 +249,18 @@ def _execute(cfg: TrainConfig, reporter: ProgressReporter, backend: TrainingBack
         LOG.info("Retraining cancelled by user.")
         return ExitCode.OK
 
-    active.prepare(cfg)
+    backend.prepare(cfg)
 
-    manifest = _start_manifest(cfg, active.version)
-    exported = _train_all(cfg, reporter, active, manifest)
+    manifest = _start_manifest(cfg, backend.version)
+    exported = _train_all(cfg, reporter, backend, manifest)
 
-    problems = manifest_mod.verify_manifest(cfg.models_dir, manifest)
-    if problems:
-        # The artifacts this run just published cannot be vouched for. This is
-        # the same condition ``--verify-manifest`` reports, and that command
-        # exits 2 — returning 0 here would label an inconsistent manifest as a
-        # clean run and let it reach the Qt app unflagged. The progress marker
-        # stays out of the success sequence for the same reason: ``done`` is
-        # reserved for a run that actually verified.
-        for problem in problems:
-            LOG.error("manifest: %s", problem)
-        LOG.error("Manifest verification failed: %s", cfg.manifest_path)
-        return ExitCode.PREFLIGHT
+    # The artifacts this run just published have to be vouchable. This is the
+    # same condition ``--verify-manifest`` reports, and that command exits 2 —
+    # so the verdict is raised, not returned: ``run`` closes the progress
+    # protocol with the terminal error marker (``done`` is reserved for a run
+    # that actually verified) and the composition root turns the failure into
+    # the same exit code an operator would get from the standalone command.
+    manifest_mod.verify_or_raise(cfg.models_dir, manifest)
 
     reporter.manifest(1.0)
     LOG.info("Manifest verified: %s", cfg.manifest_path)
@@ -272,10 +269,14 @@ def _execute(cfg: TrainConfig, reporter: ProgressReporter, backend: TrainingBack
     return ExitCode.OK
 
 
-def run(cfg: TrainConfig, *, backend: TrainingBackend | None = None) -> int:
+def run(cfg: TrainConfig, *, backend: TrainingBackend[Any]) -> int:
     """Execute the pipeline. Returns a process exit code (see :class:`ExitCode`).
 
-    ``backend`` exists for tests; production code leaves it ``None``.
+    ``backend`` is required and injected by the composition root
+    (:func:`cvtrain.cli.main`) — the only place in the package allowed to name
+    a concrete implementation. Taking it as a required argument keeps this
+    module free of a default it would have to invent (and of the import that
+    default would need).
     """
 
     reporter = ProgressReporter(cfg.models)

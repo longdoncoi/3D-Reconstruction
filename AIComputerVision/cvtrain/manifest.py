@@ -20,10 +20,10 @@ from typing import Any, TypedDict, cast
 
 from . import __version__
 from .config import MANIFEST_NAME, MODEL_SPECS
+from .errors import ManifestIntegrityError
 from .fsio import atomic_write_text, sha256_file
 
 __all__ = [
-    "MANIFEST_NAME",
     "SCHEMA_VERSION",
     "LastRun",
     "Manifest",
@@ -33,15 +33,25 @@ __all__ = [
     "migrate",
     "now_utc_iso",
     "save_manifest",
-    "sha256_file",
     "upsert_entry",
     "verify_manifest",
+    "verify_or_raise",
 ]
 
 LOG = logging.getLogger("cvtrain.manifest")
 
 SCHEMA_VERSION = 1
 """Version of the document shape this build writes. See :func:`migrate`."""
+
+# Adding optional entry fields (batch, workers, backend_version,
+# source_weights_sha256, device, dataset_sha256) deliberately does *not* bump
+# this: ``ManifestEntry`` is ``total=False``, so their absence is a shape this
+# build already knows how to read, and the consumer that cares —
+# ``gate.already_current`` — treats a missing value as "provenance we do not
+# have" and fails closed by retraining. A bump is reserved for a change that
+# makes an *old* document unreadable or actively misleading to a new reader; a
+# migration then has to say what a reader of the old shape was allowed to
+# assume.
 
 
 class ManifestEntry(TypedDict, total=False):
@@ -67,6 +77,38 @@ class ManifestEntry(TypedDict, total=False):
     imgsz: int
     seed: int
     opset: int
+    batch: int
+    workers: int
+
+    backend_version: str
+    """Version of the framework that produced this artifact.
+
+    Recorded *per entry* (the document-level ``ultralytics`` field describes
+    only the last run) because :func:`cvtrain.gate.already_current` has to
+    know which exporter wrote the file it is being asked to trust."""
+
+    device: str
+    """Compute device class the artifact was trained on (``auto`` when unset).
+
+    CPU and CUDA runs of the same hyper-parameters are different artifacts
+    behind the same file name, so this is one of the factors the skip rule
+    compares rather than an interesting fact nobody checks."""
+
+    dataset_sha256: str
+    """Digest of ``data.yaml`` as it was when the artifact was trained.
+
+    The path is not provenance: the YAML defines the classes, the splits and
+    the image locations, so an edited file behind an unchanged name is a
+    different experiment. Absent when the file was not on disk while recording,
+    which makes ``--skip-unchanged`` retrain rather than assume it matches."""
+
+    source_weights_sha256: str
+    """Digest of the base checkpoint the model was actually trained from.
+
+    The file name alone is not provenance: ``yolo11x.pt`` can be replaced or
+    re-downloaded, and a different starting point produces a different model.
+    Absent when the checkpoint was not on disk while recording, which makes
+    ``--skip-unchanged`` retrain rather than assume it matches."""
 
     trained_at: str | None
     """UTC ISO timestamp, or ``None`` when the file was adopted from disk."""
@@ -230,6 +272,24 @@ def verify_manifest(models_dir: Path, manifest: Manifest) -> list[str]:
         if path.name not in entries:
             problems.append(f"{path.name}: on disk but not recorded in the manifest")
     return problems
+
+
+def verify_or_raise(models_dir: Path, manifest: Manifest) -> None:
+    """Verify and turn any problem into a single :class:`ManifestIntegrityError`.
+
+    Both callers of :func:`verify_manifest` — the ``--verify-manifest`` command
+    and the run that just wrote a manifest — ask the same question and want the
+    same verdict (exit code ``2``, every problem named). Raising instead of
+    returning a code keeps that decision here, next to the rules that produce
+    the problems, and lets the composition root render it like any other
+    expected failure: one actionable line, no traceback.
+    """
+
+    problems = verify_manifest(models_dir, manifest)
+    if problems:
+        raise ManifestIntegrityError(
+            f"Manifest verification failed: {models_dir / MANIFEST_NAME} -> " + "; ".join(problems)
+        )
 
 
 def build_from_scan(models_dir: Path) -> Manifest:

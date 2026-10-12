@@ -41,10 +41,10 @@ class ProtocolTests(unittest.TestCase):
             def prepare(self, cfg: TrainConfig) -> None:  # pragma: no cover - never called
                 raise NotImplementedError
 
-            def train(self, spec: Any, cfg: TrainConfig, on_epoch: Any) -> TrainedModel:  # pragma: no cover
+            def train(self, spec: Any, cfg: TrainConfig, on_epoch: Any) -> TrainedModel[Any]:  # pragma: no cover
                 raise NotImplementedError
 
-            def export(self, model: TrainedModel, cfg: TrainConfig) -> Path:  # pragma: no cover
+            def export(self, model: TrainedModel[Any], cfg: TrainConfig) -> Path:  # pragma: no cover
                 raise NotImplementedError
 
         self.assertIsInstance(Minimal(), TrainingBackend)
@@ -197,7 +197,7 @@ class TrainTests(_SandboxedTestCase):
             backend.prepare(self.cfg)
             backend.train(spec, self.cfg, lambda epoch, total: None)
         assert _FakeYOLO.last is not None
-        self.assertEqual(Path(_FakeYOLO.last.weights), spec.weights_path)
+        self.assertEqual(Path(_FakeYOLO.last.weights), self.cfg.weights_path(spec))
 
     def test_forwards_hyperparameters_and_uses_the_run_subdirectory(self) -> None:
         spec = MODEL_SPECS["det"]

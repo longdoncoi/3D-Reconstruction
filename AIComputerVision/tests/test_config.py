@@ -68,14 +68,28 @@ class TrainConfigTests(unittest.TestCase):
         cfg = TrainConfig(data_yaml=Path("Dataset/data.yaml"))
         self.assertEqual(cfg.train_kwargs()["data"], str(Path("Dataset/data.yaml")))
 
+    def test_the_quality_gate_is_opt_in(self) -> None:
+        # No threshold by default: behaviour for every existing caller (the Qt
+        # dialog included) must stay exactly what it was.
+        self.assertEqual(TrainConfig().min_metrics, ())
+
 
 class PathResolutionTests(unittest.TestCase):
-    def test_weights_path_resolves_from_the_package_root(self) -> None:
-        # preflight and the backend must agree on where checkpoints live.
+    def test_weights_path_resolves_from_the_package_root_by_default(self) -> None:
+        # preflight, the backend and the provenance digest must agree on where
+        # checkpoints live, so all three resolve the path through TrainConfig.
+        cfg = TrainConfig()
         for key, spec in MODEL_SPECS.items():
             with self.subTest(key=key):
-                self.assertEqual(spec.weights_path, PACKAGE_DIR.parent / spec.ckpt)
-                self.assertTrue(str(spec.weights_path).endswith(spec.ckpt))
+                self.assertEqual(cfg.weights_path(spec), PACKAGE_DIR.parent / spec.ckpt)
+                self.assertTrue(str(cfg.weights_path(spec)).endswith(spec.ckpt))
+
+    def test_weights_dir_override_moves_the_checkpoint_lookup(self) -> None:
+        # Inputs move like outputs: a caller that redirects models_dir/runs_dir
+        # can redirect the checkpoints the run starts from too.
+        spec = MODEL_SPECS["det"]
+        cfg = TrainConfig(weights_dir=Path("C:/elsewhere/weights"))
+        self.assertEqual(cfg.weights_path(spec), Path("C:/elsewhere/weights") / spec.ckpt)
 
     def test_output_path_honours_a_models_dir_override(self) -> None:
         spec = MODEL_SPECS["det"]

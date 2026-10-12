@@ -139,7 +139,7 @@ class UltralyticsBackend:
 
     def train(self, spec: ModelSpec, cfg: TrainConfig, on_epoch: EpochCallback) -> TrainedModel[Any]:
         self._ensure_loaded()
-        model = self._yolo(str(spec.weights_path))
+        model = self._yolo(str(cfg.weights_path(spec)))
 
         def _on_epoch_end(trainer: Any) -> None:
             on_epoch(

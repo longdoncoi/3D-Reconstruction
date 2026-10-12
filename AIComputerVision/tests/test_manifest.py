@@ -9,6 +9,7 @@ from pathlib import Path
 
 from cvtrain import manifest as manifest_mod
 from cvtrain.config import MANIFEST_NAME, MODEL_SPECS
+from cvtrain.fsio import sha256_file
 
 
 class Sha256Tests(unittest.TestCase):
@@ -18,7 +19,7 @@ class Sha256Tests(unittest.TestCase):
             payload = b"hello world"
             path.write_bytes(payload)
             expected = hashlib.sha256(payload).hexdigest()
-            self.assertEqual(manifest_mod.sha256_file(path), expected)
+            self.assertEqual(sha256_file(path), expected)
 
 
 class ManifestRoundTripTests(unittest.TestCase):
@@ -62,7 +63,7 @@ class ManifestRoundTripTests(unittest.TestCase):
             manifest: manifest_mod.Manifest = {
                 "schema_version": 1,
                 "entries": {
-                    "yolo11n.onnx": {"sha256": manifest_mod.sha256_file(good)},
+                    "yolo11n.onnx": {"sha256": sha256_file(good)},
                     "ghost.onnx": {"sha256": "deadbeef"},
                 },
             }
@@ -96,7 +97,7 @@ class ManifestRoundTripTests(unittest.TestCase):
             (models_dir / "notes.txt").write_text("not a model", encoding="utf-8")
             manifest: manifest_mod.Manifest = {
                 "schema_version": 1,
-                "entries": {"yolo11n.onnx": {"sha256": manifest_mod.sha256_file(good)}},
+                "entries": {"yolo11n.onnx": {"sha256": sha256_file(good)}},
             }
             self.assertEqual(manifest_mod.verify_manifest(models_dir, manifest), [])
 
@@ -110,7 +111,7 @@ class ManifestRoundTripTests(unittest.TestCase):
             (models_dir / "yolo11n.onnx.bak").write_bytes(b"older-bytes")
             manifest: manifest_mod.Manifest = {
                 "schema_version": 1,
-                "entries": {"yolo11n.onnx": {"sha256": manifest_mod.sha256_file(good)}},
+                "entries": {"yolo11n.onnx": {"sha256": sha256_file(good)}},
             }
             self.assertEqual(manifest_mod.verify_manifest(models_dir, manifest), [])
 
@@ -154,7 +155,7 @@ class ManifestRoundTripTests(unittest.TestCase):
             entry = refreshed["entries"][MODEL_SPECS["det"].output]
             self.assertIsNone(entry["trained_at"])
             self.assertNotIn("metrics", entry)
-            self.assertEqual(entry["sha256"], manifest_mod.sha256_file(target))
+            self.assertEqual(entry["sha256"], sha256_file(target))
 
     def test_scan_handles_a_changed_file_whose_identity_fields_are_absent(self) -> None:
         # An entry written by an older schema may carry only a digest; the scan

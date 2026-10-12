@@ -17,7 +17,8 @@ from pathlib import Path
 
 from cvtrain.cli import build_parser, config_from_args
 from cvtrain.config import ALL_MODEL_KEYS, MODEL_SPECS
-from cvtrain.logging_setup import PROGRESS_PREFIX, ProgressReporter, setup_logging
+from cvtrain.logging_setup import setup_logging
+from cvtrain.progress import PROGRESS_PREFIX, ProgressReporter
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCK = REPO_ROOT / "src" / "modules" / "AIProcessorPlugin" / "AITrainDockWidget.cpp"

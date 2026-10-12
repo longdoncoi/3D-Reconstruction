@@ -15,9 +15,10 @@ from pathlib import Path
 from unittest import mock
 
 from cvtrain import manifest as manifest_mod
-from cvtrain.cli import build_parser, config_from_args, main
-from cvtrain.config import DEFAULT_MODELS, MODEL_SPECS
-from cvtrain.errors import BackendUnavailableError, ExitCode
+from cvtrain.backend import UltralyticsBackend
+from cvtrain.cli import build_parser, config_from_args, main, parse_metric_threshold
+from cvtrain.config import DEFAULT_MODELS, DEFAULT_OPSET, MODEL_SPECS, TrainConfig
+from cvtrain.errors import BackendUnavailableError, ExitCode, QualityGateError
 
 
 class ParserTests(unittest.TestCase):
@@ -54,12 +55,24 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(cfg.device, "cpu")
 
     def test_modes_are_mapped(self) -> None:
-        args = build_parser().parse_args(["--check", "--dry-run", "--tensorboard", "-v"])
+        args = build_parser().parse_args(["--check", "--tensorboard", "-v"])
         cfg = config_from_args(args)
         self.assertTrue(cfg.check_only)
-        self.assertTrue(cfg.dry_run)
         self.assertTrue(cfg.tensorboard)
         self.assertTrue(cfg.verbose)
+
+        dry = config_from_args(build_parser().parse_args(["--dry-run"]))
+        self.assertTrue(dry.dry_run)
+        self.assertFalse(dry.check_only)
+
+    def test_two_modes_at_once_are_a_usage_error(self) -> None:
+        # Silent precedence is how `--write-manifest --verify-manifest` used to
+        # overwrite a manifest and then "verify" the file it had just written.
+        for pair in (("--check", "--dry-run"), ("--write-manifest", "--verify-manifest"), ("--check", "--verify-manifest")):
+            with self.subTest(pair=pair), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as ctx:
+                    build_parser().parse_args(list(pair))
+                self.assertEqual(ctx.exception.code, 2)
 
     def test_tracking_flag_matches_tracking_spec(self) -> None:
         cfg = config_from_args(build_parser().parse_args(["--track"]))
@@ -70,6 +83,73 @@ class ParserTests(unittest.TestCase):
         # behaviour every existing caller (and the Qt dialog) relies on.
         self.assertFalse(config_from_args(build_parser().parse_args(["--yes"])).skip_unchanged)
         self.assertTrue(config_from_args(build_parser().parse_args(["--skip-unchanged"])).skip_unchanged)
+
+    def test_quality_gate_thresholds_are_mapped_and_repeatable(self) -> None:
+        args = build_parser().parse_args(["--min-metric", "metrics/mAP50(B)=0.5", "--min-metric", "mAP=0.4"])
+        self.assertEqual(config_from_args(args).min_metrics, (("metrics/mAP50(B)", 0.5), ("mAP", 0.4)))
+
+    def test_the_quality_gate_is_opt_in(self) -> None:
+        self.assertEqual(config_from_args(build_parser().parse_args(["--yes"])).min_metrics, ())
+
+    def test_a_threshold_without_an_equals_sign_is_a_usage_error(self) -> None:
+        # argparse exits 2 on a bad option, which the desktop app surfaces as a
+        # "Mã lỗi: 2" dialog — and it must say *why*, not just reject.
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as ctx:
+            build_parser().parse_args(["--min-metric", "mAP50"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("NAME=VALUE", stderr.getvalue())
+
+    def test_a_non_numeric_threshold_is_a_usage_error(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as ctx:
+            build_parser().parse_args(["--min-metric", "mAP=high"])
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("is not a number", stderr.getvalue())
+
+    def test_weights_dir_is_mapped(self) -> None:
+        # Inputs move like outputs: the checkpoints a run starts from are
+        # overridable the same way the export directory is.
+        args = build_parser().parse_args(["--weights-dir", "C:/ckpts"])
+        self.assertEqual(config_from_args(args).weights_dir, Path("C:/ckpts"))
+
+    def test_the_opset_default_comes_from_the_config_module(self) -> None:
+        # A literal here would let the parser and TrainConfig disagree the
+        # moment either one changes; both must read the same constant.
+        self.assertEqual(build_parser().parse_args(["--yes"]).opset, DEFAULT_OPSET)
+
+
+class MetricThresholdSyntaxTests(unittest.TestCase):
+    """``--min-metric`` syntax is parsed here; semantics belong to preflight."""
+
+    def test_a_well_formed_threshold_is_split_into_a_pair(self) -> None:
+        self.assertEqual(parse_metric_threshold("metrics/mAP50(B)=0.5"), ("metrics/mAP50(B)", 0.5))
+
+    def test_the_name_is_trimmed_and_the_value_may_be_integral(self) -> None:
+        self.assertEqual(parse_metric_threshold(" mAP = 1 "), ("mAP", 1.0))
+
+    def test_a_missing_equals_sign_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            parse_metric_threshold("mAP50")
+        self.assertIn("NAME=VALUE", str(ctx.exception))
+
+    def test_an_empty_name_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            parse_metric_threshold("=0.5")
+        self.assertIn("NAME=VALUE", str(ctx.exception))
+
+    def test_a_non_numeric_value_is_rejected(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            parse_metric_threshold("mAP=high")
+        self.assertIn("is not a number", str(ctx.exception))
+
+    def test_out_of_range_and_non_finite_values_are_left_for_preflight(self) -> None:
+        # Deliberately accepted here: a programmatically built config reaches
+        # the same preflight rule as a command line, in one place only.
+        self.assertEqual(parse_metric_threshold("mAP=1.5")[1], 1.5)
+        name, value = parse_metric_threshold("mAP=nan")
+        self.assertEqual(name, "mAP")
+        self.assertNotEqual(value, value)  # NaN: only isfinite() can reject it
 
 
 class _CliTestCase(unittest.TestCase):
@@ -124,6 +204,33 @@ class ExitCodeTests(_CliTestCase):
         with mock.patch("cvtrain.cli.trainer.run", side_effect=KeyboardInterrupt):
             self.assertEqual(main(["--yes"]), ExitCode.ABORTED)
 
+    def test_a_failed_quality_gate_maps_to_its_own_code(self) -> None:
+        # 3, not 1 and not 2: the run did what it was asked, and the artifact is
+        # merely not good enough. The operator's fix is "train better", which is
+        # a different instruction than "fix your environment".
+        with mock.patch("cvtrain.cli.trainer.run", side_effect=QualityGateError("mAP too low")):
+            with mock.patch("cvtrain.cli.LOG") as fake_log:
+                code = main(["--yes"])
+
+        self.assertEqual(code, ExitCode.QUALITY)
+        fake_log.error.assert_called_once()
+        self.assertEqual(str(fake_log.error.call_args.args[1]), "mAP too low")
+        fake_log.exception.assert_not_called()
+
+
+class CompositionRootTests(_CliTestCase):
+    """``main()`` picks the backend; the orchestrator only ever receives one."""
+
+    def test_main_injects_a_concrete_backend_into_the_orchestrator(self) -> None:
+        with mock.patch("cvtrain.cli.trainer.run", return_value=0) as fake_run:
+            main(["--yes"])
+
+        fake_run.assert_called_once()
+        cfg = fake_run.call_args.args[0]
+        backend = fake_run.call_args.kwargs.get("backend")
+        self.assertIsInstance(cfg, TrainConfig)
+        self.assertIsInstance(backend, UltralyticsBackend)
+
 
 class ManifestCommandTests(_CliTestCase):
     def test_write_manifest_scans_and_returns_ok(self) -> None:
@@ -136,10 +243,6 @@ class ManifestCommandTests(_CliTestCase):
         manifest = manifest_mod.load_manifest(models_dir)
         self.assertIn(MODEL_SPECS["det"].output, manifest["entries"])
 
-    def test_verify_missing_manifest_returns_preflight_code(self) -> None:
-        code = main(["--verify-manifest", "--models-dir", str(self._models_dir())])
-        self.assertEqual(code, ExitCode.PREFLIGHT)
-
     def test_verify_detects_a_tampered_artifact(self) -> None:
         models_dir = self._models_dir()
         target = models_dir / MODEL_SPECS["det"].output
@@ -151,8 +254,18 @@ class ManifestCommandTests(_CliTestCase):
             code = main(["--verify-manifest", "--models-dir", str(models_dir)])
 
         self.assertEqual(code, ExitCode.PREFLIGHT)
-        reported = [call.args[1] for call in fake_log.error.call_args_list if len(call.args) > 1]
+        # One actionable line carrying every problem, exactly like a training
+        # run whose freshly-written manifest does not check out.
+        reported = [str(call.args[1]) for call in fake_log.error.call_args_list]
         self.assertTrue(any("mismatch" in problem for problem in reported), reported)
+
+    def test_verify_reports_a_manifest_that_is_absent(self) -> None:
+        with mock.patch("cvtrain.cli.LOG") as fake_log:
+            code = main(["--verify-manifest", "--models-dir", str(self._models_dir())])
+
+        self.assertEqual(code, ExitCode.PREFLIGHT)
+        reported = [str(call.args[1]) for call in fake_log.error.call_args_list]
+        self.assertTrue(any("Manifest missing" in problem for problem in reported), reported)
 
     def test_verify_of_a_consistent_manifest_returns_ok(self) -> None:
         models_dir = self._models_dir()

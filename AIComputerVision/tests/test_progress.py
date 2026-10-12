@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from typing import cast
 
-from cvtrain.logging_setup import PHASES, PROGRESS_PREFIX, Phase, ProgressReporter, compute_percent
+from cvtrain.progress import PHASES, PROGRESS_PREFIX, Phase, ProgressReporter, compute_percent
 
 
 class ComputePercentTests(unittest.TestCase):
