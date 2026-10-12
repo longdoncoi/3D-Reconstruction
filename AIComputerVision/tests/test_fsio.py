@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from cvtrain.fsio import BACKUP_SUFFIX, atomic_copy, atomic_replace_with_backup, atomic_write_text, sha256_file
+from cvtrain import fsio as fsio_mod
+from cvtrain.errors import ConcurrentRunError
+from cvtrain.fsio import (
+    BACKUP_SUFFIX,
+    LOCK_NAME,
+    atomic_copy,
+    atomic_replace_with_backup,
+    atomic_write_text,
+    directory_lock,
+    sha256_file,
+)
 
 
 def _leftovers(directory: Path) -> list[str]:
@@ -141,6 +153,91 @@ class AtomicReplaceWithBackupTests(unittest.TestCase):
                     atomic_replace_with_backup(src, dst)
 
             self.assertEqual(dst.read_bytes(), b"previous-good-artifact")
+
+
+class DirectoryLockTests(unittest.TestCase):
+    """The advisory lock that keeps two runs out of one ``Models/`` directory."""
+
+    def test_creates_the_directory_and_releases_on_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            with directory_lock(target) as lock:
+                self.assertTrue(lock.exists())
+                self.assertEqual(lock.name, LOCK_NAME)
+            self.assertFalse(lock.exists())
+
+    def test_releases_the_lock_when_the_body_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            with self.assertRaises(RuntimeError):
+                with directory_lock(target) as lock:
+                    raise RuntimeError("boom")
+            self.assertFalse(lock.exists())
+
+    def test_release_tolerates_an_already_removed_lock(self) -> None:
+        # Something outside the helper deleted the file: exiting must not raise.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            with directory_lock(target) as lock:
+                lock.unlink()
+            self.assertFalse(lock.exists())
+
+    def test_a_held_lock_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            target.mkdir()
+            (target / LOCK_NAME).write_text("held", encoding="utf-8")
+
+            with self.assertRaises(ConcurrentRunError) as ctx:
+                with directory_lock(target):
+                    pass  # pragma: no cover - the lock is never acquired
+
+            self.assertIn(str(target / LOCK_NAME), str(ctx.exception))
+
+    def test_a_stale_lock_is_stolen(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            target.mkdir()
+            lock = target / LOCK_NAME
+            lock.write_text("stale", encoding="utf-8")
+            old = time.time() - 10
+            os.utime(lock, (old, old))
+
+            with self.assertLogs("cvtrain.fsio", level="WARNING") as captured:
+                with directory_lock(target, stale_after=1):
+                    self.assertTrue(lock.exists())
+
+            self.assertTrue(any("Stealing stale lock" in line for line in captured.output))
+
+    def test_a_lock_whose_age_cannot_be_read_is_refused(self) -> None:
+        # stat() failing between the failed create and the age check means the
+        # holder vanished: fail closed rather than assume the lock is free.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            target.mkdir()
+            (target / LOCK_NAME).write_text("held", encoding="utf-8")
+
+            with mock.patch("cvtrain.fsio._lock_age", return_value=None):
+                with self.assertRaises(ConcurrentRunError):
+                    with directory_lock(target):
+                        pass  # pragma: no cover - the lock is never acquired
+
+    def test_lock_age_is_none_when_the_file_is_gone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(fsio_mod._lock_age(Path(tmp) / LOCK_NAME))
+
+    def test_an_unstealable_lock_is_refused_after_retrying(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            target.mkdir()
+            (target / LOCK_NAME).write_text("held", encoding="utf-8")
+
+            with mock.patch("cvtrain.fsio._lock_age", return_value=10_000.0), mock.patch(
+                "cvtrain.fsio.os.open", side_effect=FileExistsError
+            ):
+                with self.assertRaises(ConcurrentRunError):
+                    with directory_lock(target, stale_after=1):
+                        pass  # pragma: no cover - the lock is never acquired
 
 
 if __name__ == "__main__":

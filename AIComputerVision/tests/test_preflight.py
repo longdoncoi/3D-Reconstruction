@@ -133,6 +133,15 @@ class DeviceTests(unittest.TestCase):
                 self.assertTrue(check.ok, check.detail)
                 self.assertEqual(check.detail, device)
 
+    def test_device_tokens_match_case_insensitively(self) -> None:
+        # A case-insensitive match costs nothing and keeps ``--device CPU`` from
+        # being rejected for a spelling the framework itself accepts.
+        for device in ("CPU", "Cuda:0", "MPS"):
+            with self.subTest(device=device):
+                check = self._check(device)
+                self.assertTrue(check.ok, check.detail)
+                self.assertEqual(check.detail, device)
+
     def test_a_typo_is_named_instead_of_reaching_the_framework(self) -> None:
         for device in ("gpu", "cuda:x", "-1", "cpu,", ",0", "cuda:0.5"):
             with self.subTest(device=device):

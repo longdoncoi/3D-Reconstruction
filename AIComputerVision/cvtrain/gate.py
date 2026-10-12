@@ -120,7 +120,7 @@ def already_current(spec: ModelSpec, cfg: TrainConfig, manifest: manifest_mod.Ma
         cfg.workers,
         str(cfg.data_yaml),
         backend_version,
-        str(cfg.device or "auto"),
+        cfg.device_class,
     )
     if recorded != requested:
         return False

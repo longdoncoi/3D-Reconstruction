@@ -34,7 +34,7 @@ from . import manifest as manifest_mod
 from .backend import EpochCallback, TrainedModel, TrainingBackend
 from .config import BASE_DIR, MODEL_SPECS, ModelSpec, TrainConfig
 from .errors import ExitCode
-from .fsio import atomic_replace_with_backup, sha256_file
+from .fsio import atomic_replace_with_backup, directory_lock, sha256_file
 from .progress import ProgressReporter
 
 LOG = logging.getLogger("cvtrain.trainer")
@@ -174,8 +174,9 @@ def _record_entry(
         workers=cfg.workers,
         backend_version=backend_version,
         # Normalised exactly the way ``gate.already_current`` compares it: "no
-        # ``--device``" and "``--device auto``" are the same experiment.
-        device=str(cfg.device or "auto"),
+        # ``--device``" and "``--device auto``" are the same experiment, and
+        # ``"0, 1"`` and ``"0,1"`` are the same too (see ``device_class``).
+        device=cfg.device_class,
         trained_at=manifest_mod.now_utc_iso(),
         dataset=str(cfg.data_yaml),
         run_dir=str(model.run_dir),
@@ -249,22 +250,30 @@ def _execute(cfg: TrainConfig, reporter: ProgressReporter, backend: TrainingBack
         LOG.info("Retraining cancelled by user.")
         return ExitCode.OK
 
-    backend.prepare(cfg)
+    # Everything that reads-then-writes ``Models/`` runs under the advisory
+    # lock: a second run aimed at the same directory is refused here instead of
+    # silently overwriting this run's provenance in ``manifest.json``.
+    with directory_lock(cfg.models_dir):
+        backend.prepare(cfg)
 
-    manifest = _start_manifest(cfg, backend.version)
-    exported = _train_all(cfg, reporter, backend, manifest)
+        manifest = _start_manifest(cfg, backend.version)
+        exported = _train_all(cfg, reporter, backend, manifest)
 
-    # The artifacts this run just published have to be vouchable. This is the
-    # same condition ``--verify-manifest`` reports, and that command exits 2 —
-    # so the verdict is raised, not returned: ``run`` closes the progress
-    # protocol with the terminal error marker (``done`` is reserved for a run
-    # that actually verified) and the composition root turns the failure into
-    # the same exit code an operator would get from the standalone command.
-    manifest_mod.verify_or_raise(cfg.models_dir, manifest)
+        # The artifacts this run just published have to be vouchable. This is the
+        # same condition ``--verify-manifest`` reports, and that command exits 2 —
+        # so the verdict is raised, not returned: ``run`` closes the progress
+        # protocol with the terminal error marker (``done`` is reserved for a run
+        # that actually verified) and the composition root turns the failure into
+        # the same exit code an operator would get from the standalone command.
+        # Only the models this invocation is responsible for are in scope: a stray
+        # file already sitting in ``Models/`` must not fail an otherwise clean run
+        # (``--verify-manifest`` still accounts for it).
+        manifest_mod.verify_or_raise(cfg.models_dir, manifest, only=exported)
 
-    reporter.manifest(1.0)
-    LOG.info("Manifest verified: %s", cfg.manifest_path)
-    LOG.info("Training complete. Exported: %s", ", ".join(exported))
+        reporter.manifest(1.0)
+        LOG.info("Manifest verified: %s", cfg.manifest_path)
+        LOG.info("Training complete. Exported: %s", ", ".join(exported))
+
     LOG.info("Base directory: %s", BASE_DIR)
     return ExitCode.OK
 

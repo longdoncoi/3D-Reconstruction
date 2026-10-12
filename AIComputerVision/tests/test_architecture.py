@@ -33,11 +33,11 @@ ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
     "__init__": frozenset(),
     "backend": frozenset({"config", "errors"}),
     "checks": frozenset(),
-    "cli": frozenset({"backend", "config", "errors", "logging_setup", "manifest", "trainer"}),
+    "cli": frozenset({"backend", "config", "errors", "fsio", "logging_setup", "manifest", "trainer"}),
     "config": frozenset(),
     "dataset": frozenset({"checks"}),
     "errors": frozenset(),
-    "fsio": frozenset(),
+    "fsio": frozenset({"errors"}),
     "gate": frozenset({"config", "errors", "fsio", "manifest"}),
     "logging_setup": frozenset(),
     "manifest": frozenset({"config", "errors", "fsio"}),
@@ -51,8 +51,9 @@ ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
 
 One direction only, and every edge is named here rather than inferred: a new
 edge is a change to this table, reviewed like any other. The shape encodes the
-README diagram — leaves (``config``, ``fsio``, ``checks``, ``errors``,
-``progress``, ``logging_setup``) know nothing, ``manifest``/``dataset``/
+README diagram — leaves (``config``, ``checks``, ``errors``, ``progress``,
+``logging_setup``) know nothing, ``fsio`` sits on ``errors`` (it raises a typed
+``ConcurrentRunError`` from the advisory lock), ``manifest``/``dataset``/
 ``backend`` sit on them, ``gate``/``preflight`` hold the policies, ``trainer``
 orchestrates, and ``cli`` alone is the composition root.
 """
@@ -199,6 +200,14 @@ class LazyDependencyTests(unittest.TestCase):
 class DocumentationTests(unittest.TestCase):
     """Every module explains itself; the README layout mirrors the package."""
 
+    _TOOLING_FLAGS = frozenset({"--help", "--version", "-h", "-v"})
+    """Argparse-level switches that are not part of the documented option list.
+
+    ``--help``/``-h`` and ``--version`` are parser conventions rather than
+    training options, and ``-v`` is the short alias of the documented
+    ``--verbose``.
+    """
+
     def test_every_module_has_a_docstring(self) -> None:
         for name in MODULES:
             with self.subTest(module=name):
@@ -220,6 +229,19 @@ class DocumentationTests(unittest.TestCase):
         documented = set(re.findall(r"--[a-z][a-z0-9-]*", text))
         accepted = set(build_parser()._option_string_actions)
         self.assertEqual(documented - accepted, set(), "README documents flags the CLI does not accept")
+
+    def test_every_flag_the_cli_accepts_is_documented(self) -> None:
+        # The reverse direction: a flag the parser accepts but the README never
+        # mentions is an undocumented feature. ``--help``/``--version`` are
+        # tooling switches rather than run options, so they are exempt.
+        text = README.read_text(encoding="utf-8")
+        documented = set(re.findall(r"--[a-z][a-z0-9-]*", text))
+        accepted = set(build_parser()._option_string_actions)
+        self.assertEqual(
+            accepted - documented - self._TOOLING_FLAGS,
+            set(),
+            "CLI accepts flags the README never mentions",
+        )
 
 
 if __name__ == "__main__":

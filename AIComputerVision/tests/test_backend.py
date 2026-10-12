@@ -15,6 +15,7 @@ import tempfile
 import types
 import unittest
 from collections.abc import Iterator
+from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -61,6 +62,14 @@ class MetricsFromTests(unittest.TestCase):
     def test_keeps_only_numeric_values(self) -> None:
         metrics = metrics_from(_Results({"metrics/precision(B)": 0.9, "epoch": 5, "bad": "text", "none": None}))
         self.assertEqual(metrics, {"metrics/precision(B)": 0.9, "epoch": 5.0})
+
+    def test_keeps_a_real_number_that_is_not_a_python_float(self) -> None:
+        # numpy scalar types register with ``numbers`` but are not ``float``;
+        # the ``numbers.Real`` test keeps them instead of dropping a real metric
+        # (which would turn a ``--min-metric`` request into a false "not
+        # reported").
+        metrics = metrics_from(_Results({"mAP": Fraction(1, 2)}))
+        self.assertEqual(metrics, {"mAP": 0.5})
 
     def test_returns_empty_dict_when_framework_reports_nothing(self) -> None:
         self.assertEqual(metrics_from(None), {})

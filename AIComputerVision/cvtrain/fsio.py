@@ -9,19 +9,44 @@ with one recomputed by ``--verify-manifest``.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import logging
 import os
 import shutil
 import tempfile
+import time
+from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 
-__all__ = ["BACKUP_SUFFIX", "CHUNK_SIZE", "atomic_copy", "atomic_replace_with_backup", "atomic_write_text", "sha256_file"]
+from .errors import ConcurrentRunError
+
+__all__ = [
+    "BACKUP_SUFFIX",
+    "CHUNK_SIZE",
+    "LOCK_NAME",
+    "LOCK_STALE_SECONDS",
+    "atomic_copy",
+    "atomic_replace_with_backup",
+    "atomic_write_text",
+    "directory_lock",
+    "sha256_file",
+]
+
+LOG = logging.getLogger("cvtrain.fsio")
 
 CHUNK_SIZE = 1 << 20
 """Hashing block size (1 MiB): large enough to be fast, small enough for RAM."""
 
 BACKUP_SUFFIX = ".bak"
 """Suffix of the one-generation rollback copy kept beside a replaced artifact."""
+
+LOCK_NAME = ".cvtrain.lock"
+"""Name of the advisory lock file that marks a models directory as busy."""
+
+LOCK_STALE_SECONDS = 24 * 60 * 60
+"""Age after which a lock file is treated as abandoned (its process crashed)."""
 
 
 def sha256_file(path: Path) -> str:
@@ -99,3 +124,73 @@ def atomic_replace_with_backup(src: Path, dst: Path) -> Path:
     if dst.exists():
         atomic_copy(dst, dst.with_name(dst.name + BACKUP_SUFFIX))
     return atomic_copy(src, dst)
+
+
+def _remove_lock(lock: Path) -> None:
+    """Delete ``lock``, tolerating the case where it is already gone."""
+
+    try:
+        os.unlink(lock)
+    except FileNotFoundError:
+        pass
+
+
+def _lock_age(lock: Path) -> float | None:
+    """Seconds since ``lock`` was last written, or ``None`` when it is gone."""
+
+    try:
+        return max(0.0, time.time() - lock.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def _held_message(lock: Path) -> str:
+    return f"{lock} is held by another cvtrain run; wait for it to finish, or delete the file if no run is active"
+
+
+def _acquire_lock(lock: Path, stale_after: float) -> None:
+    """Create ``lock`` exclusively, replacing it only when it is provably stale."""
+
+    last_error: FileExistsError | None = None
+    for _ in range(2):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            last_error = exc
+            age = _lock_age(lock)
+            if age is not None and age > stale_after:
+                LOG.warning("Stealing stale lock %s (age %.0fs > %.0fs)", lock, age, stale_after)
+                _remove_lock(lock)
+                continue
+            raise ConcurrentRunError(_held_message(lock)) from exc
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(f"owner pid={os.getpid()} acquired={datetime.now(timezone.utc).isoformat()}\n")
+        return
+    raise ConcurrentRunError(_held_message(lock)) from last_error
+
+
+@contextlib.contextmanager
+def directory_lock(directory: Path, *, stale_after: float = LOCK_STALE_SECONDS) -> Iterator[Path]:
+    """Hold an advisory lock on ``directory`` for the duration of the block.
+
+    The lock is a file created with ``O_CREAT | O_EXCL`` — the one atomic
+    "create if absent" primitive every supported platform shares — so a second
+    ``cvtrain`` run aimed at the same directory fails fast
+    (:class:`~cvtrain.errors.ConcurrentRunError`) instead of racing on
+    ``manifest.json``. It is advisory: anything that does not go through this
+    helper can still write; the point is to turn the pipeline's documented
+    single-writer assumption into an *enforced* one.
+
+    A lock older than ``stale_after`` is treated as abandoned (its process
+    crashed) and replaced with a warning, so a crash cannot wedge the next run
+    forever. The lock is always removed on the way out, including when the body
+    raises.
+    """
+
+    directory.mkdir(parents=True, exist_ok=True)
+    lock = directory / LOCK_NAME
+    _acquire_lock(lock, stale_after)
+    try:
+        yield lock
+    finally:
+        _remove_lock(lock)

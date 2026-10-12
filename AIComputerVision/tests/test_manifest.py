@@ -6,6 +6,7 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from cvtrain import manifest as manifest_mod
 from cvtrain.config import MANIFEST_NAME, MODEL_SPECS
@@ -281,6 +282,85 @@ class SchemaMigrationTests(unittest.TestCase):
 
             self.assertEqual(manifest["schema_version"], 99)
             self.assertIn(MODEL_SPECS["det"].output, manifest["entries"])
+
+
+class ManifestQuarantineTests(unittest.TestCase):
+    """A corrupt manifest is preserved, never silently overwritten."""
+
+    def test_a_corrupt_manifest_is_quarantined(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp)
+            path = models_dir / MANIFEST_NAME
+            path.write_text("{not json", encoding="utf-8")
+
+            with self.assertLogs("cvtrain.manifest", level="WARNING"):
+                manifest = manifest_mod.load_manifest(models_dir)
+
+            self.assertEqual(manifest["entries"], {})
+            self.assertFalse(path.exists())
+            quarantined = list(models_dir.glob(f"{MANIFEST_NAME}.corrupt-*"))
+            self.assertEqual(len(quarantined), 1)
+            self.assertEqual(quarantined[0].read_text(encoding="utf-8"), "{not json")
+
+    def test_an_invalid_manifest_is_quarantined(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp)
+            (models_dir / MANIFEST_NAME).write_text('{"entries": []}', encoding="utf-8")
+
+            with self.assertLogs("cvtrain.manifest", level="WARNING"):
+                manifest = manifest_mod.load_manifest(models_dir)
+
+            self.assertEqual(manifest["entries"], {})
+            self.assertEqual(len(list(models_dir.glob(f"{MANIFEST_NAME}.corrupt-*"))), 1)
+
+    def test_a_failed_quarantine_still_returns_the_skeleton(self) -> None:
+        # A read-only volume must not stop the run: the corruption is logged and
+        # the reader still fails closed to an empty manifest.
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp)
+            (models_dir / MANIFEST_NAME).write_text("{not json", encoding="utf-8")
+
+            with mock.patch("cvtrain.manifest.os.replace", side_effect=OSError("read-only")):
+                with self.assertLogs("cvtrain.manifest", level="WARNING") as captured:
+                    manifest = manifest_mod.load_manifest(models_dir)
+
+            self.assertEqual(manifest["entries"], {})
+            self.assertTrue(any("Could not quarantine" in line for line in captured.output))
+
+
+class ScopedVerificationTests(unittest.TestCase):
+    """``verify_manifest(only=...)`` checks the named artifacts and no more."""
+
+    def test_only_ignores_an_unrelated_entry_and_a_stray_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp)
+            good = models_dir / "yolo11n.onnx"
+            good.write_bytes(b"model-bytes")
+            other = models_dir / "other.onnx"
+            other.write_bytes(b"other-bytes")
+            (models_dir / "stray.onnx").write_bytes(b"stray-bytes")
+            manifest: manifest_mod.Manifest = {
+                "schema_version": 1,
+                "entries": {
+                    "yolo11n.onnx": {"sha256": sha256_file(good)},
+                    "other.onnx": {"sha256": sha256_file(other)},
+                },
+            }
+
+            self.assertEqual(manifest_mod.verify_manifest(models_dir, manifest, only=["yolo11n.onnx"]), [])
+            # The global sweep is unchanged: it still accounts for the stray file.
+            self.assertEqual(
+                manifest_mod.verify_manifest(models_dir, manifest),
+                ["stray.onnx: on disk but not recorded in the manifest"],
+            )
+
+    def test_only_still_reports_a_named_artifact_without_an_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest: manifest_mod.Manifest = {"entries": {"yolo11n.onnx": {"sha256": "deadbeef"}}}
+            self.assertEqual(
+                manifest_mod.verify_manifest(Path(tmp), manifest, only=["yolo11n.onnx", "seg.onnx"]),
+                ["yolo11n.onnx: missing on disk", "seg.onnx: expected but not recorded in the manifest"],
+            )
 
 
 if __name__ == "__main__":

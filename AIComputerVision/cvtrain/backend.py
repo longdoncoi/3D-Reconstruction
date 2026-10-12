@@ -15,6 +15,7 @@ That buys two things:
 from __future__ import annotations
 
 import logging
+import numbers
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -83,9 +84,12 @@ class TrainingBackend(Protocol[H]):
 def metrics_from(results: object) -> dict[str, float]:
     """Coerce a framework result object into ``{name: float}``.
 
-    Anything non-numeric (numpy scalars already converted, ``None``, nested
-    objects) is dropped rather than smuggled into the JSON manifest, where it
-    would make the file unreadable.
+    Anything that is not a real number (``None``, nested objects, strings) is
+    dropped rather than smuggled into the JSON manifest, where it would make the
+    file unreadable. ``numbers.Real`` — not ``float`` — is the test, so the
+    numpy scalar types frameworks like to report are kept instead of silently
+    vanishing: a metric that disappears would turn a ``--min-metric`` request
+    into an unexplanable "not reported" failure.
     """
 
     data = getattr(results, "results_dict", None)
@@ -93,7 +97,7 @@ def metrics_from(results: object) -> dict[str, float]:
         return {}
     clean: dict[str, float] = {}
     for key, value in data.items():
-        if isinstance(value, (int, float)):
+        if isinstance(value, numbers.Real):
             clean[str(key)] = float(value)
     return clean
 

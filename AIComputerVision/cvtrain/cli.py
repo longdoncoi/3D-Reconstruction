@@ -36,6 +36,7 @@ from .config import (
     resolve_models,
 )
 from .errors import CvTrainError, ExitCode, ManifestIntegrityError
+from .fsio import directory_lock
 from .logging_setup import setup_logging
 
 LOG = logging.getLogger("cvtrain.cli")
@@ -189,8 +190,11 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
 
 
 def _write_manifest(models_dir: Path) -> int:
-    manifest = manifest_mod.build_from_scan(models_dir)
-    path = manifest_mod.save_manifest(models_dir, manifest)
+    # The same advisory lock a training run takes: adopting models while another
+    # run trains would rewrite ``manifest.json`` out from under it.
+    with directory_lock(models_dir):
+        manifest = manifest_mod.build_from_scan(models_dir)
+        path = manifest_mod.save_manifest(models_dir, manifest)
     count = len(manifest.get("entries") or {})
     LOG.info("Manifest written: %s (%d entries)", path, count)
     return int(ExitCode.OK)

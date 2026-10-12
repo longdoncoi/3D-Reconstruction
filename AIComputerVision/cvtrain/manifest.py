@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+import os
+from collections.abc import Callable, Collection
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -210,9 +211,35 @@ def migrate(data: dict[str, Any], path: Path) -> Manifest:
     return cast(Manifest, data)
 
 
+def _quarantine(path: Path) -> None:
+    """Move an unreadable manifest aside so a later write cannot erase it.
+
+    Best effort and non-fatal: on a read-only volume (or a directory sitting
+    where the file should be) the rename itself fails, and the corruption is
+    still reported by the caller's warning. The point is only that the evidence
+    of *what was on disk* survives the next ``save_manifest``; the pipeline still
+    fails closed by returning a skeleton.
+    """
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = path.with_name(f"{path.name}.corrupt-{stamp}")
+    try:
+        os.replace(path, target)
+    except OSError as exc:
+        LOG.warning("Could not quarantine %s: %s", path, exc)
+    else:
+        LOG.warning("Quarantined unreadable manifest to %s", target)
+
+
 def load_manifest(models_dir: Path) -> Manifest:
     """Return the existing manifest migrated to the current schema, or a fresh
-    skeleton when the file is absent, unreadable or structurally invalid."""
+    skeleton when the file is absent, unreadable or structurally invalid.
+
+    A corrupt or structurally invalid document is *quarantined* (renamed aside)
+    before the skeleton is returned, so the next ``save_manifest`` cannot
+    silently overwrite the only record of what was there. A missing file is not
+    an error and is not quarantined.
+    """
 
     path = models_dir / MANIFEST_NAME
     if not path.exists():
@@ -221,9 +248,11 @@ def load_manifest(models_dir: Path) -> Manifest:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         LOG.warning("Corrupt manifest %s: %s", path, exc)
+        _quarantine(path)
         return _skeleton()
     if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
         LOG.warning("Manifest %s is invalid (missing entries dict)", path)
+        _quarantine(path)
         return _skeleton()
     return migrate(cast(dict[str, Any], data), path)
 
@@ -245,18 +274,27 @@ def upsert_entry(manifest: Manifest, filename: str, entry: ManifestEntry) -> Non
     entries[filename] = entry
 
 
-def verify_manifest(models_dir: Path, manifest: Manifest) -> list[str]:
+def verify_manifest(models_dir: Path, manifest: Manifest, *, only: Collection[str] | None = None) -> list[str]:
     """Return a list of problems; an empty list means the manifest is consistent.
 
     Verification is bidirectional: an entry whose file is missing on disk is a
     problem, and so is an ONNX file present on disk without an entry — otherwise
     ``--verify-manifest`` would silently stop accounting for an artifact that a
     training run (or a stray copy) dropped into ``Models/``.
+
+    ``only`` narrows the sweep to the named artifacts. A training run passes the
+    models it just published, so a stray file already sitting in ``Models/``
+    cannot fail an otherwise clean run; the global ``--verify-manifest`` command
+    passes ``only=None`` and keeps the full bidirectional check. A name in
+    ``only`` that has no entry is reported, so narrowing cannot hide a model the
+    run failed to record.
     """
 
     problems: list[str] = []
     entries = manifest.get("entries") or {}
     for filename, entry in entries.items():
+        if only is not None and filename not in only:
+            continue
         path = models_dir / filename
         if not path.exists():
             problems.append(f"{filename}: missing on disk")
@@ -268,13 +306,18 @@ def verify_manifest(models_dir: Path, manifest: Manifest) -> list[str]:
         actual = sha256_file(path)
         if actual != expected:
             problems.append(f"{filename}: sha256 mismatch (expected {expected[:12]}..., got {actual[:12]}...)")
-    for path in sorted(models_dir.glob("*.onnx")):
-        if path.name not in entries:
-            problems.append(f"{path.name}: on disk but not recorded in the manifest")
+    if only is None:
+        for path in sorted(models_dir.glob("*.onnx")):
+            if path.name not in entries:
+                problems.append(f"{path.name}: on disk but not recorded in the manifest")
+    else:
+        for filename in sorted(only):
+            if filename not in entries:
+                problems.append(f"{filename}: expected but not recorded in the manifest")
     return problems
 
 
-def verify_or_raise(models_dir: Path, manifest: Manifest) -> None:
+def verify_or_raise(models_dir: Path, manifest: Manifest, *, only: Collection[str] | None = None) -> None:
     """Verify and turn any problem into a single :class:`ManifestIntegrityError`.
 
     Both callers of :func:`verify_manifest` — the ``--verify-manifest`` command
@@ -283,9 +326,12 @@ def verify_or_raise(models_dir: Path, manifest: Manifest) -> None:
     returning a code keeps that decision here, next to the rules that produce
     the problems, and lets the composition root render it like any other
     expected failure: one actionable line, no traceback.
+
+    ``only`` is forwarded unchanged: a training run narrows verification to the
+    artifacts it just published (see :func:`verify_manifest`).
     """
 
-    problems = verify_manifest(models_dir, manifest)
+    problems = verify_manifest(models_dir, manifest, only=only)
     if problems:
         raise ManifestIntegrityError(
             f"Manifest verification failed: {models_dir / MANIFEST_NAME} -> " + "; ".join(problems)

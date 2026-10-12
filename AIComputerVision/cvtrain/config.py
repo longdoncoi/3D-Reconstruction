@@ -192,5 +192,22 @@ class TrainConfig:
             "verbose": self.verbose,
         }
         if self.device:
-            kwargs["device"] = self.device
+            kwargs["device"] = self.device_class
         return kwargs
+
+    @property
+    def device_class(self) -> str:
+        """The canonical spelling of ``device`` used as provenance.
+
+        ``None``/blank means "let the framework choose" and is normalised to
+        ``auto``; anything else is lower-cased and whitespace-stripped around
+        commas, so ``"0, 1"`` and ``"0,1"`` describe the same experiment. Both
+        the recording half (``trainer``) and the comparing half
+        (``gate.already_current``) read this one property, so a re-run can never
+        disagree with itself about which device trained an artifact.
+        """
+
+        raw = (self.device or "").strip()
+        if not raw:
+            return "auto"
+        return ",".join(part.strip().lower() for part in raw.split(","))

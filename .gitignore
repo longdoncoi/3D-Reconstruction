@@ -118,6 +118,10 @@ CMakeLists.txt.user*
 # One-generation rollback copy beside a replaced export (cvtrain.fsio). Never a
 # model the app loads, and never an LFS artifact.
 /AIComputerVision/Models/*.onnx.bak
+# Advisory lock a training run holds over Models/ (cvtrain.fsio), and copies of
+# a manifest that could not be parsed (cvtrain.manifest). Never tracked.
+/AIComputerVision/Models/.cvtrain.lock
+/AIComputerVision/Models/manifest.json.corrupt-*
 
 # Custom App Ignores
 /Predict/

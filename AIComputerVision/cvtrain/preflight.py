@@ -154,7 +154,7 @@ def check_device(cfg: TrainConfig) -> Check:
     if raw is None or not raw.strip():
         return Check("param.device", True, "auto (let the framework choose)")
     tokens = [token.strip() for token in raw.split(",")]
-    bad = [token for token in tokens if not _DEVICE_TOKEN.match(token)]
+    bad = [token for token in tokens if not _DEVICE_TOKEN.match(token.lower())]
     if bad:
         return Check(
             "param.device",

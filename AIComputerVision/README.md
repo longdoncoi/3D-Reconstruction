@@ -38,9 +38,16 @@ Dependencies point one way, from orchestration down to primitives:
 ```
 TrainModel.py → cli ──► trainer ──┬─► preflight ─┬─► dataset
    (composition root,              ├─► manifest   └─► checks
-    injects the backend)           ├─► gate ──────► fsio / config
-                                   └─► backend ────► fsio / config
+    injects the backend)           ├─► gate ─┐
+                                   └─► backend┤
+                                              ├─► fsio ──► errors
+                                              └─► config
 ```
+
+`fsio` sits on `errors` because the advisory lock raises a typed
+`ConcurrentRunError` (see [Manifest](#manifest)); every other primitive is a
+true leaf. The reasoning behind the load-bearing decisions is recorded as short
+ADRs under [`Docs/adr/`](Docs/adr/).
 
 This diagram is a contract, not a suggestion: `tests/test_architecture.py`
 parses `cvtrain/*.py` with `ast` and fails the build when an import lands
@@ -130,6 +137,9 @@ python AIComputerVision/TrainModel.py --skip-unchanged --yes
 
 # Override hyper-parameters
 python AIComputerVision/TrainModel.py --det --epochs 50 --batch 8 --imgsz 640 --seed 42
+
+# Point at a dataset, opt into TensorBoard logs, and keep the framework chatty
+python AIComputerVision/TrainModel.py --data path/to/data.yaml --tensorboard --verbose --yes
 
 # Publish only models that clear a quality bar (repeatable; see "Quality gate")
 python AIComputerVision/TrainModel.py --yes --min-metric 'metrics/mAP50(B)=0.5' --min-metric 'metrics/mAP50-95(B)=0.3'
@@ -229,10 +239,16 @@ accidental replacement detectable. Verification is bidirectional: an entry
 whose file went missing is reported, and so is an ONNX file sitting in
 `Models/` without an entry.
 
-A training run re-verifies the manifest it just wrote and fails with exit code
+A training run re-verifies the models it just published and fails with exit code
 `2` when that check fails — the same code `--verify-manifest` returns, raised
 through the same `ManifestIntegrityError` — so an artifact the pipeline cannot
-vouch for is never reported as a clean run.
+vouch for is never reported as a clean run. That end-of-run check is scoped to
+the models this invocation is responsible for (`verify_manifest(only=…)`): a
+stray ONNX already sitting in `Models/` is not this run's problem, while the
+standalone `--verify-manifest` command keeps the full bidirectional sweep.
+A manifest that cannot be parsed is quarantined as
+`manifest.json.corrupt-<timestamp>` before a skeleton is returned, so the next
+write cannot silently erase the only record of what was on disk.
 
 The document carries a `schema_version`. On load, an older document (schema
 `0`: written before the field existed) is migrated forward through
@@ -271,10 +287,15 @@ by `--write-manifest` (which records no provenance) is retrained:
 The digests are compared last: they are the expensive part, so a mismatch in the
 cheap hyper-parameters never pays for hashing a checkpoint.
 
-The pipeline assumes a single training process at a time (the desktop app runs
-one). Every write is atomic, so a concurrent run cannot leave a torn file, but
-two runs sharing `Models/` would race on `manifest.json` and the last writer
-wins.
+The pipeline is single-writer by design (the desktop app runs one training job
+at a time), and that assumption is now *enforced*, not merely stated: a run —
+and `--write-manifest` — takes an advisory lock (`Models/.cvtrain.lock`) for the
+whole read-train-write window, so a second `cvtrain` aimed at the same
+directory fails fast with a `ConcurrentRunError` (exit `2`) instead of racing on
+`manifest.json`. The lock is released when the process ends; a lock left behind
+by a crash is treated as abandoned after `LOCK_STALE_SECONDS` (24 h) and
+replaced with a warning. Every write is atomic regardless, so even an outside
+writer cannot leave a torn file.
 
 ## Tests
 

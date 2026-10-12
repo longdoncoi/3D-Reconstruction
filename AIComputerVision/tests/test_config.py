@@ -64,6 +64,15 @@ class TrainConfigTests(unittest.TestCase):
         cfg = TrainConfig(device="cpu")
         self.assertEqual(cfg.train_kwargs()["device"], "cpu")
 
+    def test_device_class_normalises_spelling(self) -> None:
+        # The canonical spelling used as provenance: blank means "auto", and
+        # whitespace/case around a comma list is not a different experiment.
+        self.assertEqual(TrainConfig().device_class, "auto")
+        self.assertEqual(TrainConfig(device="   ").device_class, "auto")
+        self.assertEqual(TrainConfig(device="0, 1").device_class, "0,1")
+        self.assertEqual(TrainConfig(device="CPU").device_class, "cpu")
+        self.assertEqual(TrainConfig(device="cuda:0").device_class, "cuda:0")
+
     def test_data_path_is_stringified(self) -> None:
         cfg = TrainConfig(data_yaml=Path("Dataset/data.yaml"))
         self.assertEqual(cfg.train_kwargs()["data"], str(Path("Dataset/data.yaml")))

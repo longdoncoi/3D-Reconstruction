@@ -19,6 +19,7 @@ from cvtrain.backend import UltralyticsBackend
 from cvtrain.cli import build_parser, config_from_args, main, parse_metric_threshold
 from cvtrain.config import DEFAULT_MODELS, DEFAULT_OPSET, MODEL_SPECS, TrainConfig
 from cvtrain.errors import BackendUnavailableError, ExitCode, QualityGateError
+from cvtrain.fsio import LOCK_NAME
 
 
 class ParserTests(unittest.TestCase):
@@ -277,6 +278,19 @@ class ManifestCommandTests(_CliTestCase):
 
         self.assertEqual(code, ExitCode.OK)
         fake_log.error.assert_not_called()
+
+    def test_write_manifest_refuses_a_held_lock(self) -> None:
+        # Adopting models while another run trains would rewrite manifest.json
+        # out from under it, so the same advisory lock a run takes is honoured.
+        models_dir = self._models_dir()
+        (models_dir / LOCK_NAME).write_text("held", encoding="utf-8")
+
+        with mock.patch("cvtrain.cli.LOG") as fake_log:
+            code = main(["--write-manifest", "--models-dir", str(models_dir)])
+
+        self.assertEqual(code, ExitCode.PREFLIGHT)
+        reported = [str(call.args[1]) for call in fake_log.error.call_args_list]
+        self.assertTrue(any("held by another cvtrain run" in problem for problem in reported), reported)
 
 
 if __name__ == "__main__":

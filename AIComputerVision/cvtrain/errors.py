@@ -16,6 +16,7 @@ from enum import IntEnum
 
 __all__ = [
     "BackendUnavailableError",
+    "ConcurrentRunError",
     "CvTrainError",
     "ExitCode",
     "ManifestIntegrityError",
@@ -66,6 +67,20 @@ class BackendUnavailableError(CvTrainError):
     ``2`` like every other check that could have caught it earlier: preflight
     normally *does* catch it, and a broken install that slipped past
     ``find_spec`` must not report a different code for the same underlying cause.
+    """
+
+    exit_code: ExitCode = ExitCode.PREFLIGHT
+
+
+class ConcurrentRunError(CvTrainError):
+    """Another run owns the models directory, so this one must not proceed.
+
+    Two processes writing ``Models/manifest.json`` at once would each read the
+    document, train, and then save — the last writer silently discards the
+    other's provenance. The advisory lock in :func:`cvtrain.fsio.directory_lock`
+    turns that race into a fast, actionable refusal. Exit code ``2``: the
+    environment is not ready for this run, exactly like a failed preflight
+    check, and the fix ("wait, or remove a stale lock") is an environment fix.
     """
 
     exit_code: ExitCode = ExitCode.PREFLIGHT

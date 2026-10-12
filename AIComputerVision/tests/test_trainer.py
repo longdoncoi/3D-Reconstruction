@@ -19,8 +19,8 @@ from unittest import mock
 from cvtrain import manifest as manifest_mod
 from cvtrain.backend import TrainedModel
 from cvtrain.config import MANIFEST_NAME, MODEL_SPECS, TrainConfig
-from cvtrain.errors import ExitCode, ManifestIntegrityError, QualityGateError
-from cvtrain.fsio import BACKUP_SUFFIX, sha256_file
+from cvtrain.errors import ConcurrentRunError, ExitCode, ManifestIntegrityError, QualityGateError
+from cvtrain.fsio import BACKUP_SUFFIX, LOCK_NAME, sha256_file
 from cvtrain.progress import PROGRESS_PREFIX
 from cvtrain.trainer import confirm_retrain, run
 
@@ -258,6 +258,20 @@ class ManifestVerificationTests(_SandboxedTestCase):
         self.assertIn("ghost.onnx: missing on disk", str(ctx.exception))
         self.assertEqual(ctx.exception.exit_code, ExitCode.PREFLIGHT)
 
+    def test_a_stray_onnx_does_not_fail_a_clean_run(self) -> None:
+        # End-of-run verification is scoped to the models just published, so a
+        # file already sitting in Models/ is not this run's problem. The global
+        # ``--verify-manifest`` command still reports it.
+        cfg = _config(self.root)
+        cfg.models_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.models_dir / "stray.onnx").write_bytes(b"not-ours")
+
+        self.assertEqual(run(cfg, backend=FakeBackend()), ExitCode.OK)
+
+        manifest = manifest_mod.load_manifest(cfg.models_dir)
+        problems = manifest_mod.verify_manifest(cfg.models_dir, manifest)
+        self.assertIn("stray.onnx: on disk but not recorded in the manifest", problems)
+
 
 class ProvenanceRecordingTests(_SandboxedTestCase):
     """What a run writes down about the inputs it used."""
@@ -430,6 +444,13 @@ class SkipUnchangedTests(_SandboxedTestCase):
         # normalisation only has to agree with itself and the default.
         self._run(models=("det",), skip_unchanged=True)
         _, backend = self._run(models=("det",), skip_unchanged=True, device="")
+        self.assertNotIn("train:det", backend.calls)
+
+    def test_equivalent_device_spellings_are_not_retrained(self) -> None:
+        # Provenance stores the canonical device, so "0, 1" and "0,1" describe
+        # the same experiment and the second run is skipped.
+        self._run(models=("det",), skip_unchanged=True, device="0,1")
+        _, backend = self._run(models=("det",), skip_unchanged=True, device="0, 1")
         self.assertNotIn("train:det", backend.calls)
 
     def test_a_changed_dataset_definition_is_trained(self) -> None:
@@ -615,6 +636,20 @@ class SchemaForwardCompatibilityTests(_SandboxedTestCase):
         self.assertEqual(code, ExitCode.OK)
         on_disk = json.loads((cfg.models_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
         self.assertEqual(on_disk["schema_version"], 99)
+
+
+class ConcurrentRunTests(_SandboxedTestCase):
+    """A second run aimed at a busy ``Models/`` directory is refused, not raced."""
+
+    def test_a_held_lock_refuses_the_run(self) -> None:
+        cfg = _config(self.root, models=("det",))
+        cfg.models_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.models_dir / LOCK_NAME).write_text("held", encoding="utf-8")
+
+        with self.assertRaises(ConcurrentRunError) as ctx:
+            run(cfg, backend=FakeBackend())
+
+        self.assertEqual(ctx.exception.exit_code, ExitCode.PREFLIGHT)
 
 
 if __name__ == "__main__":
