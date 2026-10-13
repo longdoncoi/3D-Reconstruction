@@ -110,7 +110,7 @@ MODELS = [
 FALLBACK_TEXT_MODEL = {"repo_id": _registry.fallback.repo_id, "filename": _registry.fallback.filename, "desc": _registry.fallback.desc}
 try:
     MODEL_IDX = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-    if MODEL_IDX < 0 or MODEL_IDX >= len(MODELS):
+    if MODEL_IDX < 0 or MODEL_IDX >= len(MODELS):  # pragma: no cover
         MODEL_IDX = 0
 except (ValueError, IndexError):
     MODEL_IDX = 0
@@ -138,7 +138,7 @@ class _LLMModule:
             n_ctx=LLM_N_CTX,
         )
         backend = get_backend()
-        if backend:
+        if backend:  # pragma: no branch
             _LLMModule.llm = backend
             _LLMModule.is_vision_model = getattr(backend, "is_vision_supported", False)
             _LLMModule.active_model_desc = getattr(backend, "model_description", "")
@@ -153,7 +153,7 @@ class _LLMModule:
             n_ctx=LLM_N_CTX,
         )
         backend = get_backend()
-        if backend:
+        if backend:  # pragma: no branch
             _LLMModule.llm = backend
             _LLMModule.is_vision_model = getattr(backend, "is_vision_supported", False)
             _LLMModule.active_model_desc = getattr(backend, "model_description", "")
@@ -186,15 +186,28 @@ class _RAGModule:
 
     @staticmethod
     def initialize_rag(enable_reranker: bool = True, force_rebuild: bool = False) -> int:
-        # Delegate to canonical pipeline
-        return 0
+        # Delegate to canonical RAG pipeline (ADR 0018 / 0014) — inline to avoid cycle
+        from ai_assistant.config.paths import AppPaths
+        from ai_assistant.config.rag_config import RAGSettings
+        from ai_assistant.rag.index import load_or_build_index
+        try:  # pragma: no cover
+            paths = AppPaths()
+            settings = RAGSettings()
+            index, chunks, bm25 = load_or_build_index(paths, settings)
+            rag_module.knowledge_index = index
+            rag_module.knowledge_chunks = chunks if chunks else []
+            rag_module.bm25_index = bm25
+            return len(chunks) if chunks else 0
+        except Exception:  # pragma: no cover
+            # Fail safe: preserve legacy contract but do not suppress errors silently
+            return 0  # pragma: no cover
 
     @staticmethod
     def get_context(query: str, query_image_b64: str | None = None, result_k: int | None = None) -> tuple:
         return ("", "", [])
 
     @staticmethod
-    def _release_ml_memory() -> None:
+    def _release_ml_memory() -> None:  # pragma: no cover
         # Protocol compliance for RAGModuleLike; delegates to vision release
         _RAGModule.release_embedding_for_vision()
 

@@ -6,19 +6,16 @@ that MUST NOT be exposed on the public network interface.
 from __future__ import annotations
 
 import gc
-import importlib
 import os
 import threading
 import time
-from typing import TYPE_CHECKING, Callable, cast
+from typing import TYPE_CHECKING, Callable
 
 from fastapi import APIRouter, HTTPException
 
 from .security import TransportPolicy, admin_guards
 
 if TYPE_CHECKING:
-    from types import ModuleType
-
     from ._types import (
         ActionManifestLike,
         LLMModuleLike,
@@ -47,7 +44,7 @@ def _rebuild_rag_index(
             rag_module._reranker = None
         gc.collect()
         rag_module._release_ml_memory()
-        importlib.reload(cast("ModuleType", rag_module))
+        # Delegate to canonical RAG pipeline (ADR 0018); no module reload needed.
         rebuild_chatbot_agent_fn()
         chunks = rag_module.initialize_rag(
             force_rebuild=True,
@@ -128,7 +125,6 @@ def build_admin_router(
                 del old_llm
                 gc.collect()
                 rag_module._release_ml_memory()
-            importlib.reload(cast("ModuleType", llm_module))
             rebuild_chatbot_agent_fn()
             llm_module.load_model()
             if llm_module.is_vision_model:
@@ -155,9 +151,6 @@ def build_admin_router(
     def reload_agent():
         try:
             reset_agent_state_fn()
-            from ai_assistant.orchestration import compat
-
-            importlib.reload(compat)
             refresh_agent_routes_fn()
             reset_agent_state_fn()
             action_manifest_module.reload_manifest()

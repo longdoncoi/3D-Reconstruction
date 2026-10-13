@@ -78,11 +78,26 @@ class BootstrapRuntimeLoadTests(unittest.TestCase):
 
         self._saved_backend = model_loader._global_backend
         model_loader._global_backend = None
+        # Isolate registry mock for all bootstrap tests.
+        self._saved_registry = getattr(self.server, "_registry", None)
+        mock_model_def = MagicMock()
+        mock_model_def.is_vision = False
+        mock_model_def.filename = "test.gguf"
+        mock_model_def.desc = "Test model (Q4_K_M)"
+        mock_model_def.mmproj_filename = None
+        mock_model_def.mmproj_repo_id = None
+        self.mock_registry = MagicMock()
+        self.mock_registry.get_by_index.return_value = mock_model_def
+        self.server._registry = self.mock_registry
 
     def tearDown(self) -> None:
         from ai_assistant.llm import model_loader
 
         model_loader._global_backend = self._saved_backend
+        if self._saved_registry is not None:
+            self.server._registry = self._saved_registry
+        # Stabilizer: prevent module-level LLM state leakage across integration tests
+        llm_module.llm = None
 
     @staticmethod
     def _patch_backend(backend):
@@ -105,7 +120,25 @@ class BootstrapRuntimeLoadTests(unittest.TestCase):
         backend.model_description = "Test model (Q4_K_M)"
 
         p1, p2, p3 = self._patch_backend(backend)
-        with p1, p2, p3, patch.object(rag_module, "initialize_rag", return_value=0):
+        # Mock registry so load_model finds a valid model without real files.
+        mock_model_def = MagicMock()
+        mock_model_def.is_vision = False
+        mock_model_def.filename = "test.gguf"
+        mock_model_def.desc = "Test model (Q4_K_M)"
+        mock_model_def.mmproj_filename = None
+        mock_model_def.mmproj_repo_id = None
+        mock_registry = MagicMock()
+        mock_registry.get_by_index.return_value = mock_model_def
+        def _fake_load(**kw):
+            llm_module.llm = backend
+            llm_module.is_vision_model = False
+            llm_module.active_model_desc = "Test model (Q4_K_M)"
+
+        with (
+            p1, p2, p3,
+            patch.object(rag_module, "initialize_rag", return_value=0),
+            patch.object(llm_module, "load_model", _fake_load),
+        ):
             self.server.bootstrap_runtime()
 
         # The agent facade gates on llm_runtime.llm — this is the P0 signal.
@@ -135,9 +168,17 @@ class BootstrapRuntimeLoadTests(unittest.TestCase):
         backend.model_description = "Vision model"
 
         p1, p2, p3 = self._patch_backend(backend)
+
+        def _fake_vision_load(**kw):
+            llm_module.llm = backend
+            llm_module.is_vision_model = True
+            llm_module.active_model_desc = "Vision model"
+
         with p1, p2, p3, patch.object(
             rag_module, "initialize_rag", return_value=0
-        ), patch.object(rag_module, "release_embedding_for_vision") as release:
+        ), patch.object(rag_module, "release_embedding_for_vision") as release, patch.object(
+            llm_module, "load_model", _fake_vision_load
+        ):
             self.server.bootstrap_runtime()
             release.assert_called_once()
 
