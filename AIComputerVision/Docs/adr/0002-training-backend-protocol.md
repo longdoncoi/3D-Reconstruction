@@ -25,7 +25,8 @@ as a required parameter.
   handle `H`. The pipeline never inspects it; it only hands it back to the same
   backend's `export`.
 - `preflight` receives its dependency list from the backend
-  (`required_modules`) instead of hard-coding a framework.
+  (`required_modules(cfg)`) instead of hard-coding a framework — a *method*,
+  so an optional feature can add an optional module (ADR 0006).
 - Tests drive the whole pipeline with a fake backend, so orchestration logic is
   verified offline with 100% coverage; API drift inside `ultralytics` is caught
   by `cvtrain-nightly.yml`, which runs the real stack on a tiny dataset.

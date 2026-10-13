@@ -77,7 +77,10 @@ Three consequences:
   so preflight/dry-run/prompt/quality-gate/manifest-durability/progress are all
   verified offline;
 * `preflight` receives its dependency list from the backend
-  (`required_modules`) instead of hard-coding a framework.
+  (`backend.required_modules(cfg)`) instead of hard-coding a framework — so an
+  optional feature can demand an optional package: `--tensorboard` fails in
+  preflight (exit `2`) rather than training for an hour and then writing no
+  logs at all.
 
 Validation is split three ways so no module has two reasons to change:
 `checks` owns the `Check`/`PreflightReport` vocabulary every contributor
@@ -150,8 +153,10 @@ python AIComputerVision/TrainModel.py --verify-manifest
 ```
 
 `--skip-unchanged` is about *whether to train*, not about permission to
-overwrite: an interactive run still asks before touching a model that exists but
-no longer matches (the desktop app passes `--yes` and never prompts). See
+overwrite: an interactive run asks about *any* model that is already there
+before it starts, and only afterwards decides whether that model will actually
+be touched — so one that no longer matches is still confirmed before it is
+replaced (the desktop app passes `--yes` and never prompts). See
 [Manifest](#manifest) for the exact rule a model has to satisfy to be skipped.
 
 `--check`, `--dry-run`, `--write-manifest` and `--verify-manifest` are the four
@@ -171,12 +176,12 @@ load it.
 
 Exit codes are declared once in `cvtrain/errors.py` (`ExitCode`) and never
 written as bare integers elsewhere: `0` success, `1` unexpected failure, `2`
-preflight/manifest failure (including an unreadable file the pipeline had to
-hash or measure — `StorageError`, "cannot vouch"), `3` quality-gate failure,
-`130` interrupted. Expected failures (`CvTrainError`) are logged as a single
-actionable line; anything else keeps the full traceback. The Qt dock reports
-the number verbatim and only tests it against zero, so adding a code is a
-compatible change.
+preflight/manifest failure (including a file the pipeline had to hash, measure
+or *write* — `StorageError`, "this storage is not ready"), `3` quality-gate
+failure, `130` interrupted. Expected failures (`CvTrainError`) are logged as a
+single actionable line; anything else keeps the full traceback. The Qt dock
+reports the number verbatim and only tests it against zero, so adding a code is
+a compatible change.
 
 ## Quality gate
 
@@ -252,8 +257,12 @@ through the same `ManifestIntegrityError` — so an artifact the pipeline cannot
 vouch for is never reported as a clean run. That end-of-run check is scoped to
 the models this invocation is responsible for (`verify_manifest(only=…)`): a
 stray ONNX already sitting in `Models/` is not this run's problem, while the
-standalone `--verify-manifest` command keeps the full bidirectional sweep.
-A manifest that cannot be parsed is quarantined as
+standalone `--verify-manifest` command keeps the full bidirectional sweep. A
+stray is deliberately *reported* rather than adopted: `--write-manifest` only
+rebuilds entries for the contract models, since vouching for an unknown ONNX
+would hand it a clean verification with no provenance behind it. The fix is to
+remove the file or re-export it from the pipeline. A manifest that cannot be
+parsed is quarantined as
 `manifest.json.corrupt-<timestamp>` before a skeleton is returned, so the next
 write cannot silently erase the only record of what was on disk.
 
@@ -296,14 +305,24 @@ cheap hyper-parameters never pays for hashing a checkpoint.
 
 The pipeline is single-writer by design (the desktop app runs one training job
 at a time), and that assumption is now *enforced*, not merely stated: a run —
-and `--write-manifest` — takes an advisory lock (`Models/.cvtrain.lock`) for the
-whole read-train-write window, so a second `cvtrain` aimed at the same
-directory fails fast with a `ConcurrentRunError` (exit `2`) instead of racing on
-`manifest.json`. The lock file carries a pid+token, and release deletes it only
-while it is still ours — a steal that landed mid-run is never unlocked from
-under its new owner. A lock left behind by a crash is treated as abandoned
-after `LOCK_STALE_SECONDS` (24 h) and replaced with a warning. Every write is
-atomic regardless, so even an outside writer cannot leave a torn file.
+and `--write-manifest`, and `--verify-manifest` — takes an advisory lock
+(`Models/.cvtrain.lock`) for the whole read-train-write window, so a second
+`cvtrain` aimed at the same directory fails fast with a `ConcurrentRunError`
+(exit `2`) instead of racing on `manifest.json`. Verification is included on
+purpose: it hashes artifacts a concurrent run may be replacing, and "wait for
+the run to finish" is the honest answer where a lock-free sweep would report a
+mismatch that exists only as a race. The lock file carries a pid+token, and
+release deletes it only while it is still ours — a steal that landed mid-run is
+never unlocked from under its new owner. A lock left behind by a crash is
+treated as abandoned after `LOCK_STALE_SECONDS` (24 h) and replaced with a
+warning; a live run keeps its lock young by refreshing the mtime once per epoch
+(`fsio.touch_lock`), so a training job that outlives the window can never be
+mistaken for that crash and let a second writer in. Every write is atomic
+regardless, so even an outside writer cannot leave a torn file — and a write the
+OS refuses (a read-only `Models/`, a full disk, a Windows sharing violation)
+surfaces as a typed `StorageError` (exit `2`) instead of a traceback. The one
+exception is a framework output that should exist and does not: that is a bug
+and keeps its stack trace.
 
 ## Tests
 

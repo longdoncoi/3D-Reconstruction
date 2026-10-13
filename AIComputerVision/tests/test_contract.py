@@ -44,6 +44,26 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual(self._returned_literal(function), expected)
 
 
+class ContractSourcePresenceTests(unittest.TestCase):
+    """A relocated contract file must not switch the contract itself off.
+
+    ``ContractTests``/``OpsetCeilingTests`` skip themselves when the C++
+    sources are absent, which is right for a Python-only checkout — but a
+    *rename* has the identical effect, leaving CI green with no comparison
+    running at all. This test inverts the guard: if the Qt sources are checked
+    out, the files the contract reads must be there too, so a move turns the
+    suite red instead of quiet.
+    """
+
+    REPO_SRC = Path(__file__).resolve().parents[2] / "src"
+
+    def test_the_contract_sources_are_present_when_the_qt_sources_are(self) -> None:
+        if not self.REPO_SRC.exists():
+            self.skipTest("Python-only checkout: there is no contract to compare against")
+        self.assertTrue(HEADER.exists(), f"{HEADER} moved or was renamed; ContractTests now skips silently")
+        self.assertTrue(CMAKE.exists(), f"{CMAKE} missing; the opset ceiling tripwire is inactive")
+
+
 ORT_OPSET_CEILING = {"1.20": 21}
 """ONNX Runtime -> highest opset its loader implements (vendor table).
 

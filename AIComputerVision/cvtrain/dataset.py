@@ -56,7 +56,8 @@ def missing_dataset_paths(parsed: dict[object, object], yaml_dir: Path) -> list[
 
     Only string entries are validated: ``train`` can legitimately be a text file
     listing or a remote URL that the framework resolves, so anything that is not
-    a plain path is left to the framework instead of being rejected here.
+    a plain path is left to the framework instead of being rejected here —
+    ``ref_exists`` is *only* asked about references that name a local path.
     """
 
     base = dataset_base(parsed, yaml_dir)
@@ -64,6 +65,11 @@ def missing_dataset_paths(parsed: dict[object, object], yaml_dir: Path) -> list[
     for key in ("train", "val"):
         value = parsed.get(key)
         if not isinstance(value, str):
+            continue
+        if "://" in value:
+            # Remote (http://, https://, s3://, ...): there is nothing on this
+            # disk to check, and reporting it as "missing" would reject a
+            # dataset shape Ultralytics downloads itself.
             continue
         if not ref_exists(value, base):
             missing.append(f"{key}='{value}' (resolved under {base})")

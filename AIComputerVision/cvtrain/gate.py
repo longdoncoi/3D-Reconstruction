@@ -19,6 +19,8 @@ this module is the *comparing* half.
 from __future__ import annotations
 
 import logging
+import math
+import numbers
 
 from . import manifest as manifest_mod
 from .config import ModelSpec, TrainConfig
@@ -28,6 +30,29 @@ from .fsio import sha256_file
 LOG = logging.getLogger("cvtrain.gate")
 
 __all__ = ["already_current", "dataset_digest", "enforce_quality_gate", "weights_digest"]
+
+
+def _usable_metrics(metrics: object) -> dict[str, float]:
+    """Keep only metrics this gate can actually compare against a threshold.
+
+    Accepting :class:`object` is deliberate: one caller hands back numbers read
+    out of a JSON manifest that a hand (or an older build) may have reshaped,
+    and the other hands back whatever the framework returned. A gate that
+    cannot read its input must fail the threshold — *fail closed* — rather than
+    raise ``AttributeError``/``TypeError`` halfway through the run, and a
+    ``NaN`` must never silently satisfy ``actual < minimum`` (it does not, in
+    IEEE-754 arithmetic, which would publish a model that met no bar at all).
+    """
+
+    if not isinstance(metrics, dict):
+        return {}
+    usable: dict[str, float] = {}
+    for name, value in metrics.items():
+        if isinstance(value, numbers.Real):
+            number = float(value)
+            if math.isfinite(number):
+                usable[str(name)] = number
+    return usable
 
 
 def weights_digest(spec: ModelSpec, cfg: TrainConfig) -> str | None:
@@ -133,7 +158,7 @@ def already_current(spec: ModelSpec, cfg: TrainConfig, manifest: manifest_mod.Ma
     return weights_sha is not None and entry.get("source_weights_sha256") == weights_sha
 
 
-def enforce_quality_gate(cfg: TrainConfig, spec: ModelSpec, metrics: dict[str, float]) -> None:
+def enforce_quality_gate(cfg: TrainConfig, spec: ModelSpec, metrics: object) -> None:
     """Refuse to publish (or keep) an artifact below the requested bar.
 
     Called right after training — *before* the export is published, so a model
@@ -143,19 +168,22 @@ def enforce_quality_gate(cfg: TrainConfig, spec: ModelSpec, metrics: dict[str, f
     a model that never met the bar, which is precisely the "skip hides work"
     failure this pipeline refuses to allow elsewhere.
 
-    A metric the backend did not report is a failure, not a pass: the operator
-    asked to gate on it, so silently not checking would defeat the request. The
-    message lists what *was* reported, which is usually a typo in the name.
+    A metric the backend did not report — or reported in a shape this gate
+    cannot compare (see :func:`_usable_metrics`) — is a failure, not a pass:
+    the operator asked to gate on it, so silently not checking would defeat the
+    request. The message lists what *was* reported, which is usually a typo in
+    the name.
     """
 
     if not cfg.min_metrics:
         return
+    reported = _usable_metrics(metrics)
     for name, minimum in cfg.min_metrics:
-        actual = metrics.get(name)
+        actual = reported.get(name)
         if actual is None:
-            reported = ", ".join(sorted(metrics)) or "none"
+            names = ", ".join(sorted(reported)) or "none"
             raise QualityGateError(
-                f"{spec.output}: metric {name!r} was not reported (reported: {reported}); "
+                f"{spec.output}: metric {name!r} was not reported as a usable number (reported: {names}); "
                 "fix or drop that --min-metric threshold"
             )
         if actual < minimum:

@@ -313,6 +313,21 @@ class ManifestQuarantineTests(unittest.TestCase):
             self.assertEqual(manifest["entries"], {})
             self.assertEqual(len(list(models_dir.glob(f"{MANIFEST_NAME}.corrupt-*"))), 1)
 
+    def test_an_entry_that_is_not_a_map_is_quarantined(self) -> None:
+        # Every reader below is typed against a map: a scalar where an entry
+        # belongs would raise AttributeError (exit 1 + traceback) partway
+        # through a check the operator asked for.
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp)
+            (models_dir / MANIFEST_NAME).write_text('{"entries": {"yolo11n.onnx": "oops"}}', encoding="utf-8")
+
+            with self.assertLogs("cvtrain.manifest", level="WARNING") as captured:
+                manifest = manifest_mod.load_manifest(models_dir)
+
+            self.assertEqual(manifest["entries"], {})
+            self.assertEqual(len(list(models_dir.glob(f"{MANIFEST_NAME}.corrupt-*"))), 1)
+            self.assertTrue(any("is not a map" in line for line in captured.output))
+
     def test_a_failed_quarantine_still_returns_the_skeleton(self) -> None:
         # A read-only volume must not stop the run: the corruption is logged and
         # the reader still fails closed to an empty manifest.

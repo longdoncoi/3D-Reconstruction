@@ -31,12 +31,17 @@ class FakeBackend:
     """Deterministic stand-in for :class:`cvtrain.backend.UltralyticsBackend`."""
 
     version = "9.9.9-fake"
-    required_modules: tuple[str, ...] = ()
 
     def __init__(self, *, fail_on: str | None = None) -> None:
         self.calls: list[str] = []
         self.fail_on = fail_on
         self.prepared: TrainConfig | None = None
+
+    def required_modules(self, cfg: TrainConfig) -> tuple[str, ...]:
+        # The fake drives preflight through the *backend-owned* dependency list
+        # without asking for any framework module: the offline suite must not
+        # need the ML stack to exercise this path.
+        return ()
 
     def prepare(self, cfg: TrainConfig) -> None:
         self.prepared = cfg
@@ -124,6 +129,15 @@ class HappyPathTests(_SandboxedTestCase):
             self.backend.calls,
             ["prepare", "train:det", "export:det", "train:seg", "export:seg"],
         )
+
+    def test_every_epoch_keeps_the_advisory_lock_alive(self) -> None:
+        # The stale-lock rule ("abandoned after LOCK_STALE_SECONDS") is only
+        # safe if a run that is still working refreshes its lock. Without this
+        # heartbeat a single model training past the window would be mistaken
+        # for a crash and a second writer would be let into Models/.
+        with mock.patch("cvtrain.trainer.touch_lock") as touch:
+            self.assertEqual(run(self.cfg, backend=self.backend), ExitCode.OK)
+        self.assertEqual(touch.call_count, self.cfg.epochs * len(self.cfg.models))
 
     def test_manifest_records_verifiable_provenance(self) -> None:
         run(self.cfg, backend=self.backend)
@@ -624,6 +638,28 @@ class QualityGateTests(_SandboxedTestCase):
         with self.assertRaises(QualityGateError) as ctx:
             run(gated, backend=FakeBackend())
         self.assertIn("reported: none", str(ctx.exception))
+
+    def test_a_recorded_metric_that_is_not_a_usable_number_cannot_pass_the_gate(self) -> None:
+        # Three shapes a hand-edited (or older) manifest can carry, each of
+        # which must fail closed: a scalar where a map belongs used to raise
+        # AttributeError (exit 1 + traceback), a string used to raise TypeError,
+        # and NaN satisfies ``actual < minimum`` in no arithmetic at all — so
+        # an unconverged model would have sailed straight through the bar.
+        for bogus in ("oops", {"metrics/mAP50(B)": "0.9"}, {"metrics/mAP50(B)": float("nan")}):
+            with self.subTest(metrics=bogus):
+                cfg = _config(self.root, models=("det",), skip_unchanged=True)
+                run(cfg, backend=FakeBackend())
+                path = cfg.models_dir / MANIFEST_NAME
+                document = json.loads(path.read_text(encoding="utf-8"))
+                document["entries"][MODEL_SPECS["det"].output]["metrics"] = bogus
+                path.write_text(json.dumps(document), encoding="utf-8")
+
+                gated = _config(
+                    self.root, models=("det",), skip_unchanged=True, min_metrics=(("metrics/mAP50(B)", 0.1),)
+                )
+                with self.assertRaises(QualityGateError) as ctx:
+                    run(gated, backend=FakeBackend())
+                self.assertIn("was not reported", str(ctx.exception))
 
 
 class PublishBackupTests(_SandboxedTestCase):

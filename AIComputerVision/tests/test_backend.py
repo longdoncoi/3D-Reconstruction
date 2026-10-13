@@ -22,7 +22,14 @@ from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
-from cvtrain.backend import TrainedModel, TrainingBackend, UltralyticsBackend, _run_timestamp, metrics_from
+from cvtrain.backend import (
+    TrainedModel,
+    TrainingBackend,
+    UltralyticsBackend,
+    _run_timestamp,
+    metrics_from,
+    train_kwargs,
+)
 from cvtrain.config import MODEL_SPECS, TrainConfig
 from cvtrain.errors import BackendUnavailableError
 
@@ -38,7 +45,9 @@ class ProtocolTests(unittest.TestCase):
     def test_structural_conformance_accepts_any_duck_typed_backend(self) -> None:
         class Minimal:
             version = "1.2.3"
-            required_modules: tuple[str, ...] = ()
+
+            def required_modules(self, cfg: TrainConfig) -> tuple[str, ...]:
+                return ()
 
             def prepare(self, cfg: TrainConfig) -> None:  # pragma: no cover - never called
                 raise NotImplementedError
@@ -54,7 +63,9 @@ class ProtocolTests(unittest.TestCase):
     def test_missing_method_breaks_conformance(self) -> None:
         class Incomplete:
             version = "1.2.3"
-            required_modules: tuple[str, ...] = ()
+
+            def required_modules(self, cfg: TrainConfig) -> tuple[str, ...]:
+                return ()
 
         self.assertNotIsInstance(Incomplete(), TrainingBackend)
 
@@ -76,6 +87,32 @@ class MetricsFromTests(unittest.TestCase):
         self.assertEqual(metrics_from(None), {})
         self.assertEqual(metrics_from(object()), {})
         self.assertEqual(metrics_from(_Results({"not": "a"})), {})
+
+
+class TrainKwargsTests(unittest.TestCase):
+    """``TrainConfig`` -> ``YOLO.train(...)`` mapping lives in the adapter (ADR 0002)."""
+
+    def test_train_kwargs_are_reproducible(self) -> None:
+        cfg = TrainConfig(models=("det",), epochs=3, seed=7)
+        kwargs = train_kwargs(cfg)
+        self.assertEqual(kwargs["epochs"], 3)
+        self.assertEqual(kwargs["seed"], 7)
+        self.assertEqual(kwargs["data"], str(cfg.data_yaml))
+        self.assertIs(kwargs["deterministic"], True)
+        self.assertIs(kwargs["exist_ok"], False)
+        self.assertNotIn("device", kwargs)
+
+    def test_device_is_forwarded_when_set(self) -> None:
+        self.assertEqual(train_kwargs(TrainConfig(device="cpu"))["device"], "cpu")
+
+    def test_auto_device_is_not_forwarded_to_the_framework(self) -> None:
+        # ``auto`` is provenance spelling ("let the framework choose"), not a
+        # device the framework accepts: it must behave like the default.
+        for device in ("auto", "AUTO", "  auto  "):
+            with self.subTest(device=device):
+                cfg = TrainConfig(device=device)
+                self.assertEqual(cfg.device_class, "auto")
+                self.assertNotIn("device", train_kwargs(cfg))
 
 
 class _FakeYOLO:
@@ -162,7 +199,15 @@ class _SandboxedTestCase(unittest.TestCase):
 
 class LazyImportTests(_SandboxedTestCase):
     def test_declares_the_modules_preflight_must_verify(self) -> None:
-        self.assertEqual(UltralyticsBackend.required_modules, ("ultralytics", "yaml", "onnx"))
+        # A method, not a constant: an optional feature can add an optional
+        # dependency, and the adapter is the one module that knows which.
+        self.assertEqual(UltralyticsBackend().required_modules(self.cfg), ("ultralytics", "yaml", "onnx"))
+
+    def test_tensorboard_is_demanded_only_when_it_was_asked_for(self) -> None:
+        backend = UltralyticsBackend()
+        self.assertNotIn("tensorboard", backend.required_modules(self.cfg))
+        self.cfg.tensorboard = True
+        self.assertEqual(backend.required_modules(self.cfg)[-1], "tensorboard")
 
     def test_construction_is_lazy(self) -> None:
         # Building the backend must not import the ML stack, otherwise
@@ -197,6 +242,31 @@ class PrepareTests(_SandboxedTestCase):
         with _stub_ultralytics() as (_, settings):
             UltralyticsBackend().prepare(self.cfg)
         self.assertEqual(settings, {})
+
+    def test_a_missing_tensorboard_is_reported_instead_of_claimed(self) -> None:
+        # ultralytics drops TensorBoard *silently* when the package is absent,
+        # so the "enabled" line must never appear for a run that will write no
+        # logs: say what actually happened, and leave the setting off.
+        self.cfg.tensorboard = True
+        with (
+            _stub_ultralytics() as (_, settings),
+            mock.patch.dict(sys.modules, {"tensorboard": None}),
+            self.assertLogs("cvtrain.backend", level="WARNING") as captured,
+        ):
+            UltralyticsBackend().prepare(self.cfg)
+        self.assertEqual(settings, {})
+        self.assertTrue(any("no TensorBoard logs" in line for line in captured.output))
+
+    def test_a_backend_without_a_settings_object_does_not_claim_success(self) -> None:
+        # Half of the same rule: even with the package importable, there must
+        # be somewhere to switch the writer on. No settings -> no claim.
+        self.cfg.tensorboard = True
+        backend = UltralyticsBackend()
+        backend._yolo = object()  # already "loaded", so no framework import
+        backend._settings = None
+        with self.assertLogs("cvtrain.backend", level="WARNING") as captured:
+            backend.prepare(self.cfg)
+        self.assertTrue(any("TensorBoard logging stays off" in line for line in captured.output))
 
 
 class TrainTests(_SandboxedTestCase):

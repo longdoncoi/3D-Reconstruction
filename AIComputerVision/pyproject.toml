@@ -48,9 +48,10 @@ strict_equality = true
 # not a re-export of ours: ``no_implicit_reexport`` is a rule about *this*
 # package's module boundaries, and applying it to site-packages would only
 # produce a suppression comment that rots when the dependency is absent.
-# ``ignore_missing_imports`` is scoped here (and to ``yaml`` below) for the
-# same import-light reason: the adapter imports the ML stack lazily, so
-# ``--help``, linting and the unit suite must type-check with it absent.
+# ``ignore_missing_imports`` is scoped here (and to ``yaml`` / ``tensorboard``
+# below) for the same import-light reason: the adapter imports the ML stack
+# lazily, so ``--help``, linting and the unit suite must type-check with it
+# absent.
 [[tool.mypy.overrides]]
 module = ["ultralytics", "ultralytics.*"]
 no_implicit_reexport = false
@@ -61,6 +62,13 @@ ignore_missing_imports = true
 # type-checking on a machine that simply has no stubs installed).
 [[tool.mypy.overrides]]
 module = ["yaml"]
+ignore_missing_imports = true
+
+# ``tensorboard`` is probed (not used) by the adapter so ``--tensorboard``
+# fails fast instead of silently writing no logs; it ships no stubs either, and
+# it must stay out of the import set of everything else.
+[[tool.mypy.overrides]]
+module = ["tensorboard"]
 ignore_missing_imports = true
 
 # Every statement *and* branch of cvtrain is exercised. The package carries two

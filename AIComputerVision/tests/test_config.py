@@ -51,28 +51,6 @@ class ResolveModelsTests(unittest.TestCase):
 
 
 class TrainConfigTests(unittest.TestCase):
-    def test_train_kwargs_are_reproducible(self) -> None:
-        cfg = TrainConfig(models=("det",), epochs=3, seed=7)
-        kwargs = cfg.train_kwargs()
-        self.assertEqual(kwargs["epochs"], 3)
-        self.assertEqual(kwargs["seed"], 7)
-        self.assertIs(kwargs["deterministic"], True)
-        self.assertIs(kwargs["exist_ok"], False)
-        self.assertNotIn("device", kwargs)
-
-    def test_device_is_forwarded_when_set(self) -> None:
-        cfg = TrainConfig(device="cpu")
-        self.assertEqual(cfg.train_kwargs()["device"], "cpu")
-
-    def test_auto_device_is_not_forwarded_to_the_framework(self) -> None:
-        # ``auto`` is provenance spelling ("let the framework choose"), not a
-        # device the framework accepts: it must behave like the default.
-        for device in ("auto", "AUTO", "  auto  "):
-            with self.subTest(device=device):
-                cfg = TrainConfig(device=device)
-                self.assertEqual(cfg.device_class, "auto")
-                self.assertNotIn("device", cfg.train_kwargs())
-
     def test_device_class_normalises_spelling(self) -> None:
         # The canonical spelling used as provenance: blank means "auto", and
         # whitespace/case around a comma list is not a different experiment.
@@ -82,9 +60,11 @@ class TrainConfigTests(unittest.TestCase):
         self.assertEqual(TrainConfig(device="CPU").device_class, "cpu")
         self.assertEqual(TrainConfig(device="cuda:0").device_class, "cuda:0")
 
-    def test_data_path_is_stringified(self) -> None:
+    def test_data_yaml_is_exposed_to_the_adapter_as_a_string(self) -> None:
+        # Kept in config: the *path* is this package's contract; only the
+        # framework keyword it lands in (``data``) is the adapter's.
         cfg = TrainConfig(data_yaml=Path("Dataset/data.yaml"))
-        self.assertEqual(cfg.train_kwargs()["data"], str(Path("Dataset/data.yaml")))
+        self.assertEqual(str(cfg.data_yaml), str(Path("Dataset/data.yaml")))
 
     def test_the_quality_gate_is_opt_in(self) -> None:
         # No threshold by default: behaviour for every existing caller (the Qt

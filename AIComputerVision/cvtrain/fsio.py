@@ -6,10 +6,12 @@ exactly one temp-file + rename implementation to get right (and to test), and
 one hashing routine so a digest computed during training can never disagree
 with one recomputed by ``--verify-manifest``.
 
-Reads the pipeline *depends on* (hashing, measuring) raise
+Reads the pipeline *depends on* (hashing, measuring) and writes it performs
+(staging a temp file, ``fsync``, the rename) raise
 :class:`~cvtrain.errors.StorageError` instead of ``OSError``: a file that
-vanished or is unreadable is an environment fact with exit code ``2``, not a
-bug with a traceback.
+vanished, a permission denied or a dying disk are environment facts with exit
+code ``2``, not bugs with a traceback. The single carve-out is a *source*
+that should exist and does not (see :func:`atomic_copy`).
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ __all__ = [
     "directory_lock",
     "file_size",
     "sha256_file",
+    "touch_lock",
 ]
 
 LOG = logging.getLogger("cvtrain.fsio")
@@ -116,17 +119,25 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8", newline
     file is durable, not just readable. ``newline="\\n"`` keeps text files
     byte-identical across platforms, which matters for a JSON manifest that is
     diffed by Git.
+
+    Every failure here — an unwritable directory, a full disk, a rename that
+    the OS refuses — is an environment fact, so it is re-raised as
+    :class:`~cvtrain.errors.StorageError` (exit ``2``): the manifest that
+    carries provenance is one this run could not write, not a pipeline bug.
     """
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp_name = ""
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
         with os.fdopen(handle, "w", encoding=encoding, newline=newline) as stream:
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(tmp_name, path)
         _fsync_dir(path.parent)
+    except OSError as exc:
+        raise StorageError(f"Cannot write {path}: {exc}") from exc
     finally:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
@@ -139,23 +150,34 @@ def atomic_copy(src: Path, dst: Path) -> Path:
     Readers therefore see either the previous artifact or the complete new one,
     never a truncated ONNX file mid-copy. The temp copy is ``fsync``-ed before
     the rename so the published artifact is durable, not just complete.
+
+    ``src`` is opened *before* the typed block on purpose: a framework output
+    that was supposed to exist and does not is a bug, and keeps its traceback
+    (ADR 0005). Everything that writes ``dst`` — staging, ``fsync``, rename —
+    is an environment fact and becomes a
+    :class:`~cvtrain.errors.StorageError` instead, which is exactly what an
+    operator needs when the OS refuses the rename (a read-only ``Models/``, a
+    Windows sharing violation, a full disk).
     """
 
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    handle, tmp_name = tempfile.mkstemp(dir=str(dst.parent), prefix=f".{dst.name}.", suffix=".tmp")
-    try:
-        # Copy and fsync through the mkstemp descriptor: on Windows reopening
-        # the temp path would fail (mkstemp marks the file delete-on-close).
-        with os.fdopen(handle, "wb") as stream:
-            with src.open("rb") as source:
+    tmp_name = ""
+    with src.open("rb") as source:
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            handle, tmp_name = tempfile.mkstemp(dir=str(dst.parent), prefix=f".{dst.name}.", suffix=".tmp")
+            # Copy and fsync through the mkstemp descriptor: on Windows reopening
+            # the temp path would fail (mkstemp marks the file delete-on-close).
+            with os.fdopen(handle, "wb") as stream:
                 shutil.copyfileobj(source, stream)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(tmp_name, dst)
-        _fsync_dir(dst.parent)
-    finally:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp_name, dst)
+            _fsync_dir(dst.parent)
+        except OSError as exc:
+            raise StorageError(f"Cannot publish {dst}: {exc}") from exc
+        finally:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
     return dst
 
 
@@ -249,6 +271,25 @@ def _acquire_lock(lock: Path, stale_after: float) -> str:
     raise ConcurrentRunError(_held_message(lock)) from last_error
 
 
+def touch_lock(lock: Path) -> None:
+    """Refresh ``lock``'s mtime: "alive now", the heartbeat of a run holding it.
+
+    :func:`directory_lock` treats a lock older than ``LOCK_STALE_SECONDS`` as
+    abandoned and replaces it, which is how a crashed run stops wedging the
+    directory. That rule only stays correct if a *live* run keeps its lock
+    young, so training refreshes it once per epoch — otherwise a single
+    long-running model (``MAX_EPOCHS`` is deliberately generous) would be
+    mistaken for a crash halfway through and a second writer could be let in.
+    Best effort: failing to refresh cannot stop a run that already owns the
+    lock, so it warns and returns rather than raising.
+    """
+
+    try:
+        os.utime(lock)
+    except OSError as exc:
+        LOG.warning("Could not refresh lock %s: %s", lock, exc)
+
+
 @contextlib.contextmanager
 def directory_lock(directory: Path, *, stale_after: float = LOCK_STALE_SECONDS) -> Iterator[Path]:
     """Hold an advisory lock on ``directory`` for the duration of the block.
@@ -263,12 +304,16 @@ def directory_lock(directory: Path, *, stale_after: float = LOCK_STALE_SECONDS) 
 
     A lock older than ``stale_after`` is treated as abandoned (its process
     crashed) and replaced with a warning, so a crash cannot wedge the next run
-    forever. The lock is always released on the way out — unless it changed
-    hands while the body ran, in which case the new owner's file is left alone
-    (see :func:`_remove_lock`).
+    forever; a run that keeps working keeps its lock young with
+    :func:`touch_lock`. The lock is always released on the way out — unless it
+    changed hands while the body ran, in which case the new owner's file is
+    left alone (see :func:`_remove_lock`).
     """
 
-    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise StorageError(f"Cannot prepare the models directory {directory}: {exc}") from exc
     lock = directory / LOCK_NAME
     token = _acquire_lock(lock, stale_after)
     try:

@@ -115,18 +115,18 @@ class QualityGateError(CvTrainError):
 
 
 class StorageError(CvTrainError):
-    """A file the pipeline had to read, hash or measure is unusable.
+    """A file the pipeline had to read, write, hash or measure is unusable.
 
-    Hashing a checkpoint, measuring a just-published ONNX or scanning
-    ``Models/`` can fail on a missing file, a permission or a dying disk.
-    Those are environment facts — "this artifact is not trustworthy" — so they
-    share exit code ``2`` with preflight and manifest failures instead of
-    surfacing as an ``OSError`` traceback with exit ``1``. A traceback would
-    imply a bug; here there is none, only storage the run cannot vouch for.
+    Hashing a checkpoint, measuring a just-published ONNX, staging a manifest
+    or creating a lock can fail on a missing file, a permission, a full disk or
+    a Windows sharing violation. Those are environment facts — "this storage is
+    not ready" — so they share exit code ``2`` with preflight and manifest
+    failures instead of surfacing as an ``OSError`` traceback with exit ``1``.
+    A traceback would imply a bug; here there is none.
 
-    Deliberately *not* used for the atomic publish path itself: a vanished
-    framework output that was supposed to exist is a bug, and keeps its
-    traceback.
+    One carve-out remains: a *source* the publish copies from (the framework
+    output that should exist) keeps its ``OSError``, because an export that
+    produced nothing *is* a bug — see :func:`cvtrain.fsio.atomic_copy`.
     """
 
     exit_code: ExitCode = ExitCode.PREFLIGHT

@@ -28,7 +28,7 @@ from .errors import BackendUnavailableError
 
 LOG = logging.getLogger("cvtrain.backend")
 
-__all__ = ["EpochCallback", "TrainedModel", "TrainingBackend", "UltralyticsBackend"]
+__all__ = ["EpochCallback", "TrainedModel", "TrainingBackend", "UltralyticsBackend", "train_kwargs"]
 
 EpochCallback = Callable[[int, int], None]
 """``(epoch_index, epoch_total)`` — 0-based index, 1-based total."""
@@ -69,8 +69,17 @@ class TrainingBackend(Protocol[H]):
     version: str
     """Framework version, recorded in the manifest as provenance."""
 
-    required_modules: tuple[str, ...]
-    """Importable modules this backend needs — handed straight to preflight."""
+    def required_modules(self, cfg: TrainConfig) -> tuple[str, ...]:
+        """Importable modules this backend needs *for this run* — handed to preflight.
+
+        A method rather than a constant because some dependencies are
+        conditional on the configuration: ``--tensorboard`` needs the
+        ``tensorboard`` package, and a feature the pipeline cannot turn on must
+        be an environment failure *before* training starts, not a silent no-op
+        halfway through it. Declared by the adapter — the module that knows
+        which flag needs which package — so ``preflight`` still hard-codes no
+        framework.
+        """
 
     def prepare(self, cfg: TrainConfig) -> None:
         """Apply run-wide settings (once, before any model is trained)."""
@@ -111,17 +120,51 @@ def _run_timestamp() -> str:
     return f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-{os.getpid()}"
 
 
+def train_kwargs(cfg: TrainConfig) -> dict[str, object]:
+    """Keyword arguments forwarded to ``YOLO.train``.
+
+    This mapping is *framework syntax*, so it belongs to the adapter, not to
+    :mod:`cvtrain.config` — ``exist_ok``/``deterministic``/``data`` are
+    Ultralytics' names, and a second backend would spell its own. ``cfg`` stays
+    a plain description of the run.
+    """
+
+    kwargs: dict[str, object] = {
+        "data": str(cfg.data_yaml),
+        "epochs": cfg.epochs,
+        "imgsz": cfg.imgsz,
+        "batch": cfg.batch,
+        "workers": cfg.workers,
+        "seed": cfg.seed,
+        "deterministic": True,
+        "exist_ok": False,
+        "verbose": cfg.verbose,
+    }
+    # ``auto`` is provenance spelling ("let the framework choose"), not a
+    # device the framework accepts: only a concrete device is forwarded.
+    if cfg.device and cfg.device_class != "auto":
+        kwargs["device"] = cfg.device_class
+    return kwargs
+
+
 class UltralyticsBackend:
     """Adapter over ``ultralytics``. Imports happen on first real use only."""
 
     #: Modules preflight must see before this backend can train or export.
     #: ``yaml`` parses ``data.yaml`` and ``onnx`` is required by the export step.
-    required_modules: tuple[str, ...] = ("ultralytics", "yaml", "onnx")
+    #: ``tensorboard`` joins them only under ``--tensorboard`` (see
+    #: :meth:`required_modules`): an optional feature still has to fail fast.
+    BASE_MODULES: tuple[str, ...] = ("ultralytics", "yaml", "onnx")
 
     def __init__(self) -> None:
         self.version = ""
         self._yolo: Any = None
         self._settings: Any = None
+
+    def required_modules(self, cfg: TrainConfig) -> tuple[str, ...]:
+        if cfg.tensorboard:
+            return (*self.BASE_MODULES, "tensorboard")
+        return self.BASE_MODULES
 
     def _ensure_loaded(self) -> None:
         if self._yolo is not None:
@@ -140,9 +183,22 @@ class UltralyticsBackend:
 
     def prepare(self, cfg: TrainConfig) -> None:
         self._ensure_loaded()
-        if cfg.tensorboard and self._settings is not None:
-            self._settings.update({"tensorboard": True})
-            LOG.info("TensorBoard logging enabled. Inspect with: tensorboard --logdir %s", cfg.runs_dir)
+        if not cfg.tensorboard:
+            return
+        # Preflight already required the package when deps were fatal, but a
+        # dry-run-shaped caller can reach here without it: ultralytics drops
+        # TensorBoard *silently* when SummaryWriter is missing, so the log line
+        # must describe what actually happened rather than what was requested.
+        try:
+            import tensorboard  # noqa: F401  # existence probe, not a use
+        except ImportError:
+            LOG.warning("tensorboard is not importable; no TensorBoard logs will be written")
+            return
+        if self._settings is None:
+            LOG.warning("the framework exposes no settings; TensorBoard logging stays off")
+            return
+        self._settings.update({"tensorboard": True})
+        LOG.info("TensorBoard logging enabled. Inspect with: tensorboard --logdir %s", cfg.runs_dir)
 
     def train(self, spec: ModelSpec, cfg: TrainConfig, on_epoch: EpochCallback) -> TrainedModel[Any]:
         self._ensure_loaded()
@@ -158,7 +214,7 @@ class UltralyticsBackend:
 
         project = cfg.runs_dir / spec.runs_subdir
         name = f"train-{_run_timestamp()}"
-        results = model.train(project=str(project), name=name, **cfg.train_kwargs())
+        results = model.train(project=str(project), name=name, **train_kwargs(cfg))
         run_dir = Path(getattr(model.trainer, "save_dir", project / name))
         return TrainedModel(metrics=metrics_from(results), run_dir=run_dir, handle=model)
 

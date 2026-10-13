@@ -104,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--write-manifest",
         action="store_true",
-        help="scan the models directory and (re)write manifest.json without training",
+        help="rebuild manifest.json from the contract models on disk, without training",
     )
     mode.add_argument(
         "--verify-manifest",
@@ -212,15 +212,23 @@ def _write_manifest(models_dir: Path) -> int:
 def _verify_manifest(models_dir: Path) -> int:
     manifest_path = models_dir / MANIFEST_NAME
     if not manifest_path.exists():
-        # Not delegated to ``verify_or_raise``: an empty directory verifies
+        # Checked *before* the lock on purpose: taking it would create an empty
+        # models directory just to report that there is nothing in it. Not
+        # delegated to ``verify_or_raise`` either: an empty directory verifies
         # clean against a skeleton manifest, and "there is nothing here" is a
         # different (still fatal) verdict than "these artifacts are corrupt".
         raise ManifestIntegrityError(f"Manifest missing: {manifest_path}")
-    manifest = manifest_mod.load_manifest(models_dir)
-    # One spelling of the verdict, shared with the post-training check: any
-    # problem becomes a ManifestIntegrityError carrying exit code 2, rendered
-    # by main() like every other expected failure.
-    manifest_mod.verify_or_raise(models_dir, manifest)
+    # The same advisory lock every writer takes. Verification reads a directory
+    # a training run may be publishing into, and hashing a just-replaced ONNX
+    # against a manifest read a moment earlier reports a mismatch that is only
+    # a race — "wait for the run to finish" is the honest answer, and it is the
+    # one ``--write-manifest`` already gives.
+    with directory_lock(models_dir):
+        manifest = manifest_mod.load_manifest(models_dir)
+        # One spelling of the verdict, shared with the post-training check: any
+        # problem becomes a ManifestIntegrityError carrying exit code 2, rendered
+        # by main() like every other expected failure.
+        manifest_mod.verify_or_raise(models_dir, manifest)
     LOG.info("Manifest OK: %s", manifest_path)
     return int(ExitCode.OK)
 

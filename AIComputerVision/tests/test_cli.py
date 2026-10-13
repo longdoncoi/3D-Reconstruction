@@ -292,6 +292,23 @@ class ManifestCommandTests(_CliTestCase):
         reported = [str(call.args[1]) for call in fake_log.error.call_args_list]
         self.assertTrue(any("held by another cvtrain run" in problem for problem in reported), reported)
 
+    def test_verify_refuses_a_held_lock(self) -> None:
+        # Verification hashes files a run may be publishing right now: a
+        # manifest read before the swap compared against the artifact after it
+        # reports a mismatch that exists only as a race. The same lock turns
+        # that into "wait for the run to finish".
+        models_dir = self._models_dir()
+        (models_dir / MODEL_SPECS["det"].output).write_bytes(b"original")
+        main(["--write-manifest", "--models-dir", str(models_dir)])
+        (models_dir / LOCK_NAME).write_text("held", encoding="utf-8")
+
+        with mock.patch("cvtrain.cli.LOG") as fake_log:
+            code = main(["--verify-manifest", "--models-dir", str(models_dir)])
+
+        self.assertEqual(code, ExitCode.PREFLIGHT)
+        reported = [str(call.args[1]) for call in fake_log.error.call_args_list]
+        self.assertTrue(any("held by another cvtrain run" in problem for problem in reported), reported)
+
 
 if __name__ == "__main__":
     unittest.main()

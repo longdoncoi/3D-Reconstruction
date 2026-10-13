@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,7 @@ from . import manifest as manifest_mod
 from .backend import EpochCallback, TrainedModel, TrainingBackend
 from .config import BASE_DIR, MODEL_SPECS, ModelSpec, TrainConfig
 from .errors import ExitCode
-from .fsio import atomic_replace_with_backup, directory_lock, file_size, sha256_file
+from .fsio import atomic_replace_with_backup, directory_lock, file_size, sha256_file, touch_lock
 from .progress import ProgressReporter
 
 LOG = logging.getLogger("cvtrain.trainer")
@@ -86,7 +87,7 @@ def _run_preflight(cfg: TrainConfig, reporter: ProgressReporter, backend: Traini
     report = preflight.run(
         cfg,
         deps_fatal=not cfg.dry_run,
-        modules=backend.required_modules,
+        modules=backend.required_modules(cfg),
     )
     for line in report.lines():
         LOG.info("%s", line)
@@ -129,10 +130,22 @@ def _start_manifest(cfg: TrainConfig, backend_version: str) -> manifest_mod.Mani
     return manifest
 
 
-def _epoch_reporter(reporter: ProgressReporter, index: int, key: str) -> EpochCallback:
-    """Bind a backend epoch callback to this model's slot in the overall bar."""
+def _epoch_reporter(
+    reporter: ProgressReporter,
+    index: int,
+    key: str,
+    heartbeat: Callable[[], None],
+) -> EpochCallback:
+    """Bind a backend epoch callback to this model's slot in the overall bar.
+
+    Each epoch also *keeps the advisory lock alive* (see
+    :func:`cvtrain.fsio.touch_lock`): the stale threshold is what decides a
+    crashed run's lock is abandoned, so a run that is very much alive must not
+    look like a crash halfway through a long training.
+    """
 
     def _on_epoch(epoch: int, total: int) -> None:
+        heartbeat()
         reporter.train_epoch(index, epoch, total, key)
 
     return _on_epoch
@@ -216,6 +229,7 @@ def _train_all(
     reporter: ProgressReporter,
     backend: TrainingBackend[Any],
     manifest: manifest_mod.Manifest,
+    heartbeat: Callable[[], None],
 ) -> list[str]:
     """Run train -> gate -> export -> publish -> record for every selected model.
 
@@ -231,11 +245,14 @@ def _train_all(
         if cfg.skip_unchanged and gate.already_current(spec, cfg, manifest, backend.version):
             LOG.info("[%d/%d] %s already matches this invocation; skipping", index + 1, total, spec.output)
             kept = (manifest.get("entries") or {}).get(spec.output) or {}
-            gate.enforce_quality_gate(cfg, spec, kept.get("metrics") or {})
+            # Read back through the gate, which tolerates a document a hand has
+            # reshaped: a scalar where a metric map was expected must read as
+            # "no metrics" (and so fail the gate) rather than raise AttributeError.
+            gate.enforce_quality_gate(cfg, spec, kept.get("metrics"))
             reporter.skipped(index, spec.key)
             continue
         LOG.info("[%d/%d] Training %s from %s", index + 1, total, spec.label, spec.ckpt)
-        model = backend.train(spec, cfg, _epoch_reporter(reporter, index, spec.key))
+        model = backend.train(spec, cfg, _epoch_reporter(reporter, index, spec.key, heartbeat))
         gate.enforce_quality_gate(cfg, spec, model.metrics)
         target = _export_one(spec, cfg, reporter, index, model, backend)
         _record_entry(manifest, spec, cfg, target, model, backend.version)
@@ -268,11 +285,18 @@ def _execute(cfg: TrainConfig, reporter: ProgressReporter, backend: TrainingBack
     # Everything that reads-then-writes ``Models/`` runs under the advisory
     # lock: a second run aimed at the same directory is refused here instead of
     # silently overwriting this run's provenance in ``manifest.json``.
-    with directory_lock(cfg.models_dir):
+    with directory_lock(cfg.models_dir) as lock:
+        # The lock's mtime is what "abandoned after LOCK_STALE_SECONDS" means,
+        # so a long training refreshes it every epoch: a run that is still
+        # working must never look like the crash the stale rule exists to clean
+        # up after.
+        def heartbeat() -> None:
+            touch_lock(lock)
+
         backend.prepare(cfg)
 
         manifest = _start_manifest(cfg, backend.version)
-        exported = _train_all(cfg, reporter, backend, manifest)
+        exported = _train_all(cfg, reporter, backend, manifest, heartbeat)
 
         # The artifacts this run just published have to be vouchable. This is the
         # same condition ``--verify-manifest`` reports, and that command exits 2 —

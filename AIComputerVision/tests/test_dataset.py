@@ -246,6 +246,19 @@ class DatasetPathTests(unittest.TestCase):
             text = _write(path, "train: [seed.txt, more.txt]\nval: images/val\nnames:\n  0: part\n")
             self.assertTrue(check_data_yaml(text).ok)
 
+    def test_a_remote_reference_is_left_to_the_framework_as_promised(self) -> None:
+        # Ultralytics downloads these itself: there is no local path to check,
+        # and reporting one as "missing" would reject a shape the framework
+        # supports — and this module's docstring promises to leave alone.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = _write(
+                root / "data.yaml",
+                "train: https://example.com/train.zip\nval: https://example.com/val.zip\nnames:\n  0: part\n",
+            )
+            self.assertTrue(check_data_yaml(path).ok)
+            self.assertEqual(missing_dataset_paths({"train": "https://example.com/train.zip"}, root), [])
+
     def test_ref_exists_missing_plain_path_falls_through(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

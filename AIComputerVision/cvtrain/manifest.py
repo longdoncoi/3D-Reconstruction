@@ -1,8 +1,10 @@
 """Model manifest: provenance + integrity for the exported ONNX artifacts.
 
 Every exported model gets an entry describing which base weights, dataset and
-hyper-parameters produced it, plus a SHA-256 digest so the Qt app (or a release
-auditor) can detect a truncated or replaced file.
+hyper-parameters produced it, plus a SHA-256 digest so ``--verify-manifest``
+(or a release auditor) can detect a truncated or replaced file. The Qt app
+does not read this document — it loads the ONNX files the manifest accounts
+for; checking them is this package's job.
 
 The document shape is expressed as :class:`Manifest`/:class:`ManifestEntry`
 ``TypedDict``s so that a typo in an entry key is a type error rather than
@@ -271,6 +273,15 @@ def load_manifest(models_dir: Path) -> Manifest:
         LOG.warning("Manifest %s is invalid (missing entries dict)", path)
         _quarantine(path)
         return _skeleton()
+    entries = cast(dict[str, Any], data)["entries"]
+    if not all(isinstance(entry, dict) for entry in entries.values()):
+        # Every reader below is typed against ``ManifestEntry``: a scalar where
+        # an entry is expected would otherwise surface as ``AttributeError``
+        # halfway through verification (exit 1 + traceback). Same verdict as a
+        # document with no entries at all — quarantined, then rebuilt.
+        LOG.warning("Manifest %s is invalid (an entry is not a map)", path)
+        _quarantine(path)
+        return _skeleton()
     return migrate(cast(dict[str, Any], data), path)
 
 
@@ -359,9 +370,12 @@ def build_from_scan(models_dir: Path) -> Manifest:
     """Create/refresh manifest entries from the ONNX files already on disk.
 
     Used by ``--write-manifest`` to adopt models that were produced elsewhere
-    (for example the pre-existing artifacts shipped with the repository). Any
-    training metadata already recorded in the manifest is preserved as long as
-    the file content is unchanged.
+    (for example the pre-existing artifacts shipped with the repository). Only
+    the files :data:`cvtrain.config.MODEL_SPECS` names are adopted: vouching
+    for an unknown ONNX would hand it a clean verification with no provenance
+    behind it, so ``verify_manifest`` reports a stray instead. Any training
+    metadata already recorded in the manifest is preserved as long as the file
+    content is unchanged.
     """
 
     manifest = load_manifest(models_dir)

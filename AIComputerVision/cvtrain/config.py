@@ -10,6 +10,11 @@ It deliberately holds no command-line *syntax*: turning a string such as
 ``metrics/mAP50(B)=0.5`` into a value is :func:`cvtrain.cli.parse_metric_threshold`,
 and deciding whether that value is meaningful is :mod:`cvtrain.preflight`.
 
+It holds no *framework* syntax either: mapping this config onto
+``YOLO.train(...)`` keyword arguments is :func:`cvtrain.backend.train_kwargs`,
+because ``exist_ok``/``deterministic`` are Ultralytics' names — a second
+backend would spell its own, and a leaf must not know them.
+
 The exported file names are a contract with the Qt application. Keep them in
 sync with ``src/app/AppConstants.h``; ``tests/test_contract.py`` enforces the
 match so the two sides cannot silently drift apart.
@@ -185,26 +190,6 @@ class TrainConfig:
         """Absolute path of the model manifest for this invocation."""
 
         return self.models_dir / MANIFEST_NAME
-
-    def train_kwargs(self) -> dict[str, object]:
-        """Keyword arguments forwarded to ``YOLO.train``."""
-
-        kwargs: dict[str, object] = {
-            "data": str(self.data_yaml),
-            "epochs": self.epochs,
-            "imgsz": self.imgsz,
-            "batch": self.batch,
-            "workers": self.workers,
-            "seed": self.seed,
-            "deterministic": True,
-            "exist_ok": False,
-            "verbose": self.verbose,
-        }
-        # ``auto`` is provenance spelling ("let the framework choose"), not a
-        # device the framework accepts: only a concrete device is forwarded.
-        if self.device and self.device_class != "auto":
-            kwargs["device"] = self.device_class
-        return kwargs
 
     @property
     def device_class(self) -> str:

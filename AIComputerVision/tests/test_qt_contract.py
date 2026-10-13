@@ -28,6 +28,22 @@ ENTRY_POINT = Path(__file__).resolve().parents[1] / "TrainModel.py"
 _missing_dock = f"AITrainDockWidget.cpp not found at {DOCK}"
 
 
+class ContractSourcePresenceTests(unittest.TestCase):
+    """The dock source must exist whenever the Qt sources are checked out.
+
+    Every class below skips itself when ``AITrainDockWidget.cpp`` is missing —
+    correct for a Python-only checkout, but a *rename* produces the same
+    silence and CI keeps going green with no contract running. Guarding on the
+    presence of ``src/`` keeps that skip legitimate and turns a move into a red
+    test instead of a disabled contract.
+    """
+
+    def test_the_dock_source_is_present_when_the_qt_sources_are(self) -> None:
+        if not (REPO_ROOT / "src").exists():
+            self.skipTest("Python-only checkout: there is no contract to compare against")
+        self.assertTrue(DOCK.exists(), f"{DOCK} moved or was renamed; the dock contract now skips silently")
+
+
 @unittest.skipUnless(DOCK.exists(), _missing_dock)
 class LaunchContractTests(unittest.TestCase):
     """``startTraining`` assembles argv; the CLI must accept exactly that."""

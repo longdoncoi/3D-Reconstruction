@@ -60,6 +60,7 @@ orchestrates, and ``cli`` alone is the composition root.
 
 HEAVY_DEPENDENCIES: dict[str, frozenset[str]] = {
     "ultralytics": frozenset({"backend"}),
+    "tensorboard": frozenset({"backend"}),
     "yaml": frozenset({"dataset"}),
 }
 """Third-party modules that may only be imported by the listed files.
@@ -67,7 +68,9 @@ HEAVY_DEPENDENCIES: dict[str, frozenset[str]] = {
 The ML stack (and even PyYAML) is deliberately unreachable from the rest of
 the package so that ``--help``, ``--check``, ``--dry-run`` and the whole unit
 suite run without it installed. ``ultralytics`` belongs to the one adapter;
-``yaml`` belongs to the one module that parses ``data.yaml``.
+``yaml`` belongs to the one module that parses ``data.yaml``; ``tensorboard``
+is the optional sink behind ``--tensorboard``, probed by the same adapter so
+that feature fails fast rather than logging a success it did not have.
 """
 
 

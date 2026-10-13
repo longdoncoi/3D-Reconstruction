@@ -27,9 +27,10 @@ outside the declared `ALLOWED_IMPORTS` map.
 - `gate` and `preflight` hold policy; `manifest`/`dataset`/`backend` hold
   documents and seams; `fsio`, `checks`, `errors`, `progress`, `config`,
   `logging_setup` are primitives.
-- The heavy stack (`ultralytics`, `yaml`) is importable from exactly one module
-  (`backend`), and only lazily, so `--help`/`--check` and the offline suite run
-  with no ML packages installed.
+- The heavy stack is imported from exactly one module each and only lazily —
+  `ultralytics` (and the optional `tensorboard`) from `backend`, `yaml` from
+  `dataset` — so `--help`/`--check` and the offline suite run with no ML
+  packages installed.
 - A new edge is a change to the table — reviewed in the same commit, by the
   same build — not an invisible infra change.
 

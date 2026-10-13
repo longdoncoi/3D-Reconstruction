@@ -27,7 +27,8 @@ but each break a contract the suite claims to hold:
 - New `StorageError(CvTrainError)`, exit `2`: an unreadable/unmeasurable file
   during provenance, verification or publishing-input is "cannot vouch", not
   a bug. The atomic publish path itself keeps `OSError`: a vanished framework
-  output that was supposed to exist *is* a bug.
+  output that was supposed to exist *is* a bug. *(ADR 0006 narrows this: only
+  the source of `atomic_copy` keeps `OSError`; the write side is typed too.)*
 - The lock file carries `token=<pid>-<ns>`; release deletes only while the
   token matches, warns and leaves a foreign lock otherwise. Run names carry
   the PID too, so two processes can no longer collide under `exist_ok=False`.
@@ -56,3 +57,5 @@ but each break a contract the suite claims to hold:
   fix), relative provenance paths (fail-closed absolute paths are safe; a
   rewrite would change skip semantics), git-commit provenance (best-effort
   subprocess in a possibly-unzipped tree, untestable branches).
+  *(ADR 0006 revisits the first of these after an audit: the thread stays
+  rejected, but an epoch-level `touch_lock` does not — see that record.)*
