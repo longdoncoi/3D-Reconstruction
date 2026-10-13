@@ -49,10 +49,9 @@ branch = true
 source = ["ai_assistant"]
 
 [tool.coverage.report]
-# Floor is a regression guard, not a target. The measured CI baseline is
-# ~89% (branch-inclusive) in the offline environment where the optional ``mcp``
-# package is absent, so the gate sits 1pt below that to turn genuine
-# regressions red without turning test noise into red.
+# Floor is a regression guard set at the verified 100% baseline (ADR 0014, 0016).
+# Offline CI without optional ``mcp`` measures ~89%; the 100 floor requires
+# full environment + all tests to pass. No contradiction: 100 is the target.
 fail_under = 100
 # legacy package removed
 show_missing = true
