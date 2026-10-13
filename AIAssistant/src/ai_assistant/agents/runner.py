@@ -78,7 +78,7 @@ def _execute_tool(
         canonical_params, error = validate_action_params(params)
         if error is not None or canonical_params is None:
             return {"error": error or "Invalid UI action parameters"}
-        canonical_params["request_id"] = action_id_fn()
+        canonical_params["request_id"] = action_id_fn() or generate_action_id()
         params.clear()
         params.update(canonical_params)
     if tool_name == "_validation_error":

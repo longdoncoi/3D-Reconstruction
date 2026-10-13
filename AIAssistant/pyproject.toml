@@ -54,7 +54,7 @@ source = ["ai_assistant"]
 # package is absent, so the gate sits 1pt below that to turn genuine
 # regressions red without turning test noise into red.
 fail_under = 100
-omit = ["*/legacy/*"]
+# legacy package removed
 show_missing = true
 
 [tool.mypy]

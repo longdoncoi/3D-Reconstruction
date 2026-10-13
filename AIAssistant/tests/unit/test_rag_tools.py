@@ -11,21 +11,17 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-import ai_assistant.legacy as legacy_pkg
+from ai_assistant.bootstrap import server as server_module
 from ai_assistant.tools.builtin import rag_tools
 
-_FAKE_RAG_PATH = "ai_assistant.legacy.rag_module"
+_FAKE_RAG_PATH = "ai_assistant.bootstrap.server"
 
 
 class RagSearchToolTests(unittest.TestCase):
     def _patch_rag(self, fake):
-        # Patch both the sys.modules entry (fresh process) and the package
-        # attribute (once another test has imported the real shim) so the
-        # function-level ``from ai_assistant.legacy import rag_module`` always
-        # sees the fake regardless of test ordering.
         patchers = [
             mock.patch.dict(sys.modules, {_FAKE_RAG_PATH: fake}),
-            mock.patch.object(legacy_pkg, "rag_module", fake, create=True),
+            mock.patch.object(server_module, "rag_module", fake, create=True),
         ]
         for patcher in patchers:
             patcher.start()

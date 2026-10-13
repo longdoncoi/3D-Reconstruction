@@ -34,8 +34,9 @@ def _rebuild_rag_index(
     logger: "LoggerLike",
 ) -> dict:
     """Rebuild the RAG index; raises ``HTTPException`` on failure."""
-    from ai_assistant.legacy.config import ENABLE_RAG
-    if not ENABLE_RAG:
+    from ai_assistant.config.rag_config import RAGSettings
+    _rag = RAGSettings.from_env_and_dict({})
+    if not _rag.enabled:
         return {"status": "skipped", "message": "RAG is disabled"}
     try:
         with rag_module.rag_lock:

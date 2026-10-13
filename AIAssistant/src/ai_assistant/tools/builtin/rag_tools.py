@@ -9,17 +9,18 @@ def tool_rag_search(params: dict[str, Any]) -> dict[str, Any]:
     Note: Requires a RAG engine to be injected or used via globals in the caller layer.
     For this module, it forwards to the old rag module for compatibility until rag is fully integrated.
     """
-    from ai_assistant.legacy import rag_module
+    from ai_assistant.bootstrap import server as bootstrap_server
+    rag_module_local = bootstrap_server.rag_module
     
     query = params.get("query", "").strip()
     if not query:
         return {"error": "Query không được để trống."}
     top_k = min(int(params.get("top_k", 5)), 10)
     
-    if not hasattr(rag_module, "get_context"):
+    if not hasattr(rag_module_local, "get_context"):
         return {"error": "RAG index chưa sẵn sàng."}
     try:
-        doc_ctx, code_ctx, _ = rag_module.get_context(query, result_k=top_k)
+        doc_ctx, code_ctx, _ = rag_module_local.get_context(query, result_k=top_k)
         results = []
         if doc_ctx:
             results.append({"source": "documentation", "content": doc_ctx[:3000]})

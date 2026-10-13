@@ -27,6 +27,11 @@ def force_utf8_stream(stream):
 def setup_logging(logs_dir: Path | str) -> tuple[logging.Logger, Path]:
     """Configure application logging and return the main logger and current log file path."""
     # Configure global stream encodings for Qt Creator compatibility
+    # When detached (close_fds=True), stdout/stderr can be None — provide a dummy.
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
     os.environ["PYTHONUTF8"] = "1"
     sys.stdout = force_utf8_stream(sys.stdout)
     sys.stderr = force_utf8_stream(sys.stderr)

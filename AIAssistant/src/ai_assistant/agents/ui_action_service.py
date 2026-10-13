@@ -170,7 +170,16 @@ class UIActionService:
     ) -> dict[str, Any]:
         """Finalize the UI action workflow, optionally resuming LangGraph."""
         langgraph_available = self._ctx.local_agent_graph is not None
-        if action.get("messages") and use_langgraph_agent() and langgraph_available:
+        llm_ready = (
+            self._ctx.llm_runtime is not None
+            and getattr(self._ctx.llm_runtime, "llm", None) is not None
+        )
+        if (
+            action.get("messages")
+            and use_langgraph_agent()
+            and langgraph_available
+            and llm_ready
+        ):
             return self._resume_langgraph(action, steps, success)
 
         content = (f"Đã thực thi {action['params']['action']}." if success

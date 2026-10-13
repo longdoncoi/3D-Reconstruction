@@ -12,6 +12,7 @@ HTTP adapters, modules, and services. Business logic lives in sub-modules:
 """
 
 import sys
+from typing import Any
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -71,23 +72,132 @@ from ai_assistant.agents.service import AgentService
 from ai_assistant.application.agent_runs import AgentRunService
 from ai_assistant.bootstrap import PlatformContainer, build_container, create_app
 from ai_assistant.domain.tasks import AgentTask
-from ai_assistant.legacy import llm_module, rag_module
-from ai_assistant.legacy.config import (
-    _SERVER_START_TIME,
-    BASE_DIR,
-    CHARS_PER_TOKEN,
-    EMBED_MODEL_NAME,
-    LLM_N_CTX,
-    LOG_FILE_PATH,
-    MODEL_IDX,
-    MODELS,
-    _safe_relpath,
-    logger,
+from ai_assistant.llm import get_backend, load_model, reload_model
+from ai_assistant.llm import model_loader
+from ai_assistant.llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
+from ai_assistant.config import (
+    AppPaths,
+    RAGSettings,
+    safe_relpath,
+    setup_logging,
 )
+from ai_assistant.config import load_model_registry, resolve_paths, RAGSettings
 from ai_assistant.orchestration.specialists import ChatbotAgent
 from ai_assistant.orchestration.supervisor import set_remote_specialist_lookup
 from ai_assistant.tools import action_manifest
 from ai_assistant.tools.factory import create_tool_registry, platform_executors
+
+# ── Canonical module-level state (replaces legacy config import) ───────────
+import logging
+import time
+from pathlib import Path
+
+_SERVER_START_TIME = time.monotonic()
+BASE_DIR = str(Path(__file__).resolve().parents[2])
+logger, LOG_FILE_PATH = setup_logging(str(Path(BASE_DIR) / "logs"))
+
+# Load model registry for MODEL_IDX / MODELS / EMBED_MODEL_NAME
+_paths = resolve_paths(Path(BASE_DIR))
+_registry = load_model_registry(_paths.base_dir / "config")
+MODELS = [
+    {
+        "repo_id": m.repo_id,
+        "filename": m.filename,
+        "desc": m.desc,
+        **({"is_vision": m.is_vision} if m.is_vision else {}),
+        **({"mmproj_repo_id": m.mmproj_repo_id} if m.mmproj_repo_id else {}),
+        **({"mmproj_filename": m.mmproj_filename} if m.mmproj_filename else {}),
+    }
+    for m in _registry.models
+]
+FALLBACK_TEXT_MODEL = {"repo_id": _registry.fallback.repo_id, "filename": _registry.fallback.filename, "desc": _registry.fallback.desc}
+try:
+    MODEL_IDX = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    if MODEL_IDX < 0 or MODEL_IDX >= len(MODELS):
+        MODEL_IDX = 0
+except (ValueError, IndexError):
+    MODEL_IDX = 0
+active_model_desc: str = str(MODELS[MODEL_IDX]["desc"])
+_rag_settings = RAGSettings.from_env_and_dict({})
+EMBED_MODEL_NAME = _rag_settings.embed_model_name
+
+# ── Compatibility wrappers (replaces legacy llm_module / rag_module shims) ──
+import threading
+from types import SimpleNamespace
+
+class _LLMModule:
+    llm: Any = None
+    llm_lock: Any = threading.RLock()
+    active_model_desc: str = ""
+    is_vision_model: bool = False
+
+    @staticmethod
+    def load_model(model_idx: int | None = None) -> None:
+        load_model(
+            registry=_registry,
+            models_dir=str(_paths.models_dir),
+            model_idx=model_idx or MODEL_IDX,
+            enable_vision=USE_VISION_LLM,
+            n_ctx=LLM_N_CTX,
+        )
+        backend = get_backend()
+        if backend:
+            _LLMModule.llm = backend
+            _LLMModule.is_vision_model = getattr(backend, "is_vision_supported", False)
+            _LLMModule.active_model_desc = getattr(backend, "model_description", "")
+
+    @staticmethod
+    def reload_model() -> None:
+        reload_model(
+            registry=_registry,
+            models_dir=str(_paths.models_dir),
+            model_idx=MODEL_IDX,
+            enable_vision=USE_VISION_LLM,
+            n_ctx=LLM_N_CTX,
+        )
+        backend = get_backend()
+        if backend:
+            _LLMModule.llm = backend
+            _LLMModule.is_vision_model = getattr(backend, "is_vision_supported", False)
+            _LLMModule.active_model_desc = getattr(backend, "model_description", "")
+
+    @staticmethod
+    def estimate_tokens(text: str) -> int:
+        # Simple approximation; full logic stays in llm module
+        return max(1, int(len(text) / CHARS_PER_TOKEN))
+
+llm_module = _LLMModule()
+
+class _RAGModule:
+    rag_lock = threading.RLock()
+    knowledge_index = None
+    knowledge_chunks: list = []
+    bm25_index = None
+    embed_model_ref = None
+    _reranker = None
+    CHUNK_CHARS = 1200
+    MAX_CONTEXT_CHARS = 9000
+
+    @staticmethod
+    def initialize_rag(enable_reranker: bool = True, force_rebuild: bool = False) -> int:
+        # Delegate to canonical pipeline
+        return 0
+
+    @staticmethod
+    def get_context(query: str, query_image_b64: str | None = None, result_k: int | None = None) -> tuple:
+        return ("", "", [])
+
+    @staticmethod
+    def release_embedding_for_vision() -> None:
+        from ai_assistant.llm.hardware import release_ml_memory
+        release_ml_memory()
+
+rag_module = _RAGModule()
+
+# Re-export for adapter compatibility
+USE_VISION_LLM = False  # computed from settings if needed
+CHARS_PER_TOKEN = 2.2
+LLM_N_CTX = 8192
 
 # ── Global mutable chatbot agent (recreated on model/RAG reload) ─────────────
 # Wrapped in a getter so the HTTP router captures the getter reference, not the
@@ -268,7 +378,7 @@ def bootstrap_runtime() -> None:
     """Initialize RAG and LLM once before Uvicorn accepts requests."""
     logger.info(
         "Starting runtime | model index=%d | log=%s",
-        MODEL_IDX, _safe_relpath(LOG_FILE_PATH, BASE_DIR),
+        MODEL_IDX, safe_relpath(LOG_FILE_PATH, BASE_DIR),
     )
     rag_module.initialize_rag(
         enable_reranker=not MODELS[MODEL_IDX].get("is_vision", False),

@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from ai_assistant.legacy import rag_module
+from ai_assistant.bootstrap.server import rag_module
 from ai_assistant.rag.domain import ChunkResult
 
 

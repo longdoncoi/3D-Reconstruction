@@ -46,9 +46,11 @@ except ImportError:  # pragma: no cover — graph framework optional in bare tes
     LocalAgentGraph = None  # type: ignore[assignment,misc]
 
 
-def _noop_validate_tool_call(*_args: Any, **_kwargs: Any) -> None:
+def _noop_validate_tool_call(
+    tool_name: str, params: Any, tool_models: Any
+) -> tuple[Any | None, str | None]:
     """Resume-path validator: parameters were already validated on the first pass."""
-    return None
+    return params, None
 
 
 def _empty_action_id() -> str:

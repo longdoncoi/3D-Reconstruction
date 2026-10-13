@@ -18,7 +18,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from ai_assistant.legacy import llm_module, rag_module
+from ai_assistant.bootstrap.server import llm_module, rag_module
 
 
 class CompositionRootImportTests(unittest.TestCase):
