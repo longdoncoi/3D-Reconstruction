@@ -143,6 +143,7 @@
       "description": "Track objects in a video file.",
       "intents": [
         "theo dõi video",
+        "theo dõi đối tượng",
         "chạy theo dõi",
         "video tracking",
         "track video"

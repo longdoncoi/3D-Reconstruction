@@ -124,7 +124,7 @@
     "ai.menu": "Xử lý AI",
     "ai.run_detection": "Chạy Nhận diện",
     "ai.run_segmentation": "Chạy Phân đoạn",
-    "ai.run_tracking": "Theo dõi Video",
+    "ai.video_tracking": "Theo dõi Video",
     "ai.hide_results": "Ẩn Kết quả",
     "ai.training": "Huấn luyện Mô hình",
     "ai.charts": "Xem Biểu đồ Training",

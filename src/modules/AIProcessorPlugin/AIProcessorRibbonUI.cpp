@@ -44,7 +44,7 @@ AIProcessorRibbonUI::AIProcessorRibbonUI(IAppContext* ctx, QWidget* panel, QObje
     m_btnHide->setMinimumWidth(80);
 
     m_btnTrack = new QToolButton(m_groupAI);
-    m_btnTrack->setText(m_ctx->translate("ai.run_tracking"));
+    m_btnTrack->setText(m_ctx->translate("ai.video_tracking"));
     m_btnTrack->setIcon(IconFactory::createModern("🎥", QColor("#ef4444"), QColor("#b91c1c")));
     m_btnTrack->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
     m_btnTrack->setMinimumWidth(80);

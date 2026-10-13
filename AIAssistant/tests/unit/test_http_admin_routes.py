@@ -190,8 +190,8 @@ class AdminRoutesTest(unittest.TestCase):
 
     def test_reload_rag_skipped_when_disabled(self) -> None:
         client, _ = _build_client()
-        with mock.patch("ai_assistant.config.rag_config.RAGSettings") as MockRAG:
-            MockRAG.from_env_and_dict.return_value = SimpleNamespace(enabled=False)
+        with mock.patch("ai_assistant.config.rag_config.RAGSettings") as mock_rag:
+            mock_rag.from_env_and_dict.return_value = SimpleNamespace(enabled=False)
             response = client.post("/admin/reload-rag")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "skipped")
@@ -200,10 +200,10 @@ class AdminRoutesTest(unittest.TestCase):
         rag = _FakeRAGModule()
         client, state = _build_client(rag=rag)
         with (
-            mock.patch("ai_assistant.config.rag_config.RAGSettings") as MockRAG,
+            mock.patch("ai_assistant.config.rag_config.RAGSettings") as mock_rag,
             mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True),
         ):
-            MockRAG.from_env_and_dict.return_value = SimpleNamespace(enabled=True)
+            mock_rag.from_env_and_dict.return_value = SimpleNamespace(enabled=True)
             response = client.post("/admin/reload-rag")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["chunks"], 42)
@@ -215,10 +215,10 @@ class AdminRoutesTest(unittest.TestCase):
         rag = _FakeRAGModule()
         client, _ = _build_client(llm=llm, rag=rag)
         with (
-            mock.patch("ai_assistant.config.rag_config.RAGSettings") as MockRAG,
+            mock.patch("ai_assistant.config.rag_config.RAGSettings") as mock_rag,
             mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True),
         ):
-            MockRAG.from_env_and_dict.return_value = SimpleNamespace(enabled=True)
+            mock_rag.from_env_and_dict.return_value = SimpleNamespace(enabled=True)
             response = client.post("/admin/reload-rag")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(rag.release_embedding_calls, 1)
@@ -227,10 +227,10 @@ class AdminRoutesTest(unittest.TestCase):
         rag = _FakeRAGModule(init_error=RuntimeError("index boom"))
         client, _ = _build_client(rag=rag)
         with (
-            mock.patch("ai_assistant.config.rag_config.RAGSettings") as MockRAG,
+            mock.patch("ai_assistant.config.rag_config.RAGSettings") as mock_rag,
             mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True),
         ):
-            MockRAG.from_env_and_dict.return_value = SimpleNamespace(enabled=True)
+            mock_rag.from_env_and_dict.return_value = SimpleNamespace(enabled=True)
             response = client.post("/admin/reload-rag")
         self.assertEqual(response.status_code, 500)
         self.assertIn("index boom", response.text)

@@ -568,7 +568,7 @@ void AIProcessorPlugin::updateActions() {
   if (m_ribbonUI) {
       m_ribbonUI->btnHide()->setText(m_ctx->translate("ai.hide_results"));
       m_ribbonUI->btnHide()->setEnabled(mode != AIMode::None);
-      m_ribbonUI->btnTrack()->setText(m_ctx->translate("ai.run_tracking"));
+      m_ribbonUI->btnTrack()->setText(m_ctx->translate("ai.video_tracking"));
       m_ribbonUI->btnTrain()->setText(m_ctx->translate("ai.training"));
       m_ribbonUI->btnChart()->setText(m_ctx->translate("ai.charts"));
       

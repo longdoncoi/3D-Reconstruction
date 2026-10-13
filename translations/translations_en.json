@@ -124,7 +124,7 @@
     "ai.menu": "AI Processing",
     "ai.run_detection": "Run Detection",
     "ai.run_segmentation": "Run Segmentation",
-    "ai.run_tracking": "Video Tracking",
+    "ai.video_tracking": "Video Tracking",
     "ai.hide_results": "Hide Results",
     "ai.training": "Training Model",
     "ai.charts": "View Training Charts",
