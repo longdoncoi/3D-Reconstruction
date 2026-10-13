@@ -593,6 +593,29 @@ class SkipUnchangedTests(_SandboxedTestCase):
         _, backend = self._run(models=("det",), skip_unchanged=True)
         self.assertIn("train:det", backend.calls)
 
+    def test_no_digest_and_no_checkpoint_is_trained_as_well(self) -> None:
+        # Both halves of "cannot prove" at once — nothing recorded to compare
+        # against *and* nothing on disk to compare with. ``None == None`` would
+        # read as agreement without the guard that refuses to compare two
+        # absences, and the README's rule for this case is "a missing one
+        # cannot be verified at all": retrain.
+        cfg = _config(self.root, models=("det",), skip_unchanged=True)
+        run(cfg, backend=FakeBackend())
+        spec = MODEL_SPECS["det"]
+        manifest = manifest_mod.load_manifest(cfg.models_dir)
+        manifest["entries"][spec.output].pop("source_weights_sha256", None)
+        manifest_mod.save_manifest(cfg.models_dir, manifest)
+
+        # Built before the deletion: building the config is what materialises
+        # the sandbox checkpoints, so removing it afterwards is the only order
+        # that leaves the run looking at a genuinely absent base checkpoint.
+        rerun = _config(self.root, models=("det",), skip_unchanged=True)
+        rerun.weights_path(spec).unlink()
+
+        backend = FakeBackend()
+        run(rerun, backend=backend)
+        self.assertIn("train:det", backend.calls)
+
 
 class QualityGateTests(_SandboxedTestCase):
     """``--min-metric`` keeps an unusable model out of ``Models/``."""

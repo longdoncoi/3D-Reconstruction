@@ -126,7 +126,10 @@ def _start_manifest(cfg: TrainConfig, backend_version: str) -> manifest_mod.Mani
         python=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         min_metrics=[[name, minimum] for name, minimum in cfg.min_metrics],
     )
-    manifest["updated_at"] = started_at
+    # ``updated_at`` is deliberately *not* stamped here: it marks provenance
+    # writes, and this header is not one. Nothing saves the document until
+    # ``_record_entry`` does, and that refreshes the stamp itself — setting it
+    # here would be a value no reader can ever observe.
     return manifest
 
 

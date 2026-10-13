@@ -224,7 +224,12 @@ def _verify_manifest(models_dir: Path) -> int:
     # a race — "wait for the run to finish" is the honest answer, and it is the
     # one ``--write-manifest`` already gives.
     with directory_lock(models_dir):
-        manifest = manifest_mod.load_manifest(models_dir)
+        # ``strict=True``: this command is a *verdict*, and the reader's
+        # recovery path (quarantine + skeleton) would let it log "Manifest OK"
+        # over a document it had just set aside. A verdict on a document it
+        # cannot read is exit 2, and nothing is renamed — the command is
+        # documented as reading ``Models/``, so it leaves the evidence in place.
+        manifest = manifest_mod.load_manifest(models_dir, strict=True)
         # One spelling of the verdict, shared with the post-training check: any
         # problem becomes a ManifestIntegrityError carrying exit code 2, rendered
         # by main() like every other expected failure.

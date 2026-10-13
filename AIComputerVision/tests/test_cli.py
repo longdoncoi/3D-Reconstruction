@@ -17,7 +17,7 @@ from unittest import mock
 from cvtrain import manifest as manifest_mod
 from cvtrain.backend import UltralyticsBackend
 from cvtrain.cli import build_parser, config_from_args, main, parse_metric_threshold
-from cvtrain.config import DEFAULT_MODELS, DEFAULT_OPSET, MODEL_SPECS, TrainConfig
+from cvtrain.config import DEFAULT_MODELS, DEFAULT_OPSET, MANIFEST_NAME, MODEL_SPECS, TrainConfig
 from cvtrain.errors import BackendUnavailableError, ExitCode, QualityGateError
 from cvtrain.fsio import LOCK_NAME
 
@@ -267,6 +267,24 @@ class ManifestCommandTests(_CliTestCase):
         self.assertEqual(code, ExitCode.PREFLIGHT)
         reported = [str(call.args[1]) for call in fake_log.error.call_args_list]
         self.assertTrue(any("Manifest missing" in problem for problem in reported), reported)
+
+    def test_verify_of_a_corrupt_manifest_fails_instead_of_reporting_a_clean_run(self) -> None:
+        # The recovering reader would quarantine the document and hand back an
+        # empty manifest, which this command would then log as "Manifest OK" —
+        # an empty directory it already refuses to call clean, and a document
+        # it had just set aside is strictly worse. It stays read-only too.
+        models_dir = self._models_dir()
+        path = models_dir / MANIFEST_NAME
+        path.write_text("{not json", encoding="utf-8")
+
+        with mock.patch("cvtrain.cli.LOG") as fake_log:
+            code = main(["--verify-manifest", "--models-dir", str(models_dir)])
+
+        self.assertEqual(code, ExitCode.PREFLIGHT)
+        reported = [str(call.args[1]) for call in fake_log.error.call_args_list]
+        self.assertTrue(any("Manifest corrupt" in problem for problem in reported), reported)
+        self.assertEqual(path.read_text(encoding="utf-8"), "{not json")
+        self.assertEqual(list(models_dir.glob(f"{MANIFEST_NAME}.corrupt-*")), [])
 
     def test_verify_of_a_consistent_manifest_returns_ok(self) -> None:
         models_dir = self._models_dir()

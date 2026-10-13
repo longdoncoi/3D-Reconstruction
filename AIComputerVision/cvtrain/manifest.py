@@ -250,7 +250,7 @@ def _quarantine(path: Path) -> None:
         LOG.warning("Quarantined unreadable manifest to %s", target)
 
 
-def load_manifest(models_dir: Path) -> Manifest:
+def load_manifest(models_dir: Path, *, strict: bool = False) -> Manifest:
     """Return the existing manifest migrated to the current schema, or a fresh
     skeleton when the file is absent, unreadable or structurally invalid.
 
@@ -258,6 +258,16 @@ def load_manifest(models_dir: Path) -> Manifest:
     before the skeleton is returned, so the next ``save_manifest`` cannot
     silently overwrite the only record of what was there. A missing file is not
     an error and is not quarantined.
+
+    ``strict=True`` is the *verdict* mode ``--verify-manifest`` reads in. The
+    same problems raise :class:`~cvtrain.errors.ManifestIntegrityError`
+    (exit ``2``) and nothing is renamed: recovery is the right answer for a run
+    that rebuilds provenance as it goes, but for a read-only verdict it would
+    mean reporting "Manifest OK" over a document this very call had set aside —
+    the one outcome :mod:`cvtrain.errors` promises the pipeline never produces.
+    Quarantining here would also make a command documented as *reading*
+    ``Models/`` silently rewrite it. A missing file is not an error even in
+    strict mode: whether there is anything to verify is the caller's call.
     """
 
     path = models_dir / MANIFEST_NAME
@@ -266,10 +276,14 @@ def load_manifest(models_dir: Path) -> Manifest:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
+        if strict:
+            raise ManifestIntegrityError(f"Manifest corrupt: {path} ({exc})") from exc
         LOG.warning("Corrupt manifest %s: %s", path, exc)
         _quarantine(path)
         return _skeleton()
     if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
+        if strict:
+            raise ManifestIntegrityError(f"Manifest invalid: {path} (missing entries dict)")
         LOG.warning("Manifest %s is invalid (missing entries dict)", path)
         _quarantine(path)
         return _skeleton()
@@ -279,6 +293,8 @@ def load_manifest(models_dir: Path) -> Manifest:
         # an entry is expected would otherwise surface as ``AttributeError``
         # halfway through verification (exit 1 + traceback). Same verdict as a
         # document with no entries at all — quarantined, then rebuilt.
+        if strict:
+            raise ManifestIntegrityError(f"Manifest invalid: {path} (an entry is not a map)")
         LOG.warning("Manifest %s is invalid (an entry is not a map)", path)
         _quarantine(path)
         return _skeleton()

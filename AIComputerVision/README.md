@@ -264,7 +264,10 @@ would hand it a clean verification with no provenance behind it. The fix is to
 remove the file or re-export it from the pipeline. A manifest that cannot be
 parsed is quarantined as
 `manifest.json.corrupt-<timestamp>` before a skeleton is returned, so the next
-write cannot silently erase the only record of what was on disk.
+write cannot silently erase the only record of what was on disk. That recovery
+path belongs to runs, not to verdicts: `--verify-manifest` reads in strict mode
+and reports an unreadable document as exit `2`, naming the reason — without
+renaming it, since the command is documented as *reading* `Models/`.
 
 The document carries a `schema_version`. On load, an older document (schema
 `0`: written before the field existed) is migrated forward through

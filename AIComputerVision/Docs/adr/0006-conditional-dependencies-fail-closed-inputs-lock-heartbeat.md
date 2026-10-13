@@ -9,7 +9,9 @@
 
 An independent audit of the 0005 state found no defect in the default path,
 but named gaps that all share one shape: text asserting more than the code
-does, plus two places where a failure still escaped the typed taxonomy.
+does, plus two places where a failure still escaped the typed taxonomy. Two
+follow-up audits of this ADR's own output found the same shape again — hence
+the last three bullets here.
 
 - `--tensorboard` was not part of preflight's dependency list, yet `prepare`
   logged "TensorBoard logging enabled" unconditionally. Ultralytics drops
@@ -36,6 +38,16 @@ does, plus two places where a failure still escaped the typed taxonomy.
 - The C++ contract tests skipped themselves when a source file was missing —
   correct for a Python-only checkout, but a *rename* produced the same
   silence, leaving CI green with no comparison running.
+- `--verify-manifest` read through the *recovering* loader: a corrupt manifest
+  was quarantined, an empty document came back, and the command logged
+  `Manifest OK` with exit `0`. Reporting a clean run over a document it had
+  just set aside is the outcome `errors.py` names as the one the pipeline must
+  never produce.
+- Mutation testing showed two guards with no test behind them: removing the
+  `only=` scope filter left the suite green (a training run's scoped check was
+  never pinned against a broken *neighbour*), and removing the
+  `weights_sha is not None` check did too — `None == None` read as agreement,
+  so "no digest and no checkpoint" would have been skipped as "already current".
 
 ## Decision
 
@@ -65,6 +77,20 @@ does, plus two places where a failure still escaped the typed taxonomy.
   that is not a map, for the same fail-closed reason.
 - The contract tests gain a non-skipping presence guard: when `src/` is
   checked out, the files they read must exist.
+- `load_manifest(..., strict=True)` becomes the verdict reader used by
+  `--verify-manifest`: an unreadable or structurally invalid document raises
+  `ManifestIntegrityError` (exit `2`) naming the reason, and nothing is
+  quarantined — a command documented as *reading* `Models/` leaves the evidence
+  where it is. The recovery path stays exactly where it belongs, with runs that
+  rebuild provenance as they go.
+- Two guards are now pinned by tests that break when the guard disappears: the
+  `only=` scope filter is checked against neighbours that are deliberately
+  broken (and the fixture proves them broken), and the skip rule is checked
+  with the digest absent *and* the checkpoint gone.
+- `_start_manifest` no longer stamps `updated_at`. The document is not saved
+  until the first provenance write, which stamps it again anyway, so the value
+  was a dead store; `updated_at` keeps meaning what the README says it means —
+  the last write, never older than the entries.
 
 ## Consequences
 

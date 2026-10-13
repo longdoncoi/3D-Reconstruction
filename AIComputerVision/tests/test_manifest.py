@@ -10,6 +10,7 @@ from unittest import mock
 
 from cvtrain import manifest as manifest_mod
 from cvtrain.config import MANIFEST_NAME, MODEL_SPECS
+from cvtrain.errors import ManifestIntegrityError
 from cvtrain.fsio import sha256_file
 
 
@@ -343,6 +344,48 @@ class ManifestQuarantineTests(unittest.TestCase):
             self.assertTrue(any("Could not quarantine" in line for line in captured.output))
 
 
+class StrictLoadTests(unittest.TestCase):
+    """``--verify-manifest`` fails a document it cannot read; it never repairs it."""
+
+    UNUSABLE = (
+        ("{not json", "Manifest corrupt"),
+        ('{"entries": []}', "Manifest invalid"),
+        ('{"entries": {"yolo11n.onnx": "oops"}}', "an entry is not a map"),
+    )
+
+    def test_unusable_documents_raise_and_are_left_where_they_are(self) -> None:
+        # The recovering reader is right for a run that rebuilds provenance as
+        # it goes. For a *verdict* it would mean logging "Manifest OK" over a
+        # document this very call had quarantined — and a command documented as
+        # reading Models/ must not rewrite it either.
+        for payload, expected in self.UNUSABLE:
+            with self.subTest(payload=payload):
+                with tempfile.TemporaryDirectory() as tmp:
+                    models_dir = Path(tmp)
+                    path = models_dir / MANIFEST_NAME
+                    path.write_text(payload, encoding="utf-8")
+
+                    with self.assertRaises(ManifestIntegrityError) as ctx:
+                        manifest_mod.load_manifest(models_dir, strict=True)
+
+                    self.assertIn(expected, str(ctx.exception))
+                    self.assertEqual(path.read_text(encoding="utf-8"), payload)
+                    self.assertEqual(list(models_dir.glob(f"{MANIFEST_NAME}.corrupt-*")), [])
+
+    def test_a_missing_file_is_not_corruption_for_a_verdict(self) -> None:
+        # Whether there is anything to verify is the caller's call — it has its
+        # own message for an empty directory — so the reader must not turn
+        # "nothing here" into a document problem.
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(manifest_mod.load_manifest(Path(tmp), strict=True)["entries"], {})
+
+    def test_strict_accepts_exactly_what_the_recovering_reader_accepts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp)
+            manifest_mod.save_manifest(models_dir, manifest_mod.load_manifest(models_dir))
+            self.assertEqual(manifest_mod.load_manifest(models_dir, strict=True)["entries"], {})
+
+
 class ScopedVerificationTests(unittest.TestCase):
     """``verify_manifest(only=...)`` checks the named artifacts and no more."""
 
@@ -367,6 +410,35 @@ class ScopedVerificationTests(unittest.TestCase):
             self.assertEqual(
                 manifest_mod.verify_manifest(models_dir, manifest),
                 ["stray.onnx: on disk but not recorded in the manifest"],
+            )
+
+    def test_only_never_reports_an_entry_it_was_not_asked_about(self) -> None:
+        # The guard that makes ``only`` mean anything. Both neighbours are
+        # deliberately broken; without the scope check a training run would fail
+        # verification for a model it never touched.
+        with tempfile.TemporaryDirectory() as tmp:
+            models_dir = Path(tmp)
+            good = models_dir / "yolo11n.onnx"
+            good.write_bytes(b"model-bytes")
+            wrong = models_dir / "other.onnx"
+            wrong.write_bytes(b"other-bytes")
+            manifest: manifest_mod.Manifest = {
+                "entries": {
+                    "yolo11n.onnx": {"sha256": sha256_file(good)},
+                    "other.onnx": {"sha256": "0" * 64},  # a digest that matches nothing here
+                    "gone.onnx": {"sha256": "f" * 64},  # and no file to hash at all
+                },
+            }
+
+            self.assertEqual(manifest_mod.verify_manifest(models_dir, manifest, only=["yolo11n.onnx"]), [])
+            # Prove the fixture really is broken, or the line above would pass
+            # no matter what ``only`` does.
+            self.assertEqual(
+                manifest_mod.verify_manifest(models_dir, manifest),
+                [
+                    f"other.onnx: sha256 mismatch (expected {'0' * 12}..., got {sha256_file(wrong)[:12]}...)",
+                    "gone.onnx: missing on disk",
+                ],
             )
 
     def test_only_still_reports_a_named_artifact_without_an_entry(self) -> None:
