@@ -21,6 +21,7 @@ __all__ = [
     "ExitCode",
     "ManifestIntegrityError",
     "QualityGateError",
+    "StorageError",
 ]
 
 
@@ -111,3 +112,21 @@ class QualityGateError(CvTrainError):
     """
 
     exit_code: ExitCode = ExitCode.QUALITY
+
+
+class StorageError(CvTrainError):
+    """A file the pipeline had to read, hash or measure is unusable.
+
+    Hashing a checkpoint, measuring a just-published ONNX or scanning
+    ``Models/`` can fail on a missing file, a permission or a dying disk.
+    Those are environment facts — "this artifact is not trustworthy" — so they
+    share exit code ``2`` with preflight and manifest failures instead of
+    surfacing as an ``OSError`` traceback with exit ``1``. A traceback would
+    imply a bug; here there is none, only storage the run cannot vouch for.
+
+    Deliberately *not* used for the atomic publish path itself: a vanished
+    framework output that was supposed to exist is a bug, and keeps its
+    traceback.
+    """
+
+    exit_code: ExitCode = ExitCode.PREFLIGHT

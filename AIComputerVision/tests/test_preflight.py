@@ -11,7 +11,10 @@ from unittest import mock
 from cvtrain.checks import Check, PreflightReport, module_available
 from cvtrain.config import MODEL_SPECS, TrainConfig
 from cvtrain.preflight import (
+    MAX_EPOCHS,
+    MAX_IMGSZ,
     MAX_OPSET,
+    MAX_WORKERS,
     MIN_IMGSZ,
     MIN_OPSET,
     check_dependencies,
@@ -102,6 +105,28 @@ class HyperparameterTests(unittest.TestCase):
         failed = [check for check in check_hyperparameters(TrainConfig(models=())) if not check.ok]
         self.assertEqual([check.name for check in failed], ["param.models"])
 
+    def test_an_unknown_model_key_fails_instead_of_raising_keyerror(self) -> None:
+        # A programmatic TrainConfig can carry a typo resolve_models would have
+        # filtered on the CLI path: report it, never raise KeyError downstream.
+        cfg = TrainConfig(models=("bogus",))
+        failed = [check for check in check_hyperparameters(cfg) if not check.ok]
+        self.assertEqual([check.name for check in failed], ["param.models"])
+        self.assertIn("bogus", failed[0].detail)
+        # The weights check skips unknown keys so the report stays complete.
+        self.assertEqual(check_weights(cfg), [])
+
+    def test_absurd_hyper_parameters_fail_fast(self) -> None:
+        cases = (
+            {"epochs": MAX_EPOCHS + 1},
+            {"imgsz": MAX_IMGSZ + 1},
+            {"workers": MAX_WORKERS + 1},
+        )
+        for overrides in cases:
+            with self.subTest(**overrides):
+                failed = self._failures(**overrides)
+                self.assertEqual(len(failed), 1)
+                self.assertTrue(failed[0].name.startswith("param."))
+
     def test_the_gate_thresholds_are_validated_with_the_rest(self) -> None:
         cfg = TrainConfig(models=("det",), min_metrics=(("mAP", 2.0),))
         failed = [check.name for check in check_hyperparameters(cfg) if not check.ok]
@@ -120,7 +145,7 @@ class DeviceTests(unittest.TestCase):
         return check_device(TrainConfig(models=("det",), device=device))
 
     def test_no_device_means_the_framework_chooses(self) -> None:
-        for device in (None, "", "   "):
+        for device in (None, "", "   ", "auto", "AUTO", "  Auto  "):
             with self.subTest(device=device):
                 check = self._check(device)
                 self.assertTrue(check.ok, check.detail)

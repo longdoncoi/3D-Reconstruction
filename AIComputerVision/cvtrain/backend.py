@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import numbers
+import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -103,9 +104,11 @@ def metrics_from(results: object) -> dict[str, float]:
 
 
 def _run_timestamp() -> str:
-    # Microsecond precision: two invocations in the same second would otherwise
-    # collide on `name` under ultralytics' ``exist_ok=False`` and fail the run.
-    return datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    # Microsecond precision plus the PID: two invocations in the same second
+    # would otherwise collide on `name` under ultralytics' ``exist_ok=False``
+    # and fail the run — and two *processes* can share a microsecond, so the
+    # timestamp alone is not unique.
+    return f"{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-{os.getpid()}"
 
 
 class UltralyticsBackend:

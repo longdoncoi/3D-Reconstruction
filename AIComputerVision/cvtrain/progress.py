@@ -83,7 +83,10 @@ class ProgressReporter:
     The Qt side only reads ``pct=<0-100>``; every other field (``stage``,
     ``key``, ``epoch``) is informational and parsed by the log view. The
     reporter remembers the last percentage it published so a terminal
-    :meth:`error` marker can repeat it instead of snapping the bar backwards.
+    :meth:`error` marker can repeat it instead of snapping the bar backwards —
+    and so an out-of-order call can never move the bar backwards either: the
+    dock's bar has no "rewind" state, so a regression is held with a warning
+    rather than published.
     """
 
     def __init__(self, models: Iterable[str], logger: logging.Logger | None = None) -> None:
@@ -98,7 +101,20 @@ class ProgressReporter:
         return self._last_pct
 
     def _emit(self, percent: int, **fields: object) -> None:
-        self._last_pct = min(max(int(percent), 0), 100)
+        clamped = min(max(int(percent), 0), 100)
+        if clamped < self._last_pct:
+            # No ``pct=`` here on purpose: the dock parses that token out of
+            # every line carrying the marker, so a diagnostic carrying it would
+            # move the bar backwards — the one outcome this guard exists to
+            # prevent. The bar simply holds; the warning explains why.
+            self._logger.warning(
+                "%s out-of-order progress %d held at %d",
+                PROGRESS_PREFIX,
+                clamped,
+                self._last_pct,
+            )
+            return
+        self._last_pct = clamped
         extras = " ".join(f"{key}={value}" for key, value in fields.items())
         suffix = f" {extras}" if extras else ""
         self._logger.info("%s pct=%d%s", PROGRESS_PREFIX, self._last_pct, suffix)
@@ -108,12 +124,16 @@ class ProgressReporter:
 
     def train_epoch(self, index: int, epoch: int, epochs: int, key: str) -> None:
         total = max(1, epochs)
-        fraction = (epoch + 1) / total
+        # The backend forwards the framework's counter verbatim, documented as
+        # 0-based — but a 1-based counter must degrade to "stuck at 100%" for
+        # its last epoch, never to a published ``6/5`` with a clamped bar.
+        step = min(max(epoch + 1, 1), total)
+        fraction = step / total
         self._emit(
             compute_percent(index, len(self.models), "train", fraction),
             stage="train",
             key=key,
-            epoch=f"{epoch + 1}/{total}",
+            epoch=f"{step}/{total}",
         )
 
     def exporting(self, index: int, key: str) -> None:

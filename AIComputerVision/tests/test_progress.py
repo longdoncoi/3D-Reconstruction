@@ -101,6 +101,31 @@ class ProgressReporterTests(unittest.TestCase):
         self.assertIn("key=det", captured.output[-1])
         self.assertEqual(reporter.last_percent, compute_percent(0, 2, "export", 1.0))
 
+    def test_an_out_of_order_marker_holds_instead_of_rewinding(self) -> None:
+        # The dock's bar has no "rewind": a regression is held with a warning
+        # rather than published. The diagnostic carries no ``pct=`` token, or
+        # the very regex the dock parses would move the bar backwards.
+        reporter = ProgressReporter(("det", "seg"))
+        with self.assertLogs("cvtrain.progress", level="INFO"):
+            reporter.preflight(1.0)
+            reporter.train_epoch(0, 4, 5, "det")
+        held = reporter.last_percent
+        self.assertGreater(held, 2)
+        with self.assertLogs("cvtrain.progress", level="WARNING") as captured:
+            reporter.preflight(0.0)
+        self.assertEqual(reporter.last_percent, held)
+        self.assertTrue(any("held at" in line for line in captured.output))
+        self.assertTrue(all("pct=" not in line for line in captured.output))
+
+    def test_a_one_based_epoch_counter_degrades_gracefully(self) -> None:
+        # The backend forwards the framework counter verbatim (0-based); a
+        # 1-based counter must read as a finished bar, never as ``6/5``.
+        reporter = ProgressReporter(("det",))
+        with self.assertLogs("cvtrain.progress", level="INFO") as captured:
+            reporter.train_epoch(0, 5, 5, "det")
+        self.assertIn("epoch=5/5", captured.output[-1])
+        self.assertEqual(reporter.last_percent, compute_percent(0, 1, "train", 1.0))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ dataset, and on a CI image where ultralytics is not installed at all.
 from __future__ import annotations
 
 import contextlib
+import os
 import sys
 import tempfile
 import types
@@ -21,7 +22,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
-from cvtrain.backend import TrainedModel, TrainingBackend, UltralyticsBackend, metrics_from
+from cvtrain.backend import TrainedModel, TrainingBackend, UltralyticsBackend, _run_timestamp, metrics_from
 from cvtrain.config import MODEL_SPECS, TrainConfig
 from cvtrain.errors import BackendUnavailableError
 
@@ -266,6 +267,11 @@ class TrainTests(_SandboxedTestCase):
             model = backend.train(spec, self.cfg, lambda epoch, total: None)
         self.assertEqual(model.run_dir, self.cfg.runs_dir / spec.runs_subdir / model.run_dir.name)
         self.assertTrue(model.run_dir.name.startswith("train-"))
+
+    def test_run_names_carry_the_pid_for_cross_process_uniqueness(self) -> None:
+        # Two processes share a clock: microseconds alone do not separate them
+        # under ``exist_ok=False``, so the name carries the PID as well.
+        self.assertTrue(_run_timestamp().endswith(f"-{os.getpid()}"))
 
 
 class ExportTests(_SandboxedTestCase):

@@ -23,12 +23,23 @@ import sys
 from collections.abc import Sequence
 
 from .checks import Check, PreflightReport, module_available
-from .config import BASE_DIR, MODEL_SPECS, TrainConfig
+from .config import (
+    ALL_MODEL_KEYS,
+    BASE_DIR,
+    MAX_EPOCHS,
+    MAX_IMGSZ,
+    MAX_WORKERS,
+    MODEL_SPECS,
+    TrainConfig,
+)
 from .dataset import check_data_yaml
 
 __all__ = [
     "AUTO_BATCH",
+    "MAX_EPOCHS",
+    "MAX_IMGSZ",
     "MAX_OPSET",
+    "MAX_WORKERS",
     "MIN_IMGSZ",
     "MIN_OPSET",
     "MIN_PYTHON",
@@ -102,21 +113,24 @@ def check_hyperparameters(cfg: TrainConfig) -> list[Check]:
     operator used, so a ``FAIL`` line says what to change.
     """
 
+    unknown = [key for key in cfg.models if key not in ALL_MODEL_KEYS]
     checks = [
         Check(
             "param.models",
-            bool(cfg.models),
-            f"{', '.join(cfg.models) or 'none'} (at least one of det/seg/track must be selected)",
+            bool(cfg.models) and not unknown,
+            f"{', '.join(cfg.models) or 'none'} (at least one of {', '.join(ALL_MODEL_KEYS)} must be selected)"
+            if not unknown
+            else f"unknown model(s): {', '.join(unknown)} (choose from {', '.join(ALL_MODEL_KEYS)})",
         ),
         Check(
             "param.epochs",
-            cfg.epochs >= 1,
-            f"{cfg.epochs} (must be >= 1; pass --epochs N)",
+            1 <= cfg.epochs <= MAX_EPOCHS,
+            f"{cfg.epochs} (must be 1..{MAX_EPOCHS}; pass --epochs N)",
         ),
         Check(
             "param.imgsz",
-            cfg.imgsz >= MIN_IMGSZ,
-            f"{cfg.imgsz} (must be >= {MIN_IMGSZ}; pass --imgsz N)",
+            MIN_IMGSZ <= cfg.imgsz <= MAX_IMGSZ,
+            f"{cfg.imgsz} (must be {MIN_IMGSZ}..{MAX_IMGSZ}; pass --imgsz N)",
         ),
         Check(
             "param.batch",
@@ -125,8 +139,8 @@ def check_hyperparameters(cfg: TrainConfig) -> list[Check]:
         ),
         Check(
             "param.workers",
-            cfg.workers >= 0,
-            f"{cfg.workers} (must be >= 0; pass --workers N)",
+            0 <= cfg.workers <= MAX_WORKERS,
+            f"{cfg.workers} (must be 0..{MAX_WORKERS}; pass --workers N)",
         ),
         Check(
             "param.opset",
@@ -147,11 +161,13 @@ def check_device(cfg: TrainConfig) -> Check:
     passed and a traceback has replaced the actionable message preflight exists
     to deliver. The accepted grammar is the one the backend forwards verbatim:
     ``cpu``, ``mps``/``metal``, ``cuda``/``cuda:N``, a GPU index, any of those
-    comma-separated, or empty for "let the framework choose".
+    comma-separated, or empty/``auto`` for "let the framework choose".
     """
 
     raw = cfg.device
     if raw is None or not raw.strip():
+        return Check("param.device", True, "auto (let the framework choose)")
+    if raw.strip().lower() == "auto":
         return Check("param.device", True, "auto (let the framework choose)")
     tokens = [token.strip() for token in raw.split(",")]
     bad = [token for token in tokens if not _DEVICE_TOKEN.match(token.lower())]
@@ -191,7 +207,11 @@ def check_metric_thresholds(min_metrics: tuple[tuple[str, float], ...]) -> list[
 def check_weights(cfg: TrainConfig) -> list[Check]:
     checks: list[Check] = []
     for key in cfg.models:
-        spec = MODEL_SPECS[key]
+        spec = MODEL_SPECS.get(key)
+        if spec is None:
+            # Unknown keys are reported by ``param.models``; skipping here keeps
+            # the report complete instead of raising ``KeyError`` mid-preflight.
+            continue
         weights = cfg.weights_path(spec)
         present = weights.exists()
         detail = "present" if present else f"{spec.ckpt} missing — ultralytics will download it (needs network)"

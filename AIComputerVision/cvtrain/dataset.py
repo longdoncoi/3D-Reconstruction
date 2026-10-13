@@ -106,6 +106,8 @@ def check_data_yaml(path: Path) -> Check:
     missing = [key for key in ("train", "val", "names") if key not in parsed]
     if missing:
         return Check("dataset", False, f"missing required key(s): {', '.join(missing)} in {path}")
+    if not parsed.get("names"):
+        return Check("dataset", False, f"'names' must define at least one class in {path}")
     missing_paths = missing_dataset_paths(parsed, path.parent)
     if missing_paths:
         return Check("dataset", False, "missing path(s): " + "; ".join(missing_paths))

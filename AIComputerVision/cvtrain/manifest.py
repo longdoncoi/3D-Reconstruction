@@ -19,10 +19,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
-from . import __version__
+from . import generator_name
 from .config import MANIFEST_NAME, MODEL_SPECS
 from .errors import ManifestIntegrityError
-from .fsio import atomic_write_text, sha256_file
+from .fsio import atomic_write_text, file_size, sha256_file
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -132,6 +132,23 @@ class LastRun(TypedDict, total=False):
     imgsz: int
     seed: int
     opset: int
+    batch: int
+    workers: int
+    device: str
+    python: str
+    """Interpreter that drove the run (``major.minor.micro``), for audit.
+
+    Informational only: :func:`cvtrain.gate.already_current` does not compare
+    it, so a Python upgrade never triggers a retrain by itself — the backend
+    version it gates on already captures export-relevant drift.
+    """
+
+    min_metrics: list[list[str | float]]
+    """Quality thresholds of the invocation, as ``[[name, minimum], ...]``.
+
+    Lists, not tuples: the manifest is JSON, and a tuple would come back as a
+    list on the next load. Informational, like ``python``.
+    """
 
 
 class Manifest(TypedDict, total=False):
@@ -153,7 +170,7 @@ def now_utc_iso() -> str:
 
 
 def _skeleton() -> Manifest:
-    return {"schema_version": SCHEMA_VERSION, "generator": f"cvtrain {__version__}", "entries": {}}
+    return {"schema_version": SCHEMA_VERSION, "generator": generator_name(), "entries": {}}
 
 
 Migration = Callable[[dict[str, Any]], dict[str, Any]]
@@ -168,7 +185,7 @@ def _migrate_0_to_1(data: dict[str, Any]) -> dict[str, Any]:
     ``entries`` are unchanged by this step.
     """
 
-    data.setdefault("generator", f"cvtrain {__version__}")
+    data.setdefault("generator", generator_name())
     return data
 
 
@@ -221,7 +238,7 @@ def _quarantine(path: Path) -> None:
     fails closed by returning a skeleton.
     """
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     target = path.with_name(f"{path.name}.corrupt-{stamp}")
     try:
         os.replace(path, target)
@@ -379,13 +396,13 @@ def build_from_scan(models_dir: Path) -> Manifest:
         entry.setdefault("role", spec.role)
         entry.setdefault("source_weights", spec.ckpt)
         entry["sha256"] = new_sha
-        entry["size_bytes"] = path.stat().st_size
+        entry["size_bytes"] = file_size(path)
         if "trained_at" not in entry:
             entry["trained_at"] = None
         entry["scanned_at"] = scanned
         entries[spec.output] = entry
 
-    manifest["generator"] = f"cvtrain {__version__}"
+    manifest["generator"] = generator_name()
     # ``schema_version`` is deliberately *not* re-assigned here: ``load_manifest``
     # already migrated the document, and stamping our own version over a newer
     # one would down-stamp it (see :func:`migrate`).

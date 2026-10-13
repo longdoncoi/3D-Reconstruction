@@ -129,10 +129,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA_YAML, help="dataset YAML file")
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="training epochs")
     parser.add_argument("--imgsz", type=int, default=DEFAULT_IMGSZ, help="training image size")
-    parser.add_argument("--batch", type=int, default=DEFAULT_BATCH, help="batch size")
+    parser.add_argument(
+        "--batch",
+        type=int,
+        default=DEFAULT_BATCH,
+        help="batch size (use -1 for the automatic batch size)",
+    )
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="dataloader workers")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="random seed for reproducibility")
-    parser.add_argument("--device", default=None, help="compute device, e.g. cpu, 0 or 0,1")
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="compute device, e.g. cpu, 0 or 0,1 (default/auto: let the framework choose)",
+    )
     parser.add_argument("--opset", type=int, default=DEFAULT_OPSET, help="ONNX opset for export")
     parser.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR, help="export directory")
     parser.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR, help="training log directory")

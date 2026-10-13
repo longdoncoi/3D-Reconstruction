@@ -38,6 +38,15 @@ DEFAULT_WORKERS = 0
 DEFAULT_SEED = 0
 DEFAULT_OPSET = 12
 
+MAX_EPOCHS = 10000
+"""Fail-fast ceiling: larger values are a typo, not a training plan."""
+
+MAX_IMGSZ = 4096
+"""Fail-fast ceiling: larger images OOM long before they train."""
+
+MAX_WORKERS = 64
+"""Fail-fast ceiling: beyond this the loader only adds contention."""
+
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -191,7 +200,9 @@ class TrainConfig:
             "exist_ok": False,
             "verbose": self.verbose,
         }
-        if self.device:
+        # ``auto`` is provenance spelling ("let the framework choose"), not a
+        # device the framework accepts: only a concrete device is forwarded.
+        if self.device and self.device_class != "auto":
             kwargs["device"] = self.device_class
         return kwargs
 

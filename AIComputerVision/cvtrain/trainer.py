@@ -29,12 +29,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import __version__, gate, preflight
+from . import gate, generator_name, preflight
 from . import manifest as manifest_mod
 from .backend import EpochCallback, TrainedModel, TrainingBackend
 from .config import BASE_DIR, MODEL_SPECS, ModelSpec, TrainConfig
 from .errors import ExitCode
-from .fsio import atomic_replace_with_backup, directory_lock, sha256_file
+from .fsio import atomic_replace_with_backup, directory_lock, file_size, sha256_file
 from .progress import ProgressReporter
 
 LOG = logging.getLogger("cvtrain.trainer")
@@ -72,7 +72,11 @@ def confirm_retrain(cfg: TrainConfig) -> bool:
     if not sys.stdin.isatty():
         LOG.info("Existing models detected (%s); proceeding without prompt (no TTY).", ", ".join(existing))
         return True
-    answer = input(f"Models already exist ({', '.join(existing)}). Retrain? Y/N: ").strip().upper()
+    try:
+        answer = input(f"Models already exist ({', '.join(existing)}). Retrain? Y/N: ").strip().upper()
+    except EOFError:
+        LOG.info("Retraining cancelled by user (no input).")
+        return False
     return answer == "Y"
 
 
@@ -103,18 +107,25 @@ def _start_manifest(cfg: TrainConfig, backend_version: str) -> manifest_mod.Mani
     # ``load_manifest`` hands back a document already migrated to the current
     # schema (and never down-stamps a newer one), so only the run header is
     # stamped here.
-    manifest["generator"] = f"cvtrain {__version__}"
+    started_at = manifest_mod.now_utc_iso()
+    manifest["generator"] = generator_name()
     # Key name is historical: it records whichever backend produced the run.
     manifest["ultralytics"] = backend_version
     manifest["last_run"] = manifest_mod.LastRun(
-        started_at=manifest_mod.now_utc_iso(),
+        started_at=started_at,
         dataset=str(cfg.data_yaml),
         models=list(cfg.models),
         epochs=cfg.epochs,
         imgsz=cfg.imgsz,
         seed=cfg.seed,
         opset=cfg.opset,
+        batch=cfg.batch,
+        workers=cfg.workers,
+        device=cfg.device_class,
+        python=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        min_metrics=[[name, minimum] for name, minimum in cfg.min_metrics],
     )
+    manifest["updated_at"] = started_at
     return manifest
 
 
@@ -143,7 +154,7 @@ def _export_one(
     # ``<name>.onnx.bak``: a bad export must be recoverable without retraining.
     target = atomic_replace_with_backup(generated, cfg.output_path(spec))
     reporter.exported(index, spec.key)
-    LOG.info("Exported %s -> %s (%.1f MB)", spec.ckpt, target, target.stat().st_size / (1 << 20))
+    LOG.info("Exported %s -> %s (%.1f MB)", spec.ckpt, target, file_size(target) / (1 << 20))
     return target
 
 
@@ -161,11 +172,12 @@ def _record_entry(
     leaves a verified manifest for models 1 and 2.
     """
 
+    trained_at = manifest_mod.now_utc_iso()
     entry = manifest_mod.ManifestEntry(
         role=spec.role,
         source_weights=spec.ckpt,
         sha256=sha256_file(target),
-        size_bytes=target.stat().st_size,
+        size_bytes=file_size(target),
         epochs=cfg.epochs,
         imgsz=cfg.imgsz,
         seed=cfg.seed,
@@ -177,7 +189,7 @@ def _record_entry(
         # ``--device``" and "``--device auto``" are the same experiment, and
         # ``"0, 1"`` and ``"0,1"`` are the same too (see ``device_class``).
         device=cfg.device_class,
-        trained_at=manifest_mod.now_utc_iso(),
+        trained_at=trained_at,
         dataset=str(cfg.data_yaml),
         run_dir=str(model.run_dir),
         metrics=model.metrics,
@@ -193,6 +205,9 @@ def _record_entry(
     if dataset_sha is not None:
         entry["dataset_sha256"] = dataset_sha
     manifest_mod.upsert_entry(manifest, spec.output, entry)
+    # ``updated_at`` tracks the last provenance write: without this refresh a
+    # training run leaves the header older than the entries it just published.
+    manifest["updated_at"] = trained_at
     manifest_mod.save_manifest(cfg.models_dir, manifest)
 
 

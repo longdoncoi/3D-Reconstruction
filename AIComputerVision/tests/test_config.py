@@ -64,6 +64,15 @@ class TrainConfigTests(unittest.TestCase):
         cfg = TrainConfig(device="cpu")
         self.assertEqual(cfg.train_kwargs()["device"], "cpu")
 
+    def test_auto_device_is_not_forwarded_to_the_framework(self) -> None:
+        # ``auto`` is provenance spelling ("let the framework choose"), not a
+        # device the framework accepts: it must behave like the default.
+        for device in ("auto", "AUTO", "  auto  "):
+            with self.subTest(device=device):
+                cfg = TrainConfig(device=device)
+                self.assertEqual(cfg.device_class, "auto")
+                self.assertNotIn("device", cfg.train_kwargs())
+
     def test_device_class_normalises_spelling(self) -> None:
         # The canonical spelling used as provenance: blank means "auto", and
         # whitespace/case around a comma list is not a different experiment.

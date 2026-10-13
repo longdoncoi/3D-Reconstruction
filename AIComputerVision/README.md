@@ -171,10 +171,12 @@ load it.
 
 Exit codes are declared once in `cvtrain/errors.py` (`ExitCode`) and never
 written as bare integers elsewhere: `0` success, `1` unexpected failure, `2`
-preflight/manifest failure, `3` quality-gate failure, `130` interrupted. Expected
-failures (`CvTrainError`) are logged as a single actionable line; anything else
-keeps the full traceback. The Qt dock reports the number verbatim and only tests
-it against zero, so adding a code is a compatible change.
+preflight/manifest failure (including an unreadable file the pipeline had to
+hash or measure — `StorageError`, "cannot vouch"), `3` quality-gate failure,
+`130` interrupted. Expected failures (`CvTrainError`) are logged as a single
+actionable line; anything else keeps the full traceback. The Qt dock reports
+the number verbatim and only tests it against zero, so adding a code is a
+compatible change.
 
 ## Quality gate
 
@@ -221,10 +223,12 @@ progress bar:
 
 Every run ends in a terminal marker — `stage=done` on success, or
 `stage=error` (holding the last published percentage) on failure — so the bar
-never stalls waiting for a line that will not arrive. A model skipped by
-`--skip-unchanged` publishes `stage=skip` at the percentage a completed export
-would occupy, so a run where every model is skipped still climbs monotonically
-to the manifest band. The Qt side
+never stalls waiting for a line that will not arrive. A marker that would move
+the bar backwards is held with a warning instead of published (the diagnostic
+carries no `pct=` token, so the dock's own regex cannot rewind it). A model
+skipped by `--skip-unchanged` publishes `stage=skip` at the percentage a
+completed export would occupy, so a run where every model is skipped still
+climbs monotonically to the manifest band. The Qt side
 (`AITrainDockWidget::onTrainProcessOutput`) only parses `pct=`; the other
 fields are informational.
 
@@ -233,9 +237,12 @@ fields are informational.
 Each exported model is recorded in `Models/manifest.json` with its SHA-256,
 size, dataset path *and the digest of `data.yaml`*, every hyper-parameter, the
 compute device, the digest of the base checkpoint it was actually trained from,
-the version of the backend that produced it, and (best-effort) metrics.
-`--verify-manifest` recomputes the digests, which makes truncation or
-accidental replacement detectable. Verification is bidirectional: an entry
+the version of the backend that produced it, and (best-effort) metrics. The
+run header (`last_run`) records the invocation that produced it — parameters,
+device class, interpreter version and gate thresholds — and `updated_at`
+refreshes on every provenance write, so the header can never read older than
+the entries. `--verify-manifest` recomputes the digests, which makes truncation
+or accidental replacement detectable. Verification is bidirectional: an entry
 whose file went missing is reported, and so is an ONNX file sitting in
 `Models/` without an entry.
 
@@ -292,10 +299,11 @@ at a time), and that assumption is now *enforced*, not merely stated: a run —
 and `--write-manifest` — takes an advisory lock (`Models/.cvtrain.lock`) for the
 whole read-train-write window, so a second `cvtrain` aimed at the same
 directory fails fast with a `ConcurrentRunError` (exit `2`) instead of racing on
-`manifest.json`. The lock is released when the process ends; a lock left behind
-by a crash is treated as abandoned after `LOCK_STALE_SECONDS` (24 h) and
-replaced with a warning. Every write is atomic regardless, so even an outside
-writer cannot leave a torn file.
+`manifest.json`. The lock file carries a pid+token, and release deletes it only
+while it is still ours — a steal that landed mid-run is never unlocked from
+under its new owner. A lock left behind by a crash is treated as abandoned
+after `LOCK_STALE_SECONDS` (24 h) and replaced with a warning. Every write is
+atomic regardless, so even an outside writer cannot leave a torn file.
 
 ## Tests
 
@@ -324,7 +332,9 @@ exercised, so new code lands together with its test.
   `path:` relocation, absolute/relative/glob references and the non-string
   forms the framework resolves itself.
 * `tests/test_contract.py` fails if the exported file names drift from
-  `src/app/AppConstants.h`.
+  `src/app/AppConstants.h` — or if `MAX_OPSET` no longer matches the ONNX
+  Runtime version pinned in `CMakeLists.txt` (an explicit tripwire map, so a
+  runtime bump forces a re-check of the export ceiling).
 * `tests/test_qt_contract.py` fails if the argv, checkbox labels or
   `pct=` regex used by `AITrainDockWidget.cpp` drift from what the CLI accepts
   and emits.
@@ -332,4 +342,6 @@ exercised, so new code lands together with its test.
 The offline suite fakes the ML framework, so API drift in the pinned
 `ultralytics` can only be caught by actually training. `.github/workflows/
 cvtrain-nightly.yml` runs the real stack (CPU torch) on a tiny synthetic dataset
-— one epoch, train → ONNX → manifest → verify — nightly and on demand.
+— one epoch each for detection and segmentation, train → ONNX → manifest →
+verify — nightly and on demand. Tracking stays out of the nightly on purpose:
+`yolo11x` triples the budget while exercising the same backend seam.

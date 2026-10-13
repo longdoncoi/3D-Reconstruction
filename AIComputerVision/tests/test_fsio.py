@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from cvtrain import fsio as fsio_mod
-from cvtrain.errors import ConcurrentRunError
+from cvtrain.errors import ConcurrentRunError, ExitCode, StorageError
 from cvtrain.fsio import (
     BACKUP_SUFFIX,
     LOCK_NAME,
@@ -18,6 +18,7 @@ from cvtrain.fsio import (
     atomic_replace_with_backup,
     atomic_write_text,
     directory_lock,
+    file_size,
     sha256_file,
 )
 
@@ -40,6 +41,48 @@ class Sha256Tests(unittest.TestCase):
             first = sha256_file(path)
             path.write_bytes(b"b")
             self.assertNotEqual(sha256_file(path), first)
+
+    def test_an_unreadable_file_is_a_typed_exit_2_not_a_traceback(self) -> None:
+        # Provenance and verification depend on this digest: "cannot vouch"
+        # (exit 2, one actionable line) instead of an OSError traceback.
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(StorageError) as ctx:
+                sha256_file(Path(tmp) / "missing.bin")
+        self.assertEqual(ctx.exception.exit_code, ExitCode.PREFLIGHT)
+        self.assertIn("missing.bin", str(ctx.exception))
+
+
+class FileSizeTests(unittest.TestCase):
+    def test_reports_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.onnx"
+            path.write_bytes(b"12345")
+            self.assertEqual(file_size(path), 5)
+
+    def test_an_unmeasurable_file_is_typed_like_an_unhashable_one(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(StorageError) as ctx:
+                file_size(Path(tmp) / "missing.onnx")
+        self.assertEqual(ctx.exception.exit_code, ExitCode.PREFLIGHT)
+
+
+class DirectoryFsyncTests(unittest.TestCase):
+    """The directory-entry fsync behind every atomic publish is best-effort."""
+
+    def test_an_unopenable_directory_skips_the_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("cvtrain.fsio.os.open", side_effect=OSError("cannot open dirs here")):
+                fsio_mod._fsync_dir(Path(tmp))
+
+    def test_a_failed_directory_fsync_still_closes_the_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch("cvtrain.fsio.os.open", return_value=123),
+                mock.patch("cvtrain.fsio.os.fsync", side_effect=OSError("read-only")),
+                mock.patch("cvtrain.fsio.os.close") as close,
+            ):
+                fsio_mod._fsync_dir(Path(tmp))
+            close.assert_called_once_with(123)
 
 
 class AtomicWriteTextTests(unittest.TestCase):
@@ -181,6 +224,29 @@ class DirectoryLockTests(unittest.TestCase):
             with directory_lock(target) as lock:
                 lock.unlink()
             self.assertFalse(lock.exists())
+
+    def test_release_leaves_a_foreign_lock_alone(self) -> None:
+        # A steal that landed while the body ran (possible past stale_after):
+        # exiting must not unlock the new owner's run.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            with self.assertLogs("cvtrain.fsio", level="WARNING") as captured:
+                with directory_lock(target) as lock:
+                    lock.write_text("owner pid=999999 token=foreign acquired=now\n", encoding="utf-8")
+            self.assertTrue(lock.exists())
+            self.assertIn("foreign", lock.read_text(encoding="utf-8"))
+            self.assertTrue(any("changed hands" in line for line in captured.output))
+
+    def test_release_warns_when_ownership_cannot_be_verified(self) -> None:
+        # An unreadable lock file must fail closed: leave it, warn, no raise.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            with mock.patch.object(Path, "read_text", side_effect=OSError("denied")):
+                with self.assertLogs("cvtrain.fsio", level="WARNING") as captured:
+                    with directory_lock(target) as lock:
+                        pass
+            self.assertTrue(lock.exists())
+            self.assertTrue(any("leaving it in place" in line for line in captured.output))
 
     def test_a_held_lock_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

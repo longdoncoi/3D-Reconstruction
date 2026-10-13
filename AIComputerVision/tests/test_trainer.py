@@ -132,6 +132,19 @@ class HappyPathTests(_SandboxedTestCase):
         self.assertEqual(manifest["ultralytics"], "9.9.9-fake")
         self.assertEqual(manifest["last_run"]["models"], ["det", "seg"])
         self.assertEqual(manifest["last_run"]["epochs"], 3)
+        self.assertEqual(manifest["last_run"]["batch"], 16)
+        self.assertEqual(manifest["last_run"]["workers"], 0)
+        self.assertEqual(manifest["last_run"]["device"], "auto")
+        self.assertEqual(
+            manifest["last_run"]["python"],
+            f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        )
+        self.assertEqual(manifest["last_run"]["min_metrics"], [])
+        # The header tracks the last provenance write, never older than entries.
+        self.assertIn("updated_at", manifest)
+        for key in self.cfg.models:
+            entry = manifest["entries"][MODEL_SPECS[key].output]
+            self.assertLessEqual(entry["trained_at"] or "", manifest["updated_at"] or "")
 
         for key in self.cfg.models:
             spec = MODEL_SPECS[key]
@@ -339,6 +352,21 @@ class ConfirmRetrainTests(_SandboxedTestCase):
         ):
             self.assertTrue(confirm_retrain(cfg))
 
+    def test_closed_stdin_cancels_instead_of_crashing(self) -> None:
+        # A TTY whose input is closed raises EOFError: cancel cleanly (exit 0)
+        # instead of a traceback with exit 1.
+        cfg = _config(self.root, auto_confirm=False)
+        target = cfg.output_path(MODEL_SPECS["det"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"old")
+
+        interactive = mock.Mock()
+        interactive.isatty.return_value = True
+        with mock.patch.object(sys, "stdin", interactive), mock.patch(
+            "builtins.input", side_effect=EOFError
+        ):
+            self.assertFalse(confirm_retrain(cfg))
+
 
 class SkipUnchangedTests(_SandboxedTestCase):
     """``--skip-unchanged`` turns an identical re-run into a no-op."""
@@ -439,11 +467,11 @@ class SkipUnchangedTests(_SandboxedTestCase):
         self.assertIn("train:det", backend.calls)
 
     def test_an_unspecified_device_matches_an_explicit_auto(self) -> None:
-        # "" and None are the same experiment: "let the framework choose".
-        # ``--device auto`` is *not* — preflight rejects that token, so the
-        # normalisation only has to agree with itself and the default.
+        # "" / None / "auto" are the same experiment: "let the framework choose".
         self._run(models=("det",), skip_unchanged=True)
         _, backend = self._run(models=("det",), skip_unchanged=True, device="")
+        self.assertNotIn("train:det", backend.calls)
+        _, backend = self._run(models=("det",), skip_unchanged=True, device="auto")
         self.assertNotIn("train:det", backend.calls)
 
     def test_equivalent_device_spellings_are_not_retrained(self) -> None:
@@ -537,6 +565,8 @@ class QualityGateTests(_SandboxedTestCase):
         self.assertEqual(code, ExitCode.OK)
         self.assertTrue(cfg.output_path(MODEL_SPECS["det"]).exists())
         self.assertTrue(any("Quality gate ok" in line for line in captured.output))
+        last_run = manifest_mod.load_manifest(cfg.models_dir)["last_run"]
+        self.assertEqual(last_run["min_metrics"], [["metrics/mAP50(B)", 0.4]])
 
     def test_a_model_below_the_threshold_is_never_published(self) -> None:
         # Checked *before* the export is published, so a model nobody wants

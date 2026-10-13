@@ -4,8 +4,11 @@
 # The offline suite (Build-Python-ci.yml: cvtrain job) drives the pipeline with a
 # fake backend, so the only way API drift in the pinned ultralytics version (or
 # an ONNX export regression) can surface is to actually train. This job trains
-# one detection model for a single epoch on a tiny synthetic dataset, CPU-only,
-# and verifies the published manifest. Expensive, so nightly + manual only.
+# one detection model and one segmentation model for a single epoch on a tiny
+# synthetic dataset, CPU-only, and verifies the published manifest. Expensive,
+# so nightly + manual only. Tracking (yolo11x) stays out on purpose: its
+# backbone triples the nightly budget while exercising the same backend seam
+# the det/seg jobs already cover.
 # ──────────────────────────────────────────────────────────────────────────────
 name: cvtrain nightly real-deps
 
@@ -52,6 +55,15 @@ jobs:
           python AIComputerVision/TrainModel.py --yes --det --epochs 1 --imgsz 64 --batch 2 --workers 0 --device cpu --min-metric 'metrics/mAP50(B)=0'
           python AIComputerVision/TrainModel.py --verify-manifest
           test -f AIComputerVision/Models/yolo11n.onnx
+
+      - name: Train + export segmentation model (1 epoch, CPU)
+        # The second export path (mask head) through the same backend seam.
+        # No --min-metric here: the det job above already smoke-tests the gate,
+        # and seg metric keys are allowed to differ from the det ones.
+        run: |
+          python AIComputerVision/TrainModel.py --yes --seg --epochs 1 --imgsz 64 --batch 2 --workers 0 --device cpu
+          python AIComputerVision/TrainModel.py --verify-manifest
+          test -f AIComputerVision/Models/yolo11n-seg.onnx
 
       - name: Upload training logs (kept on failure too)
         if: always()

@@ -81,6 +81,22 @@ class DataYamlTests(unittest.TestCase):
             self.assertTrue(check.ok, check.detail)
             self.assertIn("1 classes", check.detail)
 
+    def test_empty_names_fail(self) -> None:
+        # A dataset with no classes trains nothing: fail here, not in the framework.
+        for payload in (
+            "train: images/train\nval: images/val\nnames: []\n",
+            "train: images/train\nval: images/val\nnames: {}\n",
+        ):
+            with self.subTest(payload=payload):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    for name in ("images/train", "images/val"):
+                        (root / name).mkdir(parents=True, exist_ok=True)
+                    path = _write(root / "data.yaml", payload)
+                    check = check_data_yaml(path)
+                    self.assertFalse(check.ok)
+                    self.assertIn("at least one class", check.detail)
+
     def test_top_level_must_be_a_mapping(self) -> None:
         # A bare list is valid YAML but not a dataset definition; without this
         # branch ultralytics would fail much later with a far worse message.

@@ -5,6 +5,11 @@ ever leaving a half-written one behind". Keeping that logic here means there is
 exactly one temp-file + rename implementation to get right (and to test), and
 one hashing routine so a digest computed during training can never disagree
 with one recomputed by ``--verify-manifest``.
+
+Reads the pipeline *depends on* (hashing, measuring) raise
+:class:`~cvtrain.errors.StorageError` instead of ``OSError``: a file that
+vanished or is unreadable is an environment fact with exit code ``2``, not a
+bug with a traceback.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .errors import ConcurrentRunError
+from .errors import ConcurrentRunError, StorageError
 
 __all__ = [
     "BACKUP_SUFFIX",
@@ -31,6 +36,7 @@ __all__ = [
     "atomic_replace_with_backup",
     "atomic_write_text",
     "directory_lock",
+    "file_size",
     "sha256_file",
 ]
 
@@ -50,13 +56,57 @@ LOCK_STALE_SECONDS = 24 * 60 * 60
 
 
 def sha256_file(path: Path) -> str:
-    """Return the hex SHA-256 of ``path``, streamed in :data:`CHUNK_SIZE` chunks."""
+    """Return the hex SHA-256 of ``path``, streamed in :data:`CHUNK_SIZE` chunks.
+
+    Raises :class:`~cvtrain.errors.StorageError` when the file cannot be read:
+    provenance and verification *depend on* this digest, so an unreadable file
+    is exit code ``2`` ("cannot vouch"), not an ``OSError`` traceback.
+    """
 
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(CHUNK_SIZE), b""):
-            digest.update(chunk)
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(CHUNK_SIZE), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise StorageError(f"cannot hash {path}: {exc}") from exc
     return digest.hexdigest()
+
+
+def file_size(path: Path) -> int:
+    """Return the size of ``path`` in bytes.
+
+    The typed twin of :func:`sha256_file` for the manifest's ``size_bytes``:
+    same rule — an unmeasurable artifact is a :class:`StorageError`, not a
+    traceback.
+    """
+
+    try:
+        return path.stat().st_size
+    except OSError as exc:
+        raise StorageError(f"cannot measure {path}: {exc}") from exc
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Best-effort durability for the directory entry a rename just created.
+
+    ``fsync`` on the file guarantees the *contents* survive a crash, but on a
+    non-journalled filesystem the *name* itself can still be lost without an
+    ``fsync`` of the containing directory. Platforms that cannot open a
+    directory (Windows raises here) simply skip the step: the rename is still
+    atomic, only the crash-durability is best-effort there.
+    """
+
+    try:
+        fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8", newline: str = "\n") -> Path:
@@ -76,6 +126,7 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8", newline
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(tmp_name, path)
+        _fsync_dir(path.parent)
     finally:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
@@ -101,6 +152,7 @@ def atomic_copy(src: Path, dst: Path) -> Path:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(tmp_name, dst)
+        _fsync_dir(dst.parent)
     finally:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
@@ -126,13 +178,36 @@ def atomic_replace_with_backup(src: Path, dst: Path) -> Path:
     return atomic_copy(src, dst)
 
 
-def _remove_lock(lock: Path) -> None:
+def _unlink_quietly(lock: Path) -> None:
     """Delete ``lock``, tolerating the case where it is already gone."""
 
     try:
         os.unlink(lock)
     except FileNotFoundError:
         pass
+
+
+def _remove_lock(lock: Path, expected_token: str) -> None:
+    """Release ``lock``, but only when it is still ours.
+
+    The file carries ``token=<pid>-<ns>`` from acquisition. If the content no
+    longer carries our token, someone stole the lock while the body ran (only
+    possible past ``stale_after``) and deleting it would unlock *their* run —
+    so it is left in place with a warning. A lock that is already gone needs
+    no release at all.
+    """
+
+    try:
+        content = lock.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        LOG.warning("Could not verify ownership of %s: %s; leaving it in place", lock, exc)
+        return
+    if f"token={expected_token}" not in content:
+        LOG.warning("Lock %s changed hands while held; leaving the new owner's lock in place", lock)
+        return
+    _unlink_quietly(lock)
 
 
 def _lock_age(lock: Path) -> float | None:
@@ -148,9 +223,14 @@ def _held_message(lock: Path) -> str:
     return f"{lock} is held by another cvtrain run; wait for it to finish, or delete the file if no run is active"
 
 
-def _acquire_lock(lock: Path, stale_after: float) -> None:
-    """Create ``lock`` exclusively, replacing it only when it is provably stale."""
+def _acquire_lock(lock: Path, stale_after: float) -> str:
+    """Create ``lock`` exclusively, replacing it only when it is provably stale.
 
+    Returns the ownership token written into the file, so the release path can
+    prove the lock is still ours before deleting it.
+    """
+
+    token = f"{os.getpid()}-{time.time_ns()}"
     last_error: FileExistsError | None = None
     for _ in range(2):
         try:
@@ -160,12 +240,12 @@ def _acquire_lock(lock: Path, stale_after: float) -> None:
             age = _lock_age(lock)
             if age is not None and age > stale_after:
                 LOG.warning("Stealing stale lock %s (age %.0fs > %.0fs)", lock, age, stale_after)
-                _remove_lock(lock)
+                _unlink_quietly(lock)
                 continue
             raise ConcurrentRunError(_held_message(lock)) from exc
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(f"owner pid={os.getpid()} acquired={datetime.now(timezone.utc).isoformat()}\n")
-        return
+            stream.write(f"owner pid={os.getpid()} token={token} acquired={datetime.now(timezone.utc).isoformat()}\n")
+        return token
     raise ConcurrentRunError(_held_message(lock)) from last_error
 
 
@@ -183,14 +263,15 @@ def directory_lock(directory: Path, *, stale_after: float = LOCK_STALE_SECONDS) 
 
     A lock older than ``stale_after`` is treated as abandoned (its process
     crashed) and replaced with a warning, so a crash cannot wedge the next run
-    forever. The lock is always removed on the way out, including when the body
-    raises.
+    forever. The lock is always released on the way out — unless it changed
+    hands while the body ran, in which case the new owner's file is left alone
+    (see :func:`_remove_lock`).
     """
 
     directory.mkdir(parents=True, exist_ok=True)
     lock = directory / LOCK_NAME
-    _acquire_lock(lock, stale_after)
+    token = _acquire_lock(lock, stale_after)
     try:
         yield lock
     finally:
-        _remove_lock(lock)
+        _remove_lock(lock, token)
