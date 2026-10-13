@@ -172,9 +172,17 @@ class _RAGModule:
     bm25_index = None
     embed_model_ref = None
     _reranker = None
-    vector_retriever = None  # legacy compatibility (tests/unit/test_legacy_rag_cache.py)
+    vector_retriever = None  # legacy compatibility
+    bm25_retriever = None     # legacy compatibility (tests/unit/test_legacy_rag_cache.py)
+    _pipeline = None          # legacy compatibility
+
+    @staticmethod
+    def _build_retrievers(*args, **kwargs):
+        # legacy compatibility (tests/unit/test_legacy_rag_cache.py)
+        pass
     CHUNK_CHARS = 1200
     MAX_CONTEXT_CHARS = 9000
+    ENABLE_RAG = True  # legacy compatibility (tests/unit/test_legacy_rag_cache.py)
 
     @staticmethod
     def initialize_rag(enable_reranker: bool = True, force_rebuild: bool = False) -> int:

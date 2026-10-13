@@ -47,7 +47,7 @@ except ImportError:  # pragma: no cover — graph framework optional in bare tes
 
 
 def _noop_validate_tool_call(
-    tool_name: str, params: Any, tool_models: Any
+    tool_name: str | None = None, params: Any = None, tool_models: Any = None, **kwargs: Any
 ) -> tuple[Any | None, str | None]:
     """Resume-path validator: parameters were already validated on the first pass."""
     return params, None

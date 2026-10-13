@@ -163,9 +163,10 @@ class ResumeHelpersTests(unittest.TestCase):
     """The resume-path no-ops must be inert and correctly shaped."""
 
     def test_resume_validator_accepts_anything_and_returns_none(self) -> None:
-        self.assertIsNone(RESUME_VALIDATE_TOOL_CALL("tool", {"a": 1}))
-        self.assertIsNone(RESUME_VALIDATE_TOOL_CALL())
-        self.assertIsNone(RESUME_VALIDATE_TOOL_CALL("t", {}, extra=True))
+        # Resume validator returns (params, error) tuple; no-op means valid
+        self.assertEqual(RESUME_VALIDATE_TOOL_CALL("tool", {"a": 1}), ({"a": 1}, None))
+        self.assertEqual(RESUME_VALIDATE_TOOL_CALL(), (None, None))
+        self.assertEqual(RESUME_VALIDATE_TOOL_CALL("t", {}, extra=True), ({}, None))
 
     def test_resume_action_id_is_empty_string(self) -> None:
         self.assertEqual(RESUME_ACTION_ID(), "")
