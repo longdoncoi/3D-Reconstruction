@@ -172,6 +172,7 @@ class _RAGModule:
     bm25_index = None
     embed_model_ref = None
     _reranker = None
+    vector_retriever = None  # legacy compatibility (tests/unit/test_legacy_rag_cache.py)
     CHUNK_CHARS = 1200
     MAX_CONTEXT_CHARS = 9000
 

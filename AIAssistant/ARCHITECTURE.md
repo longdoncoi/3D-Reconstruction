@@ -323,7 +323,7 @@ Edge-case test coverage:
   duplicate-failed-call guard) plus the post-reason router
   (lifts `orchestration/nodes/reason.py` to 100%).
 
-Coverage of `src/ai_assistant/*` is **100%** with branch coverage enabled
+Coverage of `src/ai_assistant/*` is **97% measured (Oct 2026)** with branch coverage enabled (1 358 tests ran, 8 legacy-compat errors in `test_http_admin_routes` / `test_agent_run_context`). The 3-point gap to 100 is the remaining legacy adapter shims (`_RAGModule.vector_retriever`, admin-route reload paths) — pure architecture boundaries (domain/ports/adapters/agents) are at 100%. Full 100% requires resolving those 8 compatibility tests (ADR 0018).
 (7 189 statements, 1 904 branches, measured Oct 2026). That includes the
 composition roots `bootstrap/server.py` and `bootstrap/server_manager.py`,
 which previously pulled the total below the floor; their platform shims,
