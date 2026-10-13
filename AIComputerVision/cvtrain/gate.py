@@ -48,10 +48,14 @@ def _usable_metrics(metrics: object) -> dict[str, float]:
         return {}
     usable: dict[str, float] = {}
     for name, value in metrics.items():
-        if isinstance(value, numbers.Real):
-            number = float(value)
-            if math.isfinite(number):
-                usable[str(name)] = number
+        # ``bool`` subclasses ``int``, so it *is* a ``numbers.Real`` — but JSON
+        # ``true`` is a flag, not a measurement, and accepting it would let a
+        # hand-edited manifest clear any threshold with ``true``.
+        if isinstance(value, bool) or not isinstance(value, numbers.Real):
+            continue
+        number = float(value)
+        if math.isfinite(number):
+            usable[str(name)] = number
     return usable
 
 

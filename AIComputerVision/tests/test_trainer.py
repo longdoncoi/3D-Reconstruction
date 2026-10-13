@@ -17,7 +17,8 @@ from typing import Any
 from unittest import mock
 
 from cvtrain import manifest as manifest_mod
-from cvtrain.backend import TrainedModel
+from cvtrain.backend import TrainedModel, UltralyticsBackend
+from cvtrain.checks import module_available
 from cvtrain.config import MANIFEST_NAME, MODEL_SPECS, TrainConfig
 from cvtrain.errors import ConcurrentRunError, ExitCode, ManifestIntegrityError, QualityGateError
 from cvtrain.fsio import BACKUP_SUFFIX, LOCK_NAME, sha256_file
@@ -265,6 +266,31 @@ class FailurePathTests(_SandboxedTestCase):
         self.assertIn(MODEL_SPECS["det"].output, manifest["entries"])
         self.assertNotIn(MODEL_SPECS["seg"].output, manifest["entries"])
         self.assertEqual(manifest_mod.verify_manifest(cfg.models_dir, manifest), [])
+
+    def test_tensorboard_without_its_package_fails_in_preflight(self) -> None:
+        # The claim in README/ADR 0006 is "exit 2, before any training": here
+        # it is proved through the *real* adapter, so the wiring
+        # cfg -> required_modules(cfg) -> preflight is what is under test. Only
+        # the tensorboard probe is forced to report missing, so the assertion
+        # on the dependency line cannot be satisfied by some other check.
+        cfg = _config(self.root, tensorboard=True)
+        real = module_available
+        with (
+            mock.patch(
+                "cvtrain.preflight.module_available",
+                side_effect=lambda name: False if name == "tensorboard" else real(name),
+            ),
+            self.assertLogs("cvtrain.trainer", level="INFO") as captured,
+        ):
+            code = run(cfg, backend=UltralyticsBackend())
+
+        self.assertEqual(code, ExitCode.PREFLIGHT)
+        # The *failure* line, not any line: every check is also logged at INFO,
+        # so a bare "dependency.tensorboard" match would be satisfied by
+        # "[OK] dependency.tensorboard: installed" — i.e. by the wiring having
+        # been removed entirely on an image that already ships the package.
+        failures = [line for line in captured.output if "Preflight failure" in line and "dependency.tensorboard" in line]
+        self.assertEqual(len(failures), 1)
 
 
 class ManifestVerificationTests(_SandboxedTestCase):
@@ -645,7 +671,12 @@ class QualityGateTests(_SandboxedTestCase):
         # AttributeError (exit 1 + traceback), a string used to raise TypeError,
         # and NaN satisfies ``actual < minimum`` in no arithmetic at all — so
         # an unconverged model would have sailed straight through the bar.
-        for bogus in ("oops", {"metrics/mAP50(B)": "0.9"}, {"metrics/mAP50(B)": float("nan")}):
+        for bogus in (
+            "oops",
+            {"metrics/mAP50(B)": "0.9"},
+            {"metrics/mAP50(B)": float("nan")},
+            {"metrics/mAP50(B)": True},
+        ):
             with self.subTest(metrics=bogus):
                 cfg = _config(self.root, models=("det",), skip_unchanged=True)
                 run(cfg, backend=FakeBackend())

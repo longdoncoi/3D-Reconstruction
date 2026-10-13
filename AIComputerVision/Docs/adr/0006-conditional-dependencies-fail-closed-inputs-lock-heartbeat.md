@@ -48,9 +48,13 @@ does, plus two places where a failure still escaped the typed taxonomy.
 - The framework keyword mapping moves from `config` to
   `backend.train_kwargs`, so `TrainConfig` holds no framework syntax — what
   ADR 0002 already described.
-- Write-side failures (`mkdir`, `mkstemp`, `fsync`, `replace`) become
-  `StorageError`. One carve-out remains: the *source* of `atomic_copy`, an
-  export that produced no file is a bug and keeps its traceback.
+- Write-side failures (`mkdir`, `mkstemp`, `fsync`, `replace`) — and the lock's
+  own `O_EXCL` create and token write — become `StorageError`. One carve-out
+  remains: the *source* of `atomic_copy`, an export that produced no file is a
+  bug and keeps its traceback. Cleanup (`_discard_temp`, `_unlink_quietly`) is
+  best effort: it warns, so a leftover temp file can never replace the verdict
+  that was already on its way out, and a lock that cannot be deleted never
+  turns a held lock into a traceback.
 - `--verify-manifest` takes the same advisory lock as the writers.
 - The lock is refreshed once per epoch (`fsio.touch_lock`), so "stale" keeps
   meaning "crashed". Refreshing is best effort — it warns, never fails a run

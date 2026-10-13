@@ -184,6 +184,36 @@ class AtomicCopyTests(unittest.TestCase):
             self.assertEqual(_leftovers(root), [])
 
 
+class DiscardTempTests(unittest.TestCase):
+    """Cleanup must never replace the error it is cleaning up after."""
+
+    def test_a_temp_file_that_cannot_be_removed_never_masks_the_real_error(self) -> None:
+        # ``finally`` runs while the StorageError is on its way out: a second
+        # OSError raised there would supplant it and turn an exit-2 verdict
+        # back into a traceback.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "generated.onnx"
+            src.write_bytes(b"model")
+
+            with (
+                mock.patch("cvtrain.fsio.os.replace", side_effect=OSError("disk full")),
+                mock.patch("cvtrain.fsio.os.unlink", side_effect=OSError("locked")),
+                self.assertLogs("cvtrain.fsio", level="WARNING") as captured,
+            ):
+                with self.assertRaises(StorageError) as write:
+                    atomic_write_text(root / "manifest.json", "{}")
+                with self.assertRaises(StorageError) as copy:
+                    atomic_copy(src, root / "out.onnx")
+
+            # The typed verdict survives the failed cleanup — both writers.
+            self.assertIn("disk full", str(write.exception))
+            self.assertIn("disk full", str(copy.exception))
+            # ...and each leftover temp file is reported instead of raising.
+            warnings = [line for line in captured.output if "Could not remove" in line]
+            self.assertEqual(len(warnings), 2)
+
+
 class AtomicReplaceWithBackupTests(unittest.TestCase):
     """Publishing keeps one generation of the artifact it replaces."""
 
@@ -251,6 +281,40 @@ class DirectoryLockTests(unittest.TestCase):
                     with directory_lock(Path(tmp) / "Models"):
                         pass  # pragma: no cover - the lock is never acquired
         self.assertIn("permission denied", str(ctx.exception))
+
+    def test_a_lock_that_cannot_be_created_is_typed(self) -> None:
+        # Beyond mkdir: the O_EXCL create itself can be refused (read-only
+        # volume, full disk). Same verdict — exit 2, one line, no traceback.
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("cvtrain.fsio.os.open", side_effect=OSError("read-only volume")):
+                with self.assertRaises(StorageError) as ctx:
+                    with directory_lock(Path(tmp) / "Models"):
+                        pass  # pragma: no cover - the lock is never acquired
+        self.assertIn("read-only volume", str(ctx.exception))
+
+    def test_a_lock_whose_token_cannot_be_written_is_taken_back(self) -> None:
+        # Release only deletes a lock that still carries our token, so a lock
+        # file left behind by a failed write would block every later run until
+        # the stale window expired. Remove it, then report.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            with mock.patch("cvtrain.fsio.os.fdopen", side_effect=OSError("disk full")):
+                with self.assertRaises(StorageError) as ctx:
+                    with directory_lock(target):
+                        pass  # pragma: no cover - the lock is never acquired
+            self.assertIn("disk full", str(ctx.exception))
+            self.assertFalse((target / LOCK_NAME).exists())
+
+    def test_a_lock_that_cannot_be_deleted_warns_instead_of_failing_the_run(self) -> None:
+        # Cleanup runs while the run's own work is being reported: a failure
+        # here must never become the run's verdict.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            with mock.patch("cvtrain.fsio.os.unlink", side_effect=OSError("locked by another process")):
+                with self.assertLogs("cvtrain.fsio", level="WARNING") as captured:
+                    with directory_lock(target) as lock:
+                        self.assertTrue(lock.exists())
+        self.assertTrue(any("Could not remove" in line for line in captured.output))
 
     def test_releases_the_lock_when_the_body_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

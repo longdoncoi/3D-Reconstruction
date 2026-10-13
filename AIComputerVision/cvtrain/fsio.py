@@ -139,9 +139,24 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8", newline
     except OSError as exc:
         raise StorageError(f"Cannot write {path}: {exc}") from exc
     finally:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
+        _discard_temp(tmp_name)
     return path
+
+
+def _discard_temp(tmp_name: str) -> None:
+    """Remove a staged temp file, never letting cleanup replace the real error.
+
+    ``finally`` runs while an exception is on its way out: an ``OSError`` raised
+    here would *supplant* the ``StorageError`` that explains what actually went
+    wrong, turning an exit-2 verdict back into a traceback.
+    """
+
+    if not os.path.exists(tmp_name):
+        return
+    try:
+        os.unlink(tmp_name)
+    except OSError as exc:
+        LOG.warning("Could not remove %s: %s", tmp_name, exc)
 
 
 def atomic_copy(src: Path, dst: Path) -> Path:
@@ -153,8 +168,8 @@ def atomic_copy(src: Path, dst: Path) -> Path:
 
     ``src`` is opened *before* the typed block on purpose: a framework output
     that was supposed to exist and does not is a bug, and keeps its traceback
-    (ADR 0005). Everything that writes ``dst`` — staging, ``fsync``, rename —
-    is an environment fact and becomes a
+    (ADR 0005, narrowed by ADR 0006). Everything that writes ``dst`` — staging,
+    ``fsync``, rename — is an environment fact and becomes a
     :class:`~cvtrain.errors.StorageError` instead, which is exactly what an
     operator needs when the OS refuses the rename (a read-only ``Models/``, a
     Windows sharing violation, a full disk).
@@ -176,8 +191,7 @@ def atomic_copy(src: Path, dst: Path) -> Path:
         except OSError as exc:
             raise StorageError(f"Cannot publish {dst}: {exc}") from exc
         finally:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
+            _discard_temp(tmp_name)
     return dst
 
 
@@ -201,12 +215,20 @@ def atomic_replace_with_backup(src: Path, dst: Path) -> Path:
 
 
 def _unlink_quietly(lock: Path) -> None:
-    """Delete ``lock``, tolerating the case where it is already gone."""
+    """Delete ``lock``; a failure here is cleanup noise, never a verdict.
+
+    This runs from the release path and the stale-steal path, both of which are
+    already handling another problem: letting ``OSError`` escape would *replace*
+    the error actually in flight (or turn "I could not take the lock" into a
+    traceback), which is exactly the mix-up the typed taxonomy exists to stop.
+    """
 
     try:
         os.unlink(lock)
     except FileNotFoundError:
         pass
+    except OSError as exc:
+        LOG.warning("Could not remove %s: %s", lock, exc)
 
 
 def _remove_lock(lock: Path, expected_token: str) -> None:
@@ -265,8 +287,23 @@ def _acquire_lock(lock: Path, stale_after: float) -> str:
                 _unlink_quietly(lock)
                 continue
             raise ConcurrentRunError(_held_message(lock)) from exc
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(f"owner pid={os.getpid()} token={token} acquired={datetime.now(timezone.utc).isoformat()}\n")
+        except OSError as exc:
+            # Anything else the filesystem can refuse — a read-only volume, a
+            # permission, a full disk — is storage this run cannot write, not a
+            # bug: exit 2, one line, no traceback.
+            raise StorageError(f"Cannot create the lock {lock}: {exc}") from exc
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(f"owner pid={os.getpid()} token={token} acquired={datetime.now(timezone.utc).isoformat()}\n")
+        except OSError as exc:
+            # The file exists but now carries no token of ours, and release
+            # only deletes a lock that still names it — leaving this one would
+            # block every later run until the stale window expired. Take it
+            # back first, then report why.
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            _unlink_quietly(lock)
+            raise StorageError(f"Cannot write the lock {lock}: {exc}") from exc
         return token
     raise ConcurrentRunError(_held_message(lock)) from last_error
 

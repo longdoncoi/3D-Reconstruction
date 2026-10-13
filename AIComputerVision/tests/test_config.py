@@ -60,12 +60,6 @@ class TrainConfigTests(unittest.TestCase):
         self.assertEqual(TrainConfig(device="CPU").device_class, "cpu")
         self.assertEqual(TrainConfig(device="cuda:0").device_class, "cuda:0")
 
-    def test_data_yaml_is_exposed_to_the_adapter_as_a_string(self) -> None:
-        # Kept in config: the *path* is this package's contract; only the
-        # framework keyword it lands in (``data``) is the adapter's.
-        cfg = TrainConfig(data_yaml=Path("Dataset/data.yaml"))
-        self.assertEqual(str(cfg.data_yaml), str(Path("Dataset/data.yaml")))
-
     def test_the_quality_gate_is_opt_in(self) -> None:
         # No threshold by default: behaviour for every existing caller (the Qt
         # dialog included) must stay exactly what it was.
