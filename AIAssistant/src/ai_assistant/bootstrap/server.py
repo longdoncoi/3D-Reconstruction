@@ -12,10 +12,10 @@ HTTP adapters, modules, and services. Business logic lives in sub-modules:
 """
 
 import sys
-from typing import Any
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -56,6 +56,9 @@ def _patch_proactor_transport() -> None:
 _ensure_package_root_on_path(str(Path(__file__).resolve().parents[2]))
 _patch_proactor_transport()
 
+# ── Canonical module-level state (replaces legacy config import) ───────────
+from pathlib import Path
+
 from ai_assistant.adapters.a2a import build_a2a_router
 from ai_assistant.adapters.a2a_protocol import A2ARouter, resolve_remote_specialist
 from ai_assistant.adapters.http import (
@@ -71,26 +74,20 @@ from ai_assistant.adapters.persistence.checkpointing import build_checkpointer
 from ai_assistant.agents.service import AgentService
 from ai_assistant.application.agent_runs import AgentRunService
 from ai_assistant.bootstrap import PlatformContainer, build_container, create_app
-from ai_assistant.domain.tasks import AgentTask
-from ai_assistant.llm import get_backend, load_model, reload_model
-from ai_assistant.llm import model_loader
-from ai_assistant.llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
 from ai_assistant.config import (
-    AppPaths,
     RAGSettings,
+    load_model_registry,
+    resolve_paths,
     safe_relpath,
     setup_logging,
 )
-from ai_assistant.config import load_model_registry, resolve_paths, RAGSettings
+from ai_assistant.domain.tasks import AgentTask
+from ai_assistant.llm import get_backend, load_model, reload_model
+from ai_assistant.llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
 from ai_assistant.orchestration.specialists import ChatbotAgent
 from ai_assistant.orchestration.supervisor import set_remote_specialist_lookup
 from ai_assistant.tools import action_manifest
 from ai_assistant.tools.factory import create_tool_registry, platform_executors
-
-# ── Canonical module-level state (replaces legacy config import) ───────────
-import logging
-import time
-from pathlib import Path
 
 _SERVER_START_TIME = time.monotonic()
 BASE_DIR = str(Path(__file__).resolve().parents[2])
@@ -123,7 +120,7 @@ EMBED_MODEL_NAME = _rag_settings.embed_model_name
 
 # ── Compatibility wrappers (replaces legacy llm_module / rag_module shims) ──
 import threading
-from types import SimpleNamespace
+
 
 class _LLMModule:
     llm: Any = None
@@ -194,10 +191,9 @@ class _RAGModule:
 
 rag_module = _RAGModule()
 
-# Re-export for adapter compatibility
+# Re-export for adapter compatibility (imported from llm.defaults; kept for legacy bridge)
 USE_VISION_LLM = False  # computed from settings if needed
-CHARS_PER_TOKEN = 2.2
-LLM_N_CTX = 8192
+# CHARS_PER_TOKEN / LLM_N_CTX re-exported via import above; do not redefine.
 
 # ── Global mutable chatbot agent (recreated on model/RAG reload) ─────────────
 # Wrapped in a getter so the HTTP router captures the getter reference, not the
