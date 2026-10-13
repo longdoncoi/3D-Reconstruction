@@ -33,7 +33,10 @@ New optional entry fields do not bump the schema (`total=False`); a document
 written by a newer build is read as-is and never down-stamped, so an older
 fixture cannot erase version information a future reader needs. A corrupt or
 structurally invalid manifest is **quarantined** (`manifest.json.corrupt-<ts>`)
-so the next write cannot silently destroy the only record of what was there.
+so the next write cannot silently destroy the only record of what was there —
+that recovery path belongs to the *recovering* reader a training run uses;
+`--verify-manifest` reads strictly instead and exits `2` without renaming
+anything (ADR 0006).
 
 ## Consequences
 

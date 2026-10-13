@@ -2,8 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-10-13
-- Supersedes: partially 0005 (its "heartbeated locks" non-goal and its
-  write-side `OSError` carve-out)
+- Supersedes: partially 0003 (its unconditional quarantine wording) and 0005
+  (its "heartbeated locks" non-goal and its write-side `OSError` carve-out)
 
 ## Context
 
