@@ -185,6 +185,11 @@ class _RAGModule:
         return ("", "", [])
 
     @staticmethod
+    def _release_ml_memory() -> None:
+        # Protocol compliance for RAGModuleLike; delegates to vision release
+        _RAGModule.release_embedding_for_vision()
+
+    @staticmethod
     def release_embedding_for_vision() -> None:
         from ai_assistant.llm.hardware import release_ml_memory
         release_ml_memory()
