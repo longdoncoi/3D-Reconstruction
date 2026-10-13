@@ -20,7 +20,7 @@ from pathlib import Path
 # Host/port lấy từ hằng chuẩn của settings (ADR 0001) — không hard-code lặp.
 BASE_DIR = str(Path(__file__).resolve().parents[3])
 _SRC_DIR = os.path.join(BASE_DIR, "src")
-if _SRC_DIR not in sys.path:
+if _SRC_DIR not in sys.path:  # pragma: no cover — already present via the package import
     sys.path.insert(0, _SRC_DIR)
 
 from ai_assistant.settings import DEFAULT_HOST, DEFAULT_PORT
@@ -286,7 +286,7 @@ def main():
             pass
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover — process entry point launched by the Qt host
     # Đảm bảo stdout dùng UTF-8 cho Qt
     os.environ["PYTHONUTF8"] = "1"
     if sys.platform == "win32":

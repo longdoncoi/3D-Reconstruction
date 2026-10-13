@@ -66,11 +66,15 @@ class ProtocolSurfaceTests(unittest.TestCase):
                 self.assertTrue(callable(getattr(_types.RAGModuleLike, name)))
 
     def test_platform_like_nests_plugins_and_settings(self) -> None:
-        self.assertIn("plugins", _types.PlatformLike.__annotations__)
-        self.assertIn("settings", _types.PlatformLike.__annotations__)
+        # The nested members are read-only ``@property`` declarations (a frozen
+        # dataclass attribute is not settable, so mypy rejects a plain protocol
+        # attribute — see ADR 0001); properties surface via ``getattr``, not
+        # via ``__annotations__``.
+        self.assertTrue(isinstance(getattr(_types.PlatformLike, "plugins"), property))
+        self.assertTrue(isinstance(getattr(_types.PlatformLike, "settings"), property))
         for name in ("enable_mcp", "enable_a2a", "allow_remote_a2a"):
             with self.subTest(setting=name):
-                self.assertIn(name, _types.PlatformSettingsLike.__annotations__)
+                self.assertTrue(isinstance(getattr(_types.PlatformSettingsLike, name), property))
 
     def test_chatbot_agent_like_declares_build_and_clean_contract(self) -> None:
         self.assertTrue(callable(_types.ChatbotAgentLike.build_messages))

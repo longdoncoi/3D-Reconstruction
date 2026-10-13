@@ -55,8 +55,12 @@ class LLMBackend(Protocol):
         ...
 
 
-class ToolExecutor(Protocol):
-    def __call__(self, parameters: dict) -> dict: ...
+# A plain function type, not a ``Protocol`` with ``__call__``: every executor
+# in the tree is a free function, and mypy does not unify a
+# ``Callable[[dict[str, Any]], dict[str, Any]]`` with a callable protocol whose
+# parameter is ``dict[str, Any]`` (the ``Any`` makes the structural match fail),
+# so the alias is both simpler and actually checkable.
+ToolExecutor = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 class ToolGateway(Protocol):

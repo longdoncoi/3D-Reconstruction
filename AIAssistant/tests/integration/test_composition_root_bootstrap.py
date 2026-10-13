@@ -31,7 +31,7 @@ class CompositionRootImportTests(unittest.TestCase):
         cls.server = server_module
 
     def test_entry_module_exposes_server_start_time(self) -> None:
-        """``StartChatbotServer`` imports ``_SERVER_START_TIME`` from legacy config."""
+        """``bootstrap/server.py`` imports ``_SERVER_START_TIME`` from legacy config."""
         self.assertTrue(hasattr(self.server, "_SERVER_START_TIME"))
         self.assertTrue(hasattr(self.server, "bootstrap_runtime"))
 

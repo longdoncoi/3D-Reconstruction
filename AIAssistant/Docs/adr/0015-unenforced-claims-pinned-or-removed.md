@@ -31,7 +31,8 @@ reader had to verify every assertion by hand.
    reads.** `orchestration/supervisor.py` exposes
    `set_remote_specialist_lookup` as the dependency-inversion seam that keeps
    orchestration free of adapter imports (ADR 0002), and
-   `StartChatbotServer.py:225` installs `resolve_remote_specialist` at startup
+   `bootstrap/server.py:_register_optional_protocols` installs
+   `resolve_remote_specialist` at startup
    and clears it on shutdown. The existing tests pin the *mechanism* — the
    port shape, that delegation fails closed, that nothing in `orchestration`
    imports an adapter — but none of them opens the composition root. Deleting
@@ -66,7 +67,7 @@ reader had to verify every assertion by hand.
    regression tests rather than scored benchmarks.
 
 2. **The composition-root wiring is pinned.**
-   `tests/unit/test_a2a_import_order.py` parses `StartChatbotServer.py` with
+   `tests/unit/test_a2a_import_order.py` parses `bootstrap/server.py` with
    the AST and asserts two things: startup installs a lookup named
    `resolve_remote_specialist`, and some call clears it with `None`. Reading
    the source is deliberate — importing the script would run the server.

@@ -99,7 +99,7 @@
     "ai.starting_server": "Starting AI Server...",
     "ai.server_not_running": "AI Server is not running. Please open AI Assistant first.",
     "ai.cancel_server": "AI Server process was stopped.",
-    "ai.missing_script": "StartChatbotServer.py script not found.",
+    "ai.missing_script": "server_manager.py script not found.",
     "ai.server_crashed": "AI Server crashed unexpectedly.",
     "ai.server_error": "AI Server error with code: %1",
     "ai.connection_error": "Unable to connect to AI Server.",

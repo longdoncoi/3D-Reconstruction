@@ -185,4 +185,4 @@ try:
 except (ValueError, IndexError):
     MODEL_IDX = 0
 
-active_model_desc = MODELS[MODEL_IDX]["desc"]
+active_model_desc: str = str(MODELS[MODEL_IDX]["desc"])

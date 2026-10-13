@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -77,7 +78,7 @@ def tool_spec_from(entry: Any, executor: ToolExecutor | None) -> ToolSpec | None
 
 
 def build_container(base_dir: Path, legacy_tools: "list[Any]",
-                    legacy_executors: dict[str, ToolExecutor], task_executor: AgentTaskExecutor,
+                    legacy_executors: Mapping[str, ToolExecutor], task_executor: AgentTaskExecutor,
                     coordinator: TaskCoordinator | None = None) -> PlatformContainer:
     """Build the DI container.
 

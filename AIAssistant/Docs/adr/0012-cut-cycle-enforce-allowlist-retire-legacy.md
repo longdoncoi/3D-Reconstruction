@@ -46,7 +46,7 @@ The supervisor's remote lookup is dependency inversion: it exposes
 `set_remote_specialist_lookup(resolver)` and a private
 `_resolve_remote_endpoint` that fails closed (returns `None`, logging a
 warning) when the resolver is missing or raises. The composition root
-(`StartChatbotServer.py`) installs
+(`bootstrap/server.py`) installs
 `adapters.a2a_protocol.resolve_remote_specialist` only when
 `platform.settings.enable_a2a` is true, and clears it otherwise. The previous
 `try/except ImportError` and `_A2A_IMPORT_OK` flag are gone.

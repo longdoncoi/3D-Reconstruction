@@ -308,7 +308,14 @@ Edge-case test coverage:
 - `tests/unit/test_index.py`, `tests/unit/test_loaders.py` — image-aware
   embedding, the IVF corpus path, scan edge cases, encoding/docx/pdf/email
   loader fallbacks, hierarchical markdown sections and the sliding-window
-  overlap guard (lifts `rag/index.py` to 100% and `rag/loaders.py` to 99%).
+  overlap guard (lifts `rag/index.py` and `rag/loaders.py` to 100%).
+- `tests/unit/test_server_manager.py`, `tests/integration/test_server_module.py`
+  — the supervisor's `main()` decision matrix (same model / switch model /
+  shutdown survivor / startup timeout / missing log, plus the tail loop) and
+  the composition-root branches the module import itself cannot reach (A2A/MCP
+  deployment-profile matrix, lifespan lifecycle, chatbot-agent holder, win32
+  proactor shim), lifting both `bootstrap/server.py` and
+  `bootstrap/server_manager.py` to 100%.
 - `tests/unit/test_reason_node_guards.py` — the ReAct dispatch loop's
   self-correction guards (empty answer, hallucinated inline answer, malformed
   tool call, the `transfer_to_toolapp_agent` bounce, the desktop step/action
@@ -316,11 +323,12 @@ Edge-case test coverage:
   duplicate-failed-call guard) plus the post-reason router
   (lifts `orchestration/nodes/reason.py` to 100%).
 
-Coverage of `src/ai_assistant/*` is **91%** with branch coverage enabled
-(6 898 statements, 1 850 branches, measured Oct 2026). The modules called out
-above sit at 99–100%: `rag/index.py` and `rag/loaders.py` at 99% with every
-statement reached, `domain/approvals.py` at 100%, and the ReAct dispatch loop
-(`orchestration/nodes/reason.py`) at 99%. Run it with:
+Coverage of `src/ai_assistant/*` is **100%** with branch coverage enabled
+(7 189 statements, 1 904 branches, measured Oct 2026). That includes the
+composition roots `bootstrap/server.py` and `bootstrap/server_manager.py`,
+which previously pulled the total below the floor; their platform shims,
+deployment-profile branches and process entry points are now covered through
+extracted helpers and targeted tests rather than excluded. Run it with:
 
 ```bash
 PYTHONPATH=src python -m coverage run -m unittest discover -s tests -p "test_*.py"

@@ -64,8 +64,10 @@ class ActionManifestLike(Protocol):
 
 
 class PluginSpecLike(Protocol):
-    name: str
-    description: str
+    @property
+    def name(self) -> str: ...
+    @property
+    def description(self) -> str: ...
 
 
 class PluginRegistryLike(Protocol):
@@ -73,14 +75,22 @@ class PluginRegistryLike(Protocol):
 
 
 class PlatformSettingsLike(Protocol):
-    enable_mcp: bool
-    enable_a2a: bool
-    allow_remote_a2a: bool
+    @property
+    def enable_mcp(self) -> bool: ...
+    @property
+    def enable_a2a(self) -> bool: ...
+    @property
+    def allow_remote_a2a(self) -> bool: ...
 
 
 class PlatformLike(Protocol):
-    plugins: PluginRegistryLike
-    settings: PlatformSettingsLike
+    # Declared as read-only properties so a frozen/slots container (a read-only
+    # attribute) satisfies the protocol; a bare protocol attribute would demand
+    # a settable variable (ADR 0001, mypy "read-only attribute" error).
+    @property
+    def plugins(self) -> PluginRegistryLike: ...
+    @property
+    def settings(self) -> PlatformSettingsLike: ...
 
 
 class ChatbotAgentLike(Protocol):

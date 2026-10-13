@@ -4,7 +4,7 @@ This implements the same :class:`ai_assistant.ports.AgentOrchestrator` port as
 the canonical LangGraph adapter so the durable A2A lifecycle can run where
 LangGraph is unavailable: embeddings, CI and contract tests.
 
-It is deliberately *not* wired into production — ``StartChatbotServer`` uses
+It is deliberately *not* wired into production — ``bootstrap/server.py`` uses
 :class:`~ai_assistant.adapters.orchestration.langgraph.LangGraphAgentOrchestrator`
 (ADR 0003). Keeping the fallback loop out of ``application`` means the
 application layer holds no decision-loop implementation at all.

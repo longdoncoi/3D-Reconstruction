@@ -21,7 +21,7 @@ def build_health_router(
     platform: "PlatformLike",
     server_start_time: float,
     embed_model_name: str,
-    chars_per_token: int,
+    chars_per_token: float,
     model_idx: int,
     app: object,
 ) -> APIRouter:

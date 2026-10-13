@@ -99,7 +99,7 @@
     "ai.starting_server": "Đang khởi động AI Server...",
     "ai.server_not_running": "AI Server chưa khởi động. Hãy mở Trợ lý AI trước.",
     "ai.cancel_server": "Tiến trình AI Server đã bị dừng.",
-    "ai.missing_script": "Không tìm thấy file kịch bản StartChatbotServer.py.",
+    "ai.missing_script": "Không tìm thấy file kịch bản server_manager.py.",
     "ai.server_crashed": "AI Server bị crash đột ngột.",
     "ai.server_error": "Lỗi AI Server với mã lỗi: %1",
     "ai.connection_error": "Không thể kết nối đến AI Server.",

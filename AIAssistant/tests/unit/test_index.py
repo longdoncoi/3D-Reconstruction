@@ -152,16 +152,24 @@ class _FakeEmbed:
 
 
 def _patch_heavy(faiss=None, numpy=None, bm25=None):
-    patchers = []
+    """Install the heavy-dependency doubles in ``sys.modules``.
+
+    A single ``patch.dict`` covers every requested module: stacking one
+    ``patch.dict(sys.modules, ...)`` per dependency made the restore order
+    significant (stopping in start order re-instates the fake that the last
+    patch captured as "original"), which leaked ``numpy``/``faiss`` fakes into
+    later tests).
+    """
+    modules: dict[str, object] = {}
     if faiss is not None:
-        patchers.append(mock.patch.dict(sys.modules, {"faiss": faiss}))
+        modules["faiss"] = faiss
     if numpy is not None:
-        patchers.append(mock.patch.dict(sys.modules, {"numpy": numpy}))
+        modules["numpy"] = numpy
     if bm25 is not None:
-        patchers.append(mock.patch.dict(sys.modules, {"rank_bm25": bm25}))
-    for patcher in patchers:
-        patcher.start()
-    return patchers
+        modules["rank_bm25"] = bm25
+    patcher = mock.patch.dict(sys.modules, modules)
+    patcher.start()
+    return [patcher]
 
 
 class FileSystemHashTests(unittest.TestCase):

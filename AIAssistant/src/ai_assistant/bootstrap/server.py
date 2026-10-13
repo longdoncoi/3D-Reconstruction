@@ -18,25 +18,42 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-_PACKAGE_ROOT = str(Path(__file__).resolve().parents[2])
-if _PACKAGE_ROOT not in sys.path:
-    sys.path.insert(0, _PACKAGE_ROOT)
 
-if sys.platform == "win32":
-    try:
-        from asyncio.proactor_events import _ProactorBasePipeTransport
+def _ensure_package_root_on_path(package_root: str) -> None:
+    """Make ``python bootstrap/server.py`` work from any working directory."""
+    if package_root not in sys.path:
+        sys.path.insert(0, package_root)
 
-        _orig_call_connection_lost = _ProactorBasePipeTransport._call_connection_lost
 
-        def _silenced_call_connection_lost(self, exc):
-            try:
-                _orig_call_connection_lost(self, exc)
-            except ConnectionResetError:
-                pass
+def _silence_connection_reset(transport_cls: type) -> None:
+    """Wrap ``_call_connection_lost`` so an abrupt client reset is not an error.
 
-        _ProactorBasePipeTransport._call_connection_lost = _silenced_call_connection_lost
-    except Exception:
-        pass
+    Windows' proactor event loop raises ``ConnectionResetError`` from the pipe
+    shutdown callback after a client disconnects abruptly; the traceback is
+    noise, so the wrapper swallows exactly that exception.
+    """
+    original = getattr(transport_cls, "_call_connection_lost")
+
+    def _silenced(self, exc):
+        try:
+            original(self, exc)
+        except ConnectionResetError:
+            pass
+
+    setattr(transport_cls, "_call_connection_lost", _silenced)
+
+
+def _patch_proactor_transport() -> None:
+    """Install the Windows proactor pipe-reset shim (no-op on POSIX)."""
+    if sys.platform != "win32":
+        return
+    from asyncio.proactor_events import _ProactorBasePipeTransport
+
+    _silence_connection_reset(_ProactorBasePipeTransport)
+
+
+_ensure_package_root_on_path(str(Path(__file__).resolve().parents[2]))
+_patch_proactor_transport()
 
 from ai_assistant.adapters.a2a import build_a2a_router
 from ai_assistant.adapters.a2a_protocol import A2ARouter, resolve_remote_specialist
@@ -103,7 +120,7 @@ def _execute_a2a_task(task: AgentTask) -> dict:
 # are injected explicitly, so no module-level service locator remains.
 _tool_registry = create_tool_registry()
 platform: PlatformContainer = build_container(
-    BASE_DIR,
+    Path(BASE_DIR),
     list(_tool_registry.get_all()),
     platform_executors(_tool_registry),
     _execute_a2a_task,
@@ -219,20 +236,31 @@ app.include_router(build_admin_router(
 # Agent endpoints
 app.include_router(build_agent_router(agent_service, policy=transport_policy))
 
-# Optional protocol adapters
-if platform.settings.enable_a2a:
-    # Dependency inversion (ADR 0002): the supervisor never imports the A2A
-    # adapter; the composition root installs its remote-specialist resolver.
-    set_remote_specialist_lookup(resolve_remote_specialist)
-    app.include_router(build_a2a_router(
-        platform.tasks, "3D-Reconstruction AI Assistant", "3.0.0",
-        policy=transport_policy,
-    ))
-else:
-    set_remote_specialist_lookup(None)
-if platform.settings.enable_mcp and mcp_server.available:
-    mcp_server.register_plugin_tools(platform.plugins)
-    app.mount("/mcp", mcp_server.asgi_app())
+def _register_optional_protocols(
+    app: FastAPI,
+    platform: PlatformContainer,
+    mcp_server: McpToolServer,
+    transport_policy: TransportPolicy,
+) -> None:
+    """Wire the A2A and MCP surfaces according to the deployment profile.
+
+    Dependency inversion (ADR 0002): the supervisor never imports the A2A
+    adapter; the composition root installs its remote-specialist resolver.
+    """
+    if platform.settings.enable_a2a:
+        set_remote_specialist_lookup(resolve_remote_specialist)
+        app.include_router(build_a2a_router(
+            platform.tasks, "3D-Reconstruction AI Assistant", "3.0.0",
+            policy=transport_policy,
+        ))
+    else:
+        set_remote_specialist_lookup(None)
+    if platform.settings.enable_mcp and mcp_server.available:
+        mcp_server.register_plugin_tools(platform.plugins)
+        app.mount("/mcp", mcp_server.asgi_app())
+
+
+_register_optional_protocols(app, platform, mcp_server, transport_policy)
 
 
 # ── Runtime Bootstrap ─────────────────────────────────────────────────────────
@@ -250,7 +278,7 @@ def bootstrap_runtime() -> None:
         rag_module.release_embedding_for_vision()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover — process entry point
     import uvicorn
 
     try:

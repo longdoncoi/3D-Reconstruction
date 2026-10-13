@@ -5,11 +5,12 @@ New code should use ai_assistant.rag package directly.
 
 import threading
 from types import SimpleNamespace
+from typing import Any
 
 # --- NEW PLATFORM INTEGRATION ---
 from ai_assistant.llm.hardware import release_ml_memory as _release_ml_memory
 from ai_assistant.rag import (
-    ChunkResult,  # noqa: F401
+    ChunkResult,
     DocumentLoaderRegistry,
     RetrievalPipeline,
     build_index_from_scratch,
@@ -139,7 +140,9 @@ def initialize_rag(force_rebuild: bool = False, enable_reranker: bool = True) ->
         except Exception as error:
             logger.warning("Reranker load failed (%s); continuing without it", error)
 
-    index, chunks, bm25 = None, [], None
+    index: Any = None
+    chunks: list[ChunkResult] = []
+    bm25: Any = None
     if not force_rebuild and is_cache_valid(_paths, _rag_settings):
         with startup_step("Loading RAG index cache"):
             index, chunks, bm25 = load_cache(_paths, _rag_settings)
