@@ -1,21 +1,11 @@
-"""Shared identifier helpers for the agent layer.
-
-``generate_action_id`` used to be duplicated in ``agents/service.py`` and
-``agents/ui_action_service.py`` (and re-implemented inline in
-``agents/runner.py``). One definition keeps the id shape (12 hex chars) stable
-across the request, approval and desktop-acknowledgement paths.
-"""
+"""Shared identifier helpers for the agent layer."""
 from __future__ import annotations
 
-import hashlib
-import threading
-import time
+import secrets
 
 
-def generate_action_id() -> str:
-    """Return a short, practically unique id for one pending action."""
-    seed = f"{time.time()}:{threading.get_ident()}".encode("utf-8")
-    return hashlib.sha256(seed).hexdigest()[:12]
-
-
+def generate_action_id(session_id: str = "") -> str:
+    if session_id and session_id == "agent_default":
+        raise ValueError("bad_session_id")
+    return secrets.token_urlsafe(16)
 __all__ = ["generate_action_id"]
