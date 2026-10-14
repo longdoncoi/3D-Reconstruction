@@ -2,7 +2,12 @@ import os
 import sys
 import unittest
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Self-bootstrap: the eval CI job runs this file directly from the repo root,
+# where neither the repo layout nor tests/__init__.py puts ``src`` on sys.path
+# (the standalone-run pattern used by evals/run_agentic_eval.py).
+_SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "src")
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 from ai_assistant.tools.action_manifest import (
     action_ids,
     action_intents,

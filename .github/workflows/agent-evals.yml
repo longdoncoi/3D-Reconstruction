@@ -19,7 +19,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.11"}
-      - run: pip install "pydantic>=2.7"
+      # run_agentic_eval.py imports ai_assistant.orchestration.supervisor,
+      # whose package __init__ eagerly imports the LangGraph LocalAgentGraph
+      # (langchain_core + langgraph). pydantic alone covers run_tool_eval.py;
+      # langgraph covers the supervisor import chain. a2a-sdk / langsmith /
+      # opentelemetry stay absent on purpose — the eval guards those imports.
+      - run: pip install "pydantic>=2.7" "langgraph>=1.0.0"
       - run: python AIAssistant/evals/run_tool_eval.py
       - name: Agentic policy eval (routing / authorisation / verification)
         run: python AIAssistant/evals/run_agentic_eval.py > AIAssistant/evals/agentic_eval_report.json

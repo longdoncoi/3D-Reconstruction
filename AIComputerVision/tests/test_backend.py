@@ -233,8 +233,15 @@ class LazyImportTests(_SandboxedTestCase):
 
 class PrepareTests(_SandboxedTestCase):
     def test_tensorboard_is_enabled_only_when_requested(self) -> None:
+        # The probe must succeed whether or not the package happens to be
+        # installed on the machine running the suite (CI installs none), so
+        # the import is stubbed in — the test exercises the settings wiring,
+        # not the environment.
         self.cfg.tensorboard = True
-        with _stub_ultralytics() as (_, settings):
+        with (
+            _stub_ultralytics() as (_, settings),
+            mock.patch.dict(sys.modules, {"tensorboard": types.ModuleType("tensorboard")}),
+        ):
             UltralyticsBackend().prepare(self.cfg)
         self.assertEqual(settings, {"tensorboard": True})
 
@@ -264,7 +271,12 @@ class PrepareTests(_SandboxedTestCase):
         backend = UltralyticsBackend()
         backend._yolo = object()  # already "loaded", so no framework import
         backend._settings = None
-        with self.assertLogs("cvtrain.backend", level="WARNING") as captured:
+        # Stub the package in (as above): without it the probe would fail
+        # first on CI and the no-settings branch would never be reached.
+        with (
+            mock.patch.dict(sys.modules, {"tensorboard": types.ModuleType("tensorboard")}),
+            self.assertLogs("cvtrain.backend", level="WARNING") as captured,
+        ):
             backend.prepare(self.cfg)
         self.assertTrue(any("TensorBoard logging stays off" in line for line in captured.output))
 

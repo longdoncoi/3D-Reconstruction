@@ -40,7 +40,11 @@ jobs:
       - name: Install the real training stack (CPU torch)
         run: |
           python -m pip install --upgrade pip
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          # torch and torchvision must come from the SAME index: installing
+          # torch from the CPU index and then letting ultralytics pull
+          # torchvision from PyPI mixes two builds, and the ops registration
+          # breaks at runtime ("operator torchvision::nms does not exist").
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           pip install -r AIComputerVision/requirements.txt pillow
 
       - name: Generate a toy dataset
