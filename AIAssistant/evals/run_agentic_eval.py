@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # root alone leaves ``ai_assistant`` unimportable.
 sys.path.insert(0, str(ROOT / "src"))
 
+from ai_assistant.domain.tools import EVIDENCE_FIELDS
 from ai_assistant.orchestration.supervisor import (
     CODE_TOOLS,
     RESEARCH_TOOLS,
@@ -47,15 +48,9 @@ except ImportError:
 # the *routing + authorisation + verification* pipeline end-to-end without
 # depending on real tool output.
 
-# Mirrors the ``evidence_fields`` dict inside ``verify_result``.
-_EVIDENCE_FIELDS: dict[str, tuple[str, ...]] = {
-    "read_file":       ("content",),
-    "search_text":     ("results",),
-    "find_files":      ("matches",),
-    "list_directory":  ("entries",),
-    "analyze_code":    ("functions", "classes", "includes"),
-    "git_diff":        ("content",),
-}
+# Source of truth lives in ``domain.tools``; imported (not copied) so the eval
+# can never drift from the table ``verify_result`` actually uses.
+_EVIDENCE_FIELDS = EVIDENCE_FIELDS
 
 _PLACEHOLDER = "eval-stub"
 

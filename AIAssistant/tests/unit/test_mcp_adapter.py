@@ -14,6 +14,7 @@ import unittest
 from unittest import mock
 
 from ai_assistant.adapters import mcp as mcp_module
+from ai_assistant.domain.security import current_principal
 
 
 class _FakeGateway:
@@ -88,6 +89,32 @@ class McpToolServerTest(unittest.TestCase):
         self.assertTrue(json.loads(first._dispatch("read_file", {"path": "x"}))["success"])
         self.assertEqual(json.loads(second._dispatch("read_file", {"path": "x"}))["error_code"],
                          "runtime_unconfigured")
+
+    def test_dispatch_binds_a_least_privilege_principal(self) -> None:
+        # An external machine caller must not inherit the in-process identity:
+        # the shared gateway sees read + desktop-ack scope only, so a plugin
+        # tool declaring project.write / project.execute is refused for MCP.
+        seen: list = []
+
+        class _RecordingGateway(_FakeGateway):
+            def execute(self, tool_name, parameters):
+                seen.append(current_principal())
+                return super().execute(tool_name, parameters)
+
+        server = mcp_module.McpToolServer(_RecordingGateway())
+        json.loads(server._dispatch("read_file", {"path": "x"}))
+        principal = seen[0]
+        self.assertIs(principal, mcp_module.MCP_PRINCIPAL)
+        self.assertEqual(principal.subject, "mcp-caller")
+        self.assertTrue(principal.permits("project.read"))
+        self.assertTrue(principal.permits("desktop.action"))
+        self.assertFalse(principal.permits("project.write"))
+        self.assertFalse(principal.permits("project.execute"))
+
+    def test_the_principal_does_not_leak_beyond_one_dispatch(self) -> None:
+        server = mcp_module.McpToolServer(_FakeGateway())
+        server._dispatch("read_file", {"path": "x"})
+        self.assertIsNone(current_principal())
 
     def test_asgi_app_shape(self) -> None:
         server = mcp_module.McpToolServer()

@@ -1,61 +1,50 @@
-"""Unit tests for the ``tool_rag_search`` builtin tool.
+"""Unit tests for the ``rag_search`` builtin tool.
 
-The tool forwards to the legacy ``rag_module`` compatibility shim, whose real
-module pulls in optional ML dependencies. A fake is injected into
-``sys.modules`` instead, so these tests run in the offline CI environment.
+The handler receives its retrieval port from the composition root
+(``create_tool_registry(rag_context=…)``), so a test injects a fake provider
+directly. The previous version of this tool reached into
+``ai_assistant.bootstrap.server`` at call time, which forced every test to fake
+an entire module in ``sys.modules`` — the service-locator smell this refactor
+removed.
 """
 from __future__ import annotations
 
-import sys
 import unittest
 from types import SimpleNamespace
-from unittest import mock
 
-from ai_assistant.bootstrap import server as server_module
-from ai_assistant.tools.builtin import rag_tools
+from ai_assistant.tools.builtin import rag_search_tool
+from ai_assistant.tools.factory import create_tool_registry
 
-_FAKE_RAG_PATH = "ai_assistant.bootstrap.server"
+
+def _provider(contexts: tuple[str, str, list]):
+    """A retrieval port that always answers with ``contexts``."""
+    return SimpleNamespace(get_context=lambda query, result_k: contexts)
 
 
 class RagSearchToolTests(unittest.TestCase):
-    def _patch_rag(self, fake):
-        patchers = [
-            mock.patch.dict(sys.modules, {_FAKE_RAG_PATH: fake}),
-            mock.patch.object(server_module, "rag_module", fake, create=True),
-        ]
-        for patcher in patchers:
-            patcher.start()
-        self.addCleanup(lambda: [p.stop() for p in patchers])
-
     def test_empty_query_returns_error(self):
-        self.assertIn("trống", rag_tools.tool_rag_search({"query": "  "})["error"])
+        tool = rag_search_tool(_provider(("doc", "code", [])))
+        self.assertIn("trống", tool({"query": "  "})["error"])
 
-    def test_unavailable_rag_module_returns_not_ready(self):
-        fake = SimpleNamespace()
-        self._patch_rag(fake)
-        self.assertIn(
-            "chưa sẵn sàng",
-            rag_tools.tool_rag_search({"query": "tìm kiếm"})["error"],
-        )
+    def test_unavailable_index_returns_not_ready(self):
+        tool = rag_search_tool(None)
+        self.assertIn("chưa sẵn sàng", tool({"query": "tìm kiếm"})["error"])
 
     def test_returns_doc_and_code_evidence(self):
-        fake = SimpleNamespace(get_context=lambda query, result_k: ("doc ctx", "code ctx", []))
-        self._patch_rag(fake)
-        result = rag_tools.tool_rag_search({"query": "câu hỏi", "top_k": 3})
+        tool = rag_search_tool(_provider(("doc ctx", "code ctx", [])))
+        result = tool({"query": "câu hỏi", "top_k": 3})
         self.assertTrue(result["found"])
         self.assertEqual(result["top_k"], 3)
         self.assertEqual([r["source"] for r in result["results"]], ["documentation", "source_code"])
 
     def test_no_matches_reports_not_found(self):
-        fake = SimpleNamespace(get_context=lambda query, result_k: ("", "", []))
-        self._patch_rag(fake)
-        result = rag_tools.tool_rag_search({"query": "không có"})
+        tool = rag_search_tool(_provider(("", "", [])))
+        result = tool({"query": "không có"})
         self.assertFalse(result["found"])
 
     def test_top_k_is_clamped(self):
-        fake = SimpleNamespace(get_context=lambda query, result_k: ("ctx", "", []))
-        self._patch_rag(fake)
-        result = rag_tools.tool_rag_search({"query": "q", "top_k": 99})
+        tool = rag_search_tool(_provider(("ctx", "", [])))
+        result = tool({"query": "q", "top_k": 99})
         self.assertEqual(result["top_k"], 10)
 
     def test_engine_error_is_reported(self):
@@ -63,9 +52,23 @@ class RagSearchToolTests(unittest.TestCase):
             msg = "index crashed"
             raise RuntimeError(msg)
 
-        fake = SimpleNamespace(get_context=boom)
-        self._patch_rag(fake)
-        self.assertIn("index crashed", rag_tools.tool_rag_search({"query": "q"})["error"])
+        tool = rag_search_tool(SimpleNamespace(get_context=boom))
+        self.assertIn("index crashed", tool({"query": "q"})["error"])
+
+    def test_the_factory_binds_the_port_into_the_registered_handler(self):
+        """The port is closed over at registration time: no module lookup
+        happens when the agent actually calls the tool."""
+        registry = create_tool_registry(rag_context=_provider(("doc ctx", "", [])))
+        spec = registry.get("rag_search")
+        self.assertIsNotNone(spec.handler)
+        result = spec.handler({"query": "q"})
+        self.assertTrue(result["found"])
+        self.assertEqual(result["results"][0]["source"], "documentation")
+
+    def test_a_registry_built_without_a_port_keeps_reporting_not_ready(self):
+        registry = create_tool_registry()
+        spec = registry.get("rag_search")
+        self.assertIn("chưa sẵn sàng", spec.handler({"query": "q"})["error"])
 
 
 if __name__ == "__main__":

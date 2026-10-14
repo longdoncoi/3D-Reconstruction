@@ -10,8 +10,9 @@ class LegacyAdapterShardCoverage(unittest.TestCase):
         self.assertIsNone(rag_module.vector_retriever)
 
     def test_rag_adapter_shim_build_retrievers(self) -> None:
-        # Covers _build_retrievers no-op legacy bridge.
-        rag_module._build_retrievers()
+        # Covers _build_retrievers no-op legacy bridge: with no index state it
+        # hands back the empty pair instead of building anything.
+        self.assertEqual(rag_module._build_retrievers(), (None, None))
 
 if __name__ == "__main__":
     unittest.main()

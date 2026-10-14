@@ -99,9 +99,13 @@ class SetupLoggingTests(unittest.TestCase):
     def test_a_locked_stream_does_not_break_setup(self):
         """``reconfigure`` may fail in the wrapper and again on the handler."""
         with tempfile.TemporaryDirectory() as logs:
-            sys.stdout = _RaisingStream()
-            logger, _ = setup_logging(logs)
+            stream = _RaisingStream()
+            sys.stdout = stream
+            logger, log_file = setup_logging(logs)
             logger.info("setup survived a locked stream")
+            self.assertTrue(str(log_file).endswith(".log"))
+            # Setup survived *and* the line still reached the broken stream.
+            self.assertTrue(any("setup survived" in line for line in stream.writes))
             self._close_new_handlers()
 
 
@@ -139,7 +143,10 @@ class CleanupOldLogsTests(unittest.TestCase):
 
     def test_a_missing_directory_is_a_noop(self):
         with tempfile.TemporaryDirectory() as parent:
-            cleanup_old_logs(Path(parent) / "no-such-dir")
+            missing = Path(parent) / "no-such-dir"
+            cleanup_old_logs(missing)
+            # Nothing to clean, and the call did not create one either.
+            self.assertFalse(missing.exists())
 
 
 if __name__ == "__main__":

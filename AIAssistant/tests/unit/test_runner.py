@@ -5,6 +5,7 @@ faked and no LangGraph or LLM runtime is required (offline-safe).
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 import unittest
@@ -97,7 +98,8 @@ def _deps_kwargs(**overrides):
         tool_registry=_tool_registry(),
         tool_gateway=SimpleNamespace(
             execute=lambda t, p: {"success": True, "tool": t, "params": p},
-            execute_approved=lambda t, p: {"success": True, "approved": True},
+            execute_approved=lambda t, p, tok="": {"success": True, "approved": True},
+            preflight=lambda t, p, tok="": {"success": True, "tool": t, "preflight": True},
         ),
         pending_actions={},
         pending_lock=threading.Lock(),
@@ -115,11 +117,9 @@ def _deps_kwargs(**overrides):
         record_schema_error_fn=lambda t: None,
         langsmith_trace_fn=lambda *a, **k: _LSContext(),
         span_fn=lambda *a, **k: _Span(),
-        specialist_instruction_fn=lambda d: "instruction",
         is_coding_task_fn=lambda t: True,
         save_pending_fn=lambda: None,
         local_agent_graph=_FakeGraph,
-        specialist=_Specialist,
         a2a_router=None,
         checkpointer=None,
     )
@@ -247,6 +247,59 @@ class RunLanggraphAgentTests(unittest.TestCase):
         self.assertEqual(kwargs["deps"].pending_actions["id-123"]["tool"], "run_command")
         self.assertEqual(result["steps"][0]["type"], "pending_approval")
 
+    def test_a_resumed_run_still_mints_an_id_for_a_newly_parked_approval(self):
+        """The resume path installs a no-op id generator, but the action parked
+        during that run is new. An empty action_id is refused at the approval
+        boundary, so the client could never approve what this returns."""
+        _FakeGraph.state = {
+            "steps": [],
+            "iteration": 1,
+            "pending_tool": {
+                "tool": "run_command",
+                "params": {"command": "git commit", "description": "commit"},
+                "ui_ack": False,
+                "approval_scope": "repo",
+                "approval_preview": "diff",
+            },
+            "cancelled": False,
+            "messages": [{"role": "user", "content": "m"}],
+        }
+        result, kwargs = self._run(generate_action_id_fn=lambda: "")
+        self.assertEqual(result["status"], "pending_approval")
+        self.assertTrue(result["action_id"])
+        self.assertEqual(
+            kwargs["deps"].pending_actions[result["action_id"]]["tool"], "run_command",
+        )
+        self.assertNotIn("", kwargs["deps"].pending_actions)
+        self.assertEqual(result["steps"][0]["action_id"], result["action_id"])
+
+    def test_a_parked_entry_snapshots_the_live_state_lists(self):
+        """The graph keeps appending to ``steps``/``messages`` after a run is
+        parked, and the store re-serialises whatever it holds on the next
+        save — an aliased entry changed on disk after the fact (review
+        finding 9)."""
+        _FakeGraph.state = {
+            "steps": [{"type": "plan", "iteration": 0}],
+            "iteration": 1,
+            "pending_tool": {
+                "tool": "run_command",
+                "params": {"command": "git commit", "description": "commit"},
+                "ui_ack": False,
+            },
+            "cancelled": False,
+            "messages": [{"role": "user", "content": "m"}],
+        }
+        result, kwargs = self._run()
+        entry = kwargs["deps"].pending_actions[result["action_id"]]
+        steps_at_park = list(entry["steps"])
+        messages_at_park = list(entry["messages"])
+
+        _FakeGraph.state["steps"].append({"type": "final_answer", "content": "late"})
+        _FakeGraph.state["messages"].append({"role": "assistant", "content": "late"})
+
+        self.assertEqual(entry["steps"], steps_at_park)
+        self.assertEqual(entry["messages"], messages_at_park)
+
     def test_graph_exception_propagates_and_trace_closed(self):
         _FakeGraph.run_error = RuntimeError("boom")
         ls = _LSContext()
@@ -258,6 +311,24 @@ class RunLanggraphAgentTests(unittest.TestCase):
             self._run(langsmith_trace_fn=langsmith_trace_fn)
         self.assertEqual(len(ls.exited), 1)
         self.assertIs(ls.exited[0][0], RuntimeError)
+
+    def test_an_aborted_run_still_finishes_the_task_record(self):
+        """The abort branch used to re-raise without ever reaching
+        ``_finish_task``, so a crashed run left the coordinator's record
+        parked in ``running`` forever (review finding 6)."""
+        _FakeGraph.run_error = RuntimeError("boom")
+        finished = []
+
+        coordinator = SimpleNamespace(
+            is_cancelled=lambda sid: False,
+            update=lambda sid, **kw: None,
+            finish=lambda sid, **kw: finished.append((sid, kw)),
+        )
+        with self.assertRaises(RuntimeError):
+            self._run(task_coordinator=coordinator)
+        self.assertEqual(
+            finished, [("session-1", {"success": False, "error": "boom"})]
+        )
 
 
 class RunnerCallbackTests(unittest.TestCase):
@@ -418,29 +489,115 @@ class RunnerCallbackTests(unittest.TestCase):
         self.assertEqual(routed[0][1], "do the thing")
         self.assertEqual(routed[0][2]["idempotency_key"], "ik-1")
 
-    def test_supervisor_route_defaults_and_helpers(self):
+    def test_remote_dispatch_clears_the_gateway_gate_first(self):
+        # The remote leg leaves the process, so it must clear the same policy
+        # gate — validation, scope, classification, approval grant — or not go.
+        gates: list[tuple] = []
+        routed = []
+
+        class _A2ARouter:
+            def route(self, specialist, task, payload):
+                routed.append(payload)
+                return {"source": "remote"}
+
+        def _preflight(tool, params, token=""):
+            gates.append((tool, token))
+            return {"success": False, "error_code": "forbidden", "error": "no scope"}
+
+        kwargs = _base_kwargs(
+            delegate_fn=lambda task, session_id, tool_name, params, prefer_code: _delegation(
+                remote_endpoint="http://remote"
+            ),
+            a2a_router=_A2ARouter(),
+            tool_gateway=SimpleNamespace(preflight=_preflight),
+        )
+        run_langgraph_agent(**kwargs)
+        execute = _FakeGraph._last.kwargs["execute"]
+
+        refused = execute("run_command", {"command": "ls"})
+        self.assertEqual(gates, [("run_command", "")])
+        self.assertEqual(routed, [])
+        self.assertEqual(refused["error_code"], "forbidden")
+
+    def test_remote_dispatch_never_leaves_an_unbootstrapped_platform(self):
+        routed = []
+
+        class _A2ARouter:
+            def route(self, specialist, task, payload):
+                routed.append(payload)
+                return {"source": "remote"}
+
+        kwargs = _base_kwargs(
+            delegate_fn=lambda task, session_id, tool_name, params, prefer_code: _delegation(
+                remote_endpoint="http://remote"
+            ),
+            a2a_router=_A2ARouter(),
+            tool_gateway=None,
+        )
+        run_langgraph_agent(**kwargs)
+        execute = _FakeGraph._last.kwargs["execute"]
+
+        result = execute("run_command", {"command": "ls"})
+        self.assertEqual(routed, [])
+        self.assertEqual(result["error_code"], "runtime_unconfigured")
+
+    def test_remote_dispatch_refuses_to_put_a_credential_on_the_wire(self) -> None:
+        # ``admin.login`` carries username/password; masking them would hand the
+        # remote peer a falsified payload to run, so the dispatch is refused
+        # before the gateway gate is even consulted (the grant stays unspent).
+        routed = []
+        gates = []
+
+        class _A2ARouter:
+            def route(self, specialist, task, payload):
+                routed.append(payload)
+                return {"source": "remote"}
+
+        kwargs = _base_kwargs(
+            delegate_fn=lambda task, session_id, tool_name, params, prefer_code: _delegation(
+                remote_endpoint="http://remote"
+            ),
+            a2a_router=_A2ARouter(),
+            tool_gateway=SimpleNamespace(
+                preflight=lambda t, p, tok="": gates.append(t) or {"success": True},
+            ),
+        )
+        run_langgraph_agent(**kwargs)
+        execute = _FakeGraph._last.kwargs["execute"]
+
+        result = execute("application_action",
+                         {"action": "admin.login", "username": "alice", "password": "s3cret"})
+        self.assertEqual(routed, [])
+        self.assertEqual(gates, [])
+        self.assertEqual(result["error_code"], "data_policy_denied")
+        self.assertNotIn("s3cret", json.dumps(result))
+
+    def test_graph_helpers_and_structured_completions(self):
         run_langgraph_agent(**_base_kwargs())
         g = _FakeGraph._last
-        self.assertEqual(g.run_kwargs["supervisor_route"], "supervisor")
         k = g.kwargs
         self.assertTrue(k["needs_approval"]("op_file"))
         self.assertFalse(k["needs_approval"]("run_command"))
         self.assertFalse(k["cancel_checker"]())
 
-        # plan/reflect lambdas go through structured completion (openai branch)
-        plan = k["plan_complete"]([{"role": "user", "content": "p"}], 0.4)
-        self.assertIn("passed", plan)
-        critic = k["reflect_complete"]([{"role": "user", "content": "c"}], 0.4)
-        self.assertIn("passed", critic)
-        pr = k["plan_reflect_complete"]([{"role": "user", "content": "pr"}], 0.4)
-        self.assertIn("passed", pr)
+        # plan/reflect lambdas go through structured completion (openai branch).
+        # The decoder now runs the ADR 0018 gate first, so exercising that
+        # branch means opting into cloud routing — the refusal itself is
+        # pinned by HybridPolicyGateTests.
+        with mock.patch.dict("os.environ", {"AGENT_HYBRID_POLICY": "cloud_allowed"}):
+            plan = k["plan_complete"]([{"role": "user", "content": "p"}], 0.4)
+            self.assertIn("passed", plan)
+            critic = k["reflect_complete"]([{"role": "user", "content": "c"}], 0.4)
+            self.assertIn("passed", critic)
+            pr = k["plan_reflect_complete"]([{"role": "user", "content": "pr"}], 0.4)
+            self.assertIn("passed", pr)
 
     def test_specialist_delegation_helpers(self):
         run_langgraph_agent(**_base_kwargs())
         k = _FakeGraph._last.kwargs
         sel = k["select_specialist"]("read_file", {"path": "x"})
         self.assertEqual(sel["specialist"], str(_Specialist.CODE))
-        self.assertEqual(sel["instruction"], "instruction")
+        self.assertNotIn("instruction", sel)
         self.assertEqual(k["select_specialist"]("_validation_error", {}), {})
 
         ver = k["verify_result"]("run_command", {}, {"success": True})
@@ -449,6 +606,27 @@ class RunnerCallbackTests(unittest.TestCase):
 
         ref = k["reflect_result"]("run_command", {}, {"success": True}, {"passed": True})
         self.assertEqual(ref["reason"], "reflected")
+
+    def test_one_delegation_is_shared_across_the_tool_callbacks(self):
+        """Dispatch, execution, verification and reflection classify once.
+
+        The four callbacks used to each re-run the supervisor's payload dump,
+        SHA-256 fingerprint, remote lookup and coding heuristic for the very
+        same (tool, params) pair (review finding 14); one run must now do one
+        classification per distinct call.
+        """
+        delegate = mock.Mock(return_value=_delegation())
+        run_langgraph_agent(**_base_kwargs(delegate_fn=delegate))
+        k = _FakeGraph._last.kwargs
+        k["select_specialist"]("read_file", {"path": "x"})
+        k["verify_result"]("read_file", {"path": "x"}, {"content": "# hi"})
+        k["reflect_result"]("read_file", {"path": "x"}, {"content": "# hi"},
+                            {"passed": True})
+        k["execute"]("read_file", {"path": "x"})
+        self.assertEqual(delegate.call_count, 1)
+        # A different call is a different classification.
+        k["select_specialist"]("run_command", {"command": "pytest"})
+        self.assertEqual(delegate.call_count, 2)
 
     def test_pending_store_save_via_fallback(self):
         store = mock.MagicMock()

@@ -129,26 +129,6 @@ def load_agent_runtime_settings(env: Mapping[str, str] | None = None) -> AgentRu
     return AgentRuntimeSettings.from_env(env)
 
 
-def use_langgraph_agent(env: Mapping[str, str] | None = None) -> bool:
-    """Return whether the LangGraph decision loop is enabled.
-
-    Parsed here instead of a legacy module-level global so the agent layer reads
-    the toggle through ``settings`` (ADR 0001). Defaults to enabled.
-    """
-    values = os.environ if env is None else env
-    return values.get("USE_LANGGRAPH_AGENT", "1") != "0"
-
-
-def force_langgraph_agent(env: Mapping[str, str] | None = None) -> bool:
-    """Return whether the LangGraph loop is forced on regardless of routing.
-
-    Counterpart of :func:`use_langgraph_agent`; parsed here so both halves of
-    the same toggle live in one module (ADR 0001).
-    """
-    values = os.environ if env is None else env
-    return values.get("FORCE_LANGGRAPH_AGENT", "1") == "1"
-
-
 def vision_llm_enabled(env: Mapping[str, str] | None = None) -> bool:
     """Return whether the vision LLM path is active (``AI_ENABLE_VISION_LLM``)."""
     values = os.environ if env is None else env

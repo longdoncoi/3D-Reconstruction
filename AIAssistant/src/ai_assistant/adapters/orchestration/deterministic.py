@@ -18,6 +18,7 @@ from typing import Any
 from ...application.agent_runs import AgentRunResult
 from ...application.tools import ToolExecutionService
 from ...domain.agents import AgentDecision, AgentDecisionKind
+from ...domain.approvals import issue_grant_pair
 from ...domain.security import Principal
 from ...domain.tasks import AgentTask
 
@@ -50,12 +51,15 @@ class DeterministicAgentOrchestrator:
                 if resume.get("approved") is not True:
                     steps.append({"type": "tool_result", "tool": pending["tool"], "result": {"rejected": True}, "iteration": iteration})
                     return AgentRunResult("completed", "The requested action was not approved", tuple(steps)).to_dict()
-                # The durable resume carries the user's decision; bind a
-                # single-use grant to the exact invocation before executing it.
-                grant_token = f"a2a:{task.id}:{pending['tool']}"
-                self._tools.issue_approval_grant(pending["tool"], pending["params"], grant_token)
+                # The durable resume carries the user's decision; bind the
+                # shared single-use grant pair to the exact invocation and
+                # spend the direct token on the immediate execution.
+                direct_token = issue_grant_pair(
+                    pending["tool"], pending["params"], run_id=f"a2a:{task.id}",
+                )[1]
+                self._tools.issue_approval_grant(pending["tool"], pending["params"], direct_token)
                 payload = self._tools.execute(pending["tool"], pending["params"], principal,
-                                              correlation_id=task.id, approval_token=grant_token).to_dict()
+                                              correlation_id=task.id, approval_token=direct_token).to_dict()
             else:
                 result_payload = resume.get("result")
                 if not isinstance(result_payload, dict):

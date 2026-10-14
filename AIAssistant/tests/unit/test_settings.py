@@ -27,14 +27,12 @@ from ai_assistant.settings import (
     agent_bind_port,
     agent_write_roots,
     apply_startup_environment_defaults,
-    force_langgraph_agent,
     langsmith_settings,
     load_agent_runtime_settings,
     load_local_dotenv,
     lsp_binaries,
     observability_enabled,
     otlp_exporter_endpoint,
-    use_langgraph_agent,
     vision_llm_enabled,
 )
 
@@ -176,15 +174,6 @@ class AgentRuntimeSettingsTests(unittest.TestCase):
             self.assertEqual(load_agent_runtime_settings().max_write_bytes, 99)
 
 
-class UseLanggraphAgentTests(unittest.TestCase):
-    def test_default_enabled(self):
-        self.assertTrue(use_langgraph_agent({}))
-
-    def test_disabled_only_for_zero(self):
-        self.assertFalse(use_langgraph_agent({"USE_LANGGRAPH_AGENT": "0"}))
-        self.assertTrue(use_langgraph_agent({"USE_LANGGRAPH_AGENT": "1"}))
-
-
 class ObservabilityToggleTests(unittest.TestCase):
     def test_default_disabled(self):
         self.assertFalse(observability_enabled({}))
@@ -296,15 +285,6 @@ class StartupEnvironmentBootstrapTests(unittest.TestCase):
     def test_vision_llm_rejects_every_other_value(self):
         for value in ("0", "no", "off", "", "maybe"):
             self.assertFalse(vision_llm_enabled({"AI_ENABLE_VISION_LLM": value}), value)
-
-    def test_force_langgraph_defaults_on(self):
-        self.assertTrue(force_langgraph_agent({}))
-
-    def test_force_langgraph_reads_only_the_explicit_toggle(self):
-        self.assertFalse(force_langgraph_agent({"FORCE_LANGGRAPH_AGENT": "0"}))
-        self.assertTrue(force_langgraph_agent({"FORCE_LANGGRAPH_AGENT": "1"}))
-        # ``USE_LANGGRAPH_AGENT`` must not bleed into the force toggle.
-        self.assertTrue(force_langgraph_agent({"USE_LANGGRAPH_AGENT": "0"}))
 
     def test_load_local_dotenv_parses_keys_and_ignores_junk(self):
         with tempfile.TemporaryDirectory() as tmp:

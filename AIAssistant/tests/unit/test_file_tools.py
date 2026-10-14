@@ -1,4 +1,4 @@
-"""Unit tests for file read/write/patch tools and code-citation helpers."""
+"""Unit tests for file read/write/patch and directory tools."""
 from __future__ import annotations
 
 import tempfile
@@ -8,14 +8,9 @@ from types import SimpleNamespace
 from unittest import mock
 
 from ai_assistant.tools.builtin.file_tools import (
-    _build_code_citation_result,
-    _citation_is_python,
-    _citation_path_hint,
-    _code_language,
     _expand_function_end,
     _find_python_symbol_range,
     _find_symbol_range,
-    _requested_code_symbol,
     tool_create_directory,
     tool_multi_replace_file_content,
     tool_patch_file,
@@ -235,95 +230,8 @@ class ToolWriteTests(FileToolsBase):
         create.assert_called_once_with(mock.ANY, self.project_root)
 
 
-class CodeCitationHelpersTests(unittest.TestCase):
-    def test_requested_code_symbol_citation(self) -> None:
-        symbol = _requested_code_symbol("trích dẫn hàm Foo::Bar() trong file src/x.cpp")
-        self.assertEqual(symbol, "Foo::Bar")
-
-    def test_requested_code_symbol_python_def(self) -> None:
-        self.assertEqual(_requested_code_symbol("show code def compute()"), "compute")
-
-    def test_requested_code_symbol_none(self) -> None:
-        self.assertIsNone(_requested_code_symbol("làm thế nào để tối ưu"))
-
-    def test_citation_is_python(self) -> None:
-        self.assertTrue(_citation_is_python("file utils.py, hàm load", "load"))
-        self.assertTrue(_citation_is_python("def parse trong module x", "parse"))
-        self.assertTrue(_citation_is_python("x", "a.b"))
-        self.assertFalse(_citation_is_python("trích dẫn Foo::Bar trong src/x.cpp", "Foo::Bar"))
-
-
-class BuildCodeCitationTests(FileToolsBase):
-    def test_non_citation_task_returns_none(self) -> None:
-        self.assertIsNone(_build_code_citation_result("tổng hợp văn bản", "s1", 0.0))
-
-    def test_python_citation_flow(self) -> None:
-        task = "trích dẫn mã nguồn function load_data() trong file src/loader.py"
-        with (
-            mock.patch(
-                "ai_assistant.tools.builtin.file_tools._PYTHON_PATH_PATTERN",  # leave as-is
-            ),
-        ):
-            pass  # pylint: disable=pointless-statement
-        self._write("loader.py", "def load_data():\n    return 1\n")
-        with (
-            mock.patch("ai_assistant.tools.builtin.search_tools.tool_search_text") as search,
-            mock.patch("ai_assistant.tools.builtin.file_tools.tool_read_file") as read,
-        ):
-            search.return_value = {
-                "results": [{"file": "src/loader.py", "content": "    def load_data():", "line": 1}]
-            }
-            read.return_value = {
-                "path": "src/loader.py",
-                "content": "def load_data():\n    return 1\n",
-                "showing": "lines 1-2",
-            }
-            result = _build_code_citation_result(task, "session-1", 0.0)
-        self.assertIsNotNone(result)
-        self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["session_id"], "session-1")
-        final = next(s for s in result["steps"] if s["type"] == "final_answer")
-        self.assertIn("def load_data", final["content"])
-        self.assertIn("```python", final["content"])
-
-    def test_cpp_citation_falls_back_to_header(self) -> None:
-        task = "trích dẫn C++ hàm Render::init() trong src"
-        with (
-            mock.patch("ai_assistant.tools.builtin.search_tools.tool_search_text") as search,
-            mock.patch("ai_assistant.tools.builtin.file_tools.tool_read_file") as read,
-        ):
-            search.side_effect = [
-                {"results": []},  # first .cpp search -> nothing
-                {"results": [{"file": "src/render.h", "content": "void init() {"}]},
-            ]
-            read.return_value = {
-                "path": "src/render.h",
-                "content": "void init() { ;; }",
-                "showing": "lines 1-1",
-            }
-            result = _build_code_citation_result(task, "s2", 0.0)
-        self.assertIsNotNone(result)
-        self.assertIn("```cpp", next(s["content"] for s in result["steps"] if s["type"] == "final_answer"))
-
-    def test_no_definition_returns_none(self) -> None:
-        task = "trích dẫn hàm Ghost::gone() trong src"
-        with mock.patch("ai_assistant.tools.builtin.search_tools.tool_search_text", return_value={"results": []}):
-            self.assertIsNone(_build_code_citation_result(task, "s3", 0.0))
-
-    def test_code_language_mapping(self) -> None:
-        self.assertEqual(_code_language("main.cpp"), "cpp")
-        self.assertEqual(_code_language("x.py"), "python")
-        self.assertEqual(_code_language("lib.h"), "cpp")
-        self.assertEqual(_code_language("readme.txt"), "text")
-
-    def test_citation_path_hint(self) -> None:
-        hint = _citation_path_hint("xem code trong folder/src/core/util.py")
-        self.assertIsNotNone(hint)
-        self.assertTrue(hint.endswith("src/core/util.py"))
-
-
 class FileToolGuardPathTests(FileToolsBase):
-    """Every reject/except arm of the read, patch, replace and citation tools."""
+    """Every reject/except arm of the read, patch, replace and directory tools."""
 
     # -- tool_read_file
 
@@ -474,59 +382,6 @@ class FileToolGuardPathTests(FileToolsBase):
     def test_create_directory_rejects_an_unsafe_path(self) -> None:
         result = tool_create_directory({"path": "../escape"})
         self.assertIn("Invalid directory path", result["error"])
-
-
-class CitationFallbackTests(FileToolsBase):
-    """The citation flow's reject arms: no hint, unreadable, empty."""
-
-    @staticmethod
-    def _task() -> str:
-        # ``def`` makes this a Python citation; there is no ``*.py`` path in it,
-        # so the lookup has to fall back to scanning the AIAssistant tree.
-        return "trích dẫn mã nguồn def compute()"
-
-    def test_path_hint_is_none_without_a_python_path(self) -> None:
-        self.assertIsNone(_citation_path_hint(self._task()))
-
-    def test_a_python_citation_without_a_hint_scans_the_ai_assistant_tree(self) -> None:
-        with (
-            mock.patch("ai_assistant.tools.builtin.search_tools.tool_search_text") as search,
-            mock.patch("ai_assistant.tools.builtin.file_tools.tool_read_file") as read,
-        ):
-            search.return_value = {
-                "results": [{"file": "pkg/mod.py", "content": "def compute():", "line": 1}],
-            }
-            read.return_value = {
-                "path": "pkg/mod.py",
-                "content": "def compute():\n    return 1\n",
-                "showing": "lines 1-2",
-            }
-            result = _build_code_citation_result(self._task(), "s9", 0.0)
-        self.assertIsNotNone(result)
-        self.assertEqual(search.call_args.args[0]["path"], "AIAssistant")
-        self.assertEqual(search.call_args.args[0]["file_pattern"], "*.py")
-
-    def test_a_citation_whose_definition_cannot_be_read_is_dropped(self) -> None:
-        with (
-            mock.patch("ai_assistant.tools.builtin.search_tools.tool_search_text") as search,
-            mock.patch("ai_assistant.tools.builtin.file_tools.tool_read_file") as read,
-        ):
-            search.return_value = {
-                "results": [{"file": "pkg/mod.py", "content": "def compute():", "line": 1}],
-            }
-            read.return_value = {"error": "File không tồn tại: pkg/mod.py"}
-            self.assertIsNone(_build_code_citation_result(self._task(), "s10", 0.0))
-
-    def test_a_citation_with_an_empty_definition_is_dropped(self) -> None:
-        with (
-            mock.patch("ai_assistant.tools.builtin.search_tools.tool_search_text") as search,
-            mock.patch("ai_assistant.tools.builtin.file_tools.tool_read_file") as read,
-        ):
-            search.return_value = {
-                "results": [{"file": "pkg/mod.py", "content": "def compute():", "line": 1}],
-            }
-            read.return_value = {"path": "pkg/mod.py", "content": "   \n", "showing": ""}
-            self.assertIsNone(_build_code_citation_result(self._task(), "s11", 0.0))
 
 
 if __name__ == "__main__":

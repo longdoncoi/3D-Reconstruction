@@ -1,9 +1,8 @@
 """Guard-path coverage for the runner's invocation seams.
 
-Two lines of ``run_langgraph_agent`` only run for specific callers: an
-explicit ``supervisor_route`` skips the defaulting branch, and an approval
-continuation carrying a token wires the single-use grant probe into the
-graph. Both are exercised here with the same fake-graph harness style as the
+One line of ``run_langgraph_agent`` only runs for a specific caller: an
+approval continuation carrying a token wires the single-use grant probe into
+the graph. It is exercised here with the same fake-graph harness style as the
 main runner tests, so no LangGraph or LLM runtime is required.
 """
 from __future__ import annotations
@@ -93,11 +92,9 @@ def _deps(**overrides) -> RunDeps:
         "record_schema_error_fn": lambda t: None,
         "langsmith_trace_fn": lambda *a, **k: _LSContext(),
         "span_fn": lambda *a, **k: _Span(),
-        "specialist_instruction_fn": lambda d: "instruction",
         "is_coding_task_fn": lambda t: False,
         "save_pending_fn": lambda: None,
         "local_agent_graph": _FakeGraph,
-        "specialist": _Specialist,
         "tool_gateway": None,
         "a2a_router": None,
         "checkpointer": None,
@@ -122,17 +119,6 @@ def _invoke(**overrides):
     if dep_overrides:
         kwargs["deps"] = _deps(**dep_overrides)
     return run_langgraph_agent(**kwargs)
-
-
-class SupervisorRouteTests(unittest.TestCase):
-    def test_an_explicit_route_skips_defaulting(self):
-        """Callers resuming a specialist run pass the route back in."""
-        result = _invoke(supervisor_route=_Specialist.CODE)
-        self.assertEqual(result["status"], "completed")
-
-    def test_the_default_route_is_the_supervisor(self):
-        result = _invoke()
-        self.assertEqual(result["status"], "completed")
 
 
 class ApprovalTokenTests(unittest.TestCase):

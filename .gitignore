@@ -95,6 +95,8 @@ CMakeLists.txt.user*
 /AIAssistant/Docs/*
 !/AIAssistant/Docs/adr/
 /AIAssistant/logs/
+# Legacy location the composition root used before it resolved the package root.
+/AIAssistant/src/logs/
 # Local LLM weights (large; intentionally not tracked, not stored via Git LFS).
 /AIAssistant/Models/
 /AIAssistant/agent_audit.jsonl
@@ -113,6 +115,8 @@ CMakeLists.txt.user*
 /AIAssistant/.import_linter_cache/
 /AIAssistant/.mypy_cache/
 /AIAssistant/.ruff_cache/
+# mutation_check's in-flight lock — its absence is what "safe to mutate" means.
+/AIAssistant/scripts/.mutation_check.lock
 /AIAssistant/Models/.cache/
 **/__pycache__/
 /AIComputerVision/runs/

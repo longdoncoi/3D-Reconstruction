@@ -213,7 +213,12 @@ class FileSystemHashTests(unittest.TestCase):
     def test_missing_docs_dir_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp, with_docs=False)
-            get_file_system_hash(paths, _settings())  # must not raise
+            first = get_file_system_hash(paths, _settings())
+            second = get_file_system_hash(paths, _settings())
+            # The absent docs tree is skipped rather than fatal: the project
+            # tree still hashes, and the digest is stable across calls.
+            self.assertRegex(first, r"^[0-9a-f]{64}$")
+            self.assertEqual(first, second)
 
     def test_hash_survives_stat_errors(self):
         """OSError during stat of any scanned file is tolerated (both trees)."""
@@ -232,8 +237,15 @@ class FileSystemHashTests(unittest.TestCase):
                     raise OSError("boom")
                 return real_stat(path, *args, **kwargs)
 
+            readable = get_file_system_hash(paths, _settings())
             with mock.patch("ai_assistant.rag.index.os.stat", side_effect=raising_stat):
-                get_file_system_hash(paths, _settings())  # must not raise
+                failing = get_file_system_hash(paths, _settings())
+                again = get_file_system_hash(paths, _settings())
+            # The files whose stat raised are dropped from the entry list, so
+            # the digest moves away from the fully-readable one — and it stays
+            # deterministic while the failure persists.
+            self.assertNotEqual(failing, readable)
+            self.assertEqual(failing, again)
 
 
 class CacheValidityTests(unittest.TestCase):

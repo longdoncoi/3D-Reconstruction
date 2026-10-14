@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 
 from ai_assistant.settings import load_agent_runtime_settings
 
@@ -233,8 +234,12 @@ def structured_completion(messages: list[dict], max_tokens: int, temperature: fl
                           schema: dict, llm_runtime, backend_mode_fn,
                           openai_compatible_fn) -> str:
     """Generate internal planner/critic JSON with a given JSON Schema."""
+    # ADR 0018: the same gate ``constrained_completion`` uses, hoisted *above*
+    # the decode-error wrapper — inside it, the policy refusal is relabelled as
+    # a JSON decoding failure and callers can not tell the two apart (finding 16).
+    remote_backend = _remote_leg_allowed(backend_mode_fn)
     try:
-        if backend_mode_fn() != "llama_cpp":
+        if remote_backend:
             response = openai_compatible_fn(
                 messages, max_tokens=max_tokens, temperature=temperature,
                 response_format={"type": "json_object"},
@@ -263,19 +268,25 @@ def structured_completion(messages: list[dict], max_tokens: int, temperature: fl
 
 # Module-level grammar cache
 _PRECOMPILED_GRAMMAR = None
-_GRAMMAR_SCHEMA_HASH: str | None = None
+_GRAMMAR_SCHEMA: str | None = None
+_GRAMMAR_LOCK = threading.Lock()
 
 
 def _get_precompiled_grammar(grammar_schema: str):
-    """Lazily compile and cache the llama.cpp grammar."""
-    global _PRECOMPILED_GRAMMAR, _GRAMMAR_SCHEMA_HASH
-    current_hash = str(hash(grammar_schema))
-    if _GRAMMAR_SCHEMA_HASH == current_hash and _PRECOMPILED_GRAMMAR is not None:
+    """Lazily compile and cache the llama.cpp grammar.
+
+    One dedicated lock (the compile is not safe to run twice for the same
+    schema) and the schema *text* as the key: a ``hash()`` collision could
+    otherwise serve the grammar of a different schema (finding 26).
+    """
+    global _PRECOMPILED_GRAMMAR, _GRAMMAR_SCHEMA
+    with _GRAMMAR_LOCK:
+        if _GRAMMAR_SCHEMA == grammar_schema and _PRECOMPILED_GRAMMAR is not None:
+            return _PRECOMPILED_GRAMMAR
+        try:
+            from llama_cpp import LlamaGrammar
+            _PRECOMPILED_GRAMMAR = LlamaGrammar.from_json_schema(grammar_schema)
+            _GRAMMAR_SCHEMA = grammar_schema
+        except ImportError:
+            _PRECOMPILED_GRAMMAR = None
         return _PRECOMPILED_GRAMMAR
-    try:
-        from llama_cpp import LlamaGrammar
-        _PRECOMPILED_GRAMMAR = LlamaGrammar.from_json_schema(grammar_schema)
-        _GRAMMAR_SCHEMA_HASH = current_hash
-    except ImportError:
-        _PRECOMPILED_GRAMMAR = None
-    return _PRECOMPILED_GRAMMAR

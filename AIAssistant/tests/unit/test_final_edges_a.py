@@ -10,9 +10,11 @@ a reset with nothing on disk.
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -22,6 +24,7 @@ from ai_assistant.agents.service import AgentService
 from ai_assistant.application.agent_runs import AgentRunService
 from ai_assistant.application.coordination import TaskCoordinator
 from ai_assistant.config.model_registry import ModelDefinition, ModelRegistry, load_model_registry
+from ai_assistant.domain.security import DataClassification, ExecutionOrigin
 from ai_assistant.domain.tasks import AgentTask
 
 
@@ -71,6 +74,83 @@ class SqliteTaskStoreTests(unittest.TestCase):
                 self.assertEqual(len(listed), 1)
                 self.assertEqual(listed[0].context_id, "c1")
                 self.assertEqual(len(list(store.list())), 2)
+            finally:
+                store.close()
+
+    def test_classification_and_origin_survive_a_reload(self):
+        """The row mapper must not rewrite domain state.
+
+        Classification decides whether a task may leave the trust boundary, so
+        a reload that handed back INTERNAL for a RESTRICTED task would promote
+        it the moment the process restarts.
+        """
+        from ai_assistant.domain.tasks import TaskStatus
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory)
+            try:
+                task = replace(
+                    _task(classification=DataClassification.RESTRICTED),
+                    origin=ExecutionOrigin.REMOTE_A2A,
+                )
+                store.create(task)
+                reloaded = store.get(task.id)
+                self.assertIsNotNone(reloaded)
+                self.assertEqual(reloaded.classification, DataClassification.RESTRICTED)
+                self.assertEqual(reloaded.origin, ExecutionOrigin.REMOTE_A2A)
+
+                # A status change never touches the class: it is stored once.
+                store.save(reloaded.transition(TaskStatus.WORKING))
+                self.assertEqual(store.get(task.id).classification, DataClassification.RESTRICTED)
+                self.assertEqual(
+                    [(item.classification, item.origin) for item in store.list()],
+                    [(DataClassification.RESTRICTED, ExecutionOrigin.REMOTE_A2A)],
+                )
+            finally:
+                store.close()
+
+    def test_a_database_written_before_those_columns_gains_them(self):
+        """``CREATE TABLE IF NOT EXISTS`` never alters an existing table.
+
+        Without the migration every legacy row would keep the old shape, and
+        the timestamps the row already holds must come back as the ones stored
+        — not as the instant the process happened to read them.
+        """
+        from datetime import UTC, datetime
+
+        legacy_instant = "2026-01-01T00:00:00+00:00"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tasks.sqlite"
+            legacy = sqlite3.connect(str(path))
+            legacy.execute(
+                "CREATE TABLE tasks ("
+                "id TEXT PRIMARY KEY, capability TEXT NOT NULL, message TEXT NOT NULL, "
+                "status TEXT NOT NULL, result TEXT, error TEXT, "
+                "metadata TEXT NOT NULL DEFAULT '{}', context_id TEXT, "
+                "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+            )
+            legacy.execute(
+                "INSERT INTO tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("task-legacy", "supervisor", "hi", "submitted", None, None, "{}", None,
+                 legacy_instant, legacy_instant),
+            )
+            legacy.commit()
+            legacy.close()
+
+            store = self._store(directory)
+            try:
+                reloaded = store.get("task-legacy")
+                self.assertIsNotNone(reloaded)
+                self.assertEqual(reloaded.classification, DataClassification.INTERNAL)
+                expected = datetime(2026, 1, 1, tzinfo=UTC).timestamp()
+                self.assertEqual(reloaded.created_at, expected)
+                self.assertEqual(reloaded.updated_at, expected)
+
+                store.create(_task(classification=DataClassification.REGULATED))
+                added = [item for item in store.list() if item.id != "task-legacy"]
+                self.assertEqual(
+                    [item.classification for item in added], [DataClassification.REGULATED],
+                )
             finally:
                 store.close()
 
@@ -178,7 +258,18 @@ class MetricsTests(unittest.TestCase):
             "ai_assistant.observability.metrics.get_metrics", return_value={},
         ):
             from ai_assistant.observability.metrics import record_tool
-            record_tool("read_file", False, None)
+            # An empty registry degrades to a no-op instead of a KeyError …
+            self.assertIsNone(record_tool("read_file", False, None))
+        # … and a present registry is fed, which is what makes "silent" mean
+        # something rather than "never records anything".
+        counter, histogram = MagicMock(), MagicMock()
+        with patch(
+            "ai_assistant.observability.metrics.get_metrics",
+            return_value={"tool": counter, "tool_latency": histogram},
+        ):
+            record_tool("write_file", True, 0.5)
+        counter.labels.assert_called_once_with("write_file", "success")
+        histogram.labels.assert_called_once_with("write_file")
 
     def test_record_tool_without_a_duration_skips_the_histogram(self):
         tool = MagicMock()

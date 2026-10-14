@@ -5,7 +5,7 @@ import unittest
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from ai_assistant.orchestration.compat import LocalAgentGraph, _summarize_messages
+from ai_assistant.orchestration.graph import LocalAgentGraph, _summarize_messages
 
 
 class LangGraphMultiAgentTests(unittest.TestCase):

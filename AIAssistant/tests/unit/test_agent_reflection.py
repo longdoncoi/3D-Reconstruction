@@ -4,7 +4,7 @@ import unittest
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from ai_assistant.orchestration.supervisor import delegate, reflect_result, specialist_instruction, verify_result
+from ai_assistant.orchestration.supervisor import delegate, reflect_result, verify_result
 
 
 class AgentReflectionTests(unittest.TestCase):
@@ -19,10 +19,6 @@ class AgentReflectionTests(unittest.TestCase):
         review = reflect_result(item, {"matches": []}, {"passed": True, "reason": "valid"})
         self.assertTrue(review["passed"])
         self.assertEqual(review["decision"], "continue")
-
-    def test_each_specialist_has_a_compact_handoff(self):
-        item = delegate("verify", "session", "validate_file", {"path": "x.py"})
-        self.assertIn("Independently", specialist_instruction(item))
 
     def test_empty_discovery_result_is_not_accepted_as_evidence(self):
         item = delegate("inspect", "session", "search_text", {"query": "symbol"})

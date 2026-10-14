@@ -112,9 +112,11 @@ event sink). The graph engine class and `Specialist` are supplied by the
 context, so no service repeats them.
 
 The first-pass path keeps the real `validate_tool_call` and
-`generate_action_id`; the approval and desktop-ack resume paths swap in the
-named `RESUME_VALIDATE_TOOL_CALL` / `RESUME_ACTION_ID` no-ops (previously two
-inline `lambda`s duplicated in both services). The A2A router stays on the
+`generate_action_id`. *(Update, finding 27: the approval and desktop-ack resume
+paths no longer swap in a `RESUME_VALIDATE_TOOL_CALL` no-op — a resumed run may
+emit **new** tool calls, so every call is validated by the real validator. Only
+the `RESUME_ACTION_ID` no-op remains, since a resumed continuation re-uses the
+original action id.)* The A2A router stays on the
 main execute path only — the resume paths run with `a2a_router=None`, matching
 the pre-refactor behaviour.
 

@@ -37,7 +37,6 @@ def _state(**over: Any) -> dict[str, Any]:
         "approval_scope": "",
         "cancelled": False,
         "tool_call_count": 0,
-        "last_reflection": None,
         "error_count": 0,
         "resume_with_reflection": False,
         "skip_reflect": False,
@@ -151,7 +150,8 @@ class PlanReflectTests(unittest.TestCase):
         """No critic callback means the deterministic checks are the verdict."""
         outcome = plan_reflect_node(_state(plan=["Buoc mot"]), None)
         self.assertTrue(outcome["plan_verified"])
-        self.assertIn("no plan critic configured", outcome["last_reflection"]["reason"])
+        verdict = outcome["steps"][-1]["result"]
+        self.assertIn("no plan critic configured", verdict["reason"])
 
     def test_a_valid_json_non_object_critic_reply_forces_a_regeneration(self):
         """A JSON array parses but is not a review — distinct from garbage."""

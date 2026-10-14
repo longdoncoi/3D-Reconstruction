@@ -34,7 +34,6 @@ def _state(**over: Any) -> dict[str, Any]:
         "approval_scope": "",
         "cancelled": False,
         "tool_call_count": 0,
-        "last_reflection": None,
         "error_count": 0,
         "resume_with_reflection": False,
         "skip_reflect": False,

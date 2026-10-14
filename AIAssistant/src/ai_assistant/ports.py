@@ -63,27 +63,56 @@ class LLMBackend(Protocol):
 ToolExecutor = Callable[[dict[str, Any]], dict[str, Any]]
 
 
-class ToolGateway(Protocol):
-    """Least-privilege gateway through which agent engines execute tools.
+class ToolExecutionGateway(Protocol):
+    """Least-privilege *execution* surface a decision loop may reach (ADR 0010).
 
-    The adapter behind this port wraps :class:`~ai_assistant.application.tools.ToolExecutionService`
-    and resolves the active principal at call time, so the agent engine never
-    imports the composition root and never reaches the registry directly. The
-    production implementation is ``bootstrap.runtime.PlatformToolGateway``.
+    The runner executes, pre-flights and probes approval grants but can never
+    mint one; grant minting is confined to the approval services behind
+    :class:`ApprovalGrantIssuer`. Splitting the two ports makes that separation
+    of duties type-enforced rather than a convention: a bug that tried to mint a
+    grant from inside the loop would not type-check.
+
+    The adapter behind this port wraps
+    :class:`~ai_assistant.application.tools.ToolExecutionService` and resolves
+    the active principal at call time, so the agent engine never imports the
+    composition root and never reaches the registry directly. The production
+    implementation is ``bootstrap.runtime.PlatformToolGateway``.
 
     Approval-gated tools are gated by a *capability*, not a flag: a grant is
     issued for the exact invocation a user approved, spent on execution and
     probed with :meth:`approval_covers` when the engine decides whether it has
-    to ask again.
+    to ask again. :meth:`preflight` is that same gate for a dispatch that
+    executes elsewhere — it validates, authorises and spends the grant without
+    running the tool, so a remote leg cannot skip policy by leaving the
+    process.
     """
 
     def execute(self, tool_name: str, parameters: dict) -> dict: ...
 
     def execute_approved(self, tool_name: str, parameters: dict, approval_token: str = "") -> dict: ...
 
-    def issue_approval_grant(self, tool_name: str, parameters: dict, approval_token: str) -> None: ...
+    def preflight(self, tool_name: str, parameters: dict, approval_token: str = "") -> dict: ...
 
     def approval_covers(self, tool_name: str, parameters: dict, approval_token: str) -> bool: ...
+
+
+class ApprovalGrantIssuer(Protocol):
+    """Grant-minting surface, reachable only from a user-approval path.
+
+    Only a service that represents a user decision may mint a single-use grant;
+    the decision loop itself holds no reference to this port.
+    """
+
+    def issue_approval_grant(self, tool_name: str, parameters: dict, approval_token: str) -> None: ...
+
+
+class ToolGateway(ToolExecutionGateway, ApprovalGrantIssuer, Protocol):
+    """The full gateway: execution plus grant minting, as the composition root builds it.
+
+    The approval services hold this (they both mint a grant and immediately
+    execute against it); the runner is handed only the
+    :class:`ToolExecutionGateway` view.
+    """
 
 
 class AgentOrchestrator(Protocol):
@@ -133,7 +162,7 @@ class LLMRuntime(Protocol):
     The agent layer only needs the loaded backend and the lock that guards it;
     it never imports the model loader, so the inference technology stays
     replaceable and the composition root owns the concrete runtime
-    (ADR 0001). ``legacy.llm_module`` satisfies this protocol.
+    (ADR 0001). ``bootstrap.server.llm_module`` satisfies this protocol.
 
     The lock is typed structurally (:class:`LockLike`) so both
     ``threading.Lock`` and ``threading.RLock`` satisfy it.
@@ -141,6 +170,18 @@ class LLMRuntime(Protocol):
 
     llm: LLMBackend | None
     llm_lock: LockLike
+
+
+class RagContextPort(Protocol):
+    """Retrieval the ``rag_search`` tool needs from the live index (ADR 0001).
+
+    The composition root injects the RAG module it owns, so the tool layer
+    never imports the bootstrap module — the last service locator in
+    ``tools``. A registry built without a provider leaves the tool reporting
+    the index as unavailable rather than reaching for a global.
+    """
+
+    def get_context(self, query: str, query_image_b64: str | None = None, result_k: int | None = None) -> tuple[Any, ...]: ...
 
 
 class AgentTaskExecutor(Protocol):

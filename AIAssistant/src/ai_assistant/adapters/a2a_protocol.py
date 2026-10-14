@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ai_assistant.config.logging import get_agent_logger
+from ai_assistant.domain.governance import has_sensitive_keys
+from ai_assistant.domain.security import DataClassification
 from ai_assistant.domain.specialists import Specialist
 from ai_assistant.settings import (
     DEFAULT_BASE_URL,
@@ -185,7 +187,15 @@ class A2ARouter:
         would be vacuously true and any discovered card could be called.
         """
         client = self._client or TrustedA2AClient(trusted_endpoints=a2a_trusted_endpoints())
-        outcome = client.submit(agent.url, specialist_id, task, metadata=params)
+        # The client's "sensitive data cannot leave the trust boundary" rule is
+        # only real if the caller declares what it is sending: a payload holding
+        # a credential is classified RESTRICTED here so that check can fire.
+        # It is the second, independent refusal behind the orchestrator's own
+        # egress rule — this one sits at the transport boundary (ADR 0008/0010).
+        classification = (DataClassification.RESTRICTED if has_sensitive_keys(params)
+                          else DataClassification.INTERNAL)
+        outcome = client.submit(agent.url, specialist_id, task, metadata=params,
+                                classification=classification)
         if outcome.get("routing") != "remote_selected":
             raise RuntimeError(outcome.get("error", "Remote A2A call was rejected"))
         return outcome

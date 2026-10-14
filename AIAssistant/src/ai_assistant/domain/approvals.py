@@ -30,7 +30,31 @@ __all__ = [
     "approval_fingerprint",
     "build_approval_preview",
     "derive_approval_scope",
+    "issue_grant_pair",
 ]
+
+
+def issue_grant_pair(
+    tool_name: str,
+    parameters: Mapping[str, Any] | None = None,
+    *,
+    run_id: str = "",
+) -> tuple[str, str]:
+    """The two single-use grants one HITL approval authorises (ADR 0010).
+
+    One user approval binds exactly two single-use grants to the same
+    invocation: a *run* token for at most one re-dispatch of the identical
+    call inside the resumed graph, and a *direct* token for the immediate
+    execution the approving service performs. Both decision loops — the
+    LangGraph resume (:class:`~ai_assistant.agents.approval_service`) and the
+    durable A2A deterministic loop
+    (:class:`~ai_assistant.adapters.orchestration.deterministic`) — mint them
+    here so the token shape, the ``#direct`` suffix, and the approval-id
+    fallback cannot drift between engines.
+    """
+    fingerprint = approval_fingerprint(tool_name, parameters)
+    run_token = run_id or f"approval-{fingerprint[:16]}"
+    return run_token, f"{run_token}#direct"
 
 
 def approval_fingerprint(tool_name: str, parameters: Mapping[str, Any] | None = None) -> str:

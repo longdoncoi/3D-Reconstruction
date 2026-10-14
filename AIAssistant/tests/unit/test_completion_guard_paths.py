@@ -166,23 +166,34 @@ class ConstrainedDecoderExitTests(unittest.TestCase):
 
 class StructuredDecoderGuardTests(unittest.TestCase):
     def test_non_string_content_is_a_hard_failure(self):
-        with self.assertRaises(RuntimeError) as caught:
-            structured_completion(
-                [], 64, 0.0, {"type": "object"}, _FakeRuntime(_llama_response(None)),
-                backend_mode_fn=lambda: "openai",
-                openai_compatible_fn=lambda *a, **kw: _llama_response(None),
-            )
+        import os
+        from unittest import mock
+
+        # The remote branch needs the ADR 0018 opt-in: the policy gate is
+        # hoisted above the decode wrapper, so a bare local_only default
+        # refuses before any decoding happens.
+        with mock.patch.dict(os.environ, {"AGENT_HYBRID_POLICY": "cloud_allowed"}):
+            with self.assertRaises(RuntimeError) as caught:
+                structured_completion(
+                    [], 64, 0.0, {"type": "object"}, _FakeRuntime(_llama_response(None)),
+                    backend_mode_fn=lambda: "openai",
+                    openai_compatible_fn=lambda *a, **kw: _llama_response(None),
+                )
         self.assertIn("no text content", str(caught.exception))
 
     def test_think_tags_are_stripped_from_the_structured_answer(self):
-        out = structured_completion(
-            [], 64, 0.0, {"type": "object"},
-            _FakeRuntime(_llama_response("")),
-            backend_mode_fn=lambda: "openai",
-            openai_compatible_fn=lambda *a, **kw: _llama_response(
-                THINK_TAG + " checking " + THINK_CLOSE + '{"passed": true}'
-            ),
-        )
+        import os
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"AGENT_HYBRID_POLICY": "cloud_allowed"}):
+            out = structured_completion(
+                [], 64, 0.0, {"type": "object"},
+                _FakeRuntime(_llama_response("")),
+                backend_mode_fn=lambda: "openai",
+                openai_compatible_fn=lambda *a, **kw: _llama_response(
+                    THINK_TAG + " checking " + THINK_CLOSE + '{"passed": true}'
+                ),
+            )
         self.assertEqual(out, '{"passed": true}')
 
 
@@ -257,6 +268,42 @@ class HybridPolicyGateTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"AGENT_HYBRID_POLICY": "cloud_allowed"}):
             result = self._call("openai")
         self.assertEqual(result, "x")
+
+    def _call_structured(self, backend: str):
+        return structured_completion(
+            [{"role": "user", "content": "hi"}],
+            8, 0.0, {"type": "object"},
+            _FakeRuntime(_llama_response("x")),
+            backend_mode_fn=lambda: backend,
+            openai_compatible_fn=MagicMock(return_value=_llama_response("x")),
+        )
+
+    def test_structured_remote_backend_is_blocked_without_cloud_opt_in(self):
+        """The planner/critic decoder runs the same gate, hoisted above the
+        decode wrapper: the refusal must not be relabelled as a decoding
+        failure (finding 16)."""
+        import os
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("AGENT_HYBRID_POLICY", None)
+            with self.assertRaises(RuntimeError) as caught:
+                self._call_structured("openai")
+        self.assertIn("AGENT_HYBRID_POLICY", str(caught.exception))
+        self.assertNotIn("decoding failed", str(caught.exception))
+
+    def test_structured_local_backend_is_unaffected_by_the_policy(self):
+        import os
+        import sys
+        from unittest import mock
+
+        fake_llama_cpp = SimpleNamespace(
+            LlamaGrammar=SimpleNamespace(from_json_schema=lambda schema: object())
+        )
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("AGENT_HYBRID_POLICY", None)
+            with mock.patch.dict(sys.modules, {"llama_cpp": fake_llama_cpp}):
+                self.assertEqual(self._call_structured("llama_cpp"), "x")
 
     def test_local_backend_is_unaffected_by_the_policy(self) -> None:
         import os

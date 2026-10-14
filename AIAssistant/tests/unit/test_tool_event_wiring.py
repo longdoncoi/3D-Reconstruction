@@ -215,6 +215,19 @@ class PayloadTests(unittest.TestCase):
         """``audit_tool_event`` is exported for the composition root to name."""
         self.assertTrue(callable(audit_tool_event))
 
+    def test_a_preflight_record_is_not_mistaken_for_an_execution(self) -> None:
+        """The remote leg authorises before it dispatches; without the field
+        that record would read as a tool that had run in this process."""
+        request = ToolRequest("run_command", {"command": "ls"}, "c-10")
+
+        executed = tool_event_payload(request, ToolResult(True, {"stdout": "ok"}))
+        authorised = tool_event_payload(
+            request, ToolResult(True, {"tool": "run_command", "preflight": True}),
+        )
+
+        self.assertEqual(executed["dispatch"], "execute")
+        self.assertEqual(authorised["dispatch"], "preflight")
+
 
 if __name__ == "__main__":
     unittest.main()

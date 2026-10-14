@@ -28,13 +28,8 @@ def plan_reflect_node(state: AgentState, plan_reflect_complete: Completion | Non
         return {"plan_verified": True}
 
     review = None
-    # Manifest matching is advisory only. Natural-language plan steps can
-    # legitimately describe an action without repeating its canonical
-    # phrase. Log the hints for observability.
-    plan_hints: list[str] = []
-    logger.info("[NODE: plan_reflect] Action hints | hints=%s", plan_hints)
 
-    if review is None and plan_reflect_complete is not None:
+    if plan_reflect_complete is not None:
         spec_to_check = dict(state.get('plan_spec') or {'steps': plan})
         spec_to_check.pop("tool_hints", None)
         critic_msgs = [
@@ -73,7 +68,7 @@ def plan_reflect_node(state: AgentState, plan_reflect_complete: Completion | Non
                 len(plan), passed, review.get("reason", "")[:240])
     if passed:
         return {"steps": steps, "plan_verified": True,
-                "plan_feedback": "", "last_reflection": review}
+                "plan_feedback": ""}
     if state.get("plan_attempts", 0) >= 3:
         steps.append({
             "type": "final_answer",
@@ -81,7 +76,6 @@ def plan_reflect_node(state: AgentState, plan_reflect_complete: Completion | Non
         })
     return {"steps": steps, "plan_verified": False,
             "plan_feedback": str(review.get("reason", "Kế hoạch chưa đạt yêu cầu.")),
-            "last_reflection": review,
             "done": state.get("plan_attempts", 0) >= 3}
 
 

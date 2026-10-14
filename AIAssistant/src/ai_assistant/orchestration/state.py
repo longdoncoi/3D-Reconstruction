@@ -1,8 +1,42 @@
 """Agent state definition and type aliases for the orchestration graph."""
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any, TypedDict
+from collections.abc import Callable, Mapping
+from typing import Any, Literal, TypedDict
+
+# ── Step vocabulary (typed-state slice, review #19) ─────────────────────────
+#: Closed set of step discriminators. Read sites must compare through
+#: :func:`has_step_type` so a typo (``"tool_cal"``) becomes a mypy error
+#: instead of a routing condition that silently never matches. The element
+#: type of ``AgentState.steps`` stays ``dict[str, Any]``: a TypedDict element
+#: is *not* assignable to ``dict[str, Any]`` (mypy invariant), which would
+#: force conversions at every boundary (``AgentRunResult``, HTTP payloads,
+#: persistence) — that migration is a separate, dedicated slice.
+StepType = Literal[
+    "approval_granted",
+    "cancelled",
+    "coding_incomplete",
+    "context_compacted",
+    "delegation",
+    "error",
+    "final_answer",
+    "pending_approval",
+    "plan",
+    "plan_incomplete",
+    "plan_reflection",
+    "reflection",
+    "step_answer",
+    "thinking",
+    "tool_call",
+    "tool_result",
+    "validation_error",
+    "verification",
+]
+
+
+def has_step_type(step: Mapping[str, Any], expected: StepType) -> bool:
+    """True when *step* carries the discriminator *expected*."""
+    return step.get("type") == expected
 
 
 class AgentState(TypedDict):
@@ -19,7 +53,6 @@ class AgentState(TypedDict):
     approval_scope:   str                   # stable hash of task/plan scope
     cancelled:        bool                  # cooperative cancellation requested
     tool_call_count: int                    # number of tool calls (triggers summarisation)
-    last_reflection: dict[str, Any] | None  # deterministic critic result
     error_count:     int                    # consecutive tool errors
     resume_with_reflection: bool            # resume after an async UI ACK
     skip_reflect:    bool                   # verified low-risk tool, auto-reviewed

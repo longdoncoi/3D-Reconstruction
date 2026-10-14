@@ -93,6 +93,17 @@ class AuthorisationTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("No specialist policy exists", reason)
 
+    def test_a_tool_outside_the_specialist_set_is_refused(self):
+        """Least privilege is table-enforced, not an accident of classification.
+
+        ``delegate`` never routes ``write_file`` to RESEARCH, but a hand-crafted
+        delegation pairing them must be refused fail-closed (review 13).
+        """
+        delegation = Delegation(Specialist.RESEARCH, "write_file", "reason", "key")
+        allowed, reason = authorise(delegation, needs_approval=True)
+        self.assertFalse(allowed)
+        self.assertIn("not permitted for specialist research", reason)
+
 
 class VerificationArmTests(unittest.TestCase):
     def test_an_unstructured_result_fails_verification(self):
@@ -224,8 +235,17 @@ class AuditWriteTests(unittest.TestCase):
         self.delegation = delegate("task", "s1", tool="read_file")
 
     def test_an_unwritable_audit_log_never_escapes(self):
-        with patch.object(supervisor.os, "makedirs", side_effect=OSError("read-only")):
+        audit_path = Path(__file__).resolve().parent / "no-such-dir" / "agent_audit.jsonl"
+        with (
+            patch.object(supervisor, "_get_audit_path", return_value=str(audit_path)),
+            patch.object(supervisor.os, "makedirs", side_effect=OSError("read-only")),
+            self.assertLogs("ai_assistant.orchestration.supervisor", level="WARNING") as logged,
+        ):
             audit("tool.completed", self.delegation, note="x")  # must not raise
+        # The failure was reported as a warning, not raised …
+        self.assertTrue(any("Unable to write agent audit event" in line for line in logged.output))
+        # … and no partial audit file appeared.
+        self.assertFalse(audit_path.exists())
 
     def test_the_record_carries_the_event_and_the_delegation(self):
         written: list[str] = []
@@ -282,14 +302,6 @@ class RemoteLookupRuntimeTests(unittest.TestCase):
 
 
 class SpecialisationBranchTests(unittest.TestCase):
-    def test_a_coding_prompt_classifies_as_the_code_role(self):
-        from ai_assistant.orchestration.supervisor import route_task
-        self.assertIs(route_task("fix the failing unit test in the parser"), Specialist.CODE)
-
-    def test_a_plain_prompt_classifies_as_the_supervisor(self):
-        from ai_assistant.orchestration.supervisor import route_task
-        self.assertIs(route_task("hello there"), Specialist.SUPERVISOR)
-
     def test_prefer_code_steers_a_research_tool_away_from_research(self):
         delegation = delegate("read it", "s1", tool="read_file", prefer_code=True)
         self.assertIs(delegation.specialist, Specialist.CODE)
@@ -314,13 +326,6 @@ class SpecialisationBranchTests(unittest.TestCase):
         delegation = delegate("just answer", "s1", tool="not_a_tool")
         self.assertIs(delegation.specialist, Specialist.SUPERVISOR)
         self.assertEqual(delegation.reason, "direct response or unresolved intent")
-
-    def test_every_specialist_has_a_compact_role_handoff(self):
-        from ai_assistant.orchestration.supervisor import specialist_instruction
-        for specialist in Specialist:
-            with self.subTest(specialist=specialist):
-                delegation = Delegation(specialist, "read_file", "r", "k")
-                self.assertTrue(specialist_instruction(delegation).strip())
 
 
 if __name__ == "__main__":

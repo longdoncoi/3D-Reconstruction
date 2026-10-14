@@ -29,7 +29,6 @@ def _state(**overrides: Any) -> dict[str, Any]:
         "done": False,
         "pending_tool": None,
         "plan": None,
-        "last_reflection": None,
     }
     base.update(overrides)
     return base
@@ -46,6 +45,11 @@ def _ctx(raw: str = '{"passed": true, "decision": "continue", "reason": "ok"}',
          reflect_result=None) -> ReflectContext:
     return ReflectContext(reflect_complete=lambda _msgs, _temp: raw,
                           reflect_result=reflect_result)
+
+
+def _verdict(outcome: dict[str, Any]) -> dict[str, Any]:
+    """The critic decision, read from the reflection step it is recorded on."""
+    return outcome["steps"][-1]["result"]
 
 
 class EmptyStepSetTests(unittest.TestCase):
@@ -67,30 +71,30 @@ class CriticOutputValidationTests(unittest.TestCase):
     def test_a_non_object_critic_payload_is_discarded(self):
         """A JSON array parses, but it is not a review, so the fallback runs."""
         outcome = self._recorded("[1, 2, 3]")
-        self.assertEqual(outcome["last_reflection"]["passed"], True)
-        self.assertEqual(outcome["last_reflection"]["decision"], "continue")
+        self.assertEqual(_verdict(outcome)["passed"], True)
+        self.assertEqual(_verdict(outcome)["decision"], "continue")
 
     def test_a_non_boolean_verdict_is_discarded(self):
         """``"yes"`` is not a verdict — only a real boolean is trusted."""
         outcome = self._recorded('{"passed": "yes", "decision": "continue", "reason": "x"}')
-        self.assertTrue(outcome["last_reflection"]["passed"])
+        self.assertTrue(_verdict(outcome)["passed"])
 
     def test_an_unknown_decision_is_discarded(self):
         outcome = self._recorded('{"passed": true, "decision": "maybe", "reason": "x"}')
-        self.assertEqual(outcome["last_reflection"]["decision"], "continue")
+        self.assertEqual(_verdict(outcome)["decision"], "continue")
 
     def test_a_non_string_reason_is_discarded(self):
         outcome = self._recorded('{"passed": true, "decision": "continue", "reason": 42}')
-        self.assertEqual(outcome["last_reflection"]["decision"], "continue")
+        self.assertEqual(_verdict(outcome)["decision"], "continue")
 
     def test_prose_from_the_critic_is_discarded(self):
         outcome = self._recorded("I think it worked fine.")
-        self.assertEqual(outcome["last_reflection"]["decision"], "continue")
+        self.assertEqual(_verdict(outcome)["decision"], "continue")
 
     def test_a_missing_verdict_key_falls_back_to_the_verifier(self):
         """``"passed" not in reflection`` is its own rejection arm."""
         outcome = self._recorded('{"decision": "continue", "reason": "x"}')
-        self.assertEqual(outcome["last_reflection"]["passed"], True)
+        self.assertEqual(_verdict(outcome)["passed"], True)
 
     def test_a_configured_reflector_replaces_the_failed_parse(self):
         """When the host supplies its own reflector, that result is used."""
@@ -99,8 +103,8 @@ class CriticOutputValidationTests(unittest.TestCase):
                     "reason": f"host critic rejected {tool}"}
 
         outcome = self._recorded("not json", reflect_result=_reflect)
-        self.assertEqual(outcome["last_reflection"]["decision"], "revise")
-        self.assertIn("read_file", outcome["last_reflection"]["reason"])
+        self.assertEqual(_verdict(outcome)["decision"], "revise")
+        self.assertIn("read_file", _verdict(outcome)["reason"])
 
 
 class ResultSizeAndPlanScopeTests(unittest.TestCase):
@@ -132,9 +136,9 @@ class ResultSizeAndPlanScopeTests(unittest.TestCase):
             return_value=False,
         ):
             outcome = reflect_node(state, _ctx())
-        self.assertEqual(outcome["last_reflection"]["decision"], "revise")
+        self.assertEqual(_verdict(outcome)["decision"], "revise")
         self.assertIn("does not match current plan step",
-                      outcome["last_reflection"]["reason"])
+                      _verdict(outcome)["reason"])
 
     def test_a_matching_action_keeps_the_critic_verdict(self):
         steps = [
@@ -149,7 +153,7 @@ class ResultSizeAndPlanScopeTests(unittest.TestCase):
             return_value=True,
         ):
             outcome = reflect_node(state, _ctx())
-        self.assertEqual(outcome["last_reflection"]["decision"], "continue")
+        self.assertEqual(_verdict(outcome)["decision"], "continue")
 
 
     def test_a_failed_verification_is_handed_to_the_host_reflector(self):
@@ -164,8 +168,8 @@ class ResultSizeAndPlanScopeTests(unittest.TestCase):
              "result": {"error": "File không tồn tại"}},
         ]
         outcome = reflect_node(_state(steps=steps), _ctx(reflect_result=_reflect))
-        self.assertEqual(outcome["last_reflection"]["decision"], "revise")
-        self.assertIn("verifier rejected", outcome["last_reflection"]["reason"])
+        self.assertEqual(_verdict(outcome)["decision"], "revise")
+        self.assertIn("verifier rejected", _verdict(outcome)["reason"])
 
     def test_a_failed_verification_without_a_host_reflector_becomes_a_revision(self):
         steps = [
@@ -174,10 +178,10 @@ class ResultSizeAndPlanScopeTests(unittest.TestCase):
              "result": {"error": "File không tồn tại"}},
         ]
         outcome = reflect_node(_state(steps=steps), _ctx())
-        self.assertEqual(outcome["last_reflection"]["passed"], False)
-        self.assertEqual(outcome["last_reflection"]["decision"], "revise")
+        self.assertEqual(_verdict(outcome)["passed"], False)
+        self.assertEqual(_verdict(outcome)["decision"], "revise")
         # The verifier reports no reason of its own, so the generic one is used.
-        self.assertEqual(outcome["last_reflection"]["reason"], "Verification failed.")
+        self.assertEqual(_verdict(outcome)["reason"], "Verification failed.")
 
 
 class FailedReviewFeedbackTests(unittest.TestCase):
@@ -190,7 +194,7 @@ class FailedReviewFeedbackTests(unittest.TestCase):
         self.assertEqual(feedback["role"], "system")
         self.assertIn("Independent review failed", feedback["content"])
         self.assertIn("no evidence", feedback["content"])
-        self.assertEqual(outcome["last_reflection"]["passed"], False)
+        self.assertEqual(_verdict(outcome)["passed"], False)
 
     def test_a_passing_review_adds_no_feedback(self):
         state = _state(steps=_steps())

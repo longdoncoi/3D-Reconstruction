@@ -12,8 +12,9 @@ import asyncio
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
+from ai_assistant.adapters.http.security import GuardedMountedApp, TransportPolicy
 from ai_assistant.bootstrap import server
 
 
@@ -87,8 +88,13 @@ class ProactorShimTests(unittest.TestCase):
         # The reset was swallowed, so the wrapping returned normally.
 
     def test_patch_proactor_transport_is_noop_on_posix(self) -> None:
-        with patch.object(server.sys, "platform", "linux"):
+        with (
+            patch.object(server.sys, "platform", "linux"),
+            patch.object(server, "_silence_connection_reset") as silence,
+        ):
             server._patch_proactor_transport()  # returns before importing asyncio internals
+            # POSIX returns first: the proactor transport class is never touched.
+            silence.assert_not_called()
 
     def test_patch_proactor_transport_installs_shim_on_windows(self) -> None:
         import asyncio.proactor_events as proactor_events
@@ -209,7 +215,8 @@ class LifespanTests(unittest.TestCase):
 
 
 class OptionalProtocolTests(unittest.TestCase):
-    def _run(self, *, enable_a2a: bool, enable_mcp: bool, mcp_available: bool):
+    def _run(self, *, enable_a2a: bool, enable_mcp: bool, mcp_available: bool,
+             bind_host: str = "127.0.0.1", policy: TransportPolicy | None = None):
         app = MagicMock()
         mcp = MagicMock()
         mcp.available = mcp_available
@@ -219,44 +226,67 @@ class OptionalProtocolTests(unittest.TestCase):
             plugins=object(),
         )
         with patch.object(server, "set_remote_specialist_lookup") as mock_set, \
-                patch.object(server, "build_a2a_router", return_value="router") as mock_build:
-            server._register_optional_protocols(app, platform, mcp, "policy")
-        return app, mcp, platform, mock_set, mock_build
+                patch.object(server, "build_a2a_router", return_value="router") as mock_build, \
+                patch.object(server, "agent_bind_host", return_value=bind_host), \
+                patch.object(server, "logger") as mock_logger:
+            server._register_optional_protocols(
+                app, platform, mcp, policy if policy is not None else TransportPolicy(),
+            )
+        return SimpleNamespace(app=app, mcp=mcp, platform=platform, mock_set=mock_set,
+                               mock_build=mock_build, logger=mock_logger)
 
     def test_registers_a2a_and_mcp_when_enabled_and_available(self) -> None:
-        app, mcp, platform, mock_set, mock_build = self._run(
-            enable_a2a=True, enable_mcp=True, mcp_available=True,
-        )
-        mock_set.assert_called_once_with(server.resolve_remote_specialist)
-        mock_build.assert_called_once_with(
-            platform.tasks,
+        run = self._run(enable_a2a=True, enable_mcp=True, mcp_available=True)
+        run.mock_set.assert_called_once_with(server.resolve_remote_specialist)
+        run.mock_build.assert_called_once_with(
+            run.platform.tasks,
             "3D-Reconstruction AI Assistant",
             "3.0.0",
-            policy="policy",
+            policy=ANY,
         )
-        app.include_router.assert_called_once_with("router")
-        mcp.register_plugin_tools.assert_called_once_with(platform.plugins)
-        app.mount.assert_called_once_with("/mcp", mcp.asgi_app())
+        self.assertIsInstance(run.mock_build.call_args.kwargs["policy"], TransportPolicy)
+        run.app.include_router.assert_called_once_with("router")
+        run.mcp.register_plugin_tools.assert_called_once_with(run.platform.plugins)
+        # The sub-app is mounted behind the transport guard: ``mount`` cannot
+        # take route dependencies, so the wrapper carries the MCP policy.
+        run.app.mount.assert_called_once()
+        path, mounted = run.app.mount.call_args.args
+        self.assertEqual(path, "/mcp")
+        self.assertIsInstance(mounted, GuardedMountedApp)
+        run.logger.warning.assert_not_called()
 
     def test_skips_mcp_when_sdk_unavailable(self) -> None:
-        app, mcp, _, mock_set, mock_build = self._run(
-            enable_a2a=True, enable_mcp=True, mcp_available=False,
-        )
-        mock_set.assert_called_once_with(server.resolve_remote_specialist)
-        mock_build.assert_called_once()
-        app.include_router.assert_called_once()
-        mcp.register_plugin_tools.assert_not_called()
-        app.mount.assert_not_called()
+        run = self._run(enable_a2a=True, enable_mcp=True, mcp_available=False)
+        run.mock_set.assert_called_once_with(server.resolve_remote_specialist)
+        run.mock_build.assert_called_once()
+        run.app.include_router.assert_called_once()
+        run.mcp.register_plugin_tools.assert_not_called()
+        run.app.mount.assert_not_called()
 
     def test_disables_a2a_and_mcp_when_deployment_profile_says_so(self) -> None:
-        app, mcp, _, mock_set, mock_build = self._run(
-            enable_a2a=False, enable_mcp=False, mcp_available=True,
-        )
-        mock_set.assert_called_once_with(None)
-        mock_build.assert_not_called()
-        app.include_router.assert_not_called()
-        mcp.register_plugin_tools.assert_not_called()
-        app.mount.assert_not_called()
+        run = self._run(enable_a2a=False, enable_mcp=False, mcp_available=True)
+        run.mock_set.assert_called_once_with(None)
+        run.mock_build.assert_not_called()
+        run.app.include_router.assert_not_called()
+        run.mcp.register_plugin_tools.assert_not_called()
+        run.app.mount.assert_not_called()
+
+    def test_exposed_bind_without_a_token_keeps_mcp_unmounted(self) -> None:
+        # Docker publishes AGENT_HOST=0.0.0.0; without AI_MCP_TOKEN there is
+        # nothing for the guard to authenticate, so the surface stays closed
+        # and the startup log says why instead of serving anonymous 403s.
+        run = self._run(enable_a2a=True, enable_mcp=True, mcp_available=True,
+                        bind_host="0.0.0.0")
+        run.app.mount.assert_not_called()
+        run.mcp.register_plugin_tools.assert_not_called()
+        run.logger.warning.assert_called_once()
+        self.assertIn("AI_MCP_TOKEN", run.logger.warning.call_args.args[0])
+
+    def test_exposed_bind_with_a_token_still_mounts_mcp(self) -> None:
+        run = self._run(enable_a2a=True, enable_mcp=True, mcp_available=True,
+                        bind_host="0.0.0.0", policy=TransportPolicy(mcp_token="mcp-secret"))
+        run.app.mount.assert_called_once()
+        run.logger.warning.assert_not_called()
 
 
 if __name__ == "__main__":

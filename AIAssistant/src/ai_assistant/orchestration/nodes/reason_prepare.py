@@ -29,7 +29,7 @@ from ..helpers import (
     plan_step_execution_contract,
 )
 from ..prompts import REASONER_PROMPT
-from ..state import OBSERVATION_SUMMARY_THRESHOLD, AgentState
+from ..state import OBSERVATION_SUMMARY_THRESHOLD, AgentState, has_step_type
 from .summarize import summarize_messages
 
 logger = get_agent_logger("reasoning")
@@ -148,7 +148,7 @@ def _completed_ui_actions(steps: list[dict[str, Any]]) -> int:
     """How many required desktop actions a reflection has already confirmed."""
     return sum(
         1 for step in steps
-        if (step.get("type") == "reflection" and step.get("tool") == "application_action"
+        if (has_step_type(step, "reflection") and step.get("tool") == "application_action"
             and step.get("result", {}).get("passed") is True)
     )
 
@@ -215,7 +215,7 @@ def _log_selection(selection: _Selection, step_contract: dict[str, Any],
         return
     step = done_display + 1
     failed = sum(1 for s in steps
-                 if s.get("type") == "reflection" and s.get("result", {}).get("passed") is False)
+                 if has_step_type(s, "reflection") and s.get("result", {}).get("passed") is False)
     logger.info("[NODE: reason] ToolApp hint | plan step %d/%d | expected action=%s | failed attempts=%d",
                 step, selection.progress_total, selection.expected_action.get("action"), failed)
     logger.debug("[AGENT TRACE] ── Reason: ToolApp hint; gọi LLM tool-calling")
@@ -249,7 +249,7 @@ def _aggregate_step_answers(state: AgentState, steps: list[dict[str, Any]], mess
     step_answers = [
         step.get("content", "").strip()
         for step in steps
-        if step.get("type") == "step_answer" and step.get("content", "").strip()
+        if has_step_type(step, "step_answer") and step.get("content", "").strip()
     ]
     if not step_answers:
         return None

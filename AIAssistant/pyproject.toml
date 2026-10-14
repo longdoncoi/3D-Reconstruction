@@ -57,8 +57,8 @@ source = ["ai_assistant"]
 exclude_also = [
     "if __name__ == .__main__.:",
 ]
-# Measured, not aspirational (ADR 0015): 100.00% of 7653 statements and 2032
-# branches on 2026-10-14 with the full suite (1576 tests) on Python 3.11 with
+# Measured, not aspirational (ADR 0015): 100.00% of 7814 statements and 2068
+# branches on 2026-10-14 with the full suite (1651 tests) on Python 3.11 with
 # ``faiss``/``sentence-transformers`` installed. The number is recorded in
 # ARCHITECTURE_10_10_CLOSED.md together with the excluded entry points; a
 # stripped-down environment (no optional RAG stack) reports less because the
@@ -72,12 +72,10 @@ python_version = "3.11"
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_ignores = false
-# Full-package type checking: mypy now covers domain, ports, application and
-# every adapter/agent/orchestration module. Third-party packages without
+# Full-package type checking: mypy covers domain, ports, application and every
+# adapter/agent/orchestration module, with no exclusions left — the legacy
+# shim package it used to skip no longer exists. Third-party packages without
 # stubs are imported as Any (ignore_missing_imports).
-exclude = [
-    "src/ai_assistant/legacy/",
-]
 
 [tool.importlinter]
 root_package = "ai_assistant"

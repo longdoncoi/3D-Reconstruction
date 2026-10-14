@@ -10,7 +10,6 @@ supplies the per-invocation arguments.
 """
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
@@ -21,9 +20,8 @@ from ..domain.errors import NotFoundError, UnprocessableRequestError
 from ..orchestration.supervisor import audit as audit_agent
 from ..orchestration.supervisor import delegate, verify_result
 from ..ports import LLMRuntime, ToolGateway
-from ..settings import use_langgraph_agent
 from ..tools.action_manifest import validate_action_params
-from .context import RESUME_ACTION_ID, RESUME_VALIDATE_TOOL_CALL, AgentRunContext
+from .context import RESUME_ACTION_ID, AgentRunContext, ContextService, append_tool_result_turn
 from .ids import generate_action_id
 from .models import AgentUiActionResultRequest
 from .pending_store import PendingActionStore
@@ -31,7 +29,7 @@ from .pending_store import PendingActionStore
 logger = logging.getLogger("ai_assistant.agents.ui_action_service")
 
 
-class UIActionService:
+class UIActionService(ContextService):
     """Domain service for desktop UI action continuation.
 
     Handles: UI action result processing, queued action chaining (multi-step
@@ -59,34 +57,6 @@ class UIActionService:
             checkpointer=checkpointer,
             task_coordinator=task_coordinator if task_coordinator is not None else TaskCoordinator(),
         )
-
-    # ── Shared wiring surfaced for introspection/tests ──────────────────────
-    @property
-    def llm_runtime(self) -> LLMRuntime | None:
-        return self._ctx.llm_runtime
-
-    @property
-    def pending_actions(self) -> PendingActionStore:
-        return self._ctx.pending_actions
-
-    @property
-    def pending_lock(self) -> Any:
-        return self._ctx.pending_lock
-
-    @property
-    def tool_gateway(self) -> ToolGateway | None:
-        return self._ctx.tool_gateway
-
-    @property
-    def tool_registry(self) -> Any:
-        return self._ctx.tool_registry
-
-    @property
-    def task_coordinator(self) -> TaskCoordinator:
-        return self._ctx.task_coordinator
-
-    def _save_pending(self) -> None:
-        self._ctx.save_pending()
 
     def ui_action_result(self, request: AgentUiActionResultRequest) -> dict[str, Any]:
         """Process a desktop UI action result and continue the agent workflow."""
@@ -169,17 +139,7 @@ class UIActionService:
         success: bool,
     ) -> dict[str, Any]:
         """Finalize the UI action workflow, optionally resuming LangGraph."""
-        langgraph_available = self._ctx.local_agent_graph is not None
-        llm_ready = (
-            self._ctx.llm_runtime is not None
-            and getattr(self._ctx.llm_runtime, "llm", None) is not None
-        )
-        if (
-            action.get("messages")
-            and use_langgraph_agent()
-            and langgraph_available
-            and llm_ready
-        ):
+        if action.get("messages") and self._ctx.resume_available(require_llm_ready=True):
             return self._resume_langgraph(action, steps, success)
 
         content = (f"Đã thực thi {action['params']['action']}." if success
@@ -207,15 +167,16 @@ class UIActionService:
         from .prompts import build_agent_system_prompt
 
         messages = action["messages"]
-        tool_call_text = json.dumps({"tool": "application_action", "params": action["params"]}, ensure_ascii=False)
-        messages.append({"role": "assistant", "content": f"```tool_call\n{tool_call_text}\n```"})
-        result_text = json.dumps({"success": success, "action": action["params"]["action"]}, ensure_ascii=False, indent=2)
-        if len(result_text) > 8000:
-            result_text = result_text[:8000] + "\n... [truncated]"
-        messages.append({
-            "role": "user",
-            "content": f"Tool `application_action` returned:\n```json\n{result_text}\n```\n\nPhân tích kết quả. NẾU kế hoạch của bạn CÒN bước tiếp theo, hãy bắt buộc GỌI TOOL cho bước đó ngay lập tức (KHÔNG HỎI LẠI NGƯỜI DÙNG). Nếu đã hoàn thành toàn bộ, đưa ra thông báo kết thúc.",
-        })
+        append_tool_result_turn(
+            messages, "application_action", action["params"],
+            {"success": success, "action": action["params"]["action"]},
+            lead="Tool `application_action` returned:",
+            tail=(
+                "Phân tích kết quả. NẾU kế hoạch của bạn CÒN bước tiếp theo, hãy bắt buộc "
+                "GỌI TOOL cho bước đó ngay lập tức (KHÔNG HỎI LẠI NGƯỜI DÙNG). Nếu đã "
+                "hoàn thành toàn bộ, đưa ra thông báo kết thúc."
+            ),
+        )
 
         system_prompt = (messages[0]["content"] if messages and messages[0].get("role") == "system"
                          else build_agent_system_prompt(self._ctx.tool_registry, language=action.get("language", "vi")))
@@ -231,7 +192,6 @@ class UIActionService:
             initial_iteration=action.get("iteration", 0),
             resume_with_reflection=True,
             prior_step_count=len(action.get("steps", [])),
-            validate_tool_call_fn=RESUME_VALIDATE_TOOL_CALL,
             generate_action_id_fn=RESUME_ACTION_ID,
         )
 

@@ -13,6 +13,7 @@ from ..state import (
     CONTEXT_SYSTEM_LIMIT,
     CONTEXT_TOTAL_LIMIT,
     OBSERVATION_KEEP_LAST,
+    has_step_type,
 )
 
 
@@ -87,7 +88,7 @@ def format_code_citation(messages: list[dict[str, str]], steps: list[dict[str, A
     if not any(term in normalized for term in citation_terms):
         return None
     for step in reversed(steps):
-        if step.get("type") != "tool_result" or step.get("tool") != "read_file":
+        if not has_step_type(step, "tool_result") or step.get("tool") != "read_file":
             continue
         result = step.get("result", {})
         content = result.get("content") if isinstance(result, dict) else None

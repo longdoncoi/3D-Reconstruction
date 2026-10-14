@@ -19,6 +19,7 @@ from ai_assistant.domain.approvals import (
     approval_fingerprint,
     build_approval_preview,
     derive_approval_scope,
+    issue_grant_pair,
 )
 from ai_assistant.orchestration.nodes.reason import ReasonContext, approval_covers_run
 
@@ -34,6 +35,34 @@ class ApprovalFingerprintTests(unittest.TestCase):
         base = approval_fingerprint("write_file", {"path": "a.txt"})
         self.assertNotEqual(base, approval_fingerprint("patch_file", {"path": "a.txt"}))
         self.assertNotEqual(base, approval_fingerprint("write_file", {"path": "b.txt"}))
+
+
+class IssueGrantPairTests(unittest.TestCase):
+    """One approval mints exactly two namespaced single-use grants (review 8)."""
+
+    def test_direct_token_is_namespaced_off_the_run_token(self) -> None:
+        run_token, direct_token = issue_grant_pair("write_file", {"path": "a"}, run_id="act-1")
+        self.assertEqual(run_token, "act-1")
+        self.assertEqual(direct_token, "act-1#direct")
+
+    def test_falls_back_to_a_fingerprint_anchored_run_token(self) -> None:
+        run_token, direct_token = issue_grant_pair("write_file", {"path": "a"})
+        fingerprint = approval_fingerprint("write_file", {"path": "a"})
+        self.assertEqual(run_token, f"approval-{fingerprint[:16]}")
+        self.assertEqual(direct_token, f"{run_token}#direct")
+
+    def test_pair_is_deterministic_for_the_same_run(self) -> None:
+        self.assertEqual(
+            issue_grant_pair("write_file", {"path": "a"}, run_id="r"),
+            issue_grant_pair("write_file", {"path": "a"}, run_id="r"),
+        )
+
+    def test_fallback_tokens_differ_per_invocation(self) -> None:
+        """With no run id the token is anchored to the invocation fingerprint."""
+        a = issue_grant_pair("write_file", {"path": "a"})
+        b = issue_grant_pair("write_file", {"path": "b"})
+        self.assertNotEqual(a[0], b[0])
+        self.assertNotEqual(a[1], b[1])
 
 
 class ApprovalGrantStoreTests(unittest.TestCase):

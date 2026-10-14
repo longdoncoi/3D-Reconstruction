@@ -7,8 +7,9 @@ HTTP adapters, modules, and services. Business logic lives in sub-modules:
   - /v1/chat/*          → src/ai_assistant/adapters/http/chat_routes.py
   - /health, /metrics   → src/ai_assistant/adapters/http/health_routes.py
   - /v1/agent/*         → src/ai_assistant/adapters/http/agent_routes.py (injected AgentService)
-  - /a2a/*              → src/ai_assistant/adapters/a2a.py
-  - /mcp                → ai_assistant/adapters/legacy/mcp_server (legacy adapter)
+  - /a2a/*              → src/ai_assistant/adapters/a2a_router.py
+  - /mcp                → src/ai_assistant/adapters/mcp.py (mounted behind the
+                          MCP transport guard, least-privilege principal)
 """
 
 import sys
@@ -18,6 +19,16 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
+
+from ai_assistant.settings import apply_startup_environment_defaults, load_local_dotenv
+
+# The composition root owns the process environment (ADR 0001): merge ``.env``
+# and apply the library-quieting defaults *before* the imports below read the
+# environment — the A2A banner and the transport policy both do so at import
+# time. Without this step the file was parsed by tests only and the running
+# server never saw the tokens an operator put there (LANGSMITH_API_KEY, …).
+load_local_dotenv(Path(__file__).resolve().parents[3])  # project root (``.env.example``'s directory)
+apply_startup_environment_defaults()
 
 
 def _ensure_package_root_on_path(package_root: str) -> None:
@@ -67,7 +78,11 @@ from ai_assistant.adapters.http import (
     build_chat_router,
     build_health_router,
 )
-from ai_assistant.adapters.http.security import TransportPolicy
+from ai_assistant.adapters.http.security import (
+    TransportPolicy,
+    mcp_exposed_without_token,
+    mcp_guarded_app,
+)
 from ai_assistant.adapters.mcp import McpToolServer
 from ai_assistant.adapters.orchestration import LangGraphAgentOrchestrator
 from ai_assistant.adapters.persistence.checkpointing import build_checkpointer
@@ -86,7 +101,12 @@ from ai_assistant.llm import get_backend, load_model, reload_model
 from ai_assistant.llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
 from ai_assistant.orchestration.specialists import ChatbotAgent
 from ai_assistant.orchestration.supervisor import set_remote_specialist_lookup
-from ai_assistant.settings import agent_bind_host, agent_bind_port, settings_config_dir
+from ai_assistant.settings import (
+    agent_bind_host,
+    agent_bind_port,
+    settings_config_dir,
+    vision_llm_enabled,
+)
 from ai_assistant.tools import action_manifest
 from ai_assistant.tools.factory import create_tool_registry, platform_executors
 
@@ -338,8 +358,11 @@ class _RAGModule:
 
 rag_module = _RAGModule()
 
-# Re-export for adapter compatibility (imported from llm.defaults; kept for legacy bridge)
-USE_VISION_LLM = False  # computed from settings if needed
+# Vision path for the local model. It is a deployment toggle (ADR 0001: env is
+# read through a settings accessor), not a constant — hard-coding ``False``
+# here silently disabled the vision branch while ``vision_llm_enabled()``
+# reported the operator's choice.
+USE_VISION_LLM = vision_llm_enabled()
 # CHARS_PER_TOKEN / LLM_N_CTX re-exported via import above; do not redefine.
 
 # ── Global mutable chatbot agent (recreated on model/RAG reload) ─────────────
@@ -371,7 +394,7 @@ def _execute_a2a_task(task: AgentTask) -> dict:
 # The composition root owns the single tool catalog, coordinator and agent
 # service. The shared tool gateway, LangGraph checkpointer and A2A transport
 # are injected explicitly, so no module-level service locator remains.
-_tool_registry = create_tool_registry()
+_tool_registry = create_tool_registry(rag_context=rag_module)
 platform: PlatformContainer = build_container(
     Path(BASE_DIR),
     list(_tool_registry.get_all()),
@@ -389,7 +412,8 @@ agent_service = AgentService(
 )
 
 # The MCP adapter owns one server instance bound to the shared gateway; the
-# legacy ``legacy.mcp_server`` shim remains only as an import-compatible name.
+# ``mcp_server`` name below is what the admin routes import (the old
+# ``legacy.mcp_server`` re-export shim was deleted with the legacy package).
 mcp_server = McpToolServer(platform.gateway)
 
 _agent_run_service = AgentRunService(
@@ -509,8 +533,18 @@ def _register_optional_protocols(
     else:
         set_remote_specialist_lookup(None)
     if platform.settings.enable_mcp and mcp_server.available:
-        mcp_server.register_plugin_tools(platform.plugins)
-        app.mount("/mcp", mcp_server.asgi_app())
+        if mcp_exposed_without_token(agent_bind_host(), transport_policy):
+            # Fail closed (ADR 0008): an exposed bind without AI_MCP_TOKEN
+            # leaves nothing for the guard to authenticate, so the surface
+            # stays unmounted and the reason is logged at startup rather than
+            # surfacing as anonymous 403s from every caller.
+            logger.warning(
+                "MCP endpoint disabled: bind host %s reaches the network and AI_MCP_TOKEN is unset",
+                agent_bind_host(),
+            )
+        else:
+            mcp_server.register_plugin_tools(platform.plugins)
+            app.mount("/mcp", mcp_guarded_app(mcp_server.asgi_app(), transport_policy))
 
 
 _register_optional_protocols(app, platform, mcp_server, transport_policy)

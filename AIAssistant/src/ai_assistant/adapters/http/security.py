@@ -24,8 +24,10 @@ import hmac
 import os
 from dataclasses import dataclass
 from ipaddress import ip_address
+from typing import Any
 
 from fastapi import Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from ...settings import DEFAULT_HOST, DEFAULT_PORT
 
@@ -43,6 +45,7 @@ class TransportPolicy:
     admin_token: str = ""
     agent_token: str = ""
     a2a_token: str = ""
+    mcp_token: str = ""
     allow_remote_a2a: bool = False
 
     @classmethod
@@ -54,6 +57,7 @@ class TransportPolicy:
             admin_token=values.get("AI_ADMIN_TOKEN", "").strip(),
             agent_token=values.get("AI_AGENT_TOKEN", "").strip(),
             a2a_token=values.get("AI_A2A_TOKEN", "").strip(),
+            mcp_token=values.get("AI_MCP_TOKEN", "").strip(),
             allow_remote_a2a=allow_remote_a2a,
         )
 
@@ -103,16 +107,22 @@ def require_token(request: Request, token: str, surface: str) -> None:
         _reject(401, f"Missing or invalid {surface} credentials")
 
 
+def _evaluate(request: Request, *, policy: TransportPolicy, surface: str, token: str,
+              allow_remote: bool) -> None:
+    """One surface's trust checks, shared by the route guards and mounted apps."""
+    if not allow_remote:
+        require_loopback(request, surface)
+    elif not token:
+        # A remotely exposed surface without a shared secret stays closed.
+        _reject(503, f"{surface} remote access requires a configured access token")
+    if token:
+        require_token(request, token, surface)
+    require_local_origin(request, policy, surface)
+
+
 def _guards(policy: TransportPolicy, *, surface: str, token: str, allow_remote: bool) -> list:
     def guard(request: Request) -> None:
-        if not allow_remote:
-            require_loopback(request, surface)
-        elif not token:
-            # A remotely exposed surface without a shared secret stays closed.
-            _reject(503, f"{surface} remote access requires a configured access token")
-        if token:
-            require_token(request, token, surface)
-        require_local_origin(request, policy, surface)
+        _evaluate(request, policy=policy, surface=surface, token=token, allow_remote=allow_remote)
 
     return [Depends(guard)]
 
@@ -142,12 +152,71 @@ def a2a_guards(policy: TransportPolicy | None) -> list:
                    allow_remote=resolved.allow_remote_a2a)
 
 
+def mcp_exposed_without_token(host: str | None, policy: TransportPolicy) -> bool:
+    """True when the bind address reaches the network but MCP has no secret.
+
+    Binding is a deployment detail (ADR 0008): a loopback bind needs no token,
+    but publishing the port without ``AI_MCP_TOKEN`` would leave the tool
+    surface reachable by every host behind the proxy. The composition root
+    keeps the mount closed and says why, instead of letting callers discover
+    403s.
+    """
+    return not _is_loopback(host) and not policy.mcp_token
+
+
+class GuardedMountedApp:
+    """Apply one surface's transport checks to a mounted ASGI sub-application.
+
+    ``FastAPI.mount`` takes no route ``dependencies``, so a mounted sub-app —
+    the MCP surface — would otherwise skip exactly the peer/origin/token checks
+    every other surface applies. This wrapper runs the shared policy on each
+    HTTP scope and answers with the same status codes; non-HTTP scopes
+    (lifespan, websocket) pass through untouched.
+    """
+
+    def __init__(self, app: Any, *, policy: TransportPolicy, surface: str, token: str,
+                 allow_remote: bool) -> None:
+        self._app = app
+        self._policy = policy
+        self._surface = surface
+        self._token = token
+        self._allow_remote = allow_remote
+
+    def _refusal(self, scope: Any) -> JSONResponse | None:
+        try:
+            _evaluate(Request(scope), policy=self._policy, surface=self._surface,
+                      token=self._token, allow_remote=self._allow_remote)
+        except HTTPException as error:
+            return JSONResponse({"detail": error.detail}, status_code=error.status_code)
+        return None
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self._app(scope, receive, send)
+            return
+        refusal = self._refusal(scope)
+        if refusal is not None:
+            await refusal(scope, receive, send)
+            return
+        await self._app(scope, receive, send)
+
+
+def mcp_guarded_app(app: Any, policy: TransportPolicy | None) -> GuardedMountedApp:
+    """Wrap the MCP sub-app so the mount enforces the MCP surface policy."""
+    resolved = policy or TransportPolicy()
+    return GuardedMountedApp(app, policy=resolved, surface="mcp", token=resolved.mcp_token,
+                             allow_remote=bool(resolved.mcp_token))
+
+
 __all__ = [
+    "GuardedMountedApp",
     "TransportPolicy",
     "a2a_guards",
     "admin_guards",
     "agent_guards",
     "chat_guards",
+    "mcp_exposed_without_token",
+    "mcp_guarded_app",
     "require_local_origin",
     "require_loopback",
     "require_token",

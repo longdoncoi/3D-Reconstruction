@@ -41,6 +41,7 @@ from .state import (
     ReflectResult,
     SelectSpecialist,
     VerifyResult,
+    has_step_type,
 )
 
 logger = logging.getLogger("ai_assistant.orchestration.graph")
@@ -136,7 +137,7 @@ class LocalAgentGraph:
             specialist = state.get("routing_plan", "supervisor")
             tool_name = ""
             for step in reversed(state.get("steps", [])):
-                if step.get("type") in {"tool_call", "tool_result"}:
+                if has_step_type(step, "tool_call") or has_step_type(step, "tool_result"):
                     tool_name = step.get("tool", "")
                     break
             trace_metadata = {
@@ -181,7 +182,6 @@ class LocalAgentGraph:
         iteration: int = 0,
         resume_with_reflection: bool = False,
         required_ui_actions: list[dict[str, Any]] | None = None,
-        supervisor_route: str | None = None,
         enforce_plan_completion: bool = False,
         approval_granted: bool = False,
         approval_scope: str = "",
@@ -189,11 +189,11 @@ class LocalAgentGraph:
     ) -> AgentState:
         self._emitted_steps = len(steps or [])
         restored_plan = next(
-            (step.get("steps") for step in reversed(steps or []) if step.get("type") == "plan"),
+            (step.get("steps") for step in reversed(steps or []) if has_step_type(step, "plan")),
             None,
         )
         prior_plan_review = next(
-            (step.get("result", {}) for step in reversed(steps or []) if step.get("type") == "plan_reflection"),
+            (step.get("result", {}) for step in reversed(steps or []) if has_step_type(step, "plan_reflection")),
             None,
         )
 
@@ -207,21 +207,21 @@ class LocalAgentGraph:
             "done": False,
             "pending_tool": None,
             "plan": restored_plan,
-            "plan_spec": next((step.get("spec") for step in reversed(steps or []) if step.get("type") == "plan"), None),
+            "plan_spec": next((step.get("spec") for step in reversed(steps or []) if has_step_type(step, "plan")), None),
             "approval_granted": approval_granted,
             "approval_scope": approval_scope,
             "granted_fingerprint": granted_fingerprint,
             "cancelled": False,
             "tool_call_count": 0,
-            "last_reflection": None,
             "error_count": 0,
             "resume_with_reflection": resume_with_reflection,
             "skip_reflect": False,
             "synthesize_after_rag": False,
             "plan_verified": bool(prior_plan_review and prior_plan_review.get("passed") is True),
-            "plan_attempts": sum(1 for step in (steps or []) if step.get("type") == "plan"),
+            "plan_attempts": sum(1 for step in (steps or []) if has_step_type(step, "plan")),
             "plan_feedback": "",
-            "routing_plan": supervisor_route,
+            # The route is a constant: no caller ever passed one (review 21).
+            "routing_plan": "supervisor",
             "enforce_plan_completion": enforce_plan_completion,
             "enforce_coding_workflow": is_coding_task(next((m.get("content", "") for m in messages if m.get("role") == "user"), "")),
         }

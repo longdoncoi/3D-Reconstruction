@@ -30,7 +30,6 @@ class ToolDefinition:
     timeout_seconds: int = 10
     policy: str = "read_only"
     requires_approval: bool = False
-    idempotent: bool = True
     handler: Callable | None = None
 
     @property

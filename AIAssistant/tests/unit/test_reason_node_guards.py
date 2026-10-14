@@ -50,7 +50,6 @@ def _state(**over: Any) -> dict[str, Any]:
         "approval_scope": "",
         "cancelled": False,
         "tool_call_count": 0,
-        "last_reflection": None,
         "error_count": 0,
         "resume_with_reflection": False,
         "skip_reflect": False,
@@ -156,6 +155,25 @@ class FailedFingerprintTests(unittest.TestCase):
             {"type": "reflection", "result": {"passed": False}},
         ]
         self.assertEqual(_failed_call_fingerprints(steps), set())
+
+
+class ToolCallLogRedactionTests(unittest.TestCase):
+    """The node logs the call it dispatches; the values must go through the
+    single redaction owner (ADR 0010) or agent.log collects every credential
+    the model ever passes."""
+
+    def test_a_credential_never_reaches_the_reason_log(self) -> None:
+        with self.assertLogs("agent.reasoning", level="DEBUG") as captured:
+            out = reason_node(
+                _state(),
+                _ctx(parse=("application_action",
+                            {"action": "admin.login", "username": "alice",
+                             "password": "hunter2-secret"})),
+            )
+        self.assertEqual(out["steps"][-1]["type"], "tool_call")
+        joined = "\n".join(captured.output)
+        self.assertNotIn("hunter2-secret", joined)
+        self.assertIn("[redacted]", joined)
 
 
 class ValidationErrorResponseTests(unittest.TestCase):

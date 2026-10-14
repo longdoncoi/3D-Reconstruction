@@ -124,8 +124,14 @@ class BootstrapServerCoverageGaps(unittest.TestCase):
                 log_cfg.setup_logging(tmp_logs)
                 new_stdout = sys.stdout
                 new_stderr = sys.stderr
+                # Both absent streams were given dummies, not left as None …
+                self.assertIsNotNone(new_stdout)
+                self.assertIsNotNone(new_stderr)
                 import logging
                 logging.shutdown()
+                # … and each replacement really accepts output.
+                new_stdout.write("stdout survived\n")
+                new_stderr.write("stderr survived\n")
         finally:
             # Prevent ResourceWarning from devnull handles we opened
             if new_stdout is not None and new_stdout is not old_stdout and hasattr(new_stdout, "close"):

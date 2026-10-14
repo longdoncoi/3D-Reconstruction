@@ -61,7 +61,6 @@ class ToolRegistry:
                         timeout_seconds=spec.timeout_seconds,
                         policy=spec.policy,
                         requires_approval=spec.requires_approval,
-                        idempotent=spec.idempotent,
                         handler=spec.handler,
                     ))
                 else:
@@ -89,7 +88,7 @@ class ToolRegistry:
                 dynamic_spec = ToolDefinition(
                     name=spec.name, description=new_desc, parameters=new_params,
                     timeout_seconds=spec.timeout_seconds, policy=spec.policy,
-                    requires_approval=spec.requires_approval, idempotent=spec.idempotent,
+                    requires_approval=spec.requires_approval,
                 )
                 result.append(dynamic_spec.to_openai_format())
             else:

@@ -6,6 +6,8 @@ import unicodedata
 from dataclasses import dataclass
 
 from ai_assistant.config.logging import get_agent_logger
+from ai_assistant.domain.tools import tool_result_has_evidence, tool_result_succeeded
+from ai_assistant.orchestration.state import has_step_type
 
 logger = get_agent_logger("coding")
 
@@ -55,42 +57,6 @@ _SOURCE_TOOLS = frozenset({"read_file", "analyze_code"})
 _MUTATION_TOOLS = frozenset({"write_file", "patch_file", "replace_file_content", "multi_replace_file_content", "create_directory"})
 
 
-def _result_is_successful(result: object) -> bool:
-    """Return whether a tool result represents a successful operation.
-
-    Tool executors use a small shared result contract. Absence of ``error`` is
-    not sufficient: a command can finish with a non-zero exit code and a
-    mutation can explicitly report ``success: false``. Keeping this check here
-    makes completion evidence independent of a particular feature or tool
-    caller.
-    """
-    if not isinstance(result, dict) or result.get("error"):
-        return False
-    if result.get("success") is False:
-        return False
-    return result.get("return_code", 0) == 0
-
-
-def _result_has_evidence(tool: str, result: object) -> bool:
-    """Return whether a successful discovery result contains usable evidence."""
-    if not _result_is_successful(result) or not isinstance(result, dict):
-        return False
-    evidence_fields = {
-        "read_file": "content",
-        "search_text": "results",
-        "find_files": "matches",
-        "list_directory": "entries",
-        "analyze_code": ("functions", "classes", "includes"),
-    }
-    fields = evidence_fields.get(tool)
-    if fields is None:
-        return True
-    if isinstance(fields, str):
-        value = result.get(fields)
-        return bool(value.strip()) if isinstance(value, str) else bool(value)
-    return any(bool(result.get(field)) for field in fields)
-
-
 def _normalise_task(task: str) -> str:
     """Create one accent-insensitive view for intent and workflow checks."""
     return unicodedata.normalize("NFKD", task).encode("ascii", "ignore").decode().casefold()
@@ -138,18 +104,18 @@ def coding_workflow_status(task: str, steps: list[dict]) -> CodingWorkflowStatus
     kind = coding_workflow_kind(task)
     successful_results = []
     for index, step in enumerate(steps):
-        if step.get("type") != "tool_result":
+        if not has_step_type(step, "tool_result"):
             continue
         result = step.get("result")
-        if _result_is_successful(result):
+        if tool_result_succeeded(result):
             successful_results.append((index, step))
 
     source_evidence = any(
-        step.get("tool") in _SOURCE_TOOLS and _result_has_evidence(step.get("tool", ""), step.get("result"))
+        step.get("tool") in _SOURCE_TOOLS and tool_result_has_evidence(step.get("tool", ""), step.get("result"))
         for _, step in successful_results
     )
     discovery_evidence = any(
-        step.get("tool") in _DISCOVERY_TOOLS and _result_has_evidence(step.get("tool", ""), step.get("result"))
+        step.get("tool") in _DISCOVERY_TOOLS and tool_result_has_evidence(step.get("tool", ""), step.get("result"))
         for _, step in successful_results
     )
     mutation_indices = [
@@ -160,7 +126,7 @@ def coding_workflow_status(task: str, steps: list[dict]) -> CodingWorkflowStatus
     mutation = last_mutation is not None
     diff_reviewed = any(
         (index > last_mutation and step.get("tool") == "git_diff"
-         and _result_has_evidence("git_diff", step.get("result")))
+         and tool_result_has_evidence("git_diff", step.get("result")))
         for index, step in successful_results
     ) if last_mutation is not None else False
     execution_observed = any(
@@ -220,15 +186,7 @@ def is_coding_task(task: str) -> bool:
     """Classify engineering requests without intercepting desktop workflows."""
     normalised = task.casefold()
     accent_free = unicodedata.normalize("NFKD", task).encode("ascii", "ignore").decode().casefold()
-    searchable_texts = (normalised, accent_free)
-    matched = any(
-        any(
-            term in text if " " in term
-            else re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text) is not None
-            for text in searchable_texts
-        )
-        for term in _CODING_TERMS
-    )
+    matched = any(_contains_term(text, _CODING_TERMS) for text in (normalised, accent_free))
     if matched:
         logger.info("Coding Agent selected | task=%s", task[:160])
     return matched

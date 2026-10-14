@@ -234,9 +234,19 @@ class TracingTests(unittest.TestCase):
     def test_span_without_backends_is_a_noop(self):
         with mock.patch.object(tracing_module, "_get_tracer", return_value=None):
             with mock.patch.object(tracing_module, "get_metrics", return_value={}):
-                with mock.patch.object(tracing_module, "start_langsmith_run", return_value=None):
-                    with tracing_module.span("op", ignored=None, kept="v"):
-                        pass
+                with mock.patch.object(
+                    tracing_module, "start_langsmith_run", return_value=None,
+                ) as start_run:
+                    with tracing_module.span("op", ignored=None, kept="v") as value:
+                        # Neither backend is enabled: the caller gets the plain
+                        # sentinel rather than a live span handle.
+                        self.assertIsNone(value)
+        # The LangSmith half was still consulted (and answered "disabled").
+        start_run.assert_called_once_with(
+            "op", "chain",
+            {"attributes": {"ignored": None, "kept": "v"}},
+            {"ignored": None, "kept": "v"},
+        )
 
     def test_span_enabled_records_success(self):
         tracer = _FakeTracer()
@@ -441,7 +451,10 @@ class LangsmithIntegrationTests(unittest.TestCase):
         self.assertIsNone(ls_module.start_langsmith_run("n", "chain", {}))
 
     def test_finish_run_disabled(self):
-        ls_module.finish_langsmith_run("run", {})  # must not raise
+        # setUp leaves tracing disabled, so there is no client to talk to …
+        self.assertIsNone(ls_module._get_client())
+        # … and the finish path degrades to a no-op instead of inventing one.
+        self.assertIsNone(ls_module.finish_langsmith_run("run", {}))
 
     def test_finish_run_success_and_error(self):
         client = _FakeLsClient()
@@ -458,8 +471,15 @@ class LangsmithIntegrationTests(unittest.TestCase):
         self.assertIn("id", client.updated[0])
 
     def test_finish_run_generic_failure_is_swallowed(self):
-        self._enable_client(_FakeLsClient(client_fail=True))
-        ls_module.finish_langsmith_run("run", {})
+        client = _FakeLsClient()
+        self._enable_client(client)
+        with mock.patch.object(
+            client, "update_run", side_effect=RuntimeError("nope"),
+        ) as attempted:
+            self.assertIsNone(ls_module.finish_langsmith_run("run", {}))
+        # The swallow wraps a real, correctly-shaped attempt rather than a
+        # call that never happened.
+        attempted.assert_called_once_with(run_id="run", outputs={})
 
     def test_feedback_disabled(self):
         self.assertFalse(ls_module.record_langsmith_feedback("k"))

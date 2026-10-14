@@ -6,6 +6,7 @@ token must be refused independently of how the process was launched.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -16,10 +17,13 @@ from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
 
 from ai_assistant.adapters.http.security import (
+    GuardedMountedApp,
     TransportPolicy,
     a2a_guards,
     admin_guards,
     agent_guards,
+    mcp_exposed_without_token,
+    mcp_guarded_app,
 )
 
 _LOCAL = ("127.0.0.1", 50000)
@@ -31,6 +35,35 @@ def _client(policy: TransportPolicy, guards, peer=_LOCAL) -> TestClient:
     router = APIRouter(dependencies=guards(policy))
     router.add_api_route("/probe", lambda: {"ok": True}, methods=["GET", "POST"])
     app.include_router(router)
+    return TestClient(app, client=peer)
+
+
+class _Recorder:
+    """Minimal ASGI app that records the scopes it is asked to serve."""
+
+    def __init__(self) -> None:
+        self.scopes: list[str] = []
+
+    async def __call__(self, scope, receive, send) -> None:
+        self.scopes.append(scope.get("type"))
+        if scope.get("type") != "http":
+            return
+        await send({"type": "http.response.start", "status": 200,
+                    "headers": [(b"content-type", b"application/json")]})
+        await send({"type": "http.response.body", "body": b'{"ok": true}'})
+
+
+async def _receive():
+    return {"type": "http.request", "body": b""}
+
+
+async def _send(_message) -> None:
+    return None
+
+
+def _mounted(policy: TransportPolicy, peer=_LOCAL) -> TestClient:
+    app = FastAPI()
+    app.mount("/mcp", mcp_guarded_app(_Recorder(), policy))
     return TestClient(app, client=peer)
 
 
@@ -91,11 +124,13 @@ class PolicyLoadingTests(unittest.TestCase):
         policy = TransportPolicy.from_env(
             allowed_origins=("http://127.0.0.1",),
             allow_remote_a2a=True,
-            env={"AI_ADMIN_TOKEN": " admin ", "AI_AGENT_TOKEN": "agent", "AI_A2A_TOKEN": "a2a"},
+            env={"AI_ADMIN_TOKEN": " admin ", "AI_AGENT_TOKEN": "agent",
+                 "AI_A2A_TOKEN": "a2a", "AI_MCP_TOKEN": " mcp "},
         )
         self.assertEqual(policy.admin_token, "admin")
         self.assertEqual(policy.agent_token, "agent")
         self.assertEqual(policy.a2a_token, "a2a")
+        self.assertEqual(policy.mcp_token, "mcp")
         self.assertTrue(policy.allow_remote_a2a)
 
     def test_from_env_defaults_to_no_tokens(self) -> None:
@@ -103,7 +138,60 @@ class PolicyLoadingTests(unittest.TestCase):
         self.assertEqual(policy.admin_token, "")
         self.assertEqual(policy.agent_token, "")
         self.assertEqual(policy.a2a_token, "")
+        self.assertEqual(policy.mcp_token, "")
         self.assertFalse(policy.allow_remote_a2a)
+
+
+class MountedMCPGuardTests(unittest.TestCase):
+    """``app.mount`` takes no route dependencies, so the MCP sub-app guards itself."""
+
+    def test_loopback_caller_reaches_the_mounted_app(self) -> None:
+        response = _mounted(TransportPolicy()).get("/mcp/list")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True})
+
+    def test_non_loopback_caller_is_refused(self) -> None:
+        response = _mounted(TransportPolicy(), peer=_REMOTE).get("/mcp/list")
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("loopback", response.json()["detail"])
+
+    def test_foreign_browser_origin_is_refused(self) -> None:
+        response = _mounted(TransportPolicy()).get("/mcp/list", headers={"Origin": "http://evil.example"})
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("origin", response.json()["detail"])
+
+    def test_a_configured_mcp_token_gates_remote_callers(self) -> None:
+        client = _mounted(TransportPolicy(mcp_token="mcp-secret"), peer=_REMOTE)
+        self.assertEqual(client.get("/mcp/list").status_code, 401)
+        self.assertEqual(
+            client.get("/mcp/list", headers={"Authorization": "Bearer wrong"}).status_code, 401,
+        )
+        self.assertEqual(
+            client.get("/mcp/list", headers={"Authorization": "Bearer mcp-secret"}).status_code,
+            200,
+        )
+
+    def test_non_http_scopes_pass_through_untouched(self) -> None:
+        recorder = _Recorder()
+        guarded = mcp_guarded_app(recorder, TransportPolicy())
+        asyncio.run(guarded({"type": "lifespan"}, _receive, _send))
+        self.assertEqual(recorder.scopes, ["lifespan"])
+
+    def test_a_policy_argument_is_optional(self) -> None:
+        self.assertIsInstance(mcp_guarded_app(_Recorder(), None), GuardedMountedApp)
+
+
+class MCPExposurePolicyTests(unittest.TestCase):
+    """A loopback bind needs no secret; an exposed one without a token stays closed."""
+
+    def test_loopback_bind_needs_no_token(self) -> None:
+        self.assertFalse(mcp_exposed_without_token("127.0.0.1", TransportPolicy()))
+
+    def test_exposed_bind_without_a_token_is_blocked(self) -> None:
+        self.assertTrue(mcp_exposed_without_token("0.0.0.0", TransportPolicy()))
+
+    def test_exposed_bind_with_a_token_is_allowed(self) -> None:
+        self.assertFalse(mcp_exposed_without_token("0.0.0.0", TransportPolicy(mcp_token="mcp-secret")))
 
 
 if __name__ == "__main__":

@@ -2,12 +2,13 @@
 
 > **CẬP NHẬT 2026-10-14 — đây là báo cáo của lần thực thi 2026-10-13; các số
 > liệu trong thân tài liệu đã được đo lại và thay đổi.** Đo hiện tại: coverage
-> **100.00%** (7 653 statements / 2 032 branches, 0 miss, 0 partial), **1 576
+> **100.00%** (7 814 statements / 2 068 branches, 0 miss, 0 partial), **1 651
 > test** OK (1 skip, 0 fail), `ruff`/`mypy`/`lint-imports` sạch, gate
-> `fail_under=100` đi qua. Trong bảng §2, mục "Coverage 100%" đã đóng; mục
+> `fail_under=100` đi qua; mutation check 16/16 killed và đã chạy trong CI
+> (bước cuối của job `test`). Trong bảng §2, mục "Coverage 100%" đã đóng; mục
 > `test_bootstrap_publishes_llm_backend` chạy xanh trong lần đo suite đầy đủ
 > 2026-10-14 (intermittent chưa tái lập được nên chưa dám tuyên bố hết). Phần
-> còn mở (HMAC cache, OTel exporter, mutation test, xác minh CI xanh) nằm ở
+> còn mở (HMAC cache, OTel exporter) nằm ở
 > `ARCHITECTURE_10_10_CLOSED.md` §4. Các dòng dưới đây được giữ nguyên như lịch
 > sử của lần review đó.
 

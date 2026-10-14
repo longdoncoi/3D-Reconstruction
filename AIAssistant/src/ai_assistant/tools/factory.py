@@ -5,8 +5,10 @@ import json
 from typing import Any, Callable
 
 from ai_assistant.config.paths import get_paths
+from ai_assistant.ports import RagContextPort
 
 from .builtin import (
+    rag_search_tool,
     tool_analyze_code,
     tool_application_action,
     tool_create_directory,
@@ -16,7 +18,6 @@ from .builtin import (
     tool_list_directory,
     tool_multi_replace_file_content,
     tool_patch_file,
-    tool_rag_search,
     tool_read_file,
     tool_replace_file_content,
     tool_run_command,
@@ -33,8 +34,13 @@ from .registry import ToolRegistry
 from .tool_contract import tool_contract_for
 
 
-def builtin_handlers() -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
-    """Map tool names to their builtin handler functions."""
+def builtin_handlers(rag_context: RagContextPort | None = None) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
+    """Map tool names to their builtin handler functions.
+
+    ``rag_context`` is the retrieval port the ``rag_search`` handler closes
+    over: the composition root passes the index it owns, and anyone else
+    leaves it unset so the tool reports the index as unavailable.
+    """
     return {
         "read_file": tool_read_file,
         "list_directory": tool_list_directory,
@@ -55,7 +61,7 @@ def builtin_handlers() -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
         "app_action_reconstruction": tool_application_action,
         "app_action_ai": tool_application_action,
         "app_action_general": tool_application_action,
-        "rag_search": tool_rag_search,
+        "rag_search": rag_search_tool(rag_context),
         "go_to_definition": tool_go_to_definition,
         "find_references": tool_find_references,
         "transfer_to_code_agent": tool_transfer_to_code_agent,
@@ -74,11 +80,13 @@ def platform_executors(registry: ToolRegistry) -> dict[str, Callable[[dict[str, 
     return {spec.name: spec.handler for spec in registry.get_all() if spec.handler}
 
 
-def create_tool_registry() -> ToolRegistry:
+def create_tool_registry(rag_context: RagContextPort | None = None) -> ToolRegistry:
     """Create and populate a ToolRegistry from ``Config/agent_tools.json``.
 
     Returns a fresh registry per call; the composition root owns the single
     long-lived instance, so this is not a module-level singleton.
+    ``rag_context`` is handed to the ``rag_search`` handler (ADR 0001): the
+    composition root injects its live index, embedders and tests may omit it.
     """
     registry = ToolRegistry()
     paths = get_paths()
@@ -91,7 +99,7 @@ def create_tool_registry() -> ToolRegistry:
     with config_file.open(encoding="utf-8") as f:
         tools_def = json.load(f)
 
-    handlers = builtin_handlers()
+    handlers = builtin_handlers(rag_context)
 
     for item in tools_def:
         name = item["name"]
@@ -104,7 +112,6 @@ def create_tool_registry() -> ToolRegistry:
             timeout_seconds=contract["timeout_seconds"],
             policy=contract["policy"],
             requires_approval=contract["requires_approval"],
-            idempotent=contract["idempotent"],
             handler=handlers.get(name),
         )
         registry.register(spec)

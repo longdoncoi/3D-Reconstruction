@@ -10,7 +10,7 @@ Qt / HTTP / MCP / A2A
           │
        adapters
           │
- application use-cases ─── plugin registry ─── legacy/builtin plugins
+ application use-cases ─── plugin registry ─── builtin plugins
           │
       domain contracts
 ```
@@ -37,6 +37,14 @@ Qt / HTTP / MCP / A2A
   Spans leave the process only when `AGENT_OBSERVABILITY=1` and
   `AGENT_OTLP_ENDPOINT` names a collector (`observability/tracing.py`); a
   missing exporter package degrades to in-process spans with one warning.
+- Concurrency is serialized per session, never globally: `AgentService.execute`
+  holds a per-session `RLock` for the whole run (`agents/service.py`), so two
+  runs of one session can not share a checkpointer `thread_id` or clobber the
+  coordinator's record while other sessions keep running in parallel — and
+  `cancel`/`approve` take no session lock, so they keep working while a run
+  holds one. The runner's abort branch finishes the record
+  (`success=False`, error attached) before re-raising, so a crash can no longer
+  leave a task parked in `running` forever.
 - Per-node latency is measured in-process: `span()` records each observation
   into a bounded window (512/node), and `p95_latency_by_node()`
   (`observability/metrics.py`) returns `{node: p95}` (nearest-rank) — the
@@ -50,9 +58,11 @@ Qt / HTTP / MCP / A2A
 - `settings.py` is the sole owner of the process environment (ADR 0001, 0014):
   it parses `.env` (`load_local_dotenv`), applies the library-quieting
   defaults and warning filters (`apply_startup_environment_defaults`), and
-  exposes every toggle as an on-demand accessor. No other module reads the
-  environment at import time, and no module re-implements the `KEY=value`
-  parser. `legacy/config.py` — the last second owner — now delegates.
+  exposes every toggle as an on-demand accessor. The composition root calls
+  both functions before its own import-time settings reads
+  (`bootstrap/server.py`), so an operator's `.env` reaches the running server
+  and not only the tests; no module re-implements the `KEY=value` parser and no
+  feature reads the environment directly at import time.
 - Coverage and complexity are gated in `pyproject.toml` (ADR 0014), not in
   the CI command line: branch coverage is on with a 100 floor at a 100%
   measured baseline, and `C90` caps every function at complexity 15. The gate
@@ -74,7 +84,11 @@ Qt / HTTP / MCP / A2A
   orchestrator; no module-level service locator remains. The MCP adapter binds
   the gateway once per `McpToolServer(gateway)` instance at construction time,
   `TaskCoordinator` is created in the container and injected, and the agent
-  tool catalog is built by the composition root (`create_tool_registry()`).
+  tool catalog is built by the composition root
+  (`create_tool_registry(rag_context=rag_module)`), which closes the
+  `RagContextPort` (`ports.py`) over the `rag_search` handler — the tool layer
+  imports no bootstrap module, and a registry built without a provider reports
+  the index as unavailable instead of reaching for a global.
   `ToolRegistry` is a catalog and cannot execute (ADR 0003).
 - The LangGraph runner (`agents/runner.py`) is the single production decision
   loop. A2A reuses it through the `AgentOrchestrator` port
@@ -82,14 +96,79 @@ Qt / HTTP / MCP / A2A
   LangGraph and holds no loop of its own. The framework-independent fallback is
   an adapter (`adapters/orchestration/deterministic.py`) injected by tests/embeds.
   The runner receives its wiring as one frozen `RunDeps` bundle
-  (`agents/deps.py`, ADR 0013) plus the per-invocation arguments.
+  (`agents/deps.py`, ADR 0013) plus the per-invocation arguments. Importing
+  `ai_assistant.orchestration` pulls no graph — the package re-exports only
+  `AgentState`, so the agent layer imports cleanly without langgraph installed
+  and the `None` engine genuinely degrades to `ServiceUnavailableError`
+  instead of the import itself failing (AST-guarded in
+  `test_architecture_boundaries.py`, review finding 5).
 - There is exactly one `ToolSpec` type — the policy record in `domain/tools.py`.
   The executable catalog entry is `tools/definition.py:ToolDefinition`; the old
   `ai_assistant.core` package is gone.
 - Capability scopes are enforced across the shared engine: the A2A principal is
   bound with `bind_principal` for the call and read by `PlatformToolGateway`.
+- The hybrid-policy gate sits *outside* the decode-error wrappers: both
+  `constrained_completion` and `structured_completion` refuse through
+  `_remote_leg_allowed` before the transport and before the `try`, so a policy
+  refusal is never relabelled as a JSON decoding failure (ADR 0018, review
+  finding 16). The llama.cpp grammar cache in `agents/completion.py` is keyed
+  by the schema *text* under its own lock — a `hash()` key could serve one
+  schema's grammar for another, and the compile is not safe to run twice
+  (finding 26).
 - Pending approvals are rehydrated from the file-backed store when
-  `AgentService` starts, so A2A resume survives a process restart.
+  `AgentService` starts, so A2A resume survives a process restart. A refused
+  load or save is logged, never swallowed — the API still answers
+  `pending_approval` afterwards (finding 25) — and a parked entry snapshots
+  the live `steps`/`messages` lists, so a later save cannot rewrite what the
+  client was already handed (finding 9).
+- The dead-API surface is gone rather than documented (ADR 0015, findings
+  17/21/22): `route_task`, `force_langgraph_agent()` and
+  `AgentExecuteRequest.force_langgraph`, `ToolAppAgent`, the write-only
+  `state.last_reflection`, the never-consumed `specialist_instruction`
+  handoff, the `supervisor_route` parameter that four layers threaded and no
+  caller ever passed (the trace label is now the constant it always carried),
+  the tests-only `orchestration/compat` shim, the `idempotent` flag that the
+  whole catalog chain propagated and nothing enforced, `file_tools.py`'s
+  orphaned citation fast path (duplicating `summarize.format_code_citation`),
+  and the `generate_action_id`/`plan_hints` guards no caller could reach. The
+  supervisor pipeline that remains computes once per distinct call:
+  `run_langgraph_agent` memoizes the delegation for each `(tool, params)` pair,
+  so dispatch, execution, verification and reflection share one
+  classification instead of four (finding 14, pinned by
+  `test_one_delegation_is_shared_across_the_tool_callbacks`).
+- The P2/P3 design-debt batch made four implicit conventions type- or
+  table-enforced (findings 7/8/10/13/15/27): the `USE_LANGGRAPH_AGENT` toggle
+  that degraded resume differently from `execute` is gone (the LangGraph loop
+  is the only production engine, so resume runs it whenever the graph is
+  wired); grant minting is one domain policy
+  (`domain.approvals.issue_grant_pair`) shared by the LangGraph-resume and
+  durable A2A loops; the runner is handed only a `ToolExecutionGateway` and can
+  never mint a grant — that lives on the separate `ApprovalGrantIssuer` port
+  the approval services hold (pinned by an AST boundary test); supervisor
+  least-privilege is a fail-closed `ALLOWED_TOOLS` table consulted by
+  `authorise`, not a side effect of how `delegate` classified the call; every
+  supervisor/observability/LLM callable is an overridable `AgentRunContext`
+  field rather than a closed-over module function; and a resumed run
+  re-validates its tool calls with the real validator instead of a no-op
+  (finding 27 — a resumed run may emit *new* calls).
+- The following debt batch (findings 18, 24-pair 7, 19-slice) tightened the
+  ReAct loop's structure: `tool_node` is a thin coordinator over `_dispatch`
+  (cancel gate, pending-call pairing, payload validation, execution, error
+  counting) and `_record` (result/verification steps, circuit breaker, RAG and
+  completion shortcuts, reflection fast paths) — finding 18; tool-result
+  semantics live in one domain contract (`domain.tools.tool_result_succeeded`,
+  `tool_result_has_evidence`, `EVIDENCE_FIELDS`) consumed by both
+  `supervisor.verify_result` and the coding-workflow classifier, so the two
+  evidence tables can no longer drift (blank-string content is evidence
+  nowhere, `git_diff` needs its `content` field on both call sites) — finding
+  24 pair 7; and every step-discriminator read goes through
+  `state.has_step_type(step, <state.StepType>)`, a closed literal vocabulary
+  that makes a typo'd routing string a mypy error instead of a condition that
+  silently never matches — the typed-state slice of finding 19. The element
+  type of `AgentState.steps` deliberately stays `dict[str, Any]`: a TypedDict
+  element is not assignable to it (verified with mypy), which would force
+  conversions at the `AgentRunResult`, HTTP and persistence boundaries; typing
+  those elements is the planned follow-up slice.
 - The HITL approval *policy* is domain-owned (`domain/approvals.py`):
   `approval_covers_invocation` (constant-time fingerprint comparison),
   `derive_approval_scope` and `build_approval_preview`. The reason node
@@ -205,38 +284,39 @@ The former monolithic `adapters/a2a.py` (310 lines) has been decomposed into:
 - `adapters/a2a_router.py` — FastAPI router with all standard and legacy endpoints.
 - `adapters/a2a.py` — backward-compatible re-exports.
 
-## Legacy migration (ADR 0006, 0012, 0013, 0014)
+## Legacy migration (ADR 0006, 0012, 0013, 0014, 0018)
 
-The legacy `modules/` package has been **removed**. Implementations live in
-`src/ai_assistant/legacy/`:
+The legacy `modules/` package has been **removed**, and so has the
+`src/ai_assistant/legacy/` shim package that briefly replaced it — the
+directory this section once described no longer exists. What the shims held
+now sits with its owner:
 
-- `legacy/config.py` — re-exports from `settings` + legacy constants. It is no
-  longer an environment owner: the `.env` parser, the startup env defaults and
-  the warning filters moved to `settings` (ADR 0014), and its `sys.path`
-  mutation — which could never help, since importing this module already
-  requires `ai_assistant` to be findable — is gone. Its public names
-  (`USE_LANGGRAPH_AGENT`, `FORCE_LANGGRAPH_AGENT`, `ENABLE_VISION_LLM`) are
-  unchanged.
-- `legacy/llm_module.py` — re-exports from `llm` + the live model state.
-  `llm`, `is_vision_model`, `active_model_desc` and `llm_lock` are what the
-  HTTP routers actually read and swap (`LLMModuleLike` in
-  `adapters/http/_types` declares them), so they stay where `load_model`
-  owns them. The two globals with no reader anywhere — `_chat_handler` and
-  the eagerly-computed `_RAG_SYSTEM_PROMPT`, which built a system prompt at
-  import time for nobody — are gone (ADR 0014).
-- `legacy/rag_module.py` — re-exports from `rag` + the live index state
-  (`knowledge_index`, `knowledge_chunks`, `bm25_index`, `embed_model_ref`,
-  `_reranker`, guarded by `rag_lock`) that `initialize_rag` owns and the
+- Environment parsing, the library-quieting defaults and the warning filters
+  belong to `settings` alone (ADR 0014); the composition root calls them once
+  at startup. The toggles the shim exposed as constants are accessors now
+  (`vision_llm_enabled`; the `USE_LANGGRAPH_AGENT` loop toggle is gone — the
+  LangGraph loop is the only production engine).
+- The live model state — `llm`, `is_vision_model`, `active_model_desc`,
+  `llm_lock`, `USE_VISION_LLM` — is `bootstrap/server.py`'s `_LLMModule`,
+  which `load_model` owns; the HTTP routers read it through `LLMModuleLike`
+  (`adapters/http/_types`). `_chat_handler` and the eagerly-computed
+  `_RAG_SYSTEM_PROMPT`, which built a system prompt at import time for nobody,
+  had no reader and are gone (ADR 0014).
+- The live index state — `knowledge_index`, `knowledge_chunks`, `bm25_index`,
+  `embed_model_ref`, `_reranker`, guarded by `rag_lock` — is
+  `bootstrap/server.py`'s `_RAGModule`, which `initialize_rag` owns and the
   admin routes reset. Its `is_vision_model` had no reader and is gone.
 
-The shims `legacy/{a2a_protocol,action_manifest,agent_module,checkpointing,lsp_client,mcp_server}.py`
-were deleted in ADR 0012: each was a one-line re-export with no live importer.
-`adapters/legacy_agent.py` was deleted in ADR 0013: it was a compatibility
-bridge for a removed package that built a second `AgentService` and a second
-`ToolRegistry` at import time and had zero production importers.
+The one-line re-export shims
+`legacy/{a2a_protocol,action_manifest,agent_module,checkpointing,lsp_client,mcp_server}.py`
+were deleted in ADR 0012, and `adapters/legacy_agent.py` in ADR 0013: each had
+zero production importers, and the latter built a second `AgentService` and a
+second `ToolRegistry` at import time.
 
 All production code imports from `ai_assistant.*` directly. The former
-`LangGraphAgent` exports now live in `orchestration.compat`, and the Qt process
+`LangGraphAgent` exports now live in `orchestration.graph` — the tests-only
+`compat` shim had zero production importers and was removed by the ADR 0015
+dead-code sweep — and the Qt process
 manager is `bootstrap.server_manager`. An import-linter contract and the AST
 boundary tests keep `modules` from being resurrected.
 
@@ -248,9 +328,10 @@ elsewhere — because a non-zero `creationflags` raises `ValueError` on POSIX
 (ADR 0014).
 
 The AST boundary test that forbids import-time environment reads used to skip
-`legacy/` because of `config.py`. That exemption is **removed** (ADR 0014): the
-shim now delegates to `settings`, so `legacy/` is scanned like every other
-module and a reintroduced inline read fails CI.
+`legacy/` because of `config.py`. That exemption is **removed** (ADR 0014) and
+the package it covered was deleted with it: every module under
+`src/ai_assistant/` is scanned — `settings` as the approved reader, `bootstrap`
+as the composition root — so a reintroduced inline read fails CI.
 
 ## Streaming endpoints (ADR 0005)
 
@@ -293,9 +374,10 @@ Sprint hardening is pinned by dedicated ADRs:
   LSP tools activated.
 - ADR 0014 — branch-coverage and cyclomatic-complexity gates live in
   `pyproject.toml` (one home, so local and CI runs measure the same thing);
-  `settings` is the sole environment owner and `legacy/config.py` delegates to
-  it; the Qt process manager's detach flags are platform-guarded; the
-  supervisor's tool groups are public API.
+  `settings` is the sole environment owner, and the last second owner
+  (`legacy/config.py`) was deleted with the rest of `legacy/`; the Qt process
+  manager's detach flags are platform-guarded; the supervisor's tool groups
+  are public API.
 
 ## Verification
 
@@ -324,7 +406,21 @@ the real FastAPI router with in-memory persistence.
 
 Edge-case test coverage:
 - `tests/unit/test_concurrent_approval.py` — thread-safe PendingActionStore ops.
+- `tests/unit/test_session_serialization.py` — one run per session: two runs of
+  the same session never overlap, a second session runs while the first still
+  holds its lock, and the lock object is per session (pins the `RLock` in
+  `AgentService.execute`; the runner's abort branch finishing the record is
+  pinned in `tests/unit/test_runner.py`).
 - `tests/unit/test_plugin_reentry.py` — plugin loader idempotency and duplicate handling.
+- The remaining review findings are pinned where they live: a crashed run
+  still finishes its record and a parked entry snapshots the live state lists
+  (`tests/unit/test_runner.py`), the ADR 0018 gate refuses on *both* decoders
+  without being relabelled as a decode failure
+  (`tests/unit/test_completion_guard_paths.py`,
+  `tests/unit/test_completion_envelopes.py`), a refused pending-store
+  load/save is logged (`tests/unit/test_pending_store_edges.py`), and the
+  orchestration package stays framework-free
+  (`tests/integration/test_architecture_boundaries.py`).
 - `tests/unit/test_a2a_streaming.py` — SSE streaming, payload safety, redaction.
 - `tests/unit/test_checkpoint_recovery.py` — backend selection and fallback.
 - `tests/unit/test_completion_envelopes.py`, `tests/unit/test_completion_guard_paths.py`,
@@ -353,23 +449,28 @@ Edge-case test coverage:
   (lifts `orchestration/nodes/reason.py` to 100%).
 
 Coverage of `src/ai_assistant/*` is **100.00% measured (2026-10-14)** with
-branch coverage enabled: 7 800 statements and 2 064 branches, 0 missed and 0
-partial, produced by 1 625 tests (1 skipped, 0 failures). Because coverage
+branch coverage enabled: 7 814 statements and 2 068 branches, 0 missed and 0
+partial, produced by 1 651 tests (1 skipped, 0 failures). Because coverage
 alone cannot detect a test that asserts the wrong direction, the load-bearing
 guards (sandbox allow-list, HITL approval, remote policy, `/health`, cache
 seal, cancel races) are additionally mutation-checked:
 `PYTHONPATH=src python scripts/mutation_check.py` inverts one decision at a
-time and requires the owning tests to fail — 12/12 killed as measured
-2026-10-14. The number is a measurement, not a target: it reproduces with
+time and requires the owning tests to fail — 16/16 killed as measured
+2026-10-14, a count CI re-runs on every push (the check fails if an anchor
+stops matching the source, so it cannot go green on stale mutants). The number is a measurement, not a target: it reproduces with
 `faiss-cpu`, `rank-bm25` and `mcp` installed (`requirements-test.txt`), and a
 stripped environment measures less because the optional-dependency branches
-flip with it. The only exclusions are the two `if __name__ == "__main__":`
-process entry points, declared once as `exclude_also` in `pyproject.toml`
-rather than as line pragmas (ADR 0015). That includes the
-composition roots `bootstrap/server.py` and `bootstrap/server_manager.py`,
-which previously pulled the total below the floor; their platform shims,
-deployment-profile branches and process entry points are now covered through
-extracted helpers and targeted tests rather than excluded. Run it with:
+flip with it. The declared exclusions are the two
+`if __name__ == "__main__":` process entry points in `pyproject.toml`'s
+`exclude_also`, which covers the composition roots `bootstrap/server.py` and
+`bootstrap/server_manager.py`; their platform shims, deployment-profile
+branches and entry points are covered through extracted helpers and targeted
+tests rather than excluded. Five `# pragma: no cover` lines remain, each
+naming a branch this environment cannot drive: the `asyncio` ImportError guard
+(`agents/context.py`), the `sys.path` idempotence line and the Qt-launched
+entry point (`bootstrap/server_manager.py`), and the two `tool_name is None`
+arms that `_handle_final_answer` catches first
+(`orchestration/nodes/reason.py`). Run it with:
 
 ```bash
 PYTHONPATH=src python -m coverage run -m unittest discover -s tests -p "test_*.py"
@@ -377,8 +478,9 @@ PYTHONPATH=src python -m coverage report
 ```
 
 There are deliberately no flags: `pyproject.toml` owns the whole coverage
-configuration (`branch = true`, `source`, the `*/legacy/*` omit and the
-`fail_under = 100` floor), so a local run and CI measure the same thing.
+configuration (`branch = true`, `source = ["ai_assistant"]`, `exclude_also`
+and the `fail_under = 100` floor), so a local run and CI measure the same
+thing.
 `.github/workflows/Build-Python-ci.yml` enforces it next to the lint job and
 the full test suite.
 

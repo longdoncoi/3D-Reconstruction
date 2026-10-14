@@ -58,6 +58,17 @@ def _ctx(result=None, *, error=None, cancel=False, verify=None):
     )
 
 
+class ToolNodeLogRedactionTests(unittest.TestCase):
+    def test_a_credential_never_reaches_the_execution_log(self) -> None:
+        """Params are logged before execution; they must arrive redacted."""
+        params = {"action": "admin.login", "username": "alice", "password": "hunter2-secret"}
+        with self.assertLogs("agent.tool", level="DEBUG") as captured:
+            tool_node(_state([_call(params=params)]), _ctx())
+        joined = "\n".join(captured.output)
+        self.assertNotIn("hunter2-secret", joined)
+        self.assertIn("[redacted]", joined)
+
+
 class ToolNodeGuardTests(unittest.TestCase):
     def test_cooperative_cancellation_short_circuits(self):
         update = tool_node(_state([_call()], done=False), _ctx(cancel=True))

@@ -12,6 +12,7 @@ preparation → graph construction → mapping.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -25,7 +26,8 @@ from ai_assistant.agents.completion import (
     structured_completion,
 )
 from ai_assistant.domain.errors import ServiceUnavailableError
-from ai_assistant.orchestration.state import CONTEXT_EXHAUSTED_MESSAGE
+from ai_assistant.domain.governance import has_sensitive_keys
+from ai_assistant.orchestration.state import CONTEXT_EXHAUSTED_MESSAGE, has_step_type
 from ai_assistant.tools.action_manifest import validate_action_params
 from ai_assistant.tools.tool_contract import RUNTIME_UNCONFIGURED_RESULT, validate_tool_call
 
@@ -50,6 +52,45 @@ def _persist_pending(deps: RunDeps, save_pending_fn: Callable[[], None] | None) 
         deps.pending_actions.save()
 
 
+def _remote_dispatch(
+    *,
+    deps: RunDeps,
+    delegation: Any,
+    task: str,
+    session_id: str,
+    tool_name: str,
+    params: dict,
+    approval_token: str,
+) -> dict:
+    """Egress policy, then the gateway gate, then the transport.
+
+    The remote leg never reaches the local executor, so nothing about it is
+    left to chance: a payload carrying a credential is refused outright —
+    masking it would hand the peer a falsified payload to run, and sending it
+    as-is would put the secret on the wire — and every other call clears the
+    same validation, scope, classification and single-use approval grant the
+    local path clears, spending that grant, before it leaves (ADR 0002/0010).
+    """
+    if has_sensitive_keys(params):
+        return {
+            "success": False,
+            "error_code": "data_policy_denied",
+            "error": "Tham số nhạy cảm không được gửi đến agent A2A từ xa.",
+        }
+    gate = (deps.tool_gateway.preflight(tool_name, params, approval_token)
+            if deps.tool_gateway is not None
+            else dict(RUNTIME_UNCONFIGURED_RESULT))
+    if not gate.get("success"):
+        return gate
+    remote_payload = {"tool": tool_name, "parameters": params,
+                      "session_id": session_id,
+                      "idempotency_key": delegation.idempotency_key}
+    with deps.span_fn("agent.a2a_delegate", tool=tool_name):
+        result = deps.a2a_router.route(delegation.specialist.value, task, remote_payload)
+    deps.audit_agent_fn("tool_transport", delegation, source=result.get("source", "local"))
+    return result
+
+
 def _execute_tool(
     *,
     deps: RunDeps,
@@ -60,16 +101,19 @@ def _execute_tool(
     tools_requiring_approval: set[str],
     approval_token: str,
     action_id_fn: Callable[[], str],
+    delegate_fn: Callable[[str, dict], Any],
 ) -> dict:
     """Supervisor authorisation, UI-action canonicalisation, then one gateway call.
 
     ADR 0002/0003: ``ToolExecutionService`` is the only execution path, reached
     through the injected gateway. When no gateway is wired we surface a
     structured error instead of calling the registry directly and bypassing
-    policy checks.
+    policy checks. The remote A2A leg is no exception: it clears the same
+    gateway through :meth:`~ai_assistant.ports.ToolGateway.preflight` before
+    dispatching, so validation, scope, classification and the approval grant
+    cannot be skipped by leaving the process.
     """
-    delegation = deps.delegate_fn(task, session_id, tool_name, params,
-                                  prefer_code=deps.is_coding_task_fn(task))
+    delegation = delegate_fn(tool_name, params)
     allowed, reason = deps.authorise_delegation_fn(delegation, tool_name in tools_requiring_approval)
     if not allowed:
         deps.audit_agent_fn("tool_denied", delegation, reason=reason)
@@ -89,12 +133,9 @@ def _execute_tool(
 
     tool_started = time.monotonic()
     if delegation.remote_endpoint and deps.a2a_router is not None:
-        remote_payload = {"tool": tool_name, "parameters": params,
-                          "session_id": session_id,
-                          "idempotency_key": delegation.idempotency_key}
-        with deps.span_fn("agent.a2a_delegate", tool=tool_name):
-            result = deps.a2a_router.route(delegation.specialist.value, task, remote_payload)
-        deps.audit_agent_fn("tool_transport", delegation, source=result.get("source", "local"))
+        result = _remote_dispatch(deps=deps, delegation=delegation, task=task,
+                                  session_id=session_id, tool_name=tool_name,
+                                  params=params, approval_token=approval_token)
     else:
         with deps.span_fn("agent.tool", tool=tool_name, session_id=session_id):
             if deps.tool_gateway is None:
@@ -161,8 +202,12 @@ def _store_pending_action(
             "params": pending["params"],
             "session_id": session_id,
             "task": task,
-            "messages": state["messages"],
-            "steps": state["steps"],
+            # Snapshot the live state lists: the graph keeps appending to them
+            # after this entry is parked, and the store re-serialises whatever it
+            # holds on the next save — aliasing made the persisted entry change
+            # after the fact (finding 9).
+            "messages": list(state["messages"]),
+            "steps": list(state["steps"]),
             "iteration": state["iteration"],
             "temperature": temperature,
             "language": language,
@@ -192,7 +237,12 @@ def _pending_response(
     if not pending:
         return None
     steps = state["steps"]
-    action_id = action_id_fn()
+    # A resumed run swaps in a no-op id generator (RESUME_ACTION_ID), but the
+    # action parked *here* is new and has no id yet. Returning "" would hand the
+    # client an id the approval boundary refuses (an empty action_id is
+    # rejected on the way back in) and would key the store on "", stranding the
+    # run — so mint one, the same way the application_action request id does.
+    action_id = action_id_fn() or generate_action_id()
     is_ui_ack = bool(pending.get("ui_ack"))
     request_id = pending["params"].get("request_id", action_id)
     _store_pending_action(
@@ -229,7 +279,7 @@ def _pending_response(
 def _completed_response(*, pending_status: str, session_id: str, state: dict,
                         steps: list, prior_step_count: int, request_started: float) -> dict:
     """The terminal response, guaranteeing one ``final_answer`` step exists."""
-    if not any(step["type"] == "final_answer" for step in steps):
+    if not any(has_step_type(step, "final_answer") for step in steps):
         steps.append({"type": "final_answer", "content": "Agent đã kết thúc mà chưa có kết luận."})
     return {
         "status": pending_status, "session_id": session_id, "steps": steps,
@@ -277,7 +327,6 @@ def run_langgraph_agent(
     approval_scope: str = "",
     approval_token: str = "",
     granted_fingerprint: str = "",
-    supervisor_route=None,
     # Per-invocation validators/hooks: resume continuations swap these for the
     # named no-op helpers in ``agents.context``.
     validate_tool_call_fn: Callable = validate_tool_call,
@@ -287,8 +336,6 @@ def run_langgraph_agent(
     if deps.local_agent_graph is None:
         msg = "LangGraph is required for Agent mode. Run: pip install -r AIAssistant/requirements.txt"
         raise ServiceUnavailableError(msg)
-    if supervisor_route is None and deps.specialist is not None:
-        supervisor_route = deps.specialist.SUPERVISOR
 
     tool_registry = deps.tool_registry
     openai_tools = tool_registry.get_openai_tools()
@@ -320,33 +367,48 @@ def run_langgraph_agent(
             deps=deps, task=task, session_id=session_id, tool_name=tool_name, params=params,
             tools_requiring_approval=tools_requiring_approval,
             approval_token=approval_token, action_id_fn=_action_id,
+            delegate_fn=_delegation_for,
         )
+
+    _delegation_cache: dict[str, Any] = {}
+
+    def _delegation_for(tool_name: str, params: dict) -> Any:
+        """One supervisor classification per distinct call (review finding 14).
+
+        Dispatch, execution, verification and reflection all ask for the same
+        delegation of the same (tool, params); recomputing it cost a payload
+        dump, a SHA-256, a remote-endpoint lookup and the ~50-term coding
+        heuristic on every step of that pipeline."""
+        key = json.dumps({"tool": tool_name, "params": params},
+                         ensure_ascii=False, sort_keys=True, default=str)
+        cached = _delegation_cache.get(key)
+        if cached is None:
+            cached = deps.delegate_fn(task, session_id, tool_name, params,
+                                      prefer_code=deps.is_coding_task_fn(task))
+            _delegation_cache[key] = cached
+        return cached
 
     def select_specialist(tool_name: str, params: dict) -> dict:
         if tool_name == "_validation_error":
             return {}
-        delegation = deps.delegate_fn(task, session_id, tool_name, params,
-                                      prefer_code=deps.is_coding_task_fn(task))
+        delegation = _delegation_for(tool_name, params)
         deps.audit_agent_fn("tool_delegated", delegation)
         return {
             "specialist": str(delegation.specialist),
             "idempotency_key": delegation.idempotency_key,
-            "instruction": deps.specialist_instruction_fn(delegation),
             "remote_endpoint": delegation.remote_endpoint,
         }
 
     def verify_tool_result(tool_name: str, params: dict, result: dict) -> dict:
         if tool_name == "_validation_error":
             return {"passed": False, "reason": result.get("error", "Validation error")}
-        delegation = deps.delegate_fn(task, session_id, tool_name, params,
-                                      prefer_code=deps.is_coding_task_fn(task))
+        delegation = _delegation_for(tool_name, params)
         verification = deps.verify_result_fn(delegation, result)
         deps.audit_agent_fn("tool_verified", delegation, **verification)
         return verification
 
     def deterministic_reflection(tool_name: str, params: dict, result: dict, verification: dict) -> dict:
-        delegation = deps.delegate_fn(task, session_id, tool_name, params,
-                                      prefer_code=deps.is_coding_task_fn(task))
+        delegation = _delegation_for(tool_name, params)
         reflection = deps.reflect_result_fn(delegation, result, verification)
         deps.audit_agent_fn("tool_reflected", delegation, **reflection)
         return reflection
@@ -357,7 +419,7 @@ def run_langgraph_agent(
     _ls_ctx_mgr = deps.langsmith_trace_fn(
         "agent.session", run_type="chain",
         inputs={"task": task[:200], "session_id": session_id,
-                "supervisor_route": supervisor_route.value if supervisor_route else "none"},
+                "supervisor_route": "supervisor"},
         metadata={"session_id": session_id, "temperature": temperature, "language": language},
     )
     _ls_ctx = _ls_ctx_mgr.__enter__()
@@ -402,11 +464,10 @@ def run_langgraph_agent(
             messages, session_id, temperature, initial_steps, initial_iteration,
             resume_with_reflection=resume_with_reflection,
             required_ui_actions=[],
-            supervisor_route=supervisor_route.value if supervisor_route else "supervisor",
             enforce_plan_completion=True,
             approval_granted=approval_granted or bool(
                 (initial_steps or []) and
-                any(step.get("type") == "approval_granted" for step in (initial_steps or []))
+                any(has_step_type(step, "approval_granted") for step in (initial_steps or []))
             ),
             approval_scope=approval_scope,
             granted_fingerprint=granted_fingerprint,
@@ -414,6 +475,11 @@ def run_langgraph_agent(
     except BaseException as error:
         _ls_ctx["outputs"] = {"status": "error", "error": str(error)}
         _ls_ctx_mgr.__exit__(type(error), error, error.__traceback__)
+        # Nothing below runs on this path, so without this call a crash left
+        # the coordinator's record parked in ``running`` forever (review
+        # finding 6).  ``finish`` still resolves cancellation first, so a run
+        # aborted by cancel reports ``cancelled``, not ``failed``.
+        deps.task_coordinator.finish(session_id, success=False, error=str(error))
         raise
 
     # ── State → response ─────────────────────────────────────────────────────

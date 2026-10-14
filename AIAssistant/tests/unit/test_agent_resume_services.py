@@ -12,6 +12,7 @@ from __future__ import annotations
 import sys
 import threading
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -148,19 +149,23 @@ class ApprovalServiceLifecycleTests(_ServiceFixture):
 class ApprovalExecutionTests(_ServiceFixture):
     """Grant issuance, execution, and the completed/resume fork."""
 
-    def _service(self, gateway) -> ApprovalService:
-        return ApprovalService(
+    def _service(self, gateway, *, graph: bool = True) -> ApprovalService:
+        svc = ApprovalService(
             llm_runtime=_llm(), pending_actions=self.store,
             pending_lock=self.lock, tool_gateway=gateway,
         )
+        if not graph:
+            # No graph engine wired => the resume branch is skipped and the
+            # service returns the completed envelope directly.
+            svc._ctx = replace(svc._ctx, local_agent_graph=None)
+        return svc
 
     def test_execute_without_gateway_reports_runtime_unconfigured(self) -> None:
         self.store["a-1"] = _approval_action()
         with patch.object(agents_context, "run_langgraph_agent", return_value={}):
-            with patch("ai_assistant.agents.approval_service.use_langgraph_agent", return_value=False):
-                out = self._service(None).approve(
-                    AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
-                )
+            out = self._service(None, graph=False).approve(
+                AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
+            )
         self.assertEqual(out["status"], "completed")
         # The tool step records the unconfigured-runtime error rather than
         # pretending the tool ran.
@@ -172,10 +177,9 @@ class ApprovalExecutionTests(_ServiceFixture):
         gateway.execute_approved.return_value = {"success": True}
         self.store["a-1"] = _approval_action()
         with patch.object(agents_context, "run_langgraph_agent", return_value={}):
-            with patch("ai_assistant.agents.approval_service.use_langgraph_agent", return_value=False):
-                self._service(gateway).approve(
-                    AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
-                )
+            self._service(gateway, graph=False).approve(
+                AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
+            )
         self.assertEqual(gateway.issue_approval_grant.call_count, 2)
         tool, params, run_token = gateway.issue_approval_grant.call_args_list[0].args
         direct_token = gateway.issue_approval_grant.call_args_list[1].args[2]
@@ -192,10 +196,9 @@ class ApprovalExecutionTests(_ServiceFixture):
         gateway.execute_approved.return_value = {"content": "notes"}
         self.store["a-1"] = _approval_action()
         with patch.object(agents_context, "run_langgraph_agent", return_value={}):
-            with patch("ai_assistant.agents.approval_service.use_langgraph_agent", return_value=False):
-                out = self._service(gateway).approve(
-                    AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
-                )
+            out = self._service(gateway, graph=False).approve(
+                AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
+            )
         types = [s["type"] for s in out["steps"]]
         self.assertEqual(types, ["plan", "tool_result", "verification"])
         self.assertEqual(out["prior_step_count"], 1)
@@ -206,10 +209,9 @@ class ApprovalExecutionTests(_ServiceFixture):
         gateway.execute_approved.return_value = {"content": "x" * 9000}
         self.store["a-1"] = _approval_action()
         with patch.object(agents_context, "run_langgraph_agent", return_value={}) as runner:
-            with patch("ai_assistant.agents.approval_service.use_langgraph_agent", return_value=True):
-                self._service(gateway).approve(
-                    AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
-                )
+            self._service(gateway).approve(
+                AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
+            )
         messages = runner.call_args.kwargs["initial_messages"]
         last = messages[-1]["content"]
         self.assertIn("[truncated]", last)
@@ -220,10 +222,9 @@ class ApprovalExecutionTests(_ServiceFixture):
         gateway.execute_approved.return_value = {"ok": True}
         self.store["a-1"] = _approval_action()
         with patch.object(agents_context, "run_langgraph_agent", return_value={"status": "completed"}) as runner:
-            with patch("ai_assistant.agents.approval_service.use_langgraph_agent", return_value=True):
-                self._service(gateway).approve(
-                    AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
-                )
+            self._service(gateway).approve(
+                AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
+            )
         kwargs = runner.call_args.kwargs
         self.assertTrue(kwargs["approval_granted"])
         self.assertEqual(kwargs["approval_scope"], "scope-1")
@@ -231,9 +232,9 @@ class ApprovalExecutionTests(_ServiceFixture):
         self.assertTrue(kwargs["granted_fingerprint"])
         self.assertEqual(kwargs["initial_iteration"], 2)
         self.assertEqual(kwargs["prior_step_count"], 1)
-        # Resume reuses the first-pass tool result, so it swaps in the no-op
-        # validator and the empty action-id generator.
-        self.assertIs(kwargs["validate_tool_call_fn"], agents_context.RESUME_VALIDATE_TOOL_CALL)
+        # Resume keeps the real validator (a resumed run may emit new calls,
+        # review 27) and swaps in only the empty action-id generator.
+        self.assertIs(kwargs["validate_tool_call_fn"], agents_context.validate_tool_call)
         self.assertIs(kwargs["generate_action_id_fn"], agents_context.RESUME_ACTION_ID)
         self.assertIn({"type": "approval_granted", "scope_id": "scope-1",
                        "tool": "read_file", "action_id": "a-1"}, kwargs["initial_steps"])
@@ -245,10 +246,9 @@ class ApprovalExecutionTests(_ServiceFixture):
             messages=[{"role": "system", "content": "you are terse"}],
         )
         with patch.object(agents_context, "run_langgraph_agent", return_value={}) as runner:
-            with patch("ai_assistant.agents.approval_service.use_langgraph_agent", return_value=True):
-                self._service(gateway).approve(
-                    AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
-                )
+            self._service(gateway).approve(
+                AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
+            )
         self.assertEqual(runner.call_args.kwargs["system_prompt"], "you are terse")
 
 
@@ -357,33 +357,32 @@ class UIActionServiceTests(_ServiceFixture):
     def test_resume_fork_hands_the_runner_its_ui_context(self) -> None:
         self.store["r-1"] = _ui_action(messages=[{"role": "system", "content": "be brief"}])
         with patch.object(agents_context, "run_langgraph_agent", return_value={"status": "completed"}) as runner:
-            with patch("ai_assistant.agents.ui_action_service.use_langgraph_agent", return_value=True):
-                self._service().ui_action_result(
-                    AgentUiActionResultRequest(request_id="r-1", success=True)
-                )
+            self._service().ui_action_result(
+                AgentUiActionResultRequest(request_id="r-1", success=True)
+            )
         kwargs = runner.call_args.kwargs
         self.assertEqual(kwargs["system_prompt"], "be brief")
         self.assertTrue(kwargs["resume_with_reflection"])
-        self.assertIs(kwargs["validate_tool_call_fn"], agents_context.RESUME_VALIDATE_TOOL_CALL)
+        # Resume keeps the real validator (review 27); only the id is a no-op.
+        self.assertIs(kwargs["validate_tool_call_fn"], agents_context.validate_tool_call)
         self.assertIs(kwargs["generate_action_id_fn"], agents_context.RESUME_ACTION_ID)
         # The desktop ack is injected into the resumed history for the graph.
         self.assertEqual(kwargs["initial_messages"][-2]["role"], "assistant")
         self.assertEqual(kwargs["initial_messages"][-1]["role"], "user")
 
     def test_finalise_without_langgraph_availability_reports_completed(self) -> None:
-        """Even with the flag on, a missing graph class falls back to plain text."""
+        """A missing graph class falls back to plain text."""
         from ai_assistant.agents.context import AgentRunContext
 
         self.store["r-1"] = _ui_action(messages=[{"role": "user", "content": "hi"}])
         svc = self._service()
         # Swap in a context whose graph class is absent so the resume branch
-        # is skipped even though the settings flag is on.
+        # is skipped.
         svc._ctx = AgentRunContext(
             llm_runtime=svc.llm_runtime, pending_actions=self.store,
             pending_lock=self.lock, local_agent_graph=None,
         )
-        with patch("ai_assistant.agents.ui_action_service.use_langgraph_agent", return_value=True):
-            out = svc.ui_action_result(AgentUiActionResultRequest(request_id="r-1", success=True))
+        out = svc.ui_action_result(AgentUiActionResultRequest(request_id="r-1", success=True))
         self.assertEqual(out["status"], "completed")
 
 

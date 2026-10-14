@@ -64,8 +64,27 @@ def redact_value(value: Any, key: str = "") -> Any:
     return value
 
 
+def has_sensitive_keys(value: Any, key: str = "") -> bool:
+    """True when this payload holds a value the redaction policy protects.
+
+    Redaction is for material that may still be *useful* once masked; a payload
+    being sent somewhere to be executed is not. An outbound dispatch carrying
+    a credential is therefore refused instead of rewritten — masking it would
+    hand the remote peer a falsified payload to run, and sending it as-is
+    would put the secret on the wire.
+    """
+    if key.casefold() in SENSITIVE_KEYS:
+        return True
+    if isinstance(value, dict):
+        return any(has_sensitive_keys(item_value, str(item_key)) for item_key, item_value in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(has_sensitive_keys(item) for item in value)
+    return False
+
+
 __all__ = [
     "SENSITIVE_KEYS",
+    "has_sensitive_keys",
     "redact_value",
     "scrub_messages",
     "scrub_pii",

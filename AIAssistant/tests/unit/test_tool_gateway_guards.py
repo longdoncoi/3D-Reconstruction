@@ -118,6 +118,62 @@ class ApprovalGrantTests(unittest.TestCase):
         self.assertTrue(result.success)
 
 
+class PreflightTests(unittest.TestCase):
+    """A dispatch that runs elsewhere clears the very same gate, then leaves.
+
+    The remote A2A leg never reaches the local executor, so ``preflight`` is
+    what keeps validation, scope, classification and the single-use grant from
+    being skipped by leaving the process.
+    """
+
+    def test_an_admitted_call_never_runs_the_executor(self):
+        runs: list[dict] = []
+        service = _service(executor=lambda params: runs.append(params) or {"content": "x"})
+        result = service.preflight("read_file", {"path": "a"}, _principal(), correlation_id="c1")
+
+        self.assertTrue(result.success)
+        self.assertTrue(result.payload["preflight"])
+        self.assertEqual(result.payload["tool"], "read_file")
+        self.assertEqual(runs, [])
+
+    def test_every_refusal_is_returned_instead_of_dispatching(self):
+        cases = [
+            ("tool_not_found", _service(), "no_such_tool", {}, _principal()),
+            ("invalid_input", _service(), "read_file", {}, _principal()),
+            ("forbidden", _service(spec=_spec(required_scope="admin:write")),
+             "read_file", {"path": "a"}, _principal()),
+            ("data_policy_denied", _service(), "read_file", {"path": "a"},
+             _principal(classification=DataClassification.REGULATED)),
+            ("approval_required", _service(spec=_spec(requires_approval=True)),
+             "read_file", {"path": "a"}, _principal()),
+        ]
+        for expected, service, tool, params, principal in cases:
+            with self.subTest(expected=expected):
+                result = service.preflight(tool, params, principal, correlation_id="c1")
+                self.assertFalse(result.success)
+                self.assertEqual(result.error_code, expected)
+
+    def test_preflight_spends_the_single_use_grant(self):
+        service = _service(spec=_spec(requires_approval=True))
+        params = {"path": "a"}
+        service.issue_approval_grant("read_file", params, token="tok-9")
+
+        authorised = service.preflight("read_file", params, _principal(), approval_token="tok-9")
+        self.assertTrue(authorised.success)
+        # Authorising the remote dispatch spent it: the probe says so...
+        self.assertFalse(service.approval_covers("read_file", params, "tok-9"))
+        # ...and a replay through the local path is refused.
+        replay = service.execute("read_file", params, _principal(), approval_token="tok-9")
+        self.assertEqual(replay.error_code, "approval_required")
+
+    def test_preflight_is_reported_to_the_audit_sink(self):
+        events: list[tuple] = []
+        service = _service(sink=lambda request, result: events.append((request, result)))
+        service.preflight("read_file", {"path": "a"}, _principal(), correlation_id="c-remote")
+        self.assertEqual(len(events), 1)
+        self.assertTrue(events[0][1].success)
+
+
 class ExecutorContractTests(unittest.TestCase):
     def test_a_crashing_executor_becomes_a_structured_failure(self):
         def _boom(params):

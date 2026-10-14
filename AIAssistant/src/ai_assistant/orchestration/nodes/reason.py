@@ -26,6 +26,7 @@ from ai_assistant.domain.approvals import (
     build_approval_preview,
     derive_approval_scope,
 )
+from ai_assistant.domain.governance import redact_value
 from ai_assistant.llm.inference import strip_think_tags
 from ai_assistant.observability import record_step_guard
 from ai_assistant.orchestration.specialists.code import coding_workflow_guidance
@@ -44,6 +45,7 @@ from ..state import (
     NeedsApproval,
     Parser,
     SelectSpecialist,
+    has_step_type,
     is_context_exhausted,
 )
 from .reason_prepare import prepare_reasoning
@@ -255,7 +257,7 @@ def _handle_final_answer(turn: _Turn) -> dict[str, Any] | None:
     if citation:
         logger.info("[NODE: reason] Dùng formatter trích dẫn code đầy đủ từ read_file result.")
         answer = citation
-    elif any(step.get("type") == "tool_call" and step.get("tool") == "rag_search"
+    elif any(has_step_type(step, "tool_call") and step.get("tool") == "rag_search"
              for step in turn.steps):
         answer = clean_project_research_answer(answer)
     turn.steps.append({"type": "final_answer", "content": answer})
@@ -332,7 +334,7 @@ def _guard_step_action_mismatch(turn: _Turn) -> dict[str, Any] | None:
     expected = [name for name, _ in rank_actions_for_step(turn.current_plan_step)][:3]
     rejections = sum(
         1 for step in turn.steps
-        if step.get("type") == "validation_error"
+        if has_step_type(step, "validation_error")
         and step.get("reason") == "step_action_mismatch"
         and step.get("plan_step_index") == turn.done_count
     )
@@ -370,10 +372,10 @@ def _failed_call_fingerprints(steps: list[dict[str, Any]]) -> set[str]:
     """Fingerprints of every tool call that a later reflection rejected."""
     failed: set[str] = set()
     for index, step in enumerate(steps):
-        if step.get("type") != "reflection" or step.get("result", {}).get("passed") is not False:
+        if not has_step_type(step, "reflection") or step.get("result", {}).get("passed") is not False:
             continue
         for prior in reversed(steps[:index]):
-            if prior.get("type") == "tool_call":
+            if has_step_type(prior, "tool_call"):
                 failed.add(json.dumps({"tool": prior.get("tool"), "params": prior.get("params", {})},
                                       ensure_ascii=False, sort_keys=True))
                 break
@@ -427,8 +429,10 @@ def _dispatch_tool_call(turn: _Turn) -> dict[str, Any]:
                            "remote_endpoint": delegation.get("remote_endpoint"),
                            "iteration": turn.iteration})
 
-    logger.debug(f"[AGENT TRACE] ── Reason: tool call → tool='{tool_name}', params={str(params)[:80]}")
-    logger.info("[NODE: reason] LLM quyết định gọi tool: %s, params: %s", tool_name, params)
+    logger.debug(f"[AGENT TRACE] ── Reason: tool call → tool='{tool_name}', "
+                 f"params={str(redact_value(params))[:80]}")
+    logger.info("[NODE: reason] LLM quyết định gọi tool: %s, params: %s",
+                tool_name, redact_value(params))
     tool_call = {"type": "tool_call", "tool": tool_name,
                  "params": params, "idempotency_key": idempotency_key,
                  "iteration": turn.iteration}
@@ -558,26 +562,26 @@ def after_reason(state: AgentState) -> str:
         return "end"
 
     steps = state.get("steps", [])
-    if steps and steps[-1].get("type") == "validation_error":
+    if steps and has_step_type(steps[-1], "validation_error"):
         logger.info("[ROUTER: after_reason] → REASON (validation error, self-correct)")
         logger.debug("[AGENT TRACE] ── Router: → Reason node (validation error self-correct)")
         return "reason"
-    if steps and steps[-1].get("type") == "plan_incomplete":
+    if steps and has_step_type(steps[-1], "plan_incomplete"):
         logger.info("[ROUTER: after_reason] → REASON (premature final answer blocked)")
         logger.debug("[AGENT TRACE] ── Router: → Reason node (plan incomplete)")
         return "reason"
-    if steps and steps[-1].get("type") == "coding_incomplete":
+    if steps and has_step_type(steps[-1], "coding_incomplete"):
         logger.info("[ROUTER: after_reason] → REASON (coding evidence incomplete)")
         logger.debug("[AGENT TRACE] ── Router: → Reason node (coding workflow incomplete)")
         return "reason"
-    if steps and steps[-1].get("type") == "context_compacted":
+    if steps and has_step_type(steps[-1], "context_compacted"):
         logger.info("[ROUTER: after_reason] → REASON (context compacted)")
         logger.debug("[AGENT TRACE] ── Router: → Reason node (context compacted)")
         return "reason"
 
     if (len(steps) >= 2
-            and steps[-2].get("type") == "step_answer"
-            and steps[-1].get("type") == "reflection"):
+            and has_step_type(steps[-2], "step_answer")
+            and has_step_type(steps[-1], "reflection")):
         logger.info("[ROUTER: after_reason] → REASON (step_answer completed)")
         logger.debug("[AGENT TRACE] ── Router: → Reason node (step_answer)")
         return "reason"

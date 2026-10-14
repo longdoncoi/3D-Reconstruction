@@ -23,6 +23,7 @@ from ...agents.models import (
 )
 from ...domain.security import Principal, bind_principal
 from ...domain.tasks import AgentTask
+from ...orchestration.state import has_step_type
 
 _LANGUAGES = frozenset({"vi", "en"})
 
@@ -100,7 +101,7 @@ class LangGraphAgentOrchestrator:
         steps = list(result.get("steps") or [])
         if status == "pending_approval":
             pending: dict[str, Any] = next(
-                (step for step in steps if step.get("type") == "pending_approval"), {}
+                (step for step in steps if has_step_type(step, "pending_approval")), {}
             )
             return {
                 "status": "input_required",
@@ -141,7 +142,7 @@ class LangGraphAgentOrchestrator:
     @staticmethod
     def _final_content(steps: list[dict[str, Any]]) -> str:
         for step in reversed(steps):
-            if step.get("type") == "final_answer" and isinstance(step.get("content"), str):
+            if has_step_type(step, "final_answer") and isinstance(step.get("content"), str):
                 return step["content"]
         return ""
 

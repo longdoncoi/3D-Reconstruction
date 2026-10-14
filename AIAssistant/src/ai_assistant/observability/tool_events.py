@@ -43,6 +43,9 @@ def tool_event_payload(request: ToolRequest, result: ToolResult) -> dict[str, An
         "correlation_id": request.correlation_id,
         "ok": result.success,
         "error_code": result.error_code,
+        # A preflight record authorises a dispatch that runs elsewhere; without
+        # this field it would read as if the tool had executed in this process.
+        "dispatch": "preflight" if result.payload.get("preflight") else "execute",
         "parameters": redact_value(dict(request.parameters)),
     }
 

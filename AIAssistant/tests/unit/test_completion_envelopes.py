@@ -179,12 +179,15 @@ class StructuredCompletionTests(unittest.TestCase):
 
     def test_remote_path(self) -> None:
         response = {"choices": [{"message": {"content": "  {\"passed\": true}  "}}]}
-        out = structured_completion(
-            [], 64, 0.0, {"type": "object"},
-            _FakeRuntime(response),
-            backend_mode_fn=lambda: "openai",
-            openai_compatible_fn=lambda *a, **kw: response,
-        )
+        # The structured decoder now runs the same ADR 0018 gate as the
+        # constrained one, so exercising the remote branch means opting in.
+        with patch.dict(os.environ, {"AGENT_HYBRID_POLICY": "cloud_allowed"}):
+            out = structured_completion(
+                [], 64, 0.0, {"type": "object"},
+                _FakeRuntime(response),
+                backend_mode_fn=lambda: "openai",
+                openai_compatible_fn=lambda *a, **kw: response,
+            )
         self.assertIn("passed", out)
 
     def test_llama_path_with_fake_grammar(self) -> None:
@@ -226,13 +229,13 @@ class GrammarCacheTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self._saved_grammar = _completion._PRECOMPILED_GRAMMAR
-        self._saved_hash = _completion._GRAMMAR_SCHEMA_HASH
+        self._saved_schema = _completion._GRAMMAR_SCHEMA
         _completion._PRECOMPILED_GRAMMAR = None
-        _completion._GRAMMAR_SCHEMA_HASH = None
+        _completion._GRAMMAR_SCHEMA = None
 
     def tearDown(self) -> None:
         _completion._PRECOMPILED_GRAMMAR = self._saved_grammar
-        _completion._GRAMMAR_SCHEMA_HASH = self._saved_hash
+        _completion._GRAMMAR_SCHEMA = self._saved_schema
 
     @staticmethod
     def _working_llama_cpp() -> SimpleNamespace:

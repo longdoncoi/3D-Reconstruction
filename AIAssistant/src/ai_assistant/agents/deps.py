@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
-from ..ports import LLMRuntime, ToolGateway
+from ..ports import LLMRuntime, ToolExecutionGateway
 from ..tools.registry import ToolRegistry
 from .pending_store import PendingActionStore
 
@@ -47,7 +47,6 @@ class RunDeps:
     authorise_delegation_fn: Callable[..., tuple[bool, str | None]]
     verify_result_fn: Callable[..., dict]
     reflect_result_fn: Callable[..., dict]
-    specialist_instruction_fn: Callable[..., str]
     is_coding_task_fn: Callable[[str], bool]
 
     # ── Observability hooks ───────────────────────────────────────────────
@@ -58,11 +57,13 @@ class RunDeps:
     span_fn: Callable[..., Any]
 
     # ── Optional wiring, injected by the composition root ─────────────────
-    tool_gateway: ToolGateway | None = None
+    # The runner reaches only the *execution* surface of the gateway: it can
+    # execute, pre-flight and probe approval grants but can never mint one.
+    # Grant minting is confined to the approval services behind
+    # ``ApprovalGrantIssuer`` (review finding 15 — separation of duties).
+    tool_gateway: ToolExecutionGateway | None = None
     #: The graph engine class; ``None`` means LangGraph is unavailable.
     local_agent_graph: Any = None
-    #: ``Specialist`` enum used to default the supervisor route.
-    specialist: Any = None
     #: Remote A2A transport; ``None`` keeps dispatch local.
     a2a_router: Any = None
     checkpointer: Any = None

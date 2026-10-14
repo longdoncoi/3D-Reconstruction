@@ -13,7 +13,7 @@ from typing import Any
 
 from ai_assistant.config.logging import get_agent_logger
 from ai_assistant.domain.specialists import Specialist
-from ai_assistant.orchestration.specialists.code import is_coding_task
+from ai_assistant.domain.tools import tool_result_has_evidence
 
 logger = logging.getLogger("ai_assistant.orchestration.supervisor")
 
@@ -67,16 +67,6 @@ class Delegation:
     remote_endpoint: str | None = field(default=None, compare=False)
 
 
-_SPECIALIST_INSTRUCTIONS = {
-    Specialist.CHATBOT: "Answer conversationally using the Chatbot Agent and its RAG context only.",
-    Specialist.TOOLAPP: "Dispatch only canonical Qt application_action calls and wait for acknowledgement.",
-    Specialist.RESEARCH: "Inspect only the smallest relevant evidence; cite files and do not change state.",
-    Specialist.WORKFLOW: "Dispatch only a canonical desktop action and wait for the desktop acknowledgement.",
-    Specialist.CODE: "Describe the smallest safe change and require explicit approval before changing project state.",
-    Specialist.VERIFICATION: "Independently check observable output; report a failed check instead of assuming success.",
-    Specialist.SUPERVISOR: "Clarify intent, enforce policy, and coordinate the next specialist handoff.",
-}
-
 RESEARCH_TOOLS = {"read_file", "list_directory", "find_files", "search_text", "analyze_code", "git_diff", "rag_search"}
 VERIFICATION_TOOLS = {"validate_file", "get_project_status"}
 CODE_TOOLS = {"write_file", "patch_file", "replace_file_content", "multi_replace_file_content", "create_directory", "run_command"}
@@ -91,7 +81,24 @@ TRANSFER_TARGETS = {
     "transfer_to_toolapp_agent": Specialist.TOOLAPP,
     "transfer_to_chatbot_agent": Specialist.CHATBOT,
 }
+
+#: The tools each specialist may execute. ``SUPERVISOR`` executes nothing (it
+#: answers directly); ``CODE`` may also run read/verify tools because a coding
+#: task inspects the repository before it mutates it, and each transfer target
+#: may be handed its own transfer tool. ``authorise`` consults this table
+#: fail-closed, so the tool sets are enforced least privilege rather than
+#: decorative routing labels (review finding 13).
+ALLOWED_TOOLS: dict[Specialist, frozenset[str]] = {
+    Specialist.SUPERVISOR: frozenset(),
+    Specialist.RESEARCH: frozenset(RESEARCH_TOOLS),
+    Specialist.VERIFICATION: frozenset(VERIFICATION_TOOLS),
+    Specialist.CODE: frozenset(RESEARCH_TOOLS | VERIFICATION_TOOLS | CODE_TOOLS | set(TRANSFER_TARGETS)),
+    Specialist.WORKFLOW: frozenset(WORKFLOW_TOOLS),
+    Specialist.TOOLAPP: frozenset({"transfer_to_toolapp_agent"}),
+    Specialist.CHATBOT: frozenset({"transfer_to_chatbot_agent"}),
+}
 _AUDIT_LOCK = threading.Lock()
+_LOG_CACHE_LOCK = threading.Lock()
 _RECENT_DELEGATION_LOGS: dict[tuple[str, str], float] = {}
 
 
@@ -106,11 +113,6 @@ def _get_audit_path() -> str:
         return str(get_paths().cache_dir / "agent_audit.jsonl")
     except Exception:
         return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "Cache", "agent_audit.jsonl"))
-
-
-def route_task(task: str) -> Specialist:
-    """Classify the primary intent into a Specialist role."""
-    return Specialist.CODE if is_coding_task(task) else Specialist.SUPERVISOR
 
 
 def delegate(
@@ -161,7 +163,10 @@ def delegate(
 
     _log_key = (session_id, delegation.idempotency_key)
     _now = time.monotonic()
-    with _AUDIT_LOCK:
+    # The throttle cache keeps its own lock: ``_AUDIT_LOCK`` guards a file
+    # append further down, and serialising log throttling behind it couples
+    # two unrelated concerns (finding 26).
+    with _LOG_CACHE_LOCK:
         _last = _RECENT_DELEGATION_LOGS.get(_log_key)
         if _last is None or (_now - _last) > 120:
             _RECENT_DELEGATION_LOGS[_log_key] = _now
@@ -196,13 +201,20 @@ def delegate(
 
 
 def authorise(delegation: Delegation, needs_approval: bool) -> tuple[bool, str | None]:
-    """Enforce least privilege before calling a tool."""
+    """Enforce least privilege before calling a tool.
+
+    The specialist's allowed-tool set (``ALLOWED_TOOLS``) is the policy, not an
+    accident of how ``delegate`` classified the call: an unknown
+    ``(specialist, tool)`` pair is refused fail-closed (review finding 13).
+    """
     if delegation.tool is None:
         return True, None
-    if delegation.specialist is Specialist.CODE and delegation.tool in CODE_TOOLS and not needs_approval:
-        return False, "Code tools must be routed through the approval workflow."
     if delegation.specialist is Specialist.SUPERVISOR:
         return False, f"No specialist policy exists for tool: {delegation.tool}"
+    if delegation.tool not in ALLOWED_TOOLS.get(delegation.specialist, frozenset()):
+        return False, f"Tool {delegation.tool} is not permitted for specialist {delegation.specialist.value}."
+    if delegation.specialist is Specialist.CODE and delegation.tool in CODE_TOOLS and not needs_approval:
+        return False, "Code tools must be routed through the approval workflow."
     return True, None
 
 
@@ -226,16 +238,9 @@ def verify_result(delegation: Delegation, result: Any) -> dict[str, Any]:
         verification_logger.warning("Verification failed | tool=%s reason=%s", delegation.tool, outcome["reason"])
         return outcome
 
-    evidence_fields = {
-        "read_file": ("content",),
-        "search_text": ("results",),
-        "find_files": ("matches",),
-        "list_directory": ("entries",),
-        "analyze_code": ("functions", "classes", "includes"),
-        "git_diff": ("content",),
-    }
-    fields = evidence_fields.get(str(delegation.tool))
-    if fields and not any(bool(result.get(field)) for field in fields):
+    # Shared evidence table lives in ``domain.tools`` so this check and the
+    # coding-workflow classifier read one source of truth (review #24/7).
+    if not tool_result_has_evidence(str(delegation.tool), result):
         outcome = {"passed": False, "reason": "Tool completed but returned no usable evidence."}
         verification_logger.warning("Verification failed | tool=%s reason=%s", delegation.tool, outcome["reason"])
         return outcome
@@ -253,11 +258,6 @@ def verify_result(delegation: Delegation, result: Any) -> dict[str, Any]:
         outcome["reason"],
     )
     return outcome
-
-
-def specialist_instruction(delegation: Delegation) -> str:
-    """Return a compact role handoff for the shared local model."""
-    return _SPECIALIST_INSTRUCTIONS[delegation.specialist]
 
 
 def reflect_result(delegation: Delegation, result: Any, verification: dict[str, Any]) -> dict[str, Any]:
@@ -293,6 +293,7 @@ def audit(event: str, delegation: Delegation, **details: Any) -> None:
 
 
 __all__ = [
+    "ALLOWED_TOOLS",
     "CODE_AGENT_TOOLS",
     "CODE_TOOLS",
     "RESEARCH_TOOLS",
@@ -305,8 +306,6 @@ __all__ = [
     "authorise",
     "delegate",
     "reflect_result",
-    "route_task",
     "set_remote_specialist_lookup",
-    "specialist_instruction",
     "verify_result",
 ]

@@ -54,6 +54,20 @@ class PlatformToolGateway:
             tool_name, parameters, self._principal(), approval_token=approval_token,
         ).to_dict()
 
+    def preflight(self, tool_name: str, parameters: dict, approval_token: str = "") -> dict:
+        """Clear the policy gate for a dispatch that executes elsewhere.
+
+        The remote A2A leg never reaches the local executor, so it runs the
+        same validation, scope, classification and single-use grant checks
+        here — spending the grant — before it leaves the process. A refusal
+        means "do not dispatch".
+        """
+        if self._service is None:
+            return dict(RUNTIME_UNCONFIGURED_RESULT)
+        return self._service.preflight(
+            tool_name, parameters, self._principal(), approval_token=approval_token,
+        ).to_dict()
+
     def issue_approval_grant(self, tool_name: str, parameters: dict, approval_token: str) -> None:
         """Bind a single-use grant to an invocation a user just approved."""
         if self._service is None:

@@ -21,7 +21,7 @@ from collections.abc import Callable
 
 from ..application.coordination import TaskCoordinator
 from ..config.paths import get_paths
-from ..domain.errors import ModelNotLoadedError, NotFoundError
+from ..domain.errors import NotFoundError
 from ..orchestration.specialists.code import (
     CodingTaskContext,
     is_coding_task,
@@ -32,7 +32,7 @@ from ..orchestration.specialists.code import (
 from ..ports import LLMRuntime, ToolGateway
 from ..tools.factory import create_tool_registry
 from .approval_service import ApprovalService
-from .context import AgentRunContext
+from .context import AgentRunContext, require_llm_runtime
 from .models import (
     AgentApproveRequest,
     AgentCancelRequest,
@@ -72,6 +72,12 @@ class AgentService:
             pending_actions if pending_actions is not None else PendingActionStore(_default_pending_path())
         )
         self.pending_lock = pending_lock if pending_lock is not None else threading.Lock()
+        # One re-entrant run lock per session id (review finding 3).  Entries
+        # live for the process: a pruning cache could build a *second* lock for
+        # a session while an older thread is still queued on the first, which
+        # is exactly the overlap this lock exists to prevent.  Cost is one tiny
+        # lock per distinct session the client has opened.
+        self._session_locks: dict[str, threading.RLock] = {}
         # The composition root owns one catalog and one coordinator; a bare
         # instance (tests, embeds) builds its own so the facade stays usable.
         self.tool_registry = tool_registry if tool_registry is not None else create_tool_registry()
@@ -123,9 +129,7 @@ class AgentService:
         )
 
     def _require_llm(self) -> None:
-        if self.llm_runtime is None or self.llm_runtime.llm is None:
-            msg = "LLM chưa khởi tạo"
-            raise ModelNotLoadedError(msg)
+        require_llm_runtime(self.llm_runtime)
 
     def _save_pending(self) -> None:
         self.pending_actions.save()
@@ -137,6 +141,14 @@ class AgentService:
                 self._save_pending()
                 logger.info("Cleaned up expired pending agent actions")
 
+    def _session_lock(self, session_id: str) -> threading.RLock:
+        """The session's run lock, created on first use.
+
+        ``dict.setdefault`` is a single atomic operation under the GIL, so
+        concurrent first runs of the same session can not build two locks.
+        """
+        return self._session_locks.setdefault(session_id, threading.RLock())
+
     def execute(self, request: AgentExecuteRequest, *, event_sink: Callable[[dict], None] | None = None,
                 client_host: str = "unknown") -> dict:
         self._cleanup_pending()
@@ -145,6 +157,23 @@ class AgentService:
         req_start = time.monotonic()
         task = request.task
         session_id = request.session_id or "agent_default"
+        # One run at a time per session (review finding 3): concurrent executes
+        # for the same session share one checkpointer thread_id and would
+        # clobber the coordinator's running record, so they queue here while
+        # other sessions keep running in parallel.  ``cancel``/``approve`` stay
+        # outside this lock on purpose — they must work while a run holds it.
+        with self._session_lock(session_id):
+            return self._execute_locked(
+                request, session_id=session_id, task=task, req_start=req_start,
+                event_sink=event_sink, client_host=client_host,
+            )
+
+    def _execute_locked(
+        self, request: AgentExecuteRequest, *, session_id: str, task: str,
+        req_start: float, event_sink: Callable[[dict], None] | None,
+        client_host: str,
+    ) -> dict:
+        """The ``execute`` body, already holding the session's run lock."""
         self.task_coordinator.start(session_id, task=request.task)
         retry_idx = request.retry_message_index
 

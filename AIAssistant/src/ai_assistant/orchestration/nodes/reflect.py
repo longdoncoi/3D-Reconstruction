@@ -14,7 +14,7 @@ from ai_assistant.tools.action_manifest import canonical_action, step_matches_ac
 
 from ..helpers import completed_plan_steps
 from ..prompts import CRITIC_PROMPT
-from ..state import AgentState, Completion, ReflectResult
+from ..state import AgentState, Completion, ReflectResult, has_step_type
 
 logger = get_agent_logger("reflect")
 
@@ -29,8 +29,8 @@ class ReflectContext:
 def reflect_node(state: AgentState, ctx: ReflectContext) -> dict[str, Any]:
     """Run an LLM-based review before the next ReAct turn."""
     logger.info("[NODE: reflect] Bắt đầu phản ánh kết quả tool bằng LLM.")
-    calls = [step for step in state["steps"] if step.get("type") == "tool_call"]
-    results = [step for step in state["steps"] if step.get("type") == "tool_result"]
+    calls = [step for step in state["steps"] if has_step_type(step, "tool_call")]
+    results = [step for step in state["steps"] if has_step_type(step, "tool_result")]
     if not calls or not results:
         logger.info("[NODE: reflect] Không có tool call/result để phản ánh.")
         return {}
@@ -39,7 +39,7 @@ def reflect_node(state: AgentState, ctx: ReflectContext) -> dict[str, Any]:
     logger.info("[NODE: reflect] Đánh giá tool='%s'", call["tool"])
 
     verification = next((step.get("result", {}) for step in reversed(state["steps"])
-                         if step.get("type") == "verification" and step.get("tool") == call["tool"]),
+                         if has_step_type(step, "verification") and step.get("tool") == call["tool"]),
                         {"passed": "error" not in result_step.get("result", {})})
 
     tool_name = call["tool"]
@@ -153,7 +153,7 @@ def _record_reflection(state: AgentState, call: dict[str, Any],
             " Do not repeat the same failing call; inspect evidence, follow the current plan step, "
             "and choose a different valid tool or parameters when needed." + recovery)})
             
-    return {"steps": steps, "messages": messages, "last_reflection": reflection}
+    return {"steps": steps, "messages": messages}
 
 
 def after_reflect(state: AgentState) -> str:

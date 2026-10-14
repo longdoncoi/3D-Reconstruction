@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ai_assistant.config.logging import get_agent_logger
+from ai_assistant.domain.governance import redact_value
 
 from ..state import (
     COMPLETION_TOOLS,
@@ -18,6 +19,7 @@ from ..state import (
     AgentState,
     Executor,
     VerifyResult,
+    has_step_type,
 )
 from .summarize import summarize_messages
 
@@ -140,17 +142,34 @@ def _verified_reflection_update(state: AgentState, steps: list[dict[str, Any]],
     }
 
 
-def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
-    """Execute the chosen tool and verify its result."""
-    logger.info("[NODE: tool] Bắt đầu thực thi tool.")
+@dataclass
+class _ToolDispatch:
+    """One pending tool call after pairing, execution and error counting."""
+
+    tool_name: str
+    params: dict[str, Any]
+    result: dict[str, Any]
+    last_step: dict[str, Any]
+    error_count: int
+
+
+def _dispatch(state: AgentState, ctx: ToolContext) -> _ToolDispatch | dict[str, Any]:
+    """Cancel gate, pending-call pairing, payload validation and execution.
+
+    Phase 1 of the tool node (review #18). Returns a complete state update
+    when the run must stop before anything is recorded — cooperative cancel,
+    a tool node reached without a pending call, an invalid payload, or a Qt
+    acknowledgement the UI still owes us; otherwise the record handed to
+    :func:`_record`.
+    """
     if ctx.cancel_checker():
         steps = list(state["steps"])
         steps.append({"type": "cancelled", "content": "Task cancelled cooperatively.",
                       "iteration": state.get("iteration", 0)})
         return {"steps": steps, "done": True, "cancelled": True}
-        
-    call_steps = [s for s in state["steps"] if s.get("type") == "tool_call"]
-    result_steps = [s for s in state["steps"] if s.get("type") == "tool_result"]
+
+    call_steps = [s for s in state["steps"] if has_step_type(s, "tool_call")]
+    result_steps = [s for s in state["steps"] if has_step_type(s, "tool_result")]
     if len(call_steps) <= len(result_steps):
         logger.error("[NODE: tool] Reached without a pending tool_call.")
         steps = list(state["steps"])
@@ -175,7 +194,7 @@ def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
         })
         return {"steps": steps, "done": True}
 
-    logger.info("[NODE: tool] Thực thi: %s, params: %s", tool_name, str(params)[:200])
+    logger.info("[NODE: tool] Thực thi: %s, params: %s", tool_name, str(redact_value(params))[:200])
     logger.debug(f"\n--- [LOG: TOOL NODE] Thuc thi: {tool_name} ---")
     try:
         result = ctx.execute(tool_name, params)
@@ -198,6 +217,20 @@ def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
             "pending_tool": {"tool": tool_name, "params": params, "ui_ack": True},
             "done": True,
         }
+    return _ToolDispatch(tool_name, params, result, last_step, error_count)
+
+
+def _record(state: AgentState, ctx: ToolContext, dispatched: _ToolDispatch) -> dict[str, Any]:
+    """Write the observable outcome of an executed tool (review #18, phase 2).
+
+    Result steps, the circuit breaker, optional verification, RAG/completion
+    shortcuts, the tool-result message and the verified-reflection fast paths.
+    """
+    tool_name = dispatched.tool_name
+    params = dispatched.params
+    result = dispatched.result
+    last_step = dispatched.last_step
+    error_count = dispatched.error_count
 
     steps = list(state["steps"])
     tool_result_entry: dict[str, Any] = {
@@ -211,7 +244,7 @@ def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
     if error_count >= 3:
         steps.append({"type": "final_answer", "content": f"Ngắt mạch (Circuit Breaker): Tool '{tool_name}' gặp lỗi 3 lần liên tiếp. Dừng tác vụ để tránh vòng lặp."})
         return {"steps": steps, "done": True, "error_count": error_count}
-        
+
     verification = {"passed": "error" not in result, "reason": "No verifier configured."}
     if ctx.verify_result:
         verification = ctx.verify_result(tool_name, params, result)
@@ -240,7 +273,7 @@ def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
             "Only continue when a specific missing fact is necessary."
         ),
     })
-    
+
     low_risk = _verified_reflection_update(
         state, steps, messages, tool_name, verification, result, last_step,
         error_count, LOW_RISK_TOOLS, "Verified low-risk read-only tool result.")
@@ -254,13 +287,27 @@ def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
         require_membership=False)
     if semantic_free is not None:
         return semantic_free
-                
+
     return {
         "steps":           steps,
         "messages":        messages,
         "tool_call_count": state.get("tool_call_count", 0) + 1,
         "error_count":     error_count,
     }
+
+
+def tool_node(state: AgentState, ctx: ToolContext) -> dict[str, Any]:
+    """Execute the chosen tool and verify its result.
+
+    Thin coordinator (review #18): :func:`_dispatch` pairs and runs the
+    pending call, :func:`_record` writes everything the UI and routers then
+    observe.
+    """
+    logger.info("[NODE: tool] Bắt đầu thực thi tool.")
+    dispatched = _dispatch(state, ctx)
+    if isinstance(dispatched, dict):
+        return dispatched
+    return _record(state, ctx, dispatched)
 
 
 def after_tool(state: AgentState) -> str:
@@ -273,7 +320,7 @@ def after_tool(state: AgentState) -> str:
         logger.info("[ROUTER: after_tool] → REASON (synthesize verified RAG evidence)")
         return "reason"
     if (state.get("skip_reflect") and state.get("steps")
-            and state["steps"][-1].get("type") == "reflection"):
+            and has_step_type(state["steps"][-1], "reflection")):
         logger.info("[ROUTER: after_tool] → REASON (verified low-risk tool)")
         return "reason"
     logger.info("[ROUTER: after_tool] → REFLECT")

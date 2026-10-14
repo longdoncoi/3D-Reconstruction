@@ -109,9 +109,19 @@ jobs:
       - name: Static analysis — mypy full package
         working-directory: AIAssistant
         # Type-checks the whole ai_assistant package (domain, ports, application,
-        # agents, orchestration, adapters, tools, rag, llm, bootstrap, legacy).
+        # agents, orchestration, adapters, tools, rag, llm, bootstrap).
         # Third-party packages without stubs are imported as Any.
         run: mypy src/ai_assistant
+
+      - name: Mutation check — load-bearing guards (ADR 0015)
+        working-directory: AIAssistant
+        # Inverts one decision at a time in the sandbox allow-list, the HITL
+        # approval gate, the transport policy, the cache seal and the cancel
+        # races, and requires the owning tests to fail. It rewrites those
+        # source files in place and restores them in a ``finally`` guarded by a
+        # lock file, so it runs last in this job — never alongside a step that
+        # reads src/ (the suite above already finished).
+        run: PYTHONPATH=src python scripts/mutation_check.py
 
   cvtrain:
     # Offline lint + type check + unit tests for the AIComputerVision training

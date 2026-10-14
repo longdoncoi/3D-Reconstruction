@@ -96,6 +96,22 @@ def _looks_like_path(argument: str) -> bool:
     return "/" in argument or "\\" in argument or argument.startswith(".") or argument.endswith(".py")
 
 
+def _executable_rejection(executable: str) -> str | None:
+    """Refuse anything that is not a bare allow-listed name resolved via PATH.
+
+    Matching on ``Path(executable).name`` alone let ``/tmp/attacker/git`` pass
+    for ``git``: the allow-list has to constrain *which* program runs, not what
+    a file happens to be called. A name carrying no separator is resolved by the
+    OS against the ``PATH`` this process inherits, so only the operator's own
+    tool can match — in the local runtime and in the container alike.
+    """
+    if "/" in executable or "\\" in executable:
+        return "Executable must be a bare name from the allow-list, resolved via PATH."
+    if executable.casefold() not in _ALLOWED:
+        return "Executable is not in the agent allow-list."
+    return None
+
+
 def _subcommand_rejection(argv: list[str]) -> str | None:
     """Restrict the subcommand surface of allow-listed binaries (ADR 0011).
 
@@ -153,8 +169,11 @@ def run(command: str, cwd: str, timeout: int) -> dict[str, Any]:
         argv = shlex.split(command, posix=os.name != "nt")
     except ValueError as error:
         return {"error": f"Invalid command: {error}"}
-    if not argv or Path(argv[0]).name.casefold() not in _ALLOWED:
+    if not argv:
         return {"error": "Executable is not in the agent allow-list."}
+    executable_rejection = _executable_rejection(argv[0])
+    if executable_rejection:
+        return {"error": executable_rejection}
     sub_rejection = _subcommand_rejection(argv)
     if sub_rejection:
         return {"error": sub_rejection}

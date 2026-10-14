@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .state import SEMANTIC_REFLECTION_TOOLS
+from .state import SEMANTIC_REFLECTION_TOOLS, has_step_type
 
 # Execution kinds the Planner assigns to each step. They replace hard-coded
 # keyword routing: the LLM decides RAG vs direct answer vs UI tool per step.
@@ -27,7 +27,7 @@ def completed_plan_steps(steps: list[dict[str, Any]], plan: list[str] | None) ->
         return 0
     reflections = [
         step for step in steps
-        if step.get("type") == "reflection" and step.get("result", {}).get("passed") is True
+        if has_step_type(step, "reflection") and step.get("result", {}).get("passed") is True
         and (step.get("tool") in SEMANTIC_REFLECTION_TOOLS or step.get("tool") == "step_answer")
     ]
     indexed = [step for step in reflections if isinstance(step.get("plan_step_index"), int)]
@@ -110,7 +110,7 @@ def is_project_role_lookup(text: str, normalize_fn) -> bool:
 def has_rag_evidence_for_step(steps: list[dict[str, Any]], plan_step_index: int) -> bool:
     """Whether this exact step has a completed RAG observation."""
     return any(
-        step.get("type") == "tool_result"
+        has_step_type(step, "tool_result")
         and step.get("tool") == "rag_search"
         and step.get("plan_step_index") == plan_step_index
         and "error" not in step.get("result", {})
@@ -121,7 +121,7 @@ def has_rag_evidence_for_step(steps: list[dict[str, Any]], plan_step_index: int)
 def has_rag_evidence_without_plan(steps: list[dict[str, Any]]) -> bool:
     """Whether a one-turn project question already has RAG evidence."""
     return any(
-        step.get("type") == "tool_result"
+        has_step_type(step, "tool_result")
         and step.get("tool") == "rag_search"
         and "error" not in step.get("result", {})
         for step in steps

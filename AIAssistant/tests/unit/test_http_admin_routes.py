@@ -1,13 +1,11 @@
 """Unit tests for the /admin/* HTTP router.
 
 The admin endpoints mutate module-level legacy singletons, so the tests replace
-``llm_module``/``rag_module`` with fakes and stub ``importlib.reload``,
-``threading.Thread`` and ``os._exit`` to keep the suite process-safe.
+``llm_module``/``rag_module`` with fakes and stub ``threading.Thread``
+and ``os._exit`` to keep the suite process-safe.
 """
 from __future__ import annotations
 
-import sys
-import types
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -150,8 +148,7 @@ def _build_client(
 class AdminRoutesTest(unittest.TestCase):
     def test_release_vram_unloads_and_gc_collects(self) -> None:
         client, _ = _build_client()
-        with mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True):
-            response = client.post("/admin/release-vram")
+        response = client.post("/admin/release-vram")
         self.assertEqual(response.status_code, 200)
         self.assertIn("VRAM", response.json()["message"])
 
@@ -164,8 +161,7 @@ class AdminRoutesTest(unittest.TestCase):
     def test_reload_model_success(self) -> None:
         llm = _FakeLLMModule()
         client, state = _build_client(llm=llm)
-        with mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True):
-            response = client.post("/admin/reload-model")
+        response = client.post("/admin/reload-model")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["model"], "fake-model")
         self.assertEqual(llm.load_calls, 1)
@@ -175,16 +171,14 @@ class AdminRoutesTest(unittest.TestCase):
         llm = _FakeLLMModule(is_vision=True)
         rag = _FakeRAGModule()
         client, _ = _build_client(llm=llm, rag=rag)
-        with mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True):
-            response = client.post("/admin/reload-model")
+        response = client.post("/admin/reload-model")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(rag.release_embedding_calls, 1)
 
     def test_reload_model_error_returns_500(self) -> None:
         llm = _FakeLLMModule(load_error=OSError("driver missing"))
         client, _ = _build_client(llm=llm)
-        with mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True):
-            response = client.post("/admin/reload-model")
+        response = client.post("/admin/reload-model")
         self.assertEqual(response.status_code, 500)
         self.assertIn("driver missing", response.text)
 
@@ -199,10 +193,7 @@ class AdminRoutesTest(unittest.TestCase):
     def test_reload_rag_rebuilds_index(self) -> None:
         rag = _FakeRAGModule()
         client, state = _build_client(rag=rag)
-        with (
-            mock.patch("ai_assistant.config.rag_config.RAGSettings") as mock_rag,
-            mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True),
-        ):
+        with mock.patch("ai_assistant.config.rag_config.RAGSettings") as mock_rag:
             mock_rag.from_env_and_dict.return_value = SimpleNamespace(enabled=True)
             response = client.post("/admin/reload-rag")
         self.assertEqual(response.status_code, 200)
@@ -214,10 +205,7 @@ class AdminRoutesTest(unittest.TestCase):
         llm = _FakeLLMModule(is_vision=True)
         rag = _FakeRAGModule()
         client, _ = _build_client(llm=llm, rag=rag)
-        with (
-            mock.patch("ai_assistant.config.rag_config.RAGSettings") as mock_rag,
-            mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True),
-        ):
+        with mock.patch("ai_assistant.config.rag_config.RAGSettings") as mock_rag:
             mock_rag.from_env_and_dict.return_value = SimpleNamespace(enabled=True)
             response = client.post("/admin/reload-rag")
         self.assertEqual(response.status_code, 200)
@@ -226,10 +214,7 @@ class AdminRoutesTest(unittest.TestCase):
     def test_reload_rag_error_returns_500(self) -> None:
         rag = _FakeRAGModule(init_error=RuntimeError("index boom"))
         client, _ = _build_client(rag=rag)
-        with (
-            mock.patch("ai_assistant.config.rag_config.RAGSettings") as mock_rag,
-            mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True),
-        ):
+        with mock.patch("ai_assistant.config.rag_config.RAGSettings") as mock_rag:
             mock_rag.from_env_and_dict.return_value = SimpleNamespace(enabled=True)
             response = client.post("/admin/reload-rag")
         self.assertEqual(response.status_code, 500)
@@ -238,12 +223,7 @@ class AdminRoutesTest(unittest.TestCase):
     def test_reload_agent_resets_state_and_refreshes(self) -> None:
         manifest = _FakeActionManifest()
         client, state = _build_client(manifest=manifest)
-        fake_langgraph = types.ModuleType("ai_assistant.orchestration.compat")
-        with (
-            mock.patch.dict(sys.modules, {"ai_assistant.orchestration.compat": fake_langgraph}),
-            mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True),
-        ):
-            response = client.post("/admin/reload-agent")
+        response = client.post("/admin/reload-agent")
         self.assertEqual(response.status_code, 200)
         # reset runs before and after the refresh.
         self.assertEqual(state["reset_calls"], 2)
@@ -257,14 +237,7 @@ class AdminRoutesTest(unittest.TestCase):
                 raise RuntimeError(msg)
 
         client, _ = _build_client(manifest=_ExplodingManifest())
-        with (
-            mock.patch.dict(
-                sys.modules,
-                {"ai_assistant.orchestration.compat": types.ModuleType("ai_assistant.orchestration.compat")},
-            ),
-            mock.patch.object(admin_routes, "importlib", SimpleNamespace(reload=mock.Mock()), create=True),
-        ):
-            response = client.post("/admin/reload-agent")
+        response = client.post("/admin/reload-agent")
         self.assertEqual(response.status_code, 500)
         self.assertIn("manifest boom", response.text)
 

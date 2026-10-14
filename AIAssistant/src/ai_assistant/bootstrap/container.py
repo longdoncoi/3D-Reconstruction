@@ -73,7 +73,6 @@ def tool_spec_from(entry: Any, executor: ToolExecutor | None) -> ToolSpec | None
         side_effect=_side_effect(policy),
         requires_approval=bool(getattr(entry, "requires_approval", False)),
         required_scope=_required_scope(policy),
-        idempotent=bool(getattr(entry, "idempotent", True)),
         maximum_classification=DataClassification.RESTRICTED,
         plugin_id="builtin.legacy-tools",
     )

@@ -15,8 +15,13 @@ from ai_assistant.llm import hardware
 
 class ReleaseMlMemoryTest(unittest.TestCase):
     def test_degrades_when_torch_missing(self) -> None:
-        with mock.patch.dict(sys.modules, {"torch": None}):
+        with (
+            mock.patch.dict(sys.modules, {"torch": None}),
+            mock.patch.object(hardware.gc, "collect") as collect,
+        ):
             hardware.release_ml_memory()  # must not raise
+        # Only the CUDA half degrades to silence: the collector still ran.
+        collect.assert_called_once()
 
     def test_clears_cuda_cache_when_available(self) -> None:
         empty_cache = mock.Mock()

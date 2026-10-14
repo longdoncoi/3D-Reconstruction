@@ -27,6 +27,10 @@ class _FakeService:
         self.calls.append((tool_name, parameters, principal, approval_token))
         return _FakeResult({"success": True, "tool": tool_name})
 
+    def preflight(self, tool_name, parameters, principal, correlation_id=None, *, approval_token=""):
+        self.calls.append((tool_name, parameters, principal, approval_token))
+        return _FakeResult({"success": True, "tool": tool_name, "preflight": True})
+
     def issue_approval_grant(self, tool_name, parameters, token):
         self.grants.append((tool_name, parameters, token))
 
@@ -75,6 +79,22 @@ class PlatformToolGatewayTests(unittest.TestCase):
         service = _FakeService()
         PlatformToolGateway(service).execute("get_project_status", {})
         self.assertEqual(service.calls[0][2].subject, "legacy-local")
+
+    def test_preflight_authorises_a_remote_dispatch_under_the_bound_principal(self):
+        service = _FakeService()
+        principal = Principal("a2a:test", frozenset({"project.read"}))
+        with bind_principal(principal):
+            result = PlatformToolGateway(service).preflight("read_file", {"path": "a.txt"}, "grant-7")
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["preflight"])
+        self.assertEqual(service.calls[0][2], principal)
+        self.assertEqual(service.calls[0][3], "grant-7")
+
+    def test_preflight_without_a_bootstrapped_service_fails_closed(self):
+        result = PlatformToolGateway().preflight("read_file", {})
+        self.assertFalse(result["success"])
+        self.assertEqual(result["error_code"], "runtime_unconfigured")
 
 
 if __name__ == "__main__":

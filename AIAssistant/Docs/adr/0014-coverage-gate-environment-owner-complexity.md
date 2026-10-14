@@ -53,6 +53,9 @@ used to inline:
 
 - `force_langgraph_agent()` and `vision_llm_enabled()` — the two toggles that
   were parsed by `legacy/config.py` with its own string comparisons.
+  `vision_llm_enabled()` is still live; `force_langgraph_agent()` was removed
+  by the ADR 0015 dead-code sweep because nothing ever read
+  `FORCE_LANGGRAPH_AGENT` (the legacy package itself is gone).
 - `load_local_dotenv(base_dir)` — the single `KEY=value` parser. Merges with
   `setdefault`, ignores comments/malformed lines, and treats a missing file as
   a no-op.
@@ -65,7 +68,9 @@ used to inline:
 requires the `ai_assistant` package to be findable, so the insert could never
 help and only mutated global interpreter state. Its public names
 (`USE_LANGGRAPH_AGENT`, `FORCE_LANGGRAPH_AGENT`, `ENABLE_VISION_LLM`) are
-unchanged, so no legacy importer broke.
+unchanged, so no legacy importer broke. *(Later removed: `FORCE_LANGGRAPH_AGENT`
+in the dead-code sweep and `USE_LANGGRAPH_AGENT` in the P2/P3 design-debt batch
+— finding 7; the LangGraph loop is the only production engine.)*
 
 ### 3. Platform-guarded detach in `server_manager.py`
 

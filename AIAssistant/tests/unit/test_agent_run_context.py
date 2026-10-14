@@ -19,12 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ai_assistant.agents import context as agents_context
 from ai_assistant.agents.context import (
     RESUME_ACTION_ID,
-    RESUME_VALIDATE_TOOL_CALL,
     AgentRunContext,
 )
 from ai_assistant.agents.pending_store import PendingActionStore
 from ai_assistant.application.coordination import TaskCoordinator
-from ai_assistant.orchestration.supervisor import Specialist
 
 
 def _capture(**overrides) -> dict:
@@ -65,30 +63,17 @@ class AgentRunContextWiringTests(unittest.TestCase):
         # supplied by the context, not left to runner-side defaults.
         for name in (
             "delegate_fn", "authorise_delegation_fn", "audit_agent_fn", "verify_result_fn",
-            "reflect_result_fn", "specialist_instruction_fn", "is_coding_task_fn",
+            "reflect_result_fn", "is_coding_task_fn",
             "record_tool_fn", "record_schema_error_fn", "langsmith_trace_fn", "span_fn",
             "backend_mode_fn", "openai_compatible_fn", "record_token_usage_fn",
         ):
             self.assertTrue(callable(getattr(deps, name)), f"{name} must be callable")
 
-    def test_defaults_to_specialist_supervisor_route(self) -> None:
-        self.assertIs(_capture()["supervisor_route"], Specialist.SUPERVISOR)
-
-    def test_explicit_supervisor_route_is_honoured(self) -> None:
-        route = Specialist.VERIFICATION
-        with patch.object(agents_context, "run_langgraph_agent", return_value={}) as runner:
-            AgentRunContext().run(
-                system_prompt="s", task="t", session_id="s", temperature=0.3,
-                language="vi", request_started=0.0, supervisor_route=route,
-            )
-        self.assertIs(runner.call_args.kwargs["supervisor_route"], route)
-
-    def test_graph_engine_and_specialist_are_injected(self) -> None:
+    def test_graph_engine_is_injected(self) -> None:
         graph = object()
         kwargs = _capture(local_agent_graph=graph)
         deps = kwargs["deps"]
         self.assertIs(deps.local_agent_graph, graph)
-        self.assertIs(deps.specialist, Specialist)
 
     def test_defaults_to_real_tool_validator_and_action_id(self) -> None:
         kwargs = _capture()
@@ -96,15 +81,16 @@ class AgentRunContextWiringTests(unittest.TestCase):
         self.assertIs(kwargs["generate_action_id_fn"], agents_context.generate_action_id)
 
     def test_caller_can_override_shared_defaults(self) -> None:
-        """A resume path must be able to swap in the no-op validator/id."""
+        """A caller must be able to swap in a custom validator/id."""
+        custom_validator = lambda *a, **k: (None, None)  # noqa: E731
         with patch.object(agents_context, "run_langgraph_agent", return_value={}) as runner:
             AgentRunContext().run(
                 system_prompt="s", task="t", session_id="s", temperature=0.3,
                 language="vi", request_started=0.0,
-                validate_tool_call_fn=RESUME_VALIDATE_TOOL_CALL,
+                validate_tool_call_fn=custom_validator,
                 generate_action_id_fn=RESUME_ACTION_ID,
             )
-        self.assertIs(runner.call_args.kwargs["validate_tool_call_fn"], RESUME_VALIDATE_TOOL_CALL)
+        self.assertIs(runner.call_args.kwargs["validate_tool_call_fn"], custom_validator)
         self.assertIs(runner.call_args.kwargs["generate_action_id_fn"], RESUME_ACTION_ID)
 
     def test_passes_per_call_arguments_through(self) -> None:
@@ -160,16 +146,32 @@ class AgentRunContextPendingTests(unittest.TestCase):
 
 
 class ResumeHelpersTests(unittest.TestCase):
-    """The resume-path no-ops must be inert and correctly shaped."""
-
-    def test_resume_validator_accepts_anything_and_returns_none(self) -> None:
-        # Resume validator returns (params, error) tuple; no-op means valid
-        self.assertEqual(RESUME_VALIDATE_TOOL_CALL("tool", {"a": 1}), ({"a": 1}, None))
-        self.assertEqual(RESUME_VALIDATE_TOOL_CALL(), (None, None))
-        self.assertEqual(RESUME_VALIDATE_TOOL_CALL("t", {}, extra=True), ({}, None))
+    """The resume-path id no-op must be inert and correctly shaped."""
 
     def test_resume_action_id_is_empty_string(self) -> None:
         self.assertEqual(RESUME_ACTION_ID(), "")
+
+
+class ContextGuardMethodTests(unittest.TestCase):
+    """``require_llm`` and ``resume_available`` gate the resume branch."""
+
+    def test_require_llm_raises_without_a_backend(self) -> None:
+        from ai_assistant.domain.errors import ModelNotLoadedError
+
+        with self.assertRaises(ModelNotLoadedError):
+            AgentRunContext(llm_runtime=None).require_llm()
+
+    def test_resume_available_is_false_without_a_graph(self) -> None:
+        self.assertFalse(AgentRunContext(local_agent_graph=None).resume_available())
+
+    def test_resume_available_requires_a_live_backend_when_asked(self) -> None:
+        ctx = AgentRunContext(llm_runtime=MagicMock(llm=None), local_agent_graph=object())
+        self.assertFalse(ctx.resume_available(require_llm_ready=True))
+        self.assertTrue(ctx.resume_available())
+
+    def test_resume_available_is_true_with_graph_and_backend(self) -> None:
+        ctx = AgentRunContext(llm_runtime=MagicMock(llm=MagicMock()), local_agent_graph=object())
+        self.assertTrue(ctx.resume_available(require_llm_ready=True))
 
 
 class ServiceContextWiringTests(unittest.TestCase):
@@ -192,7 +194,6 @@ class ServiceContextWiringTests(unittest.TestCase):
             svc._ctx.run(
                 system_prompt="s", task="t", session_id="s", temperature=0.3,
                 language="vi", request_started=0.0,
-                validate_tool_call_fn=RESUME_VALIDATE_TOOL_CALL,
                 generate_action_id_fn=RESUME_ACTION_ID,
             )
         kwargs = runner.call_args.kwargs
@@ -203,6 +204,9 @@ class ServiceContextWiringTests(unittest.TestCase):
         self.assertIs(deps.tool_registry, registry)
         self.assertIs(deps.pending_actions, store)
         self.assertIs(deps.task_coordinator, coordinator)
+        # Resume keeps the real validator (review 27); only the id is a no-op.
+        self.assertIs(kwargs["validate_tool_call_fn"], agents_context.validate_tool_call)
+        self.assertIs(kwargs["generate_action_id_fn"], RESUME_ACTION_ID)
 
     def test_ui_action_service_run_uses_resume_noops_and_no_a2a(self) -> None:
         from ai_assistant.agents.ui_action_service import UIActionService
@@ -211,7 +215,6 @@ class ServiceContextWiringTests(unittest.TestCase):
             svc._ctx.run(
                 system_prompt="s", task="t", session_id="s", temperature=0.3,
                 language="vi", request_started=0.0,
-                validate_tool_call_fn=RESUME_VALIDATE_TOOL_CALL,
                 generate_action_id_fn=RESUME_ACTION_ID,
             )
         kwargs = runner.call_args.kwargs
@@ -220,6 +223,8 @@ class ServiceContextWiringTests(unittest.TestCase):
         self.assertIs(deps.llm_runtime, llm)
         self.assertIs(deps.pending_actions, store)
         self.assertIs(deps.task_coordinator, coordinator)
+        self.assertIs(kwargs["validate_tool_call_fn"], agents_context.validate_tool_call)
+        self.assertIs(kwargs["generate_action_id_fn"], RESUME_ACTION_ID)
 
     def test_agent_service_run_keeps_a2a_router(self) -> None:
         from ai_assistant.agents.service import AgentService

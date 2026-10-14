@@ -429,9 +429,24 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIn("deps.tool_gateway.execute", runner_calls)
         self.assertIn("deps.tool_gateway.execute_approved", runner_calls)
         self.assertIn("gateway.approval_covers", runner_calls)
-        self.assertIsNotNone(
-            _defined_names(PACKAGE / "application" / "tools.py") & {"ToolExecutionService"}
-        )
+        # Separation of duties (review 15): the decision loop can execute and
+        # probe grants but can never mint one — grant minting is confined to
+        # the approval services and the durable-loop adapter.
+        self.assertNotIn("deps.tool_gateway.issue_approval_grant", runner_calls)
+        self.assertNotIn("issue_approval_grant", runner_calls)
+        # The service is constructed exactly once, by the composition root; the
+        # engines only ever touch the gateway it hands them. (This used to
+        # assert nothing beyond "the class is defined in its own module".)
+        constructors = {
+            path.relative_to(PACKAGE).as_posix()
+            for path in _iter_python()
+            if any(
+                isinstance(node, ast.Call)
+                and getattr(node.func, "id", "") == "ToolExecutionService"
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+            )
+        }
+        self.assertEqual(constructors, {"bootstrap/container.py"})
         # The only in-code decision loop lives in an adapter; application holds none.
         self.assertIn("self._tools.execute", deterministic_calls)
         self.assertIn("self._tools.issue_approval_grant", deterministic_calls)
@@ -481,6 +496,25 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         root_kwargs = _keyword_values(root_path)
         self.assertIn("LangGraphAgentOrchestrator", root_kwargs.get("orchestrator", set()))
         self.assertNotIn("LegacyConstrainedCompletion", root_path.read_text(encoding="utf-8"))
+
+    def test_the_orchestration_package_init_stays_framework_free(self):
+        """Importing ``ai_assistant.orchestration`` must not pull the graph.
+
+        The package used to re-export ``LocalAgentGraph`` eagerly, so the
+        agent layer (which imports ``orchestration.specialists``) hard-failed
+        without langgraph and the runner's documented ``None`` engine never
+        got the chance to raise ``ServiceUnavailableError`` (finding 5).
+        ``graph``/``compat`` may now be imported only from inside a function.
+        """
+        init_path = PACKAGE / "orchestration" / "__init__.py"
+        tree = ast.parse(init_path.read_text(encoding="utf-8"))
+        offenders = [
+            node for node in tree.body
+            if isinstance(node, ast.ImportFrom)
+            and (node.module or "").split(".")[-1] in {"graph", "compat"}
+        ]
+        self.assertEqual(offenders, [])
+        self.assertNotIn("LocalAgentGraph", _identifiers(init_path))
 
 
 if __name__ == "__main__":

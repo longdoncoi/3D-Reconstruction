@@ -128,12 +128,24 @@ class CleanupOldCheckpointsTests(unittest.TestCase):
         )
 
     def test_non_sqlite_backend_is_noop(self):
-        with self._patch_settings(_settings(checkpoint_backend="memory")):
+        with (
+            self._patch_settings(_settings(checkpoint_backend="memory")),
+            mock.patch.object(cp_module.os.path, "exists") as exists,
+        ):
             cp_module.cleanup_old_checkpoints()  # must not raise
+        # The backend gate fires before the filesystem is consulted at all.
+        exists.assert_not_called()
 
     def test_missing_database_is_noop(self):
-        with self._patch_settings(_settings(checkpoint_backend="sqlite", checkpoint_path="nope.sqlite")):
+        with (
+            self._patch_settings(
+                _settings(checkpoint_backend="sqlite", checkpoint_path="nope.sqlite"),
+            ),
+            mock.patch.object(cp_module.os.path, "exists", return_value=False) as exists,
+        ):
             cp_module.cleanup_old_checkpoints()  # must not raise
+        # It asked about exactly this path, got "no", and stopped there.
+        exists.assert_called_once_with("nope.sqlite")
 
     def test_small_database_is_left_alone(self):
         with tempfile.TemporaryDirectory() as tmp:

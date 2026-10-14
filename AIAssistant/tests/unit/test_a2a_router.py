@@ -14,6 +14,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ai_assistant.adapters import a2a_protocol
+from ai_assistant.domain.security import DataClassification
 
 
 class _FakeClient:
@@ -22,7 +23,7 @@ class _FakeClient:
         self.calls = []
 
     def submit(self, endpoint, capability, message, *, metadata=None, context_id=None, classification=None):
-        self.calls.append((endpoint, capability, message, metadata))
+        self.calls.append((endpoint, capability, message, metadata, classification))
         return self.outcome
 
 
@@ -62,6 +63,26 @@ class A2ARouterTests(unittest.TestCase):
             result = a2a_protocol.A2ARouter(client=_FakeClient({})).route("supervisor", "hi")
 
         self.assertEqual(result["status"], "unavailable")
+
+    def test_a_payload_holding_a_credential_is_declared_restricted(self):
+        """``TrustedA2AClient`` refuses sensitive classifications — that rule is
+        only worth having if the caller declares what it is sending, so the
+        transport boundary can refuse independently of the orchestrator."""
+        client = _FakeClient({"routing": "rejected_policy", "error": "sensitive data cannot leave"})
+        with patch.object(a2a_protocol, "a2a_available", return_value=True), _remote_registry():
+            result = a2a_protocol.A2ARouter(client=client).route(
+                "supervisor", "hi", {"action": "admin.login", "password": "s3cret"},
+            )
+
+        self.assertEqual(client.calls[0][4], DataClassification.RESTRICTED)
+        self.assertEqual(result["status"], "failed")
+
+    def test_an_ordinary_payload_stays_internal(self):
+        client = _FakeClient({"routing": "remote_selected", "agent_url": "http://remote.test"})
+        with patch.object(a2a_protocol, "a2a_available", return_value=True), _remote_registry():
+            a2a_protocol.A2ARouter(client=client).route("supervisor", "hi", {"k": "v"})
+
+        self.assertEqual(client.calls[0][4], DataClassification.INTERNAL)
 
 
 if __name__ == "__main__":

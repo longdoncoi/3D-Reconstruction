@@ -48,21 +48,36 @@ class CleanupOldCheckpointsTests(unittest.TestCase):
 
     def test_a_missing_database_is_a_noop(self):
         with tempfile.TemporaryDirectory() as directory:
-            missing = str(Path(directory) / "absent.db")
-            with patch(
-                "ai_assistant.adapters.persistence.checkpointing"
-                ".load_agent_runtime_settings",
-                return_value=self._settings(missing),
+            missing = Path(directory) / "absent.db"
+            with (
+                patch(
+                    "ai_assistant.adapters.persistence.checkpointing"
+                    ".load_agent_runtime_settings",
+                    return_value=self._settings(str(missing)),
+                ),
+                patch(
+                    "ai_assistant.adapters.persistence.checkpointing.os.path.exists",
+                    return_value=False,
+                ) as exists,
             ):
                 cleanup_old_checkpoints()
+            # It asked about exactly this path, got "no", and stopped there …
+            exists.assert_called_once_with(str(missing))
+            # … and no placeholder database appeared either.
+            self.assertFalse(missing.exists())
 
     def test_a_non_sqlite_backend_skips_cleanup(self):
-        with patch(
-            "ai_assistant.adapters.persistence.checkpointing"
-            ".load_agent_runtime_settings",
-            return_value=SimpleNamespace(checkpoint_backend="memory", checkpoint_path="x"),
+        with (
+            patch(
+                "ai_assistant.adapters.persistence.checkpointing"
+                ".load_agent_runtime_settings",
+                return_value=SimpleNamespace(checkpoint_backend="memory", checkpoint_path="x"),
+            ),
+            patch("ai_assistant.adapters.persistence.checkpointing.os.path.exists") as exists,
         ):
             cleanup_old_checkpoints()
+        # The backend gate fires before the filesystem is consulted at all.
+        exists.assert_not_called()
 
 
 class VacuumDatabaseTests(unittest.TestCase):
@@ -70,7 +85,28 @@ class VacuumDatabaseTests(unittest.TestCase):
         """A database without checkpoint tables fails the DELETEs, rolls
         back, and still compacts. ``:memory:`` keeps the test off the
         filesystem entirely (no Windows file locks to clean up)."""
-        _vacuum_database(":memory:")
+        import sqlite3
+
+        real = sqlite3.connect(":memory:")
+        try:
+            spy = MagicMock(wraps=real)
+            with patch(
+                "ai_assistant.adapters.persistence.checkpointing.sqlite3.connect",
+                return_value=spy,
+            ):
+                _vacuum_database(":memory:")
+            # The DELETEs really ran and hit the missing tables …
+            self.assertTrue(
+                any("DELETE" in str(call) for call in spy.execute.call_args_list),
+            )
+            # … the failed transaction was rolled back …
+            spy.rollback.assert_called_once()
+            # … compaction still happened …
+            spy.execute.assert_any_call("VACUUM")
+            # … and the handle was released rather than left holding a lock.
+            spy.close.assert_called_once()
+        finally:
+            real.close()
 
     def test_an_unopenable_file_closes_nothing_and_raises(self):
         with self.assertRaises(Exception):
@@ -104,8 +140,10 @@ class LangsmithCompatibilityTests(unittest.TestCase):
         self.assertEqual(client.update_run.call_count, 2)
 
     def test_finish_without_a_client_is_a_noop(self):
-        with patch.object(langsmith_mod, "_get_client", return_value=None):
-            langsmith_mod.finish_langsmith_run("run-1", {})
+        with patch.object(langsmith_mod, "_get_client", return_value=None) as get_client:
+            self.assertIsNone(langsmith_mod.finish_langsmith_run("run-1", {}))
+        # The guard is the client lookup itself: no client, no SDK call.
+        get_client.assert_called_once()
 
 
 if __name__ == "__main__":

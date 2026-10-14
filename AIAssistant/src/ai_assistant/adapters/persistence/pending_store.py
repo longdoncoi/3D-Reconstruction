@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from pathlib import Path
+
+logger = logging.getLogger("ai_assistant.persistence.pending_store")
 
 
 class PendingActionStore:
@@ -58,8 +61,11 @@ class PendingActionStore:
                     self._data.update(
                         {str(key): value for key, value in payload.items() if isinstance(value, dict)}
                     )
-            except (OSError, ValueError):
-                pass
+            except (OSError, ValueError) as error:
+                # Dropping to an empty store is deliberate (a corrupt file must
+                # not brick startup) but it must not be silent: the operator needs
+                # to know pending approvals vanished (finding 25).
+                logger.warning("Pending-action state could not be read from %s: %s", self.path, error)
 
     def save(self) -> None:
         with self._lock:
@@ -71,8 +77,10 @@ class PendingActionStore:
                 with open(temp_path, "w", encoding="utf-8") as handle:
                     json.dump(dict(self._data), handle, ensure_ascii=False, indent=2, default=str)
                 temp_path.replace(self._path)
-            except OSError:
-                pass
+            except OSError as error:
+                # The API still answers pending_approval after this, so the
+                # refusal to persist has to be visible in the log (finding 25).
+                logger.warning("Pending-action state could not be written to %s: %s", self.path, error)
 
     def cleanup(self, cutoff: float) -> bool:
         with self._lock:

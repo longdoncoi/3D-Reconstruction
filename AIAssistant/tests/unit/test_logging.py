@@ -96,7 +96,10 @@ class CleanupOldLogsTests(unittest.TestCase):
             self.assertTrue(new.exists())
 
     def test_non_existing_dir_is_noop(self) -> None:
-        cleanup_old_logs("C:/definitely/not/here", max_days=7)  # must not raise
+        missing = Path("C:/definitely/not/here")
+        cleanup_old_logs(str(missing), max_days=7)  # must not raise
+        # Nothing to clean, and nothing was created to clean either.
+        self.assertFalse(missing.exists())
 
     def test_size_cap_removes_oldest(self) -> None:
         import tempfile

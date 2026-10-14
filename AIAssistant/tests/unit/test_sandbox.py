@@ -49,6 +49,28 @@ class SandboxRunTests(unittest.TestCase):
         result = run("hacktool --all", "C:/x", 10)
         self.assertIn("allow-list", result["error"])
 
+    def test_a_blank_command_is_refused(self) -> None:
+        for command in ("", "   "):
+            with self.subTest(command=command):
+                self.assertIn("allow-list", run(command, "C:/x", 10)["error"])
+
+    def test_a_path_shaped_executable_is_refused_even_when_the_name_matches(self) -> None:
+        """The allow-list constrains *which* program runs, not what a file is
+        called: matching on the basename let ``/opt/attacker/git`` pass for
+        ``git``, so only a bare name resolved from PATH is accepted."""
+        with mock.patch("ai_assistant.tools.sandbox.subprocess.run") as sub:
+            result = run("/opt/attacker/git status", "C:/workspace", 30)
+        # The path gate answers — not the name comparison that sits behind it.
+        self.assertIn("bare name", result["error"])
+        sub.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "backslashes survive shlex only with posix=False")
+    def test_a_windows_path_shaped_executable_is_refused(self) -> None:
+        with mock.patch("ai_assistant.tools.sandbox.subprocess.run") as sub:
+            result = run("C:\\attacker\\git status", "C:/workspace", 30)
+        self.assertIn("bare name", result["error"])
+        sub.assert_not_called()
+
     def test_allowed_command_runs_local(self) -> None:
         with mock.patch(
             "ai_assistant.tools.sandbox.subprocess.run",
@@ -118,8 +140,16 @@ class SandboxRunTests(unittest.TestCase):
         """No docker daemon (or a vanished container) must not mask the timeout."""
         from ai_assistant.tools.sandbox import _force_remove_container
 
-        with mock.patch("ai_assistant.tools.sandbox.subprocess.run", side_effect=OSError("no docker")):
-            _force_remove_container("agent-sbx-gone")  # must not raise
+        with mock.patch(
+            "ai_assistant.tools.sandbox.subprocess.run", side_effect=OSError("no docker"),
+        ) as sub:
+            self.assertIsNone(_force_remove_container("agent-sbx-gone"))  # must not raise
+        # The removal really was attempted — the swallow covers its failure,
+        # not a missing call.
+        sub.assert_called_once_with(
+            ["docker", "rm", "-f", "agent-sbx-gone"],
+            capture_output=True, timeout=15, shell=False, check=False,
+        )
 
     def test_inline_interpreter_code_is_rejected(self) -> None:
         """``python -c`` / ``-m`` must not turn the allow-list into an RCE."""

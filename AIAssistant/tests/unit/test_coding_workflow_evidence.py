@@ -11,9 +11,13 @@ from __future__ import annotations
 
 import unittest
 
+from ai_assistant.domain.tools import (
+    tool_result_has_evidence as _result_has_evidence,
+)
+from ai_assistant.domain.tools import (
+    tool_result_succeeded as _result_is_successful,
+)
 from ai_assistant.orchestration.specialists.code import (
-    _result_has_evidence,
-    _result_is_successful,
     coding_workflow_guidance,
     coding_workflow_kind,
     coding_workflow_status,
@@ -52,8 +56,19 @@ class ResultContractTests(unittest.TestCase):
         self.assertFalse(_result_has_evidence("read_file", {"error": "boom"}))
         self.assertFalse(_result_has_evidence("read_file", {"content": ""}))
 
+    def test_blank_string_content_is_not_evidence(self):
+        """``" "`` must not masquerade as a read result (shared table, #24/7)."""
+        self.assertFalse(_result_has_evidence("read_file", {"content": "  \n"}))
+
     def test_an_unmapped_tool_is_trusted_on_success_alone(self):
-        self.assertTrue(_result_has_evidence("git_diff", {"success": True}))
+        self.assertTrue(_result_has_evidence("run_command", {"success": True}))
+
+    def test_git_diff_evidence_is_its_content_field(self):
+        """``git_diff`` is listed in the shared table on both call sites."""
+        self.assertFalse(_result_has_evidence("git_diff", {"success": True}))
+        self.assertTrue(
+            _result_has_evidence("git_diff", {"content": "diff --git a/x b/x"}),
+        )
 
     def test_analyse_code_evidence_needs_one_of_its_three_fields(self):
         evidence = _result_has_evidence(

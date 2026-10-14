@@ -63,16 +63,30 @@ class CheckpointCleanupTests(unittest.TestCase):
 
     def test_cleanup_noop_for_non_sqlite(self) -> None:
         """Cleanup is a no-op for non-SQLite backends."""
-        with patch.dict(os.environ, {"AGENT_CHECKPOINT_BACKEND": "memory"}):
+        with (
+            patch.dict(os.environ, {"AGENT_CHECKPOINT_BACKEND": "memory"}),
+            patch("ai_assistant.adapters.persistence.checkpointing.os.path.exists") as exists,
+        ):
             cleanup_old_checkpoints()
+        # The backend gate fires before the filesystem is consulted at all.
+        exists.assert_not_called()
 
     def test_cleanup_handles_missing_database(self) -> None:
         """Cleanup handles missing database file gracefully."""
-        with patch.dict(os.environ, {
-            "AGENT_CHECKPOINT_BACKEND": "sqlite",
-            "AGENT_CHECKPOINT_PATH": "/nonexistent/path/checkpoints.sqlite",
-        }):
+        missing = "/nonexistent/path/checkpoints.sqlite"
+        with (
+            patch.dict(os.environ, {
+                "AGENT_CHECKPOINT_BACKEND": "sqlite",
+                "AGENT_CHECKPOINT_PATH": missing,
+            }),
+            patch(
+                "ai_assistant.adapters.persistence.checkpointing.os.path.exists",
+                return_value=False,
+            ) as exists,
+        ):
             cleanup_old_checkpoints()
+        # It asked about exactly this path, got "no", and stopped there.
+        exists.assert_called_once_with(missing)
 
 
 if __name__ == "__main__":

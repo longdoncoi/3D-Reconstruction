@@ -11,13 +11,11 @@ from ai_assistant.orchestration.specialists.code import (
 from ai_assistant.orchestration.specialists.code import (
     instruction as coding_instruction,
 )
-from ai_assistant.orchestration.specialists.desktop_workflow import ToolAppAgent
 
 __all__ = [
     "ChatbotAgent",
     "CodingTaskContext",
     "CodingWorkflowStatus",
-    "ToolAppAgent",
     "coding_instruction",
     "coding_workflow_guidance",
     "coding_workflow_kind",

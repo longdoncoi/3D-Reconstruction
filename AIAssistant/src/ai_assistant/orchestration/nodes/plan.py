@@ -14,7 +14,7 @@ from ai_assistant.tools.action_manifest import normalize_text, rank_actions_for_
 
 from ..helpers import normalise_plan_payload, plan_step_execution_contract
 from ..prompts import PLANNER_PROMPT
-from ..state import AgentState, Completion
+from ..state import AgentState, Completion, has_step_type
 
 logger = get_agent_logger("reasoning")
 
@@ -27,11 +27,11 @@ def _reuse_prior_plan(state: AgentState) -> dict[str, Any] | None:
     """
     previous_review = next(
         (step.get("result", {}) for step in reversed(state.get("steps", []))
-         if step.get("type") == "plan_reflection"), None)
+         if has_step_type(step, "plan_reflection")), None)
 
     if previous_review and previous_review.get("passed") is True:
         for step in reversed(state.get("steps", [])):
-            if step.get("type") == "plan":
+            if has_step_type(step, "plan"):
                 logger.info("[NODE: plan] Đã có kế hoạch đã xác thực: %s", step.get("steps"))
                 return {"plan": step.get("steps"), "plan_spec": step.get("spec"), "plan_verified": True}
 
@@ -39,12 +39,12 @@ def _reuse_prior_plan(state: AgentState) -> dict[str, Any] | None:
     # request; only a failed plan_reflection authorises regeneration.
     if previous_review is None:
         for step in reversed(state.get("steps", [])):
-            if step.get("type") == "plan":
+            if has_step_type(step, "plan"):
                 logger.info("[NODE: plan] Đã có kế hoạch từ trước: %s", step.get("steps"))
                 return {"plan": step.get("steps"), "plan_spec": step.get("spec")}
 
     # Skip planning nếu đang ở giữa task (đã có tool_call từ vòng lặp trước)
-    if any(step.get("type") == "tool_call" for step in state.get("steps", [])) and previous_review is None:
+    if any(has_step_type(step, "tool_call") for step in state.get("steps", [])) and previous_review is None:
         return {"plan": None}
     return None
 
