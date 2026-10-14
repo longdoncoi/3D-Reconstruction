@@ -283,6 +283,11 @@ def build_index_from_scratch(chunks: list[ChunkResult], embed_model: Any, settin
         msg = f"Embedding model returned {dim} dimensions; expected {settings.embedding_dimension}"
         raise ValueError(msg)
 
+    # Annotated as the faiss base class: below 1000 vectors the index is a
+    # flat one, above it an IVF one — with faiss >= 1.14 shipping type stubs,
+    # mypy sees the two concrete classes as incompatible unless the shared
+    # variable carries the common base type.
+    index: _faiss.Index
     if n < 1000:
         index = _faiss.IndexFlatIP(dim)
         _faiss.normalize_L2(emb)
@@ -290,12 +295,15 @@ def build_index_from_scratch(chunks: list[ChunkResult], embed_model: Any, settin
     else:
         nlist = min(int(n**0.5), 256)
         quantizer = _faiss.IndexFlatIP(dim)
-        index = _faiss.IndexIVFFlat(quantizer, dim, nlist, _faiss.METRIC_INNER_PRODUCT)
+        ivf = _faiss.IndexIVFFlat(quantizer, dim, nlist, _faiss.METRIC_INNER_PRODUCT)
         normed = emb.copy()
         _faiss.normalize_L2(normed)
-        index.train(normed)
-        index.add(normed)
-        index.nprobe = min(16, nlist)
+        ivf.train(normed)
+        ivf.add(normed)
+        # nprobe is IVF-only, hence the concrete variable rather than the
+        # base-typed one.
+        ivf.nprobe = min(16, nlist)
+        index = ivf
 
     logger.info("FAISS built: ntotal=%d dim=%d", index.ntotal, dim)
 

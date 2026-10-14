@@ -4,7 +4,11 @@ The composition root injects the shared tool gateway once, at construction
 time (:class:`McpToolServer`), and every tool call funnels through the
 instance-bound :meth:`McpToolServer._dispatch`. There is no module-level
 service locator and no later ``configure_*`` rebind — the dispatch callback is
-captured when the server is built.
+captured when the server is built. The dispatch also binds
+:data:`MCP_PRINCIPAL` so the shared gateway enforces the least-privilege scope
+set for an external machine caller instead of falling back to the in-process
+identity, and the composition root mounts this app behind the MCP transport
+guard (``ai_assistant.adapters.http.security``).
 """
 from __future__ import annotations
 
@@ -12,11 +16,17 @@ import json
 from contextlib import asynccontextmanager
 from typing import Any, Callable
 
+from ..domain.security import Principal, bind_principal
 from ..ports import ToolGateway
 from ..tools.tool_contract import RUNTIME_UNCONFIGURED_RESULT
 
 try:
-    from mcp.server.fastmcp import FastMCP
+    # mcp 1.x. On mcp >= 2 the back-compat module exists in the shipped stubs
+    # (mcp-types) without the FastMCP symbol — it was renamed MCPServer — so
+    # mypy reports attr-defined while the runtime chain below keeps working
+    # on both major versions. warn_unused_ignores is off, so the ignore is
+    # inert on 1.x installs.
+    from mcp.server.fastmcp import FastMCP  # type: ignore[attr-defined]
 except ImportError:
     try:
         from mcp.server.mcpserver import MCPServer as FastMCP
@@ -39,6 +49,14 @@ _BUILTIN_TOOLS = (
     "rag_search",
     "application_action",
 )
+
+# MCP is a machine-to-machine surface with no desktop session behind it, so a
+# call never inherits the broad in-process identity: the shared gateway sees
+# read scope plus the desktop-ack scope ``application_action`` declares. Tools
+# that write or execute (``project.write`` / ``project.execute``), including
+# plugin tools declaring those scopes, are refused by the same chokepoint that
+# refuses them for any other least-privilege caller.
+MCP_PRINCIPAL = Principal("mcp-caller", frozenset({"project.read", "desktop.action"}))
 
 
 class McpToolServer:
@@ -81,7 +99,8 @@ class McpToolServer:
         parameters = {name: value for name, value in parameters.items() if value is not None}
         if self._gateway is None:
             return json.dumps(RUNTIME_UNCONFIGURED_RESULT, ensure_ascii=False)
-        return json.dumps(self._gateway.execute(tool_name, parameters), ensure_ascii=False)
+        with bind_principal(MCP_PRINCIPAL):
+            return json.dumps(self._gateway.execute(tool_name, parameters), ensure_ascii=False)
 
     @asynccontextmanager
     async def lifespan(self):
@@ -222,6 +241,7 @@ def bind_plugin_tools(
 
 __all__ = [
     "MCP_AVAILABLE",
+    "MCP_PRINCIPAL",
     "McpToolServer",
     "bind_plugin_tools",
 ]
