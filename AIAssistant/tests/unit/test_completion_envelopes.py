@@ -17,6 +17,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from ai_assistant.agents import completion as _completion
 from ai_assistant.agents.completion import (
     _get_precompiled_grammar,
     constrained_completion,
@@ -214,13 +215,69 @@ class StructuredCompletionTests(unittest.TestCase):
 
 
 class GrammarCacheTests(unittest.TestCase):
-    """Coverage for the module-level grammar precompile cache."""
+    """Coverage for the module-level grammar precompile cache.
+
+    The cache is module-level global state, so each test saves and restores it.
+    That keeps compile/hit coverage deterministic instead of depending on test
+    ordering or on a real ``llama_cpp`` being installed (it is a manual
+    heavyweight dependency that is absent from the offline CI test environment,
+    so the success path must be exercised through a stand-in).
+    """
+
+    def setUp(self) -> None:
+        self._saved_grammar = _completion._PRECOMPILED_GRAMMAR
+        self._saved_hash = _completion._GRAMMAR_SCHEMA_HASH
+        _completion._PRECOMPILED_GRAMMAR = None
+        _completion._GRAMMAR_SCHEMA_HASH = None
+
+    def tearDown(self) -> None:
+        _completion._PRECOMPILED_GRAMMAR = self._saved_grammar
+        _completion._GRAMMAR_SCHEMA_HASH = self._saved_hash
+
+    @staticmethod
+    def _working_llama_cpp() -> SimpleNamespace:
+        return SimpleNamespace(
+            LlamaGrammar=SimpleNamespace(
+                from_json_schema=MagicMock(return_value=object())
+            )
+        )
 
     def test_cache_missing_llama_cpp_returns_none(self) -> None:
         # When llama_cpp cannot provide LlamaGrammar the cache falls back to None.
         fake = SimpleNamespace()  # no LlamaGrammar attribute -> ImportError on import
         with patch.dict(sys.modules, {"llama_cpp": fake}):
             self.assertIsNone(_get_precompiled_grammar("{}"))
+
+    def test_successful_compile_is_then_served_from_cache(self) -> None:
+        """A working llama_cpp compiles once, then the cache answers for free."""
+        fake = self._working_llama_cpp()
+        with patch.dict(sys.modules, {"llama_cpp": fake}):
+            first = _get_precompiled_grammar('{"type":"object"}')
+            second = _get_precompiled_grammar('{"type":"object"}')
+        self.assertIsNotNone(first)
+        self.assertIs(first, second)  # second call is a cache hit, no recompile
+        fake.LlamaGrammar.from_json_schema.assert_called_once()
+
+    def test_constrained_completion_forwards_the_precompiled_grammar(self) -> None:
+        """The llama path passes the compiled grammar into the model kwargs."""
+        fake = self._working_llama_cpp()
+        response = {"choices": [{"message": {"content": '{"decision":"continue"}'}}]}
+        runtime = _FakeRuntime(response)
+        with patch.dict(sys.modules, {"llama_cpp": fake}):
+            out = constrained_completion(
+                [{"role": "user", "content": "hi"}],
+                max_tokens=8,
+                temperature=0.0,
+                llm_runtime=runtime,
+                backend_mode_fn=lambda: "llama_cpp",
+                openai_compatible_fn=MagicMock(),
+                openai_tools=[],
+                grammar_schema=json.dumps({"type": "object"}),
+                record_token_usage_fn=lambda *a, **kw: None,
+            )
+        _, kwargs = runtime.llm.create_chat_completion.call_args
+        self.assertIn("grammar", kwargs)
+        self.assertEqual(json.loads(out)["decision"], "continue")
 
 
 if __name__ == "__main__":
