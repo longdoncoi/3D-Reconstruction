@@ -109,7 +109,12 @@ def parse_tool_call(response_text: str, tool_models: dict[str, type],
     params = data.get("params")
     if not isinstance(params, dict):
         return None, None
-    validated, error = validate_fn(tool_name, params, tool_models)
+    result = validate_fn(tool_name, params, tool_models)
+    if result is None:
+        # Defensive: if validate_fn returns None, treat as validation error
+        logger.warning("validate_tool_call returned None for tool '%s', treating as validation error", tool_name)
+        return "_validation_error", {"tool": tool_name, "error": "validate_tool_call returned None"}
+    validated, error = result
     if error:
         logger.warning("Rejected invalid constrained tool call %s: %s", tool_name, error)
         record_schema_error_fn(tool_name)

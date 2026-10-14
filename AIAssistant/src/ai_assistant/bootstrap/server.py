@@ -18,6 +18,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+# Ensure package root is on path before any ai_assistant import
+_PACKAGE_ROOT = str(Path(__file__).resolve().parents[3])
+if _PACKAGE_ROOT not in sys.path:
+    sys.path.insert(0, _PACKAGE_ROOT)
+_SRC_DIR = str(Path(__file__).resolve().parents[2])
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
+
 from fastapi import FastAPI
 
 from ai_assistant.settings import apply_startup_environment_defaults, load_local_dotenv
