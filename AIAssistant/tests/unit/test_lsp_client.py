@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -400,7 +401,11 @@ class ProjectDirFallbackTests(unittest.TestCase):
         the location lookup failing the whole reference list.
         """
         from urllib.request import url2pathname
-        uri = Path("D:/elsewhere/module.py").as_uri()
+        # A platform-native absolute path, not a hard-coded "D:/…": a file
+        # URI is what the converter consumes, and "D:/x" is a *relative*
+        # path (so as_uri() raises) on POSIX.
+        raw = os.path.abspath("elsewhere/module.py")
+        uri = Path(raw).as_uri()
         with mock.patch("ai_assistant.tools.lsp_client._get_project_dir",
                         return_value="C:/"), \
                 mock.patch.object(lsp_client.os.path, "relpath",

@@ -1,6 +1,7 @@
 """Unit tests for agent path-safety utilities."""
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -50,8 +51,23 @@ class AgentSafePathTests(unittest.TestCase):
         self.assertIsNone(agent_safe_path("build/x/y.sln"))
         self.assertIsNone(agent_safe_path("node_modules/pkg/index.js"))
 
+    @unittest.skipUnless(sys.platform == "win32", "a foreign drive letter is only spellable on Windows")
     def test_absolute_escape_is_rejected(self) -> None:
+        # On Windows os.path.join discards the sandbox root for a path that
+        # already carries a drive letter, and commonpath then raises; POSIX
+        # re-roots absolute inputs under the sandbox instead (leading
+        # slashes are stripped), so there is no equivalent escape vector.
         self.assertIsNone(agent_safe_path("C:/Windows/system32"))
+
+    def test_a_commonpath_valueerror_is_rejection_not_a_crash(self) -> None:
+        # The guard behind that test: os.path.commonpath raises ValueError
+        # for mixed drives (Windows) and absolute-vs-relative mixes. Forced
+        # via mock so the rejection branch is exercised on every platform.
+        with mock.patch(
+            "ai_assistant.tools.builtin.path_utils.os.path.commonpath",
+            side_effect=ValueError("Paths don't have the same drive"),
+        ):
+            self.assertIsNone(agent_safe_path("src/app/main.py"))
 
     def test_constant_defaults_present(self) -> None:
         self.assertIn(".exe", _AGENT_BLOCKED_EXTS)
