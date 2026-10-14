@@ -28,7 +28,15 @@ SEED = 20261011
 
 
 def _write_sample(image_dir: Path, label_dir: Path, name: str, rng: random.Random) -> None:
-    """One synthetic image plus its YOLO label (class ``0`` bounding box)."""
+    """One synthetic image plus its YOLO label (class ``0`` quad polygon).
+
+    The label is written in segmentation form (class + four corner points,
+    9 columns): ultralytics treats any row with more than 6 columns as a
+    polygon and derives the detection bounding box from it via
+    ``segments2boxes``, so one label file serves both ``--det`` and ``--seg``
+    training (a plain 5-column box label crashes the seg transforms with an
+    empty mask tensor).
+    """
 
     image = Image.new("RGB", (IMGSZ, IMGSZ), (rng.randrange(256), rng.randrange(256), rng.randrange(256)))
     draw = ImageDraw.Draw(image)
@@ -38,11 +46,9 @@ def _write_sample(image_dir: Path, label_dir: Path, name: str, rng: random.Rando
     y1 = rng.randint(IMGSZ // 2, IMGSZ - 4)
     draw.rectangle([x0, y0, x1, y1], outline=(255, 255, 255), width=2)
     image.save(image_dir / f"{name}.jpg")
-    (label_dir / f"{name}.txt").write_text(
-        f"0 {(x0 + x1) / 2 / IMGSZ:.6f} {(y0 + y1) / 2 / IMGSZ:.6f} "
-        f"{(x1 - x0) / IMGSZ:.6f} {(y1 - y0) / IMGSZ:.6f}\n",
-        encoding="utf-8",
-    )
+    corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+    polygon = " ".join(f"{cx / IMGSZ:.6f} {cy / IMGSZ:.6f}" for cx, cy in corners)
+    (label_dir / f"{name}.txt").write_text(f"0 {polygon}\n", encoding="utf-8")
 
 
 def main() -> int:
