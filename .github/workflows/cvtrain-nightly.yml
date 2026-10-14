@@ -48,7 +48,14 @@ jobs:
           pip install -r AIComputerVision/requirements.txt pillow
 
       - name: Generate a toy dataset
-        run: python .github/scripts/make_toy_dataset.py --output "$GITHUB_WORKSPACE/Dataset"
+        run: |
+          # Start from an empty Models/ directory: the committed artifacts are
+          # Git LFS pointers in a CI checkout (actions/checkout does not fetch
+          # LFS), so verifying their hashes would fail for every model this job
+          # does not retrain. This job trains its own det/seg models and
+          # verifies the manifest it publishes itself.
+          rm -rf AIComputerVision/Models
+          python .github/scripts/make_toy_dataset.py --output "$GITHUB_WORKSPACE/Dataset"
 
       - name: Train + export detection model (1 epoch, CPU)
         # --min-metric smoke-tests the quality gate against the metric names the
