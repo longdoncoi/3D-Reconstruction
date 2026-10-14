@@ -8,6 +8,7 @@ from ai_assistant.config.paths import get_paths
 from ai_assistant.ports import RagContextPort
 
 from .builtin import (
+    TRANSFER_TOOL_HANDLERS,
     rag_search_tool,
     tool_analyze_code,
     tool_application_action,
@@ -22,9 +23,6 @@ from .builtin import (
     tool_replace_file_content,
     tool_run_command,
     tool_search_text,
-    tool_transfer_to_chatbot_agent,
-    tool_transfer_to_code_agent,
-    tool_transfer_to_toolapp_agent,
     tool_validate_file,
     tool_write_file,
 )
@@ -64,9 +62,8 @@ def builtin_handlers(rag_context: RagContextPort | None = None) -> dict[str, Cal
         "rag_search": rag_search_tool(rag_context),
         "go_to_definition": tool_go_to_definition,
         "find_references": tool_find_references,
-        "transfer_to_code_agent": tool_transfer_to_code_agent,
-        "transfer_to_toolapp_agent": tool_transfer_to_toolapp_agent,
-        "transfer_to_chatbot_agent": tool_transfer_to_chatbot_agent,
+        # Handoff markers: one entry per domain ``TRANSFER_TARGETS`` name.
+        **TRANSFER_TOOL_HANDLERS,
     }
 
 

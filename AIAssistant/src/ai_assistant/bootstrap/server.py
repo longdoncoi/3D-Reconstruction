@@ -18,13 +18,17 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-# Ensure package root is on path before any ai_assistant import
+# Ensure package root is on path before any ai_assistant import. Both inserts
+# fire only when the file is launched from a source tree without PYTHONPATH;
+# every in-process import (the test suite included) already carries both
+# dirs, so the branches are unreachable here — declared exclusions, not
+# unmeasured code.
 _PACKAGE_ROOT = str(Path(__file__).resolve().parents[3])
 if _PACKAGE_ROOT not in sys.path:
-    sys.path.insert(0, _PACKAGE_ROOT)
+    sys.path.insert(0, _PACKAGE_ROOT)  # pragma: no cover - source-launch bootstrap
 _SRC_DIR = str(Path(__file__).resolve().parents[2])
 if _SRC_DIR not in sys.path:
-    sys.path.insert(0, _SRC_DIR)
+    sys.path.insert(0, _SRC_DIR)  # pragma: no cover - source-launch bootstrap
 
 from fastapi import FastAPI
 

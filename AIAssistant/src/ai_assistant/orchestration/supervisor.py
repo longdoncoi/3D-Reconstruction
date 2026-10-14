@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from ai_assistant.config.logging import get_agent_logger
-from ai_assistant.domain.specialists import Specialist
+from ai_assistant.domain.specialists import TRANSFER_TARGETS, Specialist
 from ai_assistant.domain.tools import tool_result_has_evidence
 
 logger = logging.getLogger("ai_assistant.orchestration.supervisor")
@@ -70,22 +70,25 @@ class Delegation:
 RESEARCH_TOOLS = {"read_file", "list_directory", "find_files", "search_text", "analyze_code", "git_diff", "rag_search"}
 VERIFICATION_TOOLS = {"validate_file", "get_project_status"}
 CODE_TOOLS = {"write_file", "patch_file", "replace_file_content", "multi_replace_file_content", "create_directory", "run_command"}
-CODE_AGENT_TOOLS = frozenset({
-    "find_files", "list_directory", "search_text", "read_file", "analyze_code", "git_diff",
-    "get_project_status", "validate_file", "write_file", "patch_file",
-    "replace_file_content", "multi_replace_file_content", "create_directory", "run_command",
-})
 WORKFLOW_TOOLS = {"application_action"}
-TRANSFER_TARGETS = {
-    "transfer_to_code_agent": Specialist.CODE,
-    "transfer_to_toolapp_agent": Specialist.TOOLAPP,
-    "transfer_to_chatbot_agent": Specialist.CHATBOT,
-}
+# ``TRANSFER_TARGETS`` is the domain-owned handoff table; it is re-exported
+# here because the supervisor is its primary consumer (and existing callers
+# import it from this module).
+
+#: Specialists whose tool rows are spelled out explicitly below. A transfer
+#: target pointing at one of them rides along in that explicit row (CODE runs
+#: its own marker among its tools); any other transfer specialist gets a
+#: derived marker-only row, so a new handoff target cannot be forgotten here.
+_EXPLICIT_TOOL_ROWS = frozenset({
+    Specialist.SUPERVISOR, Specialist.RESEARCH, Specialist.VERIFICATION,
+    Specialist.CODE, Specialist.WORKFLOW,
+})
 
 #: The tools each specialist may execute. ``SUPERVISOR`` executes nothing (it
 #: answers directly); ``CODE`` may also run read/verify tools because a coding
-#: task inspects the repository before it mutates it, and each transfer target
-#: may be handed its own transfer tool. ``authorise`` consults this table
+#: task inspects the repository before it mutates it. Each transfer specialist
+#: not spelled out below is derived from ``TRANSFER_TARGETS`` and may be
+#: handed exactly its own handoff marker. ``authorise`` consults this table
 #: fail-closed, so the tool sets are enforced least privilege rather than
 #: decorative routing labels (review finding 13).
 ALLOWED_TOOLS: dict[Specialist, frozenset[str]] = {
@@ -94,9 +97,55 @@ ALLOWED_TOOLS: dict[Specialist, frozenset[str]] = {
     Specialist.VERIFICATION: frozenset(VERIFICATION_TOOLS),
     Specialist.CODE: frozenset(RESEARCH_TOOLS | VERIFICATION_TOOLS | CODE_TOOLS | set(TRANSFER_TARGETS)),
     Specialist.WORKFLOW: frozenset(WORKFLOW_TOOLS),
-    Specialist.TOOLAPP: frozenset({"transfer_to_toolapp_agent"}),
-    Specialist.CHATBOT: frozenset({"transfer_to_chatbot_agent"}),
+    **{
+        specialist: frozenset(
+            name for name, target in TRANSFER_TARGETS.items() if target is specialist
+        )
+        for specialist in dict.fromkeys(TRANSFER_TARGETS.values())
+        if specialist not in _EXPLICIT_TOOL_ROWS
+    },
 }
+
+
+@dataclass(frozen=True)
+class ToolRoute:
+    """One routing rule: the specialist that owns a class of tools, and why."""
+
+    specialist: Specialist
+    tools: frozenset[str]
+    reason: str
+    basis: str
+    requires_prefer_code: bool = False
+
+
+#: The routing registry ``delegate`` consults after an explicit handoff —
+#: first matching rule wins, so the tuple order IS the precedence: coding
+#: preference (guard-flagged) > read-only > verification > mutating code >
+#: desktop workflow, then the ``SUPERVISOR`` fallback in ``_route``. Adding a
+#: tool class or a specialist is one appended rule, not a re-ordered ``if``
+#: chain (architecture finding 12).
+_TOOL_ROUTE_RULES: tuple[ToolRoute, ...] = (
+    ToolRoute(
+        Specialist.CODE,
+        frozenset(RESEARCH_TOOLS | VERIFICATION_TOOLS | CODE_TOOLS),
+        "coding task requires isolated repository context",
+        "coding_preference",
+        requires_prefer_code=True,
+    ),
+    ToolRoute(Specialist.RESEARCH, frozenset(RESEARCH_TOOLS), "tool is read/RAG-only", "research_tool"),
+    ToolRoute(
+        Specialist.VERIFICATION, frozenset(VERIFICATION_TOOLS),
+        "tool validates an observable result", "verification_tool",
+    ),
+    ToolRoute(
+        Specialist.CODE, frozenset(CODE_TOOLS),
+        "tool can change project state and requires approval", "code_tool",
+    ),
+    ToolRoute(
+        Specialist.WORKFLOW, frozenset(WORKFLOW_TOOLS),
+        "tool dispatches a Qt desktop workflow", "workflow_tool",
+    ),
+)
 _AUDIT_LOCK = threading.Lock()
 _LOG_CACHE_LOCK = threading.Lock()
 _RECENT_DELEGATION_LOGS: dict[tuple[str, str], float] = {}
@@ -115,6 +164,21 @@ def _get_audit_path() -> str:
         return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "Cache", "agent_audit.jsonl"))
 
 
+def _route(tool: str | None, prefer_code: bool) -> tuple[Specialist, str, str]:
+    """Resolve the owning specialist from the routing registry (finding 12).
+
+    An explicit handoff and the ordered ``_TOOL_ROUTE_RULES`` table are the
+    whole decision; ``delegate`` itself never branches on a tool name again.
+    """
+    if tool in TRANSFER_TARGETS:
+        specialist = TRANSFER_TARGETS[tool]
+        return specialist, f"explicit supervisor handoff to {specialist.value}", "explicit_transfer"
+    for route in _TOOL_ROUTE_RULES:
+        if (not route.requires_prefer_code or prefer_code) and tool in route.tools:
+            return route.specialist, route.reason, route.basis
+    return Specialist.SUPERVISOR, "direct response or unresolved intent", "supervisor_fallback"
+
+
 def delegate(
     task: str,
     session_id: str,
@@ -123,21 +187,7 @@ def delegate(
     prefer_code: bool = False,
 ) -> Delegation:
     """Select exactly one worker role. Workers never delegate further."""
-    if tool in TRANSFER_TARGETS:
-        specialist = TRANSFER_TARGETS[tool]
-        reason, basis = f"explicit supervisor handoff to {specialist.value}", "explicit_transfer"
-    elif prefer_code and tool in (RESEARCH_TOOLS | VERIFICATION_TOOLS | CODE_TOOLS):
-        specialist, reason, basis = Specialist.CODE, "coding task requires isolated repository context", "coding_preference"
-    elif tool in RESEARCH_TOOLS:
-        specialist, reason, basis = Specialist.RESEARCH, "tool is read/RAG-only", "research_tool"
-    elif tool in VERIFICATION_TOOLS:
-        specialist, reason, basis = Specialist.VERIFICATION, "tool validates an observable result", "verification_tool"
-    elif tool in CODE_TOOLS:
-        specialist, reason, basis = Specialist.CODE, "tool can change project state and requires approval", "code_tool"
-    elif tool in WORKFLOW_TOOLS:
-        specialist, reason, basis = Specialist.WORKFLOW, "tool dispatches a Qt desktop workflow", "workflow_tool"
-    else:
-        specialist, reason, basis = Specialist.SUPERVISOR, "direct response or unresolved intent", "supervisor_fallback"
+    specialist, reason, basis = _route(tool, prefer_code)
 
     # A2A: check whether a remote agent can handle this specialist role.
     remote_endpoint = _resolve_remote_endpoint(specialist)
@@ -294,7 +344,6 @@ def audit(event: str, delegation: Delegation, **details: Any) -> None:
 
 __all__ = [
     "ALLOWED_TOOLS",
-    "CODE_AGENT_TOOLS",
     "CODE_TOOLS",
     "RESEARCH_TOOLS",
     "TRANSFER_TARGETS",
@@ -302,6 +351,7 @@ __all__ = [
     "WORKFLOW_TOOLS",
     "Delegation",
     "Specialist",
+    "ToolRoute",
     "audit",
     "authorise",
     "delegate",

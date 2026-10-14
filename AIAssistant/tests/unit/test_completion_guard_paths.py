@@ -214,6 +214,17 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(tool, "read_file")
         self.assertEqual(params.get("path"), "test.txt")
 
+    def test_parse_tool_call_survives_a_validator_that_returns_none(self) -> None:
+        """A ``None`` from the validator is a validation error, never a crash.
+
+        Defensive arm added after a real crash: unpacking ``None`` as a
+        ``(validated, error)`` pair raised instead of degrading.
+        """
+        text = '{"kind": "tool", "tool": "read_file", "params": {"path": "test.txt"}}'
+        tool, params = parse_tool_call(text, {}, lambda *a, **kw: None, lambda *a, **kw: None)
+        self.assertEqual(tool, "_validation_error")
+        self.assertIn("validate_tool_call returned None", params["error"])
+
     def test_parse_tool_call_no_tool(self) -> None:
         """parse_tool_call returns None for non-tool text."""
         tool, _ = parse_tool_call("Just a regular message", {}, lambda *a, **kw: None, lambda *a, **kw: None)

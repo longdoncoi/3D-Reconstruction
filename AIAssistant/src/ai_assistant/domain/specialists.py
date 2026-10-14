@@ -24,4 +24,16 @@ class Specialist(StrEnum):
     VERIFICATION = "verification"
 
 
-__all__ = ["Specialist"]
+#: The supervisor's explicit handoff vocabulary: transfer tool name → the
+#: specialist it routes to. This table is the naming authority for everything
+#: handoff-shaped — supervisor routing, the least-privilege tool rows, and the
+#: builtin marker handlers derive their names from it — so adding or removing
+#: a handoff target is one edit here instead of five parallel ones
+#: (architecture finding 12).
+TRANSFER_TARGETS: dict[str, Specialist] = {
+    "transfer_to_code_agent": Specialist.CODE,
+    "transfer_to_toolapp_agent": Specialist.TOOLAPP,
+    "transfer_to_chatbot_agent": Specialist.CHATBOT,
+}
+
+__all__ = ["TRANSFER_TARGETS", "Specialist"]

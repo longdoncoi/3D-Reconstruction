@@ -21,14 +21,11 @@ from .path_utils import (
 from .rag_tools import rag_search_tool
 from .search_tools import tool_find_files, tool_list_directory, tool_search_text
 from .system_tools import tool_run_command, tool_validate_file
-from .transfer_tools import (
-    tool_transfer_to_chatbot_agent,
-    tool_transfer_to_code_agent,
-    tool_transfer_to_toolapp_agent,
-)
+from .transfer_tools import TRANSFER_TOOL_HANDLERS
 from .vcs_tools import tool_get_project_status, tool_git_diff
 
 __all__ = [
+    "TRANSFER_TOOL_HANDLERS",
     "_AGENT_BLOCKED_DIRS",
     "_AGENT_BLOCKED_EXTS",
     "_AGENT_MAX_FILE_READ_CHARS",
@@ -48,9 +45,6 @@ __all__ = [
     "tool_replace_file_content",
     "tool_run_command",
     "tool_search_text",
-    "tool_transfer_to_chatbot_agent",
-    "tool_transfer_to_code_agent",
-    "tool_transfer_to_toolapp_agent",
     "tool_validate_file",
     "tool_write_file",
 ]

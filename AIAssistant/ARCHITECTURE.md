@@ -176,6 +176,22 @@ Qt / HTTP / MCP / A2A
   the same vocabulary. Steps deserialized from persistence or HTTP still
   cross the trust boundary as runtime dicts (`Any`); validating their shape
   is a runtime concern the type layer deliberately does not own.
+- The routing and handoff vocabulary is registry data, not control flow
+  (finding 12): `domain.specialists.TRANSFER_TARGETS` is the single naming
+  authority for handoffs — the supervisor's transfer routing, the
+  least-privilege rows (each marker-only specialist derives its
+  `ALLOWED_TOOLS` row from the table, and `CODE` carries its markers inside
+  its explicit row) and the builtin marker handlers
+  (`tools.builtin.transfer_tools.TRANSFER_TOOL_HANDLERS`, one generator
+  instead of three copy-pasted functions) all read it, so a new handoff
+  target is one entry rather than five parallel edits. Tool→specialist
+  routing in `supervisor.delegate` is the ordered `_TOOL_ROUTE_RULES` table
+  consulted by `_route` (first match wins; the tuple order is the
+  precedence; explicit handoffs and the supervisor fallback bookend it), and
+  the registry invariants are suite-enforced: every rule's specialist has a
+  policy row, every marker-only specialist runs nothing but its markers,
+  every handoff target has exactly one marker handler naming its specialist.
+  The unused `CODE_AGENT_TOOLS` constant went with it (zero references).
 - The HITL approval *policy* is domain-owned (`domain/approvals.py`):
   `approval_covers_invocation` (constant-time fingerprint comparison),
   `derive_approval_scope` and `build_approval_preview`. The reason node
@@ -456,8 +472,8 @@ Edge-case test coverage:
   (lifts `orchestration/nodes/reason.py` to 100%).
 
 Coverage of `src/ai_assistant/*` is **100.00% measured (2026-10-14)** with
-branch coverage enabled: 7 840 statements and 2 068 branches, 0 missed and 0
-partial, produced by 1 651 tests (1 skipped, 0 failures). Because coverage
+branch coverage enabled: 7 852 statements and 2 064 branches, 0 missed and 0
+partial, produced by 1 657 tests (1 skipped, 0 failures). Because coverage
 alone cannot detect a test that asserts the wrong direction, the load-bearing
 guards (sandbox allow-list, HITL approval, remote policy, `/health`, cache
 seal, cancel races) are additionally mutation-checked:
@@ -472,10 +488,13 @@ flip with it. The declared exclusions are the two
 `exclude_also`, which covers the composition roots `bootstrap/server.py` and
 `bootstrap/server_manager.py`; their platform shims, deployment-profile
 branches and entry points are covered through extracted helpers and targeted
-tests rather than excluded. Five `# pragma: no cover` lines remain, each
+tests rather than excluded. Seven `# pragma: no cover` lines remain, each
 naming a branch this environment cannot drive: the `asyncio` ImportError guard
 (`agents/context.py`), the `sys.path` idempotence line and the Qt-launched
-entry point (`bootstrap/server_manager.py`), and the two `tool_name is None`
+entry point (`bootstrap/server_manager.py`), the two source-launch `sys.path`
+inserts in `bootstrap/server.py` (every in-process import already carries both
+dirs, so the branches are unreachable in the suite), and the two
+`tool_name is None`
 arms that `_handle_final_answer` catches first
 (`orchestration/nodes/reason.py`). Run it with:
 

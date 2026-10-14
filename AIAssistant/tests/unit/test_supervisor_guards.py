@@ -28,6 +28,7 @@ from ai_assistant.orchestration.supervisor import (
     reflect_result,
     verify_result,
 )
+from ai_assistant.tools.builtin.transfer_tools import TRANSFER_TOOL_HANDLERS
 
 
 class AuditPathResolutionTests(unittest.TestCase):
@@ -326,6 +327,59 @@ class SpecialisationBranchTests(unittest.TestCase):
         delegation = delegate("just answer", "s1", tool="not_a_tool")
         self.assertIs(delegation.specialist, Specialist.SUPERVISOR)
         self.assertEqual(delegation.reason, "direct response or unresolved intent")
+
+
+class RoutingRegistryTests(unittest.TestCase):
+    """The routing registry is data, and its invariants are enforced.
+
+    Review finding 12: routing used to be an order-sensitive ``if``/``elif``
+    chain and the handoff vocabulary lived in five parallel places. The rules
+    are now a table — these tests are what keeps the table honest, so drift
+    (a rule for a specialist with no policy row, a handoff target without a
+    marker handler) fails the suite instead of misrouting at runtime.
+    """
+
+    def test_every_rule_names_a_specialist_that_has_a_policy_row(self):
+        """A rule routing to a specialist missing from ALLOWED_TOOLS would
+        fail-closed every call it produced — a wiring bug, not a policy."""
+        for rule in supervisor._TOOL_ROUTE_RULES:
+            with self.subTest(basis=rule.basis):
+                self.assertIn(rule.specialist, supervisor.ALLOWED_TOOLS)
+                self.assertTrue(rule.tools)
+
+    def test_each_rule_reaches_its_specialist_through_delegate(self):
+        """The table is what routing obeys, not the lookup path around it."""
+        for rule in supervisor._TOOL_ROUTE_RULES:
+            tool = sorted(rule.tools)[0]
+            with self.subTest(basis=rule.basis, tool=tool):
+                delegation = delegate("probe", "s1", tool=tool, prefer_code=rule.requires_prefer_code)
+                self.assertIs(delegation.specialist, rule.specialist)
+                self.assertEqual(delegation.reason, rule.reason)
+
+    def test_every_transfer_specialist_may_run_its_own_marker(self):
+        """A handoff whose own specialist refuses its marker would dead-end."""
+        for name, specialist in supervisor.TRANSFER_TARGETS.items():
+            with self.subTest(specialist=specialist.value):
+                self.assertIn(name, supervisor.ALLOWED_TOOLS[specialist])
+
+    def test_a_specialist_that_only_transfers_may_run_nothing_else(self):
+        """Marker-only roles stay marker-only: fail-closed, least privilege."""
+        marker_only = set(supervisor.TRANSFER_TARGETS.values()) - supervisor._EXPLICIT_TOOL_ROWS
+        self.assertTrue(marker_only)
+        for specialist in marker_only:
+            with self.subTest(specialist=specialist.value):
+                self.assertEqual(
+                    supervisor.ALLOWED_TOOLS[specialist],
+                    {name for name, s in supervisor.TRANSFER_TARGETS.items() if s is specialist},
+                )
+
+    def test_every_handoff_target_has_one_marker_handler(self):
+        """The tools layer derives its markers from the same domain table."""
+        self.assertEqual(set(TRANSFER_TOOL_HANDLERS), set(supervisor.TRANSFER_TARGETS))
+        for name, specialist in supervisor.TRANSFER_TARGETS.items():
+            with self.subTest(name=name):
+                marker = TRANSFER_TOOL_HANDLERS[name]({"intent": "x"})
+                self.assertEqual(marker["status"], f"transferred_to_{specialist.value}")
 
 
 if __name__ == "__main__":
