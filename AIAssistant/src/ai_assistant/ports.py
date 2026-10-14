@@ -4,7 +4,7 @@ from collections.abc import Callable, Iterable
 from typing import Any, Protocol
 
 from .domain.security import Principal
-from .domain.tasks import AgentTask
+from .domain.tasks import AgentTask, TaskStatus
 from .domain.tools import ToolRequest, ToolResult
 
 
@@ -102,8 +102,28 @@ class TaskStore(Protocol):
     def create(self, task: AgentTask) -> None: ...
     def get(self, task_id: str) -> AgentTask | None: ...
     def save(self, task: AgentTask) -> None: ...
+
+    def save_if_status(self, task: AgentTask, expected: TaskStatus) -> bool:
+        """Compare-and-set write: persist ``task`` only when the stored status
+        still equals ``expected``; return whether the write happened.
+
+        This is the TOCTOU guard for the A2A worker: without it a cancel that
+        lands while the executor runs is overwritten by an unconditional
+        ``UPDATE ... SET status='completed'``.
+        """
+        ...
+
     def append_event(self, task_id: str, kind: str, data: dict) -> None: ...
-    def events(self, task_id: str) -> Iterable[dict]: ...
+
+    def events(self, task_id: str, *, since: int = 0) -> Iterable[dict]:
+        """Yield events with an ordering key strictly greater than ``since``.
+
+        ``since`` is a store-native cursor (SQLite rowid); stores without a
+        native cursor may ignore it, in which case the caller falls back to
+        slicing by count.
+        """
+        ...
+
     def list(self, *, context_id: str | None = None, limit: int = 100) -> Iterable[AgentTask]: ...
 
 

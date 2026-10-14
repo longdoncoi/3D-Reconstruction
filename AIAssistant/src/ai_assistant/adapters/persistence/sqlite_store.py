@@ -53,6 +53,7 @@ class SqliteTaskStore:
                     created_at  TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_task_context ON tasks(context_id);
+                CREATE INDEX IF NOT EXISTS idx_task_created ON tasks(created_at);
                 CREATE INDEX IF NOT EXISTS idx_event_task ON task_events(task_id);
             """)
 
@@ -94,6 +95,21 @@ class SqliteTaskStore:
                  now, task.id),
             )
 
+    def save_if_status(self, task: AgentTask, expected: TaskStatus) -> bool:
+        """Compare-and-set update: one statement, checked rowcount (no TOCTOU)."""
+        now = _now()
+        with self._lock, self._conn:
+            cursor = self._conn.execute(
+                "UPDATE tasks SET status=?, result=?, error=?, metadata=?, updated_at=? "
+                "WHERE id=? AND status=?",
+                (str(task.status),
+                 json.dumps(task.result, default=str) if task.result else None,
+                 task.error,
+                 json.dumps(dict(task.metadata), default=str),
+                 now, task.id, str(expected)),
+            )
+        return cursor.rowcount == 1
+
     def append_event(self, task_id: str, kind: str, data: dict) -> None:
         with self._lock, self._conn:
             self._conn.execute(
@@ -101,15 +117,21 @@ class SqliteTaskStore:
                 (task_id, kind, json.dumps(data, default=str), _now()),
             )
 
-    def events(self, task_id: str) -> Iterable[dict]:
+    def events(self, task_id: str, *, since: int = 0) -> Iterable[dict]:
+        """Stream only the events after the ``rowid`` cursor (O(new), not O(n)).
+
+        The ``seq`` key is the cursor itself, so SSE subscribers can pass it
+        back instead of re-reading and re-slicing the whole log every poll.
+        """
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT kind, data, created_at FROM task_events WHERE task_id = ? ORDER BY rowid",
-                (task_id,),
+                "SELECT rowid, kind, data, created_at FROM task_events "
+                "WHERE task_id = ? AND rowid > ? ORDER BY rowid",
+                (task_id, int(since)),
             )
             rows = cursor.fetchall()
-        for kind, data_json, created_at in rows:
-            yield {"kind": kind, "data": json.loads(data_json), "created_at": created_at}
+        for rowid, kind, data_json, created_at in rows:
+            yield {"seq": rowid, "kind": kind, "data": json.loads(data_json), "created_at": created_at}
 
     def list(self, *, context_id: str | None = None, limit: int = 100) -> Iterable[AgentTask]:
         with self._lock:

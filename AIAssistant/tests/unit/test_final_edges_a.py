@@ -43,6 +43,24 @@ class SqliteTaskStoreTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_save_persists_the_new_state(self):
+        """``save`` is the non-CAS write the fallback path and resume use."""
+        from ai_assistant.domain.tasks import TaskStatus
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory)
+            try:
+                task = _task()
+                store.create(task)
+                updated = task.transition(TaskStatus.COMPLETED, result={"content": "ok"})
+                store.save(updated)
+
+                reloaded = store.get(task.id)
+                self.assertEqual(reloaded.status, TaskStatus.COMPLETED)
+                self.assertEqual(reloaded.result, {"content": "ok"})
+            finally:
+                store.close()
+
     def test_list_filters_by_context_id(self):
         with tempfile.TemporaryDirectory() as directory:
             store = self._store(directory)

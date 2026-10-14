@@ -138,13 +138,32 @@ def _record_and_decode_content(response: dict, record_token_usage_fn, label: str
     return content
 
 
+def _remote_leg_allowed(backend_mode_fn) -> bool:
+    """ADR 0018 / ADR 0015: enforce the hybrid policy before any remote call.
+
+    Returns ``True`` when this completion may leave the box. ``backend_mode``
+    alone must never be able to leak data out: the gate reads it, but the
+    decision is made here, before the transport and before the decode-error
+    wrapper, so the refusal is unambiguous.
+    """
+    if backend_mode_fn() == "llama_cpp":
+        return False
+    from ai_assistant.llm.inference import cloud_allowed
+    if not cloud_allowed("non_sensitive"):
+        msg = ("Remote inference blocked by AGENT_HYBRID_POLICY (local_only); "
+               "set AGENT_HYBRID_POLICY=cloud_allowed to opt in")
+        raise RuntimeError(msg)
+    return True
+
+
 def constrained_completion(messages: list[dict], max_tokens: int, temperature: float,
                            llm_runtime, backend_mode_fn, openai_compatible_fn,
                            openai_tools: list[dict], grammar_schema: str,
                            record_token_usage_fn) -> str:
     """Generate exactly one final/tool JSON envelope."""
+    remote_backend = _remote_leg_allowed(backend_mode_fn)
     try:
-        if backend_mode_fn() != "llama_cpp":
+        if remote_backend:
             response = openai_compatible_fn(
                 messages, max_tokens=max_tokens, temperature=temperature,
                 tools=openai_tools, tool_choice="auto",

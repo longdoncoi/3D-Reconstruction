@@ -20,6 +20,7 @@ from ai_assistant.adapters.http.health_routes import build_health_router
 def _build_client(
     llm: object | None = None,
     reranker: object | None = None,
+    chunks: list | None = None,
 ) -> TestClient:
     llm_module = SimpleNamespace(
         llm=llm,
@@ -27,7 +28,7 @@ def _build_client(
         is_vision_model=False,
     )
     rag_module = SimpleNamespace(
-        knowledge_chunks=["c1", "c2"],
+        knowledge_chunks=["c1", "c2"] if chunks is None else chunks,
         _reranker=reranker,
         CHUNK_CHARS=1200,
         MAX_CONTEXT_CHARS=4096,
@@ -57,10 +58,12 @@ def _build_client(
 
 
 class HealthRoutesTest(unittest.TestCase):
-    def test_health_reports_runtime_state_without_llm(self) -> None:
+    def test_health_reports_degraded_without_llm(self) -> None:
+        """A missing model is not ``ok`` — probes must see the truth."""
         client = _build_client(llm=None)
         data = client.get("/health").json()
-        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["status"], "degraded")
+        self.assertEqual(data["reasons"], ["llm_not_loaded"])
         self.assertFalse(data["llm_loaded"])
         self.assertEqual(data["rag_chunks"], 2)
         self.assertFalse(data["reranker"])
@@ -73,12 +76,48 @@ class HealthRoutesTest(unittest.TestCase):
         self.assertTrue(data["platform"]["mcp_enabled"])
         self.assertEqual(data["platform"]["registered_tools"], 1)
 
-    def test_health_reports_loaded_llm_and_reranker(self) -> None:
+    def test_health_degrades_when_the_rag_index_is_empty(self) -> None:
+        """P0 #1: an empty corpus used to be reported as a healthy server."""
+        client = _build_client(llm=object(), chunks=[])
+        data = client.get("/health").json()
+        self.assertEqual(data["status"], "degraded")
+        self.assertEqual(data["reasons"], ["rag_index_empty"])
+        self.assertEqual(data["rag_chunks"], 0)
+
+    def test_health_ok_when_everything_is_loaded(self) -> None:
         client = _build_client(llm=object(), reranker=object())
         data = client.get("/health").json()
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["reasons"], [])
         self.assertTrue(data["llm_loaded"])
         self.assertTrue(data["reranker"])
         self.assertIn("uptime_sec", data)
+
+    def test_livez_always_answers(self) -> None:
+        client = _build_client(llm=None, chunks=[])
+        response = client.get("/livez")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "alive")
+
+    def test_readyz_is_not_ready_without_a_model(self) -> None:
+        client = _build_client(llm=None, chunks=[])
+        response = client.get("/readyz")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["status"], "not_ready")
+        self.assertIn("llm_not_loaded", response.json()["reasons"])
+
+    def test_readyz_is_degraded_with_a_model_but_no_corpus(self) -> None:
+        """Ready to serve traffic, but the retrieval quality signal is visible."""
+        client = _build_client(llm=object(), chunks=[])
+        response = client.get("/readyz")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "degraded", "reasons": ["rag_index_empty"]})
+
+    def test_readyz_is_ready_when_model_and_index_are_present(self) -> None:
+        client = _build_client(llm=object())
+        response = client.get("/readyz")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"status": "ready", "reasons": []})
 
     def test_metrics_404_when_observability_disabled(self) -> None:
         client = _build_client()

@@ -11,20 +11,43 @@ class BootstrapServerCoverageGaps(unittest.TestCase):
     """Pin defensive import-time branches in bootstrap/server.py."""
 
     def test_model_index_guard_negative_and_overrun(self) -> None:
-        """Cover MODEL_IDX defensive bounds (lines 113-114, 115-116)."""
+        """The selector really is clamped by ``_resolve_model_idx``.
+
+        The previous version of this test re-implemented the guard inline, so
+        it asserted its own copy of the logic instead of the shipped one.
+        """
         from ai_assistant.bootstrap import server as s
-        # Direct exercise of the guard logic via simulated argv
-        with patch.object(sys, "argv", ["bootstrap/server.py", "-1"]):
-            # Re-evaluating guard manually matches import-time branch
-            idx = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-            if idx < 0 or idx >= len(s.MODELS):
-                idx = 0
-            self.assertEqual(idx, 0)
-        with patch.object(sys, "argv", ["bootstrap/server.py", "99999"]):
-            idx = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-            if idx < 0 or idx >= len(s.MODELS):
-                idx = 0
-            self.assertEqual(idx, 0)
+
+        models = s.MODELS
+        cases = {
+            ("server.py", "-1"): 0,
+            ("server.py", "99999"): 0,
+            ("server.py", "abc"): 0,
+            ("server.py", "2.5"): 0,
+        }
+        for argv, expected in cases.items():
+            with self.subTest(argv=argv):
+                self.assertEqual(s._resolve_model_idx(list(argv), models), expected)
+        self.assertEqual(s._resolve_model_idx(["server.py"], models), 0)
+        self.assertEqual(s._resolve_model_idx(["server.py", "0"], models), 0)
+        self.assertIn(s._resolve_model_idx(["server.py", "1"], models), (0, 1))
+
+    def test_adopt_backend_refuses_a_missing_backend(self) -> None:
+        """A failed load must be visible, not leave the old model advertised."""
+        from ai_assistant.bootstrap.server import _LLMModule
+
+        previous = _LLMModule.llm
+        try:
+            self.assertFalse(_LLMModule._adopt_backend(None))
+            self.assertIs(_LLMModule.llm, previous)
+            backend = MagicMock()
+            backend.is_vision_supported = False
+            backend.model_description = "adopted"
+            self.assertTrue(_LLMModule._adopt_backend(backend))
+            self.assertIs(_LLMModule.llm, backend)
+            self.assertEqual(_LLMModule.active_model_desc, "adopted")
+        finally:
+            _LLMModule.llm = previous
 
     def test_llm_load_reload_and_estimate(self) -> None:
         """Cover _LLMModule load/reload/estimate (lines 132-164)."""
@@ -45,20 +68,45 @@ class BootstrapServerCoverageGaps(unittest.TestCase):
         self.assertGreaterEqual(_LLMModule.estimate_tokens("hello"), 1)
 
     def test_rag_bridge_methods(self) -> None:
-        """Cover _RAGModule legacy bridge branches (lines 179-217)."""
+        """Cover _RAGModule legacy bridge branches (initialize_rag / get_context)."""
+        import os
+
         from ai_assistant.bootstrap.server import _RAGModule, rag_module
         self.assertTrue(hasattr(_RAGModule.initialize_rag, "__call__"))
         self.assertTrue(hasattr(_RAGModule.get_context, "__call__"))
         self.assertTrue(hasattr(_RAGModule.release_embedding_for_vision, "__call__"))
         self.assertTrue(hasattr(_RAGModule._release_ml_memory, "__call__"))
         self.assertTrue(hasattr(_RAGModule._build_retrievers, "__call__"))
-        # Call empty get_context (line 207)
+        # No pipeline wired yet: get_context is honestly empty, not a stub that
+        # pretends it searched.
         result = rag_module.get_context("test", None, None)
         self.assertIsInstance(result, tuple)
-        # Directly invoke initialize_rag delegate (lines 193-203)
-        ret = rag_module.initialize_rag(enable_reranker=False, force_rebuild=False)
-        self.assertIsInstance(ret, int)
-        # Direct release (line 215-217)
+        self.assertEqual(result, ("", "", []))
+        # Disabled branch (AI_ENABLE_RAG=0): no I/O, deterministic.
+        with patch.dict(os.environ, {"AI_ENABLE_RAG": "0"}):
+            self.assertEqual(rag_module.initialize_rag(enable_reranker=False, force_rebuild=False), 0)
+        # Cache-miss + empty-corpus branch: scan is stubbed so no full project
+        # walk happens, and the module must report the empty state it would
+        # expose on /health.
+        with patch("ai_assistant.rag.index.is_cache_valid", return_value=False), \
+                patch("ai_assistant.rag.index.scan_documents", return_value=[]):
+            ret = rag_module.initialize_rag(enable_reranker=False, force_rebuild=False)
+        self.assertEqual(ret, 0)
+        self.assertIsNone(rag_module.knowledge_index)
+        self.assertEqual(rag_module.get_context("test", None, None), ("", "", []))
+        # Hard failure (I/O error) is logged with traceback and clears state.
+        with patch("ai_assistant.rag.index.is_cache_valid", side_effect=RuntimeError("disk gone")), \
+                patch("ai_assistant.bootstrap.server.logger") as fake_logger:
+            self.assertEqual(rag_module.initialize_rag(), 0)
+            self.assertTrue(fake_logger.exception.called)
+        self.assertIsNone(rag_module._pipeline)
+        # Retrieval failure path logs and returns the empty envelope, never raises.
+        rag_module._pipeline = object()
+        with patch("ai_assistant.bootstrap.server.logger") as fake_logger:
+            self.assertEqual(rag_module.get_context("test", None, None), ("", "", []))
+            self.assertTrue(fake_logger.exception.called)
+        rag_module._pipeline = None
+        # Direct release (release_embedding_for_vision → llm.hardware)
         rag_module.release_embedding_for_vision()
 
     def test_logging_devnull_branches(self) -> None:

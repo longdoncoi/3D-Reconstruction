@@ -11,9 +11,11 @@ from ..application.tasks import TaskService
 from ..application.tools import ToolExecutionService
 from ..domain.security import DataClassification
 from ..domain.tools import SideEffect, ToolSpec
+from ..observability.metrics import record_recovery
+from ..observability.tool_events import audit_tool_event
 from ..plugins.loader import load_entrypoint_plugins
 from ..plugins.registry import PluginRegistry
-from ..ports import AgentTaskExecutor, ToolExecutor, ToolGateway
+from ..ports import AgentTaskExecutor, ToolEventSink, ToolExecutor, ToolGateway
 from ..settings import ArchitectureSettings
 from .runtime import PlatformToolGateway
 
@@ -79,7 +81,8 @@ def tool_spec_from(entry: Any, executor: ToolExecutor | None) -> ToolSpec | None
 
 def build_container(base_dir: Path, legacy_tools: "list[Any]",
                     legacy_executors: Mapping[str, ToolExecutor], task_executor: AgentTaskExecutor,
-                    coordinator: TaskCoordinator | None = None) -> PlatformContainer:
+                    coordinator: TaskCoordinator | None = None,
+                    tool_event_sink: ToolEventSink | None = None) -> PlatformContainer:
     """Build the DI container.
 
     ``legacy_tools`` is a list of catalog entries (``ToolDefinition`` objects
@@ -87,6 +90,11 @@ def build_container(base_dir: Path, legacy_tools: "list[Any]",
     converted once, through :func:`tool_spec_from`, into the domain
     ``ToolSpec`` the single execution core consumes. The legacy dict format is
     no longer accepted.
+
+    ``tool_event_sink`` observes every execution at the chokepoint (agent loop,
+    HITL approval, desktop action, A2A task worker). The default is
+    :func:`~ai_assistant.observability.tool_events.audit_tool_event`, which
+    writes the redacted one-line record; tests inject their own.
     """
     settings = ArchitectureSettings.load(base_dir)
     plugins = PluginRegistry(settings.allowed_plugins)
@@ -99,9 +107,20 @@ def build_container(base_dir: Path, legacy_tools: "list[Any]",
         if spec is not None:
             plugins.register_tool(spec, executor)
     load_entrypoint_plugins(plugins)
-    tools = ToolExecutionService(plugins)
+    # The sink is what makes the chokepoint observable: without it an approved
+    # action or an A2A task run leaves no trace outside the agent loop.
+    sink = audit_tool_event if tool_event_sink is None else tool_event_sink
+    tools = ToolExecutionService(plugins, event_sink=sink)
     gateway = PlatformToolGateway(tools)
+    # One coordinator for the whole platform: the A2A task service shares it
+    # with AgentService so ``POST /tasks/{id}:cancel`` stops the LangGraph loop
+    # instead of only writing the task row (P0 — A2A cancel). It also carries
+    # the recovery-time observer (cancel request → runner stopped, SCORECARD #4).
+    shared_coordinator = (
+        coordinator
+        if coordinator is not None
+        else TaskCoordinator(recovery_observer=record_recovery)
+    )
     store = SqliteTaskStore(settings.data_dir / "tasks.sqlite")
-    task_service = TaskService(store, task_executor, settings.agent_capabilities)
-    shared_coordinator = coordinator if coordinator is not None else TaskCoordinator()
+    task_service = TaskService(store, task_executor, settings.agent_capabilities, shared_coordinator)
     return PlatformContainer(settings, plugins, tools, task_service, gateway, shared_coordinator)

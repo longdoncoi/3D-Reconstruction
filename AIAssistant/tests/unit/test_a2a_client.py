@@ -147,5 +147,50 @@ class TrustedA2AClientSubmitTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 client._read_card("https://trusted.example.com")
 
+
+class TraceContextPropagationTests(unittest.TestCase):
+    """Outbound A2A calls carry the active trace via W3C ``traceparent``.
+
+    This is the outbound half of propagation: when a span is active the header
+    is present and well-formed; when there is nothing valid to propagate the
+    header is omitted rather than faked. (Inbound extraction on our own A2A
+    routes is not wired yet.)
+    """
+
+    _EXPECTED = "00-" + "ab" * 16 + "-" + "cd" * 8 + "-01"
+
+    def _capture_headers(self) -> dict[str, str]:
+        client = TrustedA2AClient(
+            trusted_endpoints=frozenset({"https://trusted.example.com"}), timeout_seconds=5,
+        )
+        card = RemoteAgentCard(
+            endpoint="https://trusted.example.com", name="Agent", version="1.0.0",
+            skills=frozenset({"supervisor"}), streaming=False,
+        )
+        with patch.object(client, "_read_card", return_value=card), patch(
+            "ai_assistant.adapters.a2a_client.urlopen"
+        ) as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.__enter__.return_value.read.return_value = b'{"task": {"id": "t-1"}}'
+            mock_urlopen.return_value = mock_resp
+            client.submit("https://trusted.example.com", "supervisor", "hello")
+        request = mock_urlopen.call_args[0][0]
+        return {key.lower(): value for key, value in request.header_items()}
+
+    def test_an_active_span_adds_traceparent(self) -> None:
+        with patch(
+            "ai_assistant.adapters.a2a_client.current_traceparent", return_value=self._EXPECTED
+        ):
+            headers = self._capture_headers()
+        self.assertEqual(headers["traceparent"], self._EXPECTED)
+
+    def test_nothing_to_propagate_omits_the_header(self) -> None:
+        with patch(
+            "ai_assistant.adapters.a2a_client.current_traceparent", return_value=None
+        ):
+            headers = self._capture_headers()
+        self.assertNotIn("traceparent", headers)
+
+
 if __name__ == "__main__":
     unittest.main()

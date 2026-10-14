@@ -5,6 +5,7 @@ subscription, cancellation, and approval resume.
 """
 from __future__ import annotations
 
+import json
 import threading
 import time
 import unittest
@@ -18,6 +19,11 @@ from ai_assistant.adapters.a2a import build_a2a_router
 from ai_assistant.application.tasks import TaskService
 from ai_assistant.domain.tasks import AgentTask
 
+# ``build_a2a_router`` owns its own paths and the composition root mounts it at
+# the application root, so the 0.3 endpoints are ``/message:send`` and
+# ``/tasks/{id}`` while the pre-0.3 endpoints stay under ``/a2a/tasks``.
+LEGACY_EVENTS_PATH = "/a2a/tasks"
+
 
 class _MockTaskStore:
     """In-memory task store for testing."""
@@ -26,6 +32,9 @@ class _MockTaskStore:
         self._tasks: dict[str, AgentTask] = {}
         self._events: dict[str, list[dict[str, Any]]] = {}
         self._lock = threading.Lock()
+        # Cursors the service was asked for — proves the router resumes from a
+        # cursor instead of re-reading and re-slicing the whole log each poll.
+        self.event_reads: list[tuple[str, int]] = []
 
     def create(self, task: AgentTask) -> None:
         with self._lock:
@@ -42,12 +51,23 @@ class _MockTaskStore:
 
     def append_event(self, task_id: str, kind: str, data: dict) -> None:
         with self._lock:
-            if task_id in self._events:
-                self._events[task_id].append({"kind": kind, "data": data})
+            recorded = self._events.get(task_id)
+            if recorded is not None:
+                # Round-trip through JSON like the SQLite store does, so domain
+                # enums arrive in the SSE stream as their string form.
+                payload = json.loads(json.dumps(data, default=str))
+                recorded.append({"seq": len(recorded) + 1, "kind": kind, "data": payload})
 
-    def events(self, task_id: str) -> list[dict[str, Any]]:
+    def events(self, task_id: str, *, since: int = 0) -> list[dict[str, Any]]:
+        """Cursor form of the port: ``since`` is a store-native ordering key.
+
+        Events carry the 1-based ``seq`` the SQLite store exposes, so the router
+        resumes from a cursor instead of re-reading and re-slicing the log.
+        """
         with self._lock:
-            return list(self._events.get(task_id, []))
+            recorded = self._events.get(task_id, [])
+            self.event_reads.append((task_id, since))
+            return [event for event in recorded if event["seq"] > since]
 
     def list(self, *, context_id: str | None = None, limit: int = 100) -> list[AgentTask]:
         with self._lock:
@@ -69,13 +89,16 @@ class A2AStreamingE2ETests(unittest.TestCase):
         )
         self.router = build_a2a_router(self.service, "Test Agent", "1.0.0")
         self.app = FastAPI()
-        self.app.include_router(self.router, prefix="/a2a")
+        # Mounted the way the composition root mounts it: the router owns its
+        # paths (no prefix), otherwise every 0.3 endpoint moves and the legacy
+        # ``/a2a/tasks`` tree ends up double-prefixed.
+        self.app.include_router(self.router)
         self.client = TestClient(self.app, client=("127.0.0.1", 50000))
 
     def test_submit_task_returns_task_payload(self) -> None:
         """POST /message:send returns a valid A2A task payload."""
         response = self.client.post(
-            "/a2a/message:send",
+            "/message:send",
             json={
                 "message": {
                     "role": "ROLE_USER",
@@ -95,7 +118,7 @@ class A2AStreamingE2ETests(unittest.TestCase):
         """GET /tasks/{id} returns the task."""
         # Submit a task
         submit_resp = self.client.post(
-            "/a2a/message:send",
+            "/message:send",
             json={
                 "message": {
                     "role": "ROLE_USER",
@@ -107,7 +130,7 @@ class A2AStreamingE2ETests(unittest.TestCase):
         task_id = submit_resp.json()["task"]["id"]
 
         # Get the task
-        get_resp = self.client.get(f"/a2a/tasks/{task_id}", headers={"A2A-Version": "0.3"})
+        get_resp = self.client.get(f"/tasks/{task_id}", headers={"A2A-Version": "0.3"})
         self.assertEqual(get_resp.status_code, 200)
         self.assertEqual(get_resp.json()["task"]["id"], task_id)
 
@@ -116,7 +139,7 @@ class A2AStreamingE2ETests(unittest.TestCase):
         # Submit two tasks
         for i in range(2):
             self.client.post(
-                "/a2a/message:send",
+                "/message:send",
                 json={
                     "message": {
                         "role": "ROLE_USER",
@@ -127,7 +150,7 @@ class A2AStreamingE2ETests(unittest.TestCase):
             )
 
         # List tasks
-        list_resp = self.client.get("/a2a/tasks", headers={"A2A-Version": "0.3"})
+        list_resp = self.client.get("/tasks", headers={"A2A-Version": "0.3"})
         self.assertEqual(list_resp.status_code, 200)
         self.assertEqual(len(list_resp.json()["tasks"]), 2)
 
@@ -138,7 +161,7 @@ class A2AStreamingE2ETests(unittest.TestCase):
 
         # Submit a task
         submit_resp = self.client.post(
-            "/a2a/message:send",
+            "/message:send",
             json={
                 "message": {
                     "role": "ROLE_USER",
@@ -150,24 +173,24 @@ class A2AStreamingE2ETests(unittest.TestCase):
         task_id = submit_resp.json()["task"]["id"]
 
         # Cancel it while it's still running
-        cancel_resp = self.client.post(f"/a2a/tasks/{task_id}:cancel", headers={"A2A-Version": "0.3"})
+        cancel_resp = self.client.post(f"/tasks/{task_id}:cancel", headers={"A2A-Version": "0.3"})
         self.assertEqual(cancel_resp.status_code, 200)
         self.assertEqual(cancel_resp.json()["task"]["status"]["state"], "canceled")
 
     def test_cancel_nonexistent_task_returns_409(self) -> None:
         """Cancelling a non-existent task returns 409."""
-        response = self.client.post("/a2a/tasks/nonexistent:cancel", headers={"A2A-Version": "0.3"})
+        response = self.client.post("/tasks/nonexistent:cancel", headers={"A2A-Version": "0.3"})
         self.assertEqual(response.status_code, 409)
 
     def test_get_nonexistent_task_returns_404(self) -> None:
         """Getting a non-existent task returns 404."""
-        response = self.client.get("/a2a/tasks/nonexistent", headers={"A2A-Version": "0.3"})
+        response = self.client.get("/tasks/nonexistent", headers={"A2A-Version": "0.3"})
         self.assertEqual(response.status_code, 404)
 
     def test_version_mismatch_returns_400(self) -> None:
         """Sending wrong A2A-Version returns 400."""
         response = self.client.post(
-            "/a2a/message:send",
+            "/message:send",
             json={
                 "message": {
                     "role": "ROLE_USER",
@@ -180,7 +203,7 @@ class A2AStreamingE2ETests(unittest.TestCase):
 
     def test_agent_card_discovery(self) -> None:
         """GET /.well-known/agent.json returns valid Agent Card."""
-        response = self.client.get("/a2a/.well-known/agent.json")
+        response = self.client.get("/.well-known/agent.json")
         self.assertEqual(response.status_code, 200)
         card = response.json()
         self.assertEqual(card["protocolVersion"], "0.3")
@@ -190,7 +213,7 @@ class A2AStreamingE2ETests(unittest.TestCase):
     def test_json_rpc_send_message(self) -> None:
         """JSON-RPC message/send works."""
         response = self.client.post(
-            "/a2a/a2a",
+            "/a2a",
             json={
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -213,7 +236,7 @@ class A2AStreamingE2ETests(unittest.TestCase):
     def test_json_rpc_unsupported_method_returns_error(self) -> None:
         """JSON-RPC with unsupported method returns error."""
         response = self.client.post(
-            "/a2a/a2a",
+            "/a2a",
             json={
                 "jsonrpc": "2.0",
                 "id": 2,
@@ -228,17 +251,51 @@ class A2AStreamingE2ETests(unittest.TestCase):
 
     def test_subscribe_to_nonexistent_task_returns_404(self) -> None:
         """Subscribing to a non-existent task returns 404."""
-        response = self.client.post("/a2a/tasks/nonexistent:subscribe", headers={"A2A-Version": "0.3"})
+        response = self.client.post("/tasks/nonexistent:subscribe", headers={"A2A-Version": "0.3"})
         self.assertEqual(response.status_code, 404)
 
     def test_resume_nonexistent_task_returns_409(self) -> None:
         """Resuming a non-existent task returns 409."""
         response = self.client.post(
-            "/a2a/tasks/nonexistent:resume",
+            "/tasks/nonexistent:resume",
             json={"input": {}},
             headers={"A2A-Version": "0.3"},
         )
         self.assertEqual(response.status_code, 409)
+
+
+    def test_task_events_stream_resumes_from_the_cursor(self) -> None:
+        """GET /a2a/tasks/{id}/events streams the log and never re-reads it.
+
+        The store now exposes an ``events(task_id, *, since)`` cursor (SQLite
+        ``rowid``); a stream that re-read and re-sliced the whole log on every
+        poll would show up here as a second read starting back at cursor 0.
+        """
+        # A slow executor keeps the task non-terminal, so the stream has to poll
+        # more than once and each poll must resume after the last delivered event.
+        self.service._executor = MagicMock(
+            side_effect=lambda task: (time.sleep(0.4), {"status": "completed", "content": "Done", "steps": []})[1]
+        )
+        submit_resp = self.client.post(
+            "/message:send",
+            json={"message": {"role": "ROLE_USER", "parts": [{"kind": "text", "text": "Stream me"}]}},
+            headers={"A2A-Version": "0.3"},
+        )
+        task_id = submit_resp.json()["task"]["id"]
+        self.store.append_event(task_id, "message", {"text": "step-1"})
+
+        with self.client.stream("GET", f"{LEGACY_EVENTS_PATH}/{task_id}/events") as stream:
+            body = "".join(stream.iter_text())
+
+        self.assertIn("event: message", body)
+        self.assertIn('"text": "step-1"', body)
+        self.assertIn("event: done", body)
+
+        reads = [cursor for owner, cursor in self.store.event_reads if owner == task_id]
+        self.assertTrue(reads)
+        self.assertEqual(reads[0], 0)
+        self.assertEqual(reads, sorted(reads), "the cursor must never move backwards")
+        self.assertGreater(max(reads), 0, "a later poll must resume, not re-read from the start")
 
 
 if __name__ == "__main__":

@@ -86,16 +86,22 @@ from ai_assistant.llm import get_backend, load_model, reload_model
 from ai_assistant.llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
 from ai_assistant.orchestration.specialists import ChatbotAgent
 from ai_assistant.orchestration.supervisor import set_remote_specialist_lookup
+from ai_assistant.settings import agent_bind_host, agent_bind_port, settings_config_dir
 from ai_assistant.tools import action_manifest
 from ai_assistant.tools.factory import create_tool_registry, platform_executors
 
 _SERVER_START_TIME = time.monotonic()
 BASE_DIR = str(Path(__file__).resolve().parents[2])
-logger, LOG_FILE_PATH = setup_logging(str(Path(BASE_DIR) / "logs"))
+# ``BASE_DIR`` (…/AIAssistant/src) is the data/model root the legacy resolvers
+# expect. The *tracked* deployment assets — ``config/*.toml`` and the ``logs/``
+# directory the Qt server manager tails — live one level up in the package
+# root; reading them from ``src/`` silently found nothing.
+PACKAGE_ROOT = Path(__file__).resolve().parents[3]
+logger, LOG_FILE_PATH = setup_logging(str(PACKAGE_ROOT / "logs"))
 
 # Load model registry for MODEL_IDX / MODELS / EMBED_MODEL_NAME
 _paths = resolve_paths(Path(BASE_DIR))
-_registry = load_model_registry(_paths.base_dir / "config")
+_registry = load_model_registry(settings_config_dir())
 MODELS = [
     {
         "repo_id": m.repo_id,
@@ -108,12 +114,22 @@ MODELS = [
     for m in _registry.models
 ]
 FALLBACK_TEXT_MODEL = {"repo_id": _registry.fallback.repo_id, "filename": _registry.fallback.filename, "desc": _registry.fallback.desc}
-try:
-    MODEL_IDX = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-    if MODEL_IDX < 0 or MODEL_IDX >= len(MODELS):  # pragma: no cover
-        MODEL_IDX = 0
-except (ValueError, IndexError):
-    MODEL_IDX = 0
+def _resolve_model_idx(argv: list[str], models: list[dict]) -> int:
+    """Resolve ``-1``/``99999``/non-numeric model selectors to a safe index.
+
+    Kept as a function (not an inline guard) so the clamping is exercised by a
+    test instead of being excluded from coverage.
+    """
+    try:
+        idx = int(argv[1]) if len(argv) > 1 else 0
+    except (ValueError, IndexError):
+        return 0
+    if idx < 0 or idx >= len(models):
+        return 0
+    return idx
+
+
+MODEL_IDX = _resolve_model_idx(sys.argv, MODELS)
 active_model_desc: str = str(MODELS[MODEL_IDX]["desc"])
 _rag_settings = RAGSettings.from_env_and_dict({})
 EMBED_MODEL_NAME = _rag_settings.embed_model_name
@@ -129,6 +145,22 @@ class _LLMModule:
     is_vision_model: bool = False
 
     @staticmethod
+    def _adopt_backend(backend: Any) -> bool:
+        """Bind a freshly loaded backend to the module state.
+
+        Returns ``False`` (and logs) when the backend is missing, so a failed
+        load is visible instead of leaving the previous model advertised as
+        current with neither branch excluded from coverage.
+        """
+        if backend is None:
+            logger.error("No inference backend after load; keeping previous module state")
+            return False
+        _LLMModule.llm = backend
+        _LLMModule.is_vision_model = getattr(backend, "is_vision_supported", False)
+        _LLMModule.active_model_desc = getattr(backend, "model_description", "")
+        return True
+
+    @staticmethod
     def load_model(model_idx: int | None = None) -> None:
         load_model(
             registry=_registry,
@@ -137,11 +169,7 @@ class _LLMModule:
             enable_vision=USE_VISION_LLM,
             n_ctx=LLM_N_CTX,
         )
-        backend = get_backend()
-        if backend:  # pragma: no branch
-            _LLMModule.llm = backend
-            _LLMModule.is_vision_model = getattr(backend, "is_vision_supported", False)
-            _LLMModule.active_model_desc = getattr(backend, "model_description", "")
+        _LLMModule._adopt_backend(get_backend())
 
     @staticmethod
     def reload_model() -> None:
@@ -152,11 +180,7 @@ class _LLMModule:
             enable_vision=USE_VISION_LLM,
             n_ctx=LLM_N_CTX,
         )
-        backend = get_backend()
-        if backend:  # pragma: no branch
-            _LLMModule.llm = backend
-            _LLMModule.is_vision_model = getattr(backend, "is_vision_supported", False)
-            _LLMModule.active_model_desc = getattr(backend, "model_description", "")
+        _LLMModule._adopt_backend(get_backend())
 
     @staticmethod
     def estimate_tokens(text: str) -> int:
@@ -170,44 +194,140 @@ class _RAGModule:
     knowledge_index = None
     knowledge_chunks: list = []
     bm25_index = None
-    embed_model_ref = None
+    embed_model_ref: Any = None
     _reranker = None
     vector_retriever = None  # legacy compatibility
     bm25_retriever = None     # legacy compatibility (tests/unit/test_legacy_rag_cache.py)
-    _pipeline = None          # legacy compatibility
-
-    @staticmethod
-    def _build_retrievers(*args, **kwargs):
-        # legacy compatibility (tests/unit/test_legacy_rag_cache.py)
-        pass
+    _pipeline: Any = None     # legacy compatibility
     CHUNK_CHARS = 1200
     MAX_CONTEXT_CHARS = 9000
     ENABLE_RAG = True  # legacy compatibility (tests/unit/test_legacy_rag_cache.py)
 
     @staticmethod
+    def _build_retrievers(index: Any = None, bm25: Any = None, chunks: list | None = None,
+                          encoder: Any = None, settings: Any = None):
+        """Build the dense/sparse retriever pair for the current index state."""
+        from ai_assistant.rag.retrievers import build_retrievers
+        if index is None or chunks is None or settings is None:
+            return (None, None)
+        return build_retrievers(index, bm25, chunks, encoder, settings)
+
+    @staticmethod
+    def _reset_index_state() -> None:
+        """Drop every retrieval handle so an empty state is observable everywhere."""
+        rag_module.knowledge_index = None
+        rag_module.knowledge_chunks = []
+        rag_module.bm25_index = None
+        rag_module.vector_retriever = None
+        rag_module.bm25_retriever = None
+        rag_module._pipeline = None
+
+    @staticmethod
     def initialize_rag(enable_reranker: bool = True, force_rebuild: bool = False) -> int:
-        # Delegate to canonical RAG pipeline (ADR 0018 / 0014) — inline to avoid cycle
-        from ai_assistant.config.paths import AppPaths
+        """Load (or rebuild) the RAG index and wire the retrieval pipeline.
+
+        ADR 0015 — the returned number is the count of chunks actually wired:
+        cache hit → load; cache miss → scan + build + persist; no documents or
+        any error → observable empty state (``/health`` reports
+        ``rag_chunks == 0`` and degrades) with the reason logged with traceback.
+        """
+        try:
+            count = _RAGModule._wire_index(enable_reranker, force_rebuild)
+        except Exception:
+            # Fail safe *and* visible: the traceback is logged, the state is
+            # cleared and /health degrades instead of pretending success.
+            logger.exception("RAG initialization failed; retrieval stays disabled")
+            _RAGModule._reset_index_state()
+            return 0
+        return count
+
+    @staticmethod
+    def _wire_index(enable_reranker: bool, force_rebuild: bool) -> int:
+        """Build/load the index and publish it on ``rag_module`` (may raise)."""
+        from ai_assistant.config.paths import get_paths
         from ai_assistant.config.rag_config import RAGSettings
-        from ai_assistant.rag.index import load_or_build_index
-        try:  # pragma: no cover
-            paths = AppPaths()
-            settings = RAGSettings()
-            index, chunks, bm25 = load_or_build_index(paths, settings)
+        from ai_assistant.rag.embeddings import lazy_embedding_encoder
+        from ai_assistant.rag.index import (
+            is_cache_valid,
+            load_cache,
+            load_or_build_index,
+            scan_documents,
+        )
+        from ai_assistant.rag.loaders import DocumentLoaderRegistry
+        from ai_assistant.rag.retrieval import RetrievalPipeline
+
+        settings = RAGSettings.from_env_and_dict({})
+        if not settings.enabled:
+            logger.info("RAG disabled by AI_ENABLE_RAG")
+            _RAGModule._reset_index_state()
+            return 0
+        paths = get_paths()
+        encoder = lazy_embedding_encoder(settings)
+
+        index = chunks = bm25 = None
+        if not force_rebuild and is_cache_valid(paths, settings):
+            index, chunks, bm25 = load_cache(paths, settings)
+
+        if index is None:
+            registry = DocumentLoaderRegistry.create_default(
+                settings.chunk_chars, settings.overlap_chars)
+            scanned = scan_documents(paths, registry)
+            if not scanned:
+                logger.warning("RAG: no documents found under %s — index not built",
+                               paths.project_root)
+                _RAGModule._reset_index_state()
+                return 0
+            # Cache is missing/stale: force the build path so the fs hash is
+            # computed once (scan already happened above).
+            index, chunks, bm25 = load_or_build_index(
+                scanned, encoder, paths, settings, force_rebuild=True)
+
+        if index is None or not chunks:
+            logger.warning("RAG: index unavailable after load/build")
+            _RAGModule._reset_index_state()
+            return 0
+
+        vector_retriever, bm25_retriever = _RAGModule._build_retrievers(
+            index, bm25, chunks, encoder, settings)
+        pipeline = RetrievalPipeline(
+            vector_retriever=vector_retriever,
+            bm25_retriever=bm25_retriever,
+            # The cross-encoder is an optional quality boost; it stays None
+            # until a loader exists (pipeline treats None as a no-op).
+            reranker=getattr(rag_module, "_reranker", None),
+            knowledge_chunks=chunks,
+            max_context_chars=settings.max_context_chars,
+            similarity_threshold=settings.similarity_threshold,
+            use_reranker=bool(enable_reranker and settings.use_reranker),
+            reranker_top_k=settings.reranker_top_k,
+        )
+        with rag_module.rag_lock:
             rag_module.knowledge_index = index
-            rag_module.knowledge_chunks = chunks if chunks else []
+            rag_module.knowledge_chunks = list(chunks)
             rag_module.bm25_index = bm25
-            return len(chunks) if chunks else 0
-        except Exception:  # pragma: no cover
-            # Fail safe: preserve legacy contract but do not suppress errors silently
-            return 0  # pragma: no cover
+            rag_module.vector_retriever = vector_retriever
+            rag_module.bm25_retriever = bm25_retriever
+            rag_module._pipeline = pipeline
+            rag_module.embed_model_ref = encoder
+        count = len(chunks)
+        logger.info("RAG ready: %d chunks (vector=%s bm25=%s)",
+                    count, vector_retriever is not None, bm25_retriever is not None)
+        return count
 
     @staticmethod
     def get_context(query: str, query_image_b64: str | None = None, result_k: int | None = None) -> tuple:
-        return ("", "", [])
+        pipeline = getattr(rag_module, "_pipeline", None)
+        if pipeline is None:
+            return ("", "", [])
+        try:
+            doc_ctx, code_ctx, image_chunks = pipeline.get_context(query, query_image_b64, result_k)
+        except Exception:
+            logger.exception("RAG retrieval failed")
+            return ("", "", [])
+        return doc_ctx, code_ctx, image_chunks
 
     @staticmethod
-    def _release_ml_memory() -> None:  # pragma: no cover
+    def _release_ml_memory() -> None:
         # Protocol compliance for RAGModuleLike; delegates to vision release
         _RAGModule.release_embedding_for_vision()
 
@@ -411,7 +531,7 @@ def bootstrap_runtime() -> None:
         rag_module.release_embedding_for_vision()
 
 
-if __name__ == "__main__":  # pragma: no cover — process entry point
+if __name__ == "__main__":  # process entry point (excluded by coverage's default __main__ rule)
     import uvicorn
 
     try:
@@ -420,7 +540,8 @@ if __name__ == "__main__":  # pragma: no cover — process entry point
         logger.exception("AI server startup failed")
         sys.exit(1)
     try:
-        uvicorn.run(app, host="127.0.0.1", port=8080, log_config=None, access_log=False)
+        uvicorn.run(app, host=agent_bind_host(), port=agent_bind_port(),
+                    log_config=None, access_log=False)
     except BaseException:
         logger.exception("Uvicorn terminated during server startup")
         raise

@@ -40,17 +40,27 @@ async def _task_pages(service: TaskService, task_id: str,
                       terminal: frozenset[str]) -> AsyncIterator[tuple[list[dict[str, Any]], AgentTask]]:
     """Poll a task's event log; yield ``(new_events, task)`` until terminal.
 
-    Shared by both SSE endpoints so the polling loop (cursor tracking, terminal
-    check, bounded sleep) lives in exactly one place.
+    Shared by both SSE endpoints. The cursor is the store's native event
+    sequence (SQLite ``rowid``), so each tick fetches only the events added
+    since the last page instead of re-reading and re-slicing the whole log
+    (O(n) per poll per subscriber).
     """
     cursor = 0
     while True:
-        events = list(service.events(task_id))
+        try:
+            events = list(service.events(task_id, since=cursor))
+        except TypeError:
+            # Duck-typed service/store without the cursor parameter: replay
+            # mode — read the log and slice the already-delivered prefix.
+            events = list(service.events(task_id))[cursor:]
         task = service.get(task_id)
         if task is None:
             return
-        yield events[cursor:], task
-        cursor = len(events)
+        yield events, task
+        if events:
+            # ``seq`` is present for cursor-capable stores; count-based stores
+            # fall back to "cursor += number of events just delivered".
+            cursor = int(events[-1].get("seq", cursor + len(events)))
         if task.status.value in terminal:
             return
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)

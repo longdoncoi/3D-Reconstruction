@@ -17,7 +17,36 @@ Qt / HTTP / MCP / A2A
 
 ## Runtime rules
 
-- `ToolExecutionService` is the sole tool policy and execution gateway.
+- `ToolExecutionService` is the sole tool policy and execution gateway, and the
+  composition root wires its event sink: every execution — agent loop, HITL
+  approval, desktop action, A2A task worker — is recorded as one redacted JSON
+  line on the `agent.tools` logger (`observability/tool_events.py`). Without
+  that sink the executions that do not come from the agent loop left no trace.
+- The RAG cache is unpickled only after an HMAC check: `save_cache` seals the
+  FAISS index, chunk pickle and BM25 pickle with a key stored outside the
+  cache dir (`<data_dir>/.secrets/cache_hmac_key`, 0600), and `load_cache`
+  (`rag/cache_integrity.py`) treats a missing key, a missing record or a
+  mismatched digest as a cache miss — never as code to run. Threat model
+  stated in the module: guards against tampering without read access and
+  silent corruption, not against an attacker already running as this user.
+- Cancellation recovery is measured where the runner actually stops:
+  `TaskCoordinator.cancel()` stamps `cancelled_at`, `finish()` reports the
+  delta through an observer injected by the composition root into the
+  `agent_recovery_seconds` Prometheus histogram (SCORECARD #4). The
+  coordinator itself stays free of observability imports (import contract).
+  Spans leave the process only when `AGENT_OBSERVABILITY=1` and
+  `AGENT_OTLP_ENDPOINT` names a collector (`observability/tracing.py`); a
+  missing exporter package degrades to in-process spans with one warning.
+- Per-node latency is measured in-process: `span()` records each observation
+  into a bounded window (512/node), and `p95_latency_by_node()`
+  (`observability/metrics.py`) returns `{node: p95}` (nearest-rank) — the
+  SCORECARD #2 signal without a PromQL round-trip. Only timed graph nodes
+  (`plan`/`reason`/`tool`/`reflect`) appear; `approval` is a counter, not a
+  timed span.
+- Outbound A2A calls carry the active trace: `TrustedA2AClient.submit` attaches
+  the W3C `traceparent` header from `current_traceparent()` (absent when there
+  is no valid span to propagate). Inbound extraction — continuing a caller's
+  trace on our own A2A routes — is not wired yet.
 - `settings.py` is the sole owner of the process environment (ADR 0001, 0014):
   it parses `.env` (`load_local_dotenv`), applies the library-quieting
   defaults and warning filters (`apply_startup_environment_defaults`), and
@@ -323,8 +352,20 @@ Edge-case test coverage:
   duplicate-failed-call guard) plus the post-reason router
   (lifts `orchestration/nodes/reason.py` to 100%).
 
-Coverage of `src/ai_assistant/*` is **97% measured (Oct 2026)** with branch coverage enabled (1 358 tests ran, 8 legacy-compat errors in `test_http_admin_routes` / `test_agent_run_context`). The 3-point gap to 100 is the remaining legacy adapter shims (`_RAGModule.vector_retriever`, admin-route reload paths) — pure architecture boundaries (domain/ports/adapters/agents) are at 100%. Full 100% requires resolving those 8 compatibility tests (ADR 0018).
-(7 189 statements, 1 904 branches, measured Oct 2026). That includes the
+Coverage of `src/ai_assistant/*` is **100.00% measured (2026-10-14)** with
+branch coverage enabled: 7 800 statements and 2 064 branches, 0 missed and 0
+partial, produced by 1 625 tests (1 skipped, 0 failures). Because coverage
+alone cannot detect a test that asserts the wrong direction, the load-bearing
+guards (sandbox allow-list, HITL approval, remote policy, `/health`, cache
+seal, cancel races) are additionally mutation-checked:
+`PYTHONPATH=src python scripts/mutation_check.py` inverts one decision at a
+time and requires the owning tests to fail — 12/12 killed as measured
+2026-10-14. The number is a measurement, not a target: it reproduces with
+`faiss-cpu`, `rank-bm25` and `mcp` installed (`requirements-test.txt`), and a
+stripped environment measures less because the optional-dependency branches
+flip with it. The only exclusions are the two `if __name__ == "__main__":`
+process entry points, declared once as `exclude_also` in `pyproject.toml`
+rather than as line pragmas (ADR 0015). That includes the
 composition roots `bootstrap/server.py` and `bootstrap/server_manager.py`,
 which previously pulled the total below the floor; their platform shims,
 deployment-profile branches and process entry points are now covered through
@@ -354,6 +395,19 @@ push and PR touching `AIAssistant/**`:
 
 Both are offline and exit non-zero on the first failing case, so they are
 regression tests rather than scored benchmarks. Neither imports a real LLM.
+
+Two more scripts are manual, not part of that job:
+
+- `evals/run_model_in_loop_eval.py` — grades the **real planner**
+  (`PLANNER_PROMPT` through the loaded backend) against a golden set of
+  literal prompts and reports kind accuracy + p95 latency. With no backend it
+  prints `SKIP` and exits 0 *without* an accuracy figure, so a green run can
+  never be a synthetic number. (The earlier version called a rule classifier
+  whose vocabulary could never match the expectations, and
+  `evals/run_golden_set_eval.py` — which only asserted that its own fixture
+  existed — was deleted as fake-green.)
+- `evals/run_tool_eval.py` and `evals/run_agentic_eval.py` are the two the CI
+  job runs (above).
 
 Each script puts `src/` — not the project root — on `sys.path`. Pointing at
 the root left `ai_assistant` unimportable and made the whole eval job fail

@@ -6,7 +6,7 @@ import os
 from ai_assistant.config.paths import get_paths
 
 _AGENT_BLOCKED_DIRS = {".git", "build", "__pycache__", ".vs", "node_modules"}
-_AGENT_BLOCKED_EXTS = {".exe", ".dll", ".so", ".bin", ".dat", ".pkl", ".gguf", ".onnx", ".pt"}
+_AGENT_BLOCKED_EXTS = {".exe", ".dll", ".so", ".bin", ".dat", ".pkl", ".gguf", ".onnx", ".pt", ".env", ".env.example", ".secret", ".key"}
 _AGENT_MAX_FILE_READ_CHARS = 24000
 _AGENT_MAX_UNSCOPED_SOURCE_LINES = 240
 

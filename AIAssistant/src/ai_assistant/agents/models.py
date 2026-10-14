@@ -9,7 +9,11 @@ class AgentExecuteRequest(BaseModel):
     session_id:          str   = Field(default="")
     temperature:         float = Field(0.3, ge=0.0, le=1.5)
     language:            str   = Field(default="vi", pattern="^(vi|en)$")
-    history:             list[dict] = Field(default_factory=list, max_length=20)
+    # The Qt client sends the whole conversation (``buildAgentPayload`` walks
+    # every prior message, no cap), so this bound only protects the transport:
+    # rejecting at 20 entries made every long session answer with HTTP 422.
+    # Per-message content is trimmed where the prompt is built (service.py).
+    history:             list[dict] = Field(default_factory=list, max_length=200)
     attachments:         list[str]  = Field(default_factory=list, max_length=10)
     # force_langgraph=True forces LangGraph regardless of USE_LANGGRAPH_AGENT global.
     force_langgraph:     bool | None = Field(default=None)

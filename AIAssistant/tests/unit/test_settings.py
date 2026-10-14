@@ -9,17 +9,22 @@ from __future__ import annotations
 
 import os
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from ai_assistant.settings import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
     AgentRuntimeSettings,
     ArchitectureSettings,
     a2a_card_name,
     a2a_card_url,
     a2a_enabled,
     a2a_remote_agent_urls,
+    agent_bind_host,
+    agent_bind_port,
     agent_write_roots,
     apply_startup_environment_defaults,
     force_langgraph_agent,
@@ -28,6 +33,7 @@ from ai_assistant.settings import (
     load_local_dotenv,
     lsp_binaries,
     observability_enabled,
+    otlp_exporter_endpoint,
     use_langgraph_agent,
     vision_llm_enabled,
 )
@@ -43,8 +49,11 @@ class ArchitectureSettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "AIAssistant"
             base.mkdir()
+            # An explicitly supplied (here: absent) config tree keeps the code
+            # defaults; without the override the canonical tracked config would
+            # be read instead.
             with mock.patch.dict("os.environ", {}, clear=True):
-                settings = ArchitectureSettings.load(base)
+                settings = ArchitectureSettings.load(base, config_dir=base / "config")
             self.assertEqual(settings.profile, "desktop")
             self.assertTrue(settings.enable_mcp)
             self.assertTrue(settings.enable_a2a)
@@ -53,6 +62,26 @@ class ArchitectureSettingsTests(unittest.TestCase):
             self.assertEqual(settings.allowed_plugins, frozenset({"builtin.legacy-tools"}))
             self.assertEqual(settings.allowed_origins, ())
             self.assertEqual(settings.capability_scopes, {})
+
+    def test_tracked_config_is_read_for_any_base_dir(self):
+        """ADR 0015: ``AIAssistant/config/*.toml`` must be live, not decorative.
+
+        The composition root passes ``AIAssistant/src`` as its base directory;
+        before this contract existed that base silently dropped every TOML file
+        and the platform ran with empty capabilities and an empty least-privilege
+        scope map while the files sat unread on disk.
+        """
+        from ai_assistant.settings import settings_config_dir
+
+        config = settings_config_dir()
+        self.assertTrue((config / "base.toml").is_file(), "tracked config must exist")
+        with (config / "agents.toml").open("rb") as handle:
+            expected_capabilities = frozenset(tomllib.load(handle)["agents"]["capabilities"])
+        with mock.patch.dict("os.environ", {}, clear=True):
+            settings = ArchitectureSettings.load(config.parent / "src")
+        self.assertEqual(settings.agent_capabilities, expected_capabilities)
+        self.assertTrue(settings.capability_scopes, "least-privilege scope map must load")
+        self.assertTrue(settings.allowed_origins, "origin allow-list must load")
 
     def test_reads_and_merges_config_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -82,7 +111,7 @@ enable_a2a = false
 allow_remote_a2a = true
 """)
             with mock.patch.dict("os.environ", {"AI_ASSISTANT_PROFILE": "Desktop"}, clear=True):
-                settings = ArchitectureSettings.load(base)
+                settings = ArchitectureSettings.load(base, config_dir=base / "config")
             self.assertEqual(settings.profile, "desktop")
             self.assertFalse(settings.enable_mcp)
             self.assertFalse(settings.enable_a2a)
@@ -103,7 +132,7 @@ good = ["read"]
 bad = "oops"
 """)
             with mock.patch.dict("os.environ", {}, clear=True):
-                settings = ArchitectureSettings.load(base)
+                settings = ArchitectureSettings.load(base, config_dir=base / "config")
             self.assertEqual(set(settings.capability_scopes), {"good"})
 
     def test_app_data_dir_override(self):
@@ -112,7 +141,7 @@ bad = "oops"
             base.mkdir()
             data = Path(tmp) / "data"
             with mock.patch.dict("os.environ", {"APP_DATA_DIR": str(data)}, clear=True):
-                settings = ArchitectureSettings.load(base)
+                settings = ArchitectureSettings.load(base, config_dir=base / "config")
             self.assertEqual(settings.data_dir, data / "AIAssistant")
 
 
@@ -163,6 +192,23 @@ class ObservabilityToggleTests(unittest.TestCase):
     def test_enabled(self):
         self.assertTrue(observability_enabled({"AGENT_OBSERVABILITY": "1"}))
         self.assertFalse(observability_enabled({"AGENT_OBSERVABILITY": "true"}))
+
+
+class OtlpExporterEndpointTests(unittest.TestCase):
+    def test_ignored_while_observability_is_off(self):
+        """No spans are produced, so an endpoint would export nothing."""
+        self.assertIsNone(otlp_exporter_endpoint({"AGENT_OTLP_ENDPOINT": "http://c:4318/v1/traces"}))
+
+    def test_blank_endpoint_is_none(self):
+        env = {"AGENT_OBSERVABILITY": "1", "AGENT_OTLP_ENDPOINT": "  "}
+        self.assertIsNone(otlp_exporter_endpoint(env))
+
+    def test_configured_endpoint_is_returned_stripped(self):
+        env = {"AGENT_OBSERVABILITY": "1", "AGENT_OTLP_ENDPOINT": " http://c:4318/v1/traces "}
+        self.assertEqual(otlp_exporter_endpoint(env), "http://c:4318/v1/traces")
+
+    def test_observability_without_an_endpoint_is_none(self):
+        self.assertIsNone(otlp_exporter_endpoint({"AGENT_OBSERVABILITY": "1"}))
 
 
 class LangsmithSettingsTests(unittest.TestCase):
@@ -317,6 +363,28 @@ class StartupEnvironmentBootstrapTests(unittest.TestCase):
             os.environ["TOKENIZERS_PARALLELISM"] = "operator_value"
             apply_startup_environment_defaults()  # second call is a no-op
             self.assertEqual(os.environ["TOKENIZERS_PARALLELISM"], "operator_value")
+
+
+class BindAddressTests(unittest.TestCase):
+    """``AGENT_HOST``/``AGENT_PORT`` decide where uvicorn listens.
+
+    The container image sets ``AGENT_HOST=0.0.0.0``; the desktop keeps the
+    loopback default, so exposing the socket has to stay an explicit choice.
+    """
+
+    def test_defaults_stay_loopback(self):
+        self.assertEqual(agent_bind_host({}), DEFAULT_HOST)
+        self.assertEqual(agent_bind_port({}), DEFAULT_PORT)
+
+    def test_explicit_bind_is_honoured(self):
+        self.assertEqual(agent_bind_host({"AGENT_HOST": "0.0.0.0"}), "0.0.0.0")
+        self.assertEqual(agent_bind_port({"AGENT_PORT": "9000"}), 9000)
+
+    def test_blank_or_invalid_values_fall_back(self):
+        self.assertEqual(agent_bind_host({"AGENT_HOST": "   "}), DEFAULT_HOST)
+        self.assertEqual(agent_bind_port({"AGENT_PORT": "not-a-port"}), DEFAULT_PORT)
+        self.assertEqual(agent_bind_port({"AGENT_PORT": "70000"}), DEFAULT_PORT)
+        self.assertEqual(agent_bind_port({"AGENT_PORT": "-1"}), DEFAULT_PORT)
 
 
 if __name__ == "__main__":

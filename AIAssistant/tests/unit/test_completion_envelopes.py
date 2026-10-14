@@ -10,6 +10,7 @@ transports and the grammar precompile cache. (Moved verbatim from
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import unittest
@@ -47,7 +48,7 @@ class ConstrainedCompletionEnvelopeTests(unittest.TestCase):
 
     def _run(self, response: dict, *, llama: bool = False) -> str:
         runtime = _FakeRuntime(response)
-        return constrained_completion(
+        invoke = lambda: constrained_completion(  # noqa: E731 - local helper
             [{"role": "user", "content": "hi"}],
             max_tokens=128,
             temperature=0.0,
@@ -58,6 +59,50 @@ class ConstrainedCompletionEnvelopeTests(unittest.TestCase):
             grammar_schema=json.dumps({"type": "object"}),
             record_token_usage_fn=lambda *a, **kw: None,
         )
+        if llama:
+            return invoke()
+        # ADR 0018: the remote leg is refused unless the operator opts in.
+        # These tests exercise the decoder, so they opt in explicitly instead of
+        # inheriting whatever the host environment happens to say.
+        with patch.dict(os.environ, {"AGENT_HYBRID_POLICY": "cloud_allowed"}):
+            return invoke()
+
+    def test_remote_leg_is_refused_without_the_opt_in(self) -> None:
+        """The default ``local_only`` policy must stop the remote call itself."""
+        with patch.dict(os.environ, {}):
+            os.environ.pop("AGENT_HYBRID_POLICY", None)
+            with self.assertRaises(RuntimeError) as caught:
+                constrained_completion(
+                    [{"role": "user", "content": "hi"}],
+                    max_tokens=8,
+                    temperature=0.0,
+                    llm_runtime=_FakeRuntime(None, has_llm=False),
+                    backend_mode_fn=lambda: "openai",
+                    openai_compatible_fn=MagicMock(),
+                    openai_tools=[],
+                    grammar_schema=json.dumps({"type": "object"}),
+                    record_token_usage_fn=lambda *a, **kw: None,
+                )
+        self.assertIn("AGENT_HYBRID_POLICY", str(caught.exception))
+
+    def test_local_transport_failure_is_wrapped_with_context(self) -> None:
+        """A dead llama.cpp backend surfaces as a runtime error, not a TypeError."""
+        runtime = _FakeRuntime(None)
+        runtime.llm.create_chat_completion.side_effect = OSError("model unloaded")
+        with self.assertRaises(RuntimeError) as caught:
+            constrained_completion(
+                [{"role": "user", "content": "hi"}],
+                max_tokens=8,
+                temperature=0.0,
+                llm_runtime=runtime,
+                backend_mode_fn=lambda: "llama_cpp",
+                openai_compatible_fn=MagicMock(),
+                openai_tools=[],
+                grammar_schema=json.dumps({"type": "object"}),
+                record_token_usage_fn=lambda *a, **kw: None,
+            )
+        self.assertIn("Constrained tool decoding failed", str(caught.exception))
+        self.assertIn("model unloaded", str(caught.exception))
 
     def test_remote_tool_call_envelope(self) -> None:
         response = {

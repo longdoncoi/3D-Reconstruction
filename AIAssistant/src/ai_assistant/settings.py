@@ -38,10 +38,21 @@ class ArchitectureSettings:
     a2a_card_url: str = DEFAULT_BASE_URL
 
     @classmethod
-    def load(cls, base_dir: Path) -> "ArchitectureSettings":
+    def load(cls, base_dir: Path, config_dir: Path | None = None) -> "ArchitectureSettings":
+        """Load profile configuration for this deployment.
+
+        ``config_dir`` defaults to the *tracked* TOML tree resolved from this
+        file (``AIAssistant/config``), not to ``base_dir / "config"``: the
+        composition root historically passed ``…/src`` as ``base_dir``, which
+        made every ``*.toml`` silently ignored — capabilities, the least
+        privilege scope map and the origin allow-list all fell back to code
+        defaults while the files sat unread on disk (ADR 0015). Callers that
+        build a settings tree from their own directory (tests, embedded
+        profiles) pass ``config_dir`` explicitly.
+        """
         base_dir = Path(base_dir).resolve()
         profile = os.environ.get("AI_ASSISTANT_PROFILE", "desktop").strip().lower()
-        config_dir = base_dir / "config"
+        config_dir = Path(config_dir) if config_dir is not None else settings_config_dir()
         payload: dict = {}
         for path in (
             config_dir / "base.toml", config_dir / f"{profile}.toml", config_dir / "plugins.toml",
@@ -235,6 +246,22 @@ def langsmith_settings(env: Mapping[str, str] | None = None) -> dict[str, str] |
     }
 
 
+def otlp_exporter_endpoint(env: Mapping[str, str] | None = None) -> str | None:
+    """Return the OTLP collector URL for span export, or ``None``.
+
+    Spans only exist while ``AGENT_OBSERVABILITY=1`` (see
+    :func:`observability_enabled`), so the endpoint is honoured only then too.
+    The URL is the full traces path (e.g. ``http://host:4318/v1/traces``) —
+    the standard ``OTEL_EXPORTER_OTLP_ENDPOINT`` base-URL semantics are
+    deliberately not mirrored here to keep one unambiguous knob.
+    """
+    values = os.environ if env is None else env
+    if not observability_enabled(values):
+        return None
+    endpoint = values.get("AGENT_OTLP_ENDPOINT", "").strip()
+    return endpoint or None
+
+
 def a2a_enabled(env: Mapping[str, str] | None = None) -> bool:
     """Return whether the A2A transport layer is active (``A2A_ENABLED=1``)."""
     values = os.environ if env is None else env
@@ -276,6 +303,17 @@ def a2a_trusted_endpoints(env: Mapping[str, str] | None = None) -> frozenset[str
 # on-demand accessors (e.g. a2a_trusted_endpoints) reuse that parser without a
 # composition root, while ``invalidate_settings_cache`` keeps tests honest.
 _settings_cache: ArchitectureSettings | None = None
+
+
+def settings_config_dir() -> Path:
+    """The tracked configuration tree: ``AIAssistant/config``.
+
+    Resolved from this file (``src/ai_assistant/settings.py`` → two levels up),
+    so every reader — ``load_settings`` and ``ArchitectureSettings.load`` —
+    sees the same ``base.toml``/``<profile>.toml``/``agents.toml`` no matter
+    which directory a caller believes is its base.
+    """
+    return Path(__file__).resolve().parents[2] / "config"
 
 
 def load_settings() -> ArchitectureSettings:
@@ -382,3 +420,27 @@ def agent_inference_model(env: Mapping[str, str] | None = None) -> str:
     """Return the remote completion model id (``AGENT_INFERENCE_MODEL``)."""
     values = os.environ if env is None else env
     return values.get("AGENT_INFERENCE_MODEL", "default")
+
+
+# ── Socket binding (ADR 0001: one owner for the uvicorn bind) ───────────────
+
+def agent_bind_host(env: Mapping[str, str] | None = None) -> str:
+    """Return the uvicorn bind address (``AGENT_HOST``).
+
+    Default stays the canonical loopback host: exposing the interface is a
+    deployment decision that has to be made explicitly (the Docker image sets
+    ``AGENT_HOST=0.0.0.0``), and ADR 0008 still gates the mutating surfaces.
+    """
+    values = os.environ if env is None else env
+    return values.get("AGENT_HOST", "").strip() or DEFAULT_HOST
+
+
+def agent_bind_port(env: Mapping[str, str] | None = None) -> int:
+    """Return the uvicorn port (``AGENT_PORT``), clamped to a valid range."""
+    values = os.environ if env is None else env
+    raw = values.get("AGENT_PORT", "").strip()
+    try:
+        port = int(raw) if raw else DEFAULT_PORT
+    except ValueError:
+        return DEFAULT_PORT
+    return port if 1 <= port <= 65535 else DEFAULT_PORT

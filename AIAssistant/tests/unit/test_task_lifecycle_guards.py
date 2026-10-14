@@ -113,7 +113,9 @@ class RunTests(unittest.TestCase):
     def test_a_vanished_task_after_an_executor_crash_stays_silent(self):
         """The executor raised *and* the task is gone: nothing left to fail."""
         store = _store()
-        store.get.side_effect = [_working_task(), None]
+        # read #1: the worker's entry snapshot, read #2: the compare-and-set
+        # probe for the WORKING write, read #3: the crash handler's reload.
+        store.get.side_effect = [_working_task(), _working_task(), None]
         executor = MagicMock(side_effect=RuntimeError("boom"))
         TaskService(store, executor, frozenset({"chat"}))._run("task-1")
         store.save.assert_called_once()  # the WORKING transition only

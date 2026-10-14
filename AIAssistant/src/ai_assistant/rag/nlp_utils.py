@@ -2,33 +2,36 @@
 from __future__ import annotations
 
 import re
+import unicodedata
+
+# Vietnamese multi-word terms that must survive tokenisation as one term, so the
+# BM25 index and the query share the same vocabulary.
+_COMPOUNDS = {
+    "tái tạo": "tái_tạo", "hình ảnh": "hình_ảnh", "mô hình": "mô_hình",
+    "dữ liệu": "dữ_liệu", "hệ thống": "hệ_thống", "đầu vào": "đầu_vào",
+    "đầu ra": "đầu_ra", "cấu hình": "cấu_hình", "giao diện": "giao_diện",
+}
+# Basic Vietnamese + English function words.
+_STOPWORDS = frozenset({"là", "của", "và", "các", "trong", "được", "có", "cho", "với", "để", "những"})
+# ``\w+`` with the ``re.UNICODE`` flag: one call covers Latin, Vietnamese
+# diacritics, CJK and code identifiers alike (``model_idx``, ``point3d``).
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 
 def tokenize_vn(text: str) -> list[str]:
-    """
-    Tokenizer BM25 hỗ trợ Việt + English + code.
-    - Xử lý một số từ ghép tiếng Việt cơ bản
-    - Loại bỏ stopwords cơ bản
-    """
-    t = text.lower()
-    
-    # Nối từ ghép cơ bản
-    compounds = {
-        "tái tạo": "tái_tạo", "hình ảnh": "hình_ảnh", "mô hình": "mô_hình",
-        "dữ liệu": "dữ_liệu", "hệ thống": "hệ_thống", "đầu vào": "đầu_vào",
-        "đầu ra": "đầu_ra", "cấu hình": "cấu_hình", "giao diện": "giao_diện"
-    }
-    for k, v in compounds.items():
-        t = t.replace(k, v)
+    """Tokenizer BM25 hỗ trợ Việt + English + code.
 
-    # Stopwords tiếng Việt cơ bản
-    stopwords = {"là", "của", "và", "các", "trong", "được", "có", "cho", "với", "để", "những"}
-
-    latin_tokens = re.findall(r"[a-z0-9][a-z0-9_]*", t)
-    viet_tokens = re.findall(r"[^\x00-\x7f\s.,!?;:()\[\]{}'\"<>/\\|@#$%^&*+=~`]+", t)
-    
-    tokens = latin_tokens + viet_tokens
-    return [tk for tk in tokens if tk not in stopwords]
+    - NFC-normalise first: a decomposed ``ế`` (``e`` + circumflex + acute) must
+      not defeat the compound rules or the stop-word list, which is what made
+      two spellings of the same word index as different terms.
+    - ``\\w+`` keeps ``hình_ảnh``/``model_idx`` in one token and drops
+      punctuation; the previous ASCII/non-ASCII split produced junk tokens out
+      of em dashes and left underscores out of code identifiers.
+    """
+    normalised = unicodedata.normalize("NFC", text.lower())
+    for source, target in _COMPOUNDS.items():
+        normalised = normalised.replace(source, target)
+    return [token for token in _WORD_RE.findall(normalised) if token not in _STOPWORDS]
 
 
 _PROJECT_ROLE_QUERY_ALIASES = (

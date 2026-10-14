@@ -1,5 +1,16 @@
 # KIẾN TRÚC SƯ TRƯỞNG — Báo cáo thực thi Khuyến nghị (ADR 0018 / 0014)
 
+> **CẬP NHẬT 2026-10-14 — đây là báo cáo của lần thực thi 2026-10-13; các số
+> liệu trong thân tài liệu đã được đo lại và thay đổi.** Đo hiện tại: coverage
+> **100.00%** (7 653 statements / 2 032 branches, 0 miss, 0 partial), **1 576
+> test** OK (1 skip, 0 fail), `ruff`/`mypy`/`lint-imports` sạch, gate
+> `fail_under=100` đi qua. Trong bảng §2, mục "Coverage 100%" đã đóng; mục
+> `test_bootstrap_publishes_llm_backend` chạy xanh trong lần đo suite đầy đủ
+> 2026-10-14 (intermittent chưa tái lập được nên chưa dám tuyên bố hết). Phần
+> còn mở (HMAC cache, OTel exporter, mutation test, xác minh CI xanh) nằm ở
+> `ARCHITECTURE_10_10_CLOSED.md` §4. Các dòng dưới đây được giữ nguyên như lịch
+> sử của lần review đó.
+
 Ngày thực thi: 2026-10-13
 Vai trò: Principal / Chief AI Agent Architect
 Trạng thái trước: 9.3/10 — không đạt 10/10 do coverage gate fail (99%), 1 test fail, legacy shim `_RAGModule`, ResourceWarning `nul`

@@ -33,7 +33,22 @@ def cloud_allowed(data_classification: str) -> bool:
 
 
 def openai_compatible_completion(messages: list[dict[str, Any]], **params: Any) -> dict[str, Any]:
-    """Call a separately deployed vLLM/TGI OpenAI-compatible server."""
+    """Call a separately deployed vLLM/TGI OpenAI-compatible server.
+
+    ADR 0018 enforcement point: every remote inference call funnels through
+    here, so ``cloud_allowed`` is checked *before* any bytes leave the process.
+    Messages are scrubbed of secrets first, hence they travel as
+    ``non_sensitive`` content — and only when the operator opted into cloud
+    routing with ``AGENT_HYBRID_POLICY=cloud_allowed`` (the default
+    ``local_only`` refuses).
+    """
+    if not cloud_allowed("non_sensitive"):
+        msg = (
+            "Remote inference blocked by AGENT_HYBRID_POLICY (local_only); "
+            "set AGENT_HYBRID_POLICY=cloud_allowed to opt in"
+        )
+        raise RuntimeError(msg)
+
     endpoint = agent_inference_url()
     if not endpoint:
         msg = "AGENT_INFERENCE_URL is required for remote inference"

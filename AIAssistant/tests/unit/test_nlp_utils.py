@@ -1,6 +1,7 @@
 """Unit tests for RAG NLP utilities."""
 from __future__ import annotations
 
+import unicodedata
 import unittest
 
 from ai_assistant.rag.nlp_utils import expand_project_role_query, tokenize_vn
@@ -15,13 +16,42 @@ class TokenizeVnTests(unittest.TestCase):
         self.assertIn("project", tokens)
 
     def test_removes_basic_stopwords(self) -> None:
-        # Only pure-ASCII tokens survive this tokenizer's diacritic splitter,
-        # so stopword removal is testable with ASCII stopwords like "cho".
         self.assertEqual(tokenize_vn("cho cho"), [])
+
+    def test_diacritic_stopwords_are_removed(self) -> None:
+        """A decomposed stop-word must not survive as three ASCII fragments."""
+        for word in ("của", "được", "với"):
+            with self.subTest(word=word):
+                decomposed = unicodedata.normalize("NFD", word)
+                self.assertEqual(tokenize_vn(decomposed), [])
+
+    def test_decomposed_compounds_are_joined(self) -> None:
+        """NFC first: the same phrase written two ways indexes the same term."""
+        composed = unicodedata.normalize("NFC", "hệ thống dữ liệu")
+        decomposed = unicodedata.normalize("NFD", "hệ thống dữ liệu")
+        self.assertEqual(tokenize_vn(decomposed), ["hệ_thống", "dữ_liệu"])
+        self.assertEqual(tokenize_vn(decomposed), tokenize_vn(composed))
 
     def test_joins_common_compounds(self) -> None:
         tokens = tokenize_vn("xây dựng hệ thống dữ liệu")
+        self.assertEqual(tokens, ["xây", "dựng", "hệ_thống", "dữ_liệu"])
+
+    def test_code_identifiers_stay_single_tokens(self) -> None:
+        tokens = tokenize_vn("vector_retriever và point3d")
+        self.assertIn("vector_retriever", tokens)
+        self.assertIn("point3d", tokens)
+
+    def test_punctuation_is_never_a_token(self) -> None:
+        tokens = tokenize_vn("truy cập — vào @nhà #v1")
+        # Every surviving token is a word: the old ASCII/non-ASCII split kept
+        # em dashes and brackets as vocabulary entries.
         self.assertTrue(tokens)
+        self.assertTrue(
+            all(ch.isalnum() or ch == "_" for token in tokens for ch in token),
+            tokens,
+        )
+        self.assertIn("nhà", tokens)
+        self.assertIn("v1", tokens)
 
     def test_returns_list(self) -> None:
         self.assertIsInstance(tokenize_vn("chào"), list)

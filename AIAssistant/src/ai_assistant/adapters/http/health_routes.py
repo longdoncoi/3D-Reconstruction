@@ -9,7 +9,7 @@ import time
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 if TYPE_CHECKING:
     from ._types import LLMModuleLike, PlatformLike, RAGModuleLike
@@ -32,10 +32,45 @@ def build_health_router(
     """
     router = APIRouter()
 
+    def _degraded_reasons() -> list[str]:
+        """Why the process is not fully functional (empty ⇒ healthy)."""
+        reasons: list[str] = []
+        if llm_module.llm is None:
+            reasons.append("llm_not_loaded")
+        if not rag_module.knowledge_chunks:
+            # P0 #1: an empty RAG index used to be invisible; surface it.
+            reasons.append("rag_index_empty")
+        return reasons
+
+    @router.get("/livez")
+    async def livez():
+        """Liveness: the event loop answered — nothing more is implied."""
+        return {"status": "alive", "uptime_sec": round(time.monotonic() - server_start_time, 1)}
+
+    @router.get("/readyz")
+    async def readyz():
+        """Readiness: 503 while the LLM cannot serve, 200 ``degraded`` when RAG is empty.
+
+        The distinction matters for orchestration: a missing model means agent
+        requests cannot be answered at all (unready), whereas an empty corpus
+        only costs retrieval quality (ready, but degraded).
+        """
+        reasons = _degraded_reasons()
+        unready = [r for r in reasons if r == "llm_not_loaded"]
+        status = "not_ready" if unready else ("degraded" if reasons else "ready")
+        return JSONResponse(
+            status_code=503 if unready else 200,
+            content={"status": status, "reasons": reasons},
+        )
+
     @router.get("/health")
     async def health():
+        reasons = _degraded_reasons()
         return {
-            "status": "ok",
+            # Degraded (not "ok") whenever a subsystem is missing, so a probe
+            # reading only ``status`` sees the truth.
+            "status": "degraded" if reasons else "ok",
+            "reasons": reasons,
             "uptime_sec": round(time.monotonic() - server_start_time, 1),
             "llm_loaded": llm_module.llm is not None,
             "rag_chunks": len(rag_module.knowledge_chunks),

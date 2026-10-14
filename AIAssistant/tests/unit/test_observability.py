@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from collections import deque
 from types import SimpleNamespace
 from unittest import mock
 
@@ -68,6 +69,7 @@ class MetricsTests(unittest.TestCase):
             metrics_module.record_schema_error("t")
             metrics_module.record_token_usage(1, 2)
             metrics_module.record_step_guard("ok")
+            metrics_module.record_recovery(0.5)
             self.assertIsNone(metrics_module.prometheus_payload())
 
     def test_missing_sdk_falls_back_to_empty(self):
@@ -95,6 +97,8 @@ class MetricsTests(unittest.TestCase):
                 metrics_module.record_schema_error("write")
                 metrics_module.record_token_usage(3, 4)
                 metrics_module.record_step_guard("blocked")
+                metrics_module.record_recovery(0.25)
+                metrics_module.record_recovery(-1)
                 payload = metrics_module.prometheus_payload()
         self.assertEqual(payload, b"prometheus-payload")
         self.assertIn(("labels", ("read", "success")), metrics["tool"].observations)
@@ -104,6 +108,91 @@ class MetricsTests(unittest.TestCase):
         self.assertIn(("observe", 0.0), metrics["tool_latency"].observations)
         self.assertIn(("inc", 3), metrics["tokens"].observations)
         self.assertIn(("inc", 4), metrics["tokens"].observations)
+        self.assertIn(("observe", 0.25), metrics["recovery"].observations)
+        # Clock skew cannot produce a negative recovery window.
+        self.assertIn(("observe", 0.0), metrics["recovery"].observations)
+
+
+class LatencyQuantileTests(unittest.TestCase):
+    """SCORECARD metric #2 — a measured p95 per timed node, no PromQL round-trip.
+
+    ``span()`` names graph nodes ``agent.<node>``; these tests pin the p95
+    arithmetic, the bounded window, the prefix stripping, and the fact that an
+    observability-off process measures nothing.
+    """
+
+    def setUp(self):
+        metrics_module._metrics = None
+        metrics_module._latency_samples = {}
+        self.addCleanup(setattr, metrics_module, "_metrics", None)
+        self.addCleanup(setattr, metrics_module, "_latency_samples", {})
+
+    def _record(self, name: str, *seconds: float) -> None:
+        fake = _FakePromClient()
+        with (
+            mock.patch.object(metrics_module, "observability_enabled", return_value=True),
+            mock.patch.dict(sys.modules, {"prometheus_client": fake}),
+        ):
+            for value in seconds:
+                metrics_module.record_latency(name, value)
+
+    def test_p95_is_the_nearest_rank_of_the_window(self) -> None:
+        self._record("agent.reason", *range(1, 101))  # 1..100
+        self.assertEqual(metrics_module.p95_latency_seconds("agent.reason"), 95)
+
+    def test_a_single_sample_is_its_own_p95(self) -> None:
+        self._record("agent.reason", 0.5)
+        self.assertEqual(metrics_module.p95_latency_seconds("agent.reason"), 0.5)
+
+    def test_a_node_without_samples_is_none(self) -> None:
+        self.assertIsNone(metrics_module.p95_latency_seconds("agent.plan"))
+
+    def test_the_window_is_bounded_to_the_latest_samples(self) -> None:
+        self._record("agent.tool", *range(1000))
+        samples = metrics_module._latency_samples["agent.tool"]
+
+        self.assertEqual(len(samples), metrics_module._LATENCY_WINDOW)
+        self.assertEqual(min(samples), 1000 - metrics_module._LATENCY_WINDOW)
+
+    def test_by_node_strips_the_prefix_and_skips_non_agent_nodes(self) -> None:
+        self._record("agent.plan", 0.2, 0.4)
+        self._record("agent.reason", 1.0)
+        metrics_module._latency_samples["http.request"] = deque([9.9])
+
+        self.assertEqual(metrics_module.p95_latency_by_node(), {"plan": 0.4, "reason": 1.0})
+
+    def test_negative_samples_are_clamped_to_zero(self) -> None:
+        self._record("agent.reflect", -5.0)
+        self.assertEqual(metrics_module.p95_latency_seconds("agent.reflect"), 0.0)
+
+    def test_observability_off_records_nothing(self) -> None:
+        with mock.patch.object(metrics_module, "observability_enabled", return_value=False):
+            metrics_module.record_latency("agent.reason", 1.0)
+        self.assertEqual(metrics_module._latency_samples, {})
+
+
+class CurrentTraceparentTests(unittest.TestCase):
+    """The outbound trace header is well-formed or absent — never faked."""
+
+    def _fake_span(self, context):
+        fake_trace = SimpleNamespace(get_current_span=lambda: SimpleNamespace(get_span_context=lambda: context))
+        return SimpleNamespace(trace=fake_trace)
+
+    def test_no_sdk_importable_returns_none(self) -> None:
+        with mock.patch.dict(sys.modules, {"opentelemetry": None}):
+            self.assertIsNone(tracing_module.current_traceparent())
+
+    def test_an_invalid_span_context_returns_none(self) -> None:
+        fake_otel = self._fake_span(SimpleNamespace(is_valid=False))
+        with mock.patch.dict(sys.modules, {"opentelemetry": fake_otel, "opentelemetry.trace": fake_otel.trace}):
+            self.assertIsNone(tracing_module.current_traceparent())
+
+    def test_a_valid_span_formats_the_traceparent(self) -> None:
+        context = SimpleNamespace(is_valid=True, trace_id=0xAB, span_id=0xCD, trace_flags=1)
+        fake_otel = self._fake_span(context)
+        with mock.patch.dict(sys.modules, {"opentelemetry": fake_otel, "opentelemetry.trace": fake_otel.trace}):
+            value = tracing_module.current_traceparent()
+        self.assertEqual(value, f"00-{0xAB:032x}-{0xCD:016x}-01")
 
 
 class _FakeSpan:

@@ -1,10 +1,12 @@
-"""Guard-path coverage for the tracer cache and the sandbox front door.
+"""Guard-path coverage for the tracer cache, the OTLP exporter wiring and the sandbox front door.
 
 The OTel tracer resolves once and is cached: the second call must take the
 cache-hit arm, and the first call must handle both an enabled SDK and a
 missing one (simulated by halting the import, which raises ``ImportError``
 exactly like an uninstalled package). Module-global tracer state is saved
-and restored so test order cannot matter.
+and restored so test order cannot matter. The exporter arms (endpoint set /
+package missing / no endpoint) are pinned with fake modules so the wiring is
+verified whether or not ``opentelemetry-exporter-otlp`` is installed.
 
 The sandbox arms are its two cheapest rejections: an interpreter flag the
 policy has never heard of, and a command line ``shlex`` itself refuses.
@@ -54,6 +56,7 @@ class TracerCacheTests(unittest.TestCase):
         tracing._tracer = None
         with (
             patch.object(tracing, "observability_enabled", return_value=True),
+            patch.object(tracing, "otlp_exporter_endpoint", return_value=None),
             patch.dict(sys.modules, {"opentelemetry": fake_otel,
                                      "opentelemetry.trace": fake_trace}),
         ):
@@ -77,6 +80,114 @@ class TracerCacheTests(unittest.TestCase):
             patch.object(tracing, "observability_enabled", return_value=True),
         ):
             self.assertIs(tracing._get_tracer(), False)
+
+
+class OtlpExporterWiringTests(unittest.TestCase):
+    """Spans reach a collector only when an endpoint is actually configured.
+
+    The exporter package may or may not be installed, so all three arms are
+    pinned with fake modules in ``sys.modules``: endpoint wired, endpoint set
+    but package missing (one warning, spans stay local), no endpoint (nothing
+    configured at all).
+    """
+
+    def setUp(self) -> None:
+        self._saved = tracing._tracer
+        self.addCleanup(setattr, tracing, "_tracer", self._saved)
+        tracing._tracer = None
+
+    def _fake_modules(self, exporter_installed: bool = True) -> dict:
+        from types import ModuleType
+
+        recorded: dict[str, object] = {}
+
+        trace_mod = ModuleType("opentelemetry.trace")
+        trace_mod.get_tracer = lambda name: "tracer!"  # type: ignore[attr-defined]
+        trace_mod.set_tracer_provider = (  # type: ignore[attr-defined]
+            lambda provider: recorded.setdefault("provider", provider)
+        )
+
+        sdk_trace = ModuleType("opentelemetry.sdk.trace")
+
+        class _Provider:
+            def __init__(self) -> None:
+                self.processors: list = []
+
+            def add_span_processor(self, processor: object) -> None:
+                self.processors.append(processor)
+
+        sdk_trace.TracerProvider = _Provider  # type: ignore[attr-defined]
+        export_mod = ModuleType("opentelemetry.sdk.trace.export")
+        export_mod.BatchSpanProcessor = (  # type: ignore[attr-defined]
+            lambda span_exporter: ("processor", span_exporter)
+        )
+        exporter_mod = ModuleType(
+            "opentelemetry.exporter.otlp.proto.http.trace_exporter"
+        )
+        exporter_mod.OTLPSpanExporter = (  # type: ignore[attr-defined]
+            lambda endpoint=None: ("exporter", endpoint)
+        )
+
+        top = ModuleType("opentelemetry")
+        top.trace = trace_mod  # type: ignore[attr-defined]
+        modules: dict = {
+            "opentelemetry": top,
+            "opentelemetry.trace": trace_mod,
+            "opentelemetry.sdk": ModuleType("opentelemetry.sdk"),
+            "opentelemetry.sdk.trace": sdk_trace,
+            "opentelemetry.sdk.trace.export": export_mod,
+            "opentelemetry.exporter": ModuleType("opentelemetry.exporter"),
+            "opentelemetry.exporter.otlp": ModuleType("opentelemetry.exporter.otlp"),
+            "opentelemetry.exporter.otlp.proto": ModuleType(
+                "opentelemetry.exporter.otlp.proto"
+            ),
+            "opentelemetry.exporter.otlp.proto.http": ModuleType(
+                "opentelemetry.exporter.otlp.proto.http"
+            ),
+            "opentelemetry.exporter.otlp.proto.http.trace_exporter": exporter_mod,
+        }
+        if not exporter_installed:
+            # ``None`` in sys.modules makes the import raise ImportError,
+            # exactly like an uninstalled package.
+            modules["opentelemetry.exporter.otlp.proto.http.trace_exporter"] = None
+        self._recorded = recorded
+        return modules
+
+    def test_an_endpoint_wires_the_exporter_into_the_provider(self) -> None:
+        url = "http://collector:4318/v1/traces"
+        with (
+            patch.object(tracing, "observability_enabled", return_value=True),
+            patch.object(tracing, "otlp_exporter_endpoint", return_value=url),
+            patch.dict(sys.modules, self._fake_modules()),
+        ):
+            self.assertEqual(tracing._get_tracer(), "tracer!")
+
+        self.assertEqual(
+            self._recorded["provider"].processors,
+            [("processor", ("exporter", url))],
+        )
+
+    def test_a_missing_exporter_package_degrades_to_local_spans(self) -> None:
+        with (
+            patch.object(tracing, "observability_enabled", return_value=True),
+            patch.object(tracing, "otlp_exporter_endpoint", return_value="http://c:1/v1/traces"),
+            patch.dict(sys.modules, self._fake_modules(exporter_installed=False)),
+            self.assertLogs("ai_assistant.observability.tracing", level="WARNING") as caught,
+        ):
+            self.assertEqual(tracing._get_tracer(), "tracer!")
+
+        self.assertIn("not installed", caught.output[0])
+        self.assertNotIn("provider", self._recorded)
+
+    def test_without_an_endpoint_no_exporter_is_configured(self) -> None:
+        with (
+            patch.object(tracing, "observability_enabled", return_value=True),
+            patch.object(tracing, "otlp_exporter_endpoint", return_value=None),
+            patch.dict(sys.modules, self._fake_modules()),
+        ):
+            self.assertEqual(tracing._get_tracer(), "tracer!")
+
+        self.assertNotIn("provider", self._recorded)
 
 
 class InlineCodeFlagTests(unittest.TestCase):

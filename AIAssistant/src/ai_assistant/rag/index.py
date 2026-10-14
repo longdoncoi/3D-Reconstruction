@@ -14,6 +14,7 @@ from ai_assistant.config.paths import AppPaths
 from ai_assistant.config.rag_config import RAGSettings
 from ai_assistant.llm.hardware import release_ml_memory
 
+from .cache_integrity import recorded_digest, seal_payload, signing_key, verify_cache
 from .domain import ChunkResult
 from .image_utils import load_image_for_embedding
 from .nlp_utils import tokenize_vn
@@ -94,6 +95,9 @@ def save_cache(index: Any, chunks: list[ChunkResult], bm25: Any, paths: AppPaths
     import faiss as _faiss
     t = time.monotonic()
     
+    # The cache directory may not exist yet (first run on a fresh data dir, or
+    # a hand-built AppPaths in tests) — create it before writing.
+    paths.cache_index.parent.mkdir(parents=True, exist_ok=True)
     _faiss.write_index(index, str(paths.cache_index))
     
     with paths.cache_chunks.open("wb") as f:
@@ -112,6 +116,13 @@ def save_cache(index: Any, chunks: list[ChunkResult], bm25: Any, paths: AppPaths
         "chunk_chars": settings.chunk_chars,
         "cache_version": settings.cache_version,
     }
+    # Seal the three artifacts just written: ``load_cache`` refuses to unpickle
+    # a cache whose digest does not match (see rag/cache_integrity.py).
+    key = signing_key(paths)
+    if key is not None:
+        meta["integrity"] = seal_payload(key, paths)
+    else:
+        logger.warning("RAG cache written unsigned — no key could be minted")
     
     with paths.cache_metadata.open("w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
@@ -125,6 +136,14 @@ def load_cache(paths: AppPaths, settings: RAGSettings) -> tuple[Any, list[ChunkR
     t = time.monotonic()
 
     def _read() -> tuple[Any, list[ChunkResult], Any]:
+        if not verify_cache(signing_key(paths), paths, recorded_digest(paths)):
+            # Tampered, truncated or written before sealing existed. Refuse
+            # *before* unpickling anything and let the caller rebuild; a cache
+            # is data, never code.
+            logger.warning("RAG cache integrity check failed — refusing to unpickle %s",
+                           paths.cache_chunks)
+            return None, [], None
+
         index = _faiss.read_index(str(paths.cache_index))
         if index.d != settings.embedding_dimension:
             msg = f"FAISS dimension {index.d} does not match {settings.embedding_dimension}"

@@ -94,16 +94,30 @@ class CloudAllowedTests(unittest.TestCase):
 
 class OpenAiCompatibleCompletionTests(unittest.TestCase):
     def test_missing_url_raises(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=False):
+        """The policy gate must not be what fails here — opt in first."""
+        with mock.patch.dict(os.environ, {"AGENT_HYBRID_POLICY": "cloud_allowed"}):
             os.environ.pop("AGENT_INFERENCE_URL", None)
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as caught:
                 openai_compatible_completion([{"role": "user", "content": "hi"}])
+        self.assertIn("AGENT_INFERENCE_URL", str(caught.exception))
+
+    def test_local_only_policy_blocks_the_remote_call(self) -> None:
+        """ADR 0018: the default policy refuses before any bytes leave."""
+        env = {"AGENT_INFERENCE_URL": "http://inference:8000"}
+        with mock.patch.dict(os.environ, env):
+            os.environ.pop("AGENT_HYBRID_POLICY", None)
+            with mock.patch("ai_assistant.llm.inference.urlopen") as m_urlopen:
+                with self.assertRaises(RuntimeError) as caught:
+                    openai_compatible_completion([{"role": "user", "content": "hi"}])
+        self.assertIn("AGENT_HYBRID_POLICY", str(caught.exception))
+        m_urlopen.assert_not_called()
 
     def test_returns_parsed_payload_and_scrubs_messages(self) -> None:
         env = {
             "AGENT_INFERENCE_URL": "http://inference:8000",
             "AGENT_INFERENCE_MODEL": "qwen",
             "AGENT_INFERENCE_TIMEOUT": "5",
+            "AGENT_HYBRID_POLICY": "cloud_allowed",
         }
         payload = b'{"choices": [{"message": {"role": "assistant", "content": "ok"}}]}'
         with mock.patch.dict(os.environ, env):
@@ -125,7 +139,8 @@ class OpenAiCompatibleCompletionTests(unittest.TestCase):
         self.assertIn("[REDACTED_IP]", body)
 
     def test_invalid_json_still_parsed_by_caller(self) -> None:
-        env = {"AGENT_INFERENCE_URL": "http://inference:8000"}
+        env = {"AGENT_INFERENCE_URL": "http://inference:8000",
+               "AGENT_HYBRID_POLICY": "cloud_allowed"}
         with mock.patch.dict(os.environ, env):
             with mock.patch("ai_assistant.llm.inference.urlopen") as m_urlopen:
                 response = mock.MagicMock()

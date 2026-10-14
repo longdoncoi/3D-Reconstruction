@@ -14,6 +14,7 @@ from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 from ..domain.security import DataClassification
+from ..observability.tracing import current_traceparent
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,9 +60,16 @@ class TrustedA2AClient:
             "classification": classification.value,
             "message": {"role": "user", "parts": [{"kind": "text", "text": message}]},
         }
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        # Propagate the active trace so a remote agent's spans can join this
+        # trace (outbound half of W3C propagation; inbound extraction is the
+        # receiver's job and is not wired on our own inbound A2A routes yet).
+        traceparent = current_traceparent()
+        if traceparent:
+            headers["traceparent"] = traceparent
         request = Request(
             urljoin(endpoint + "/", "a2a/tasks/send"), data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Accept": "application/json"}, method="POST",
+            headers=headers, method="POST",
         )
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:

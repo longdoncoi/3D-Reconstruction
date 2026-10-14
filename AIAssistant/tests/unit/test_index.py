@@ -18,6 +18,7 @@ from unittest import mock
 
 from ai_assistant.config.paths import AppPaths
 from ai_assistant.config.rag_config import RAGSettings
+from ai_assistant.rag.cache_integrity import seal_payload, signing_key
 from ai_assistant.rag.domain import ChunkResult
 from ai_assistant.rag.index import (
     build_index_from_scratch,
@@ -66,6 +67,18 @@ def _paths(tmp: str, with_docs: bool = True) -> AppPaths:
 
 def _chunk(text: str, source: str) -> ChunkResult:
     return ChunkResult(text=text, source_path=source, loader_type="md")
+
+
+def _seal(paths: AppPaths) -> None:
+    """Write the metadata ``load_cache`` requires, sealing the files on disk.
+
+    The load guards below are about dimension/pickle failures, so they must
+    get past the integrity check first instead of tripping on it.
+    """
+    paths.cache_metadata.write_text(
+        json.dumps({"integrity": seal_payload(signing_key(paths), paths)}),
+        encoding="utf-8",
+    )
 
 
 class _FakeArr:
@@ -291,8 +304,11 @@ class SaveLoadCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
             chunks = [_chunk("a", "a.md")]
-            pickle.dump(chunks, paths.cache_chunks.open("wb"))
-            pickle.dump("bm25", paths.cache_bm25.open("wb"))
+            with paths.cache_chunks.open("wb") as handle:
+                pickle.dump(chunks, handle)
+            with paths.cache_bm25.open("wb") as handle:
+                pickle.dump("bm25", handle)
+            _seal(paths)
             self.faiss.index_d = 3
             index, loaded, bm25 = load_cache(paths, _settings())
         self.assertEqual(index.d, 3)
@@ -303,6 +319,7 @@ class SaveLoadCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
             paths.cache_chunks.write_bytes(pickle.dumps([]))
+            _seal(paths)
             self.faiss.index_d = 99
             index, loaded, bm25 = load_cache(paths, _settings())
         self.assertIsNone(index)
@@ -313,9 +330,83 @@ class SaveLoadCacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
             paths.cache_chunks.write_bytes(b"not pickle")
+            _seal(paths)
             index, loaded, _bm25 = load_cache(paths, _settings())
         self.assertIsNone(index)
         self.assertEqual(loaded, [])
+
+    def test_a_tampered_chunk_file_is_refused_before_unpickling(self) -> None:
+        """One flipped byte turns the cache into a miss, not into code."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            with paths.cache_chunks.open("wb") as handle:
+                pickle.dump([_chunk("a", "a.md")], handle)
+            with paths.cache_bm25.open("wb") as handle:
+                pickle.dump("bm25", handle)
+            _seal(paths)
+            self.faiss.index_d = 3
+            # The pickle itself stays perfectly loadable — only the digest moved.
+            paths.cache_chunks.write_bytes(paths.cache_chunks.read_bytes() + b"x")
+
+            index, loaded, bm25 = load_cache(paths, _settings())
+        self.assertIsNone(index)
+        self.assertEqual(loaded, [])
+        self.assertIsNone(bm25)
+
+    def test_an_unsealed_cache_is_refused_once_and_rebuilt(self) -> None:
+        """A pre-sealing cache carries no digest: unreadable, then re-sealed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            with paths.cache_chunks.open("wb") as handle:
+                pickle.dump([_chunk("a", "a.md")], handle)
+
+            index, loaded, _bm25 = load_cache(paths, _settings())
+        self.assertIsNone(index)
+        self.assertEqual(loaded, [])
+
+    def test_a_cache_written_by_another_key_is_refused(self) -> None:
+        """Same files, different machine key (e.g. a copied data dir)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            with paths.cache_chunks.open("wb") as handle:
+                pickle.dump([_chunk("a", "a.md")], handle)
+            with paths.cache_bm25.open("wb") as handle:
+                pickle.dump("bm25", handle)
+            _seal(paths)
+            (paths.data_dir / ".secrets" / "cache_hmac_key").write_bytes(b"y" * 32)
+            self.faiss.index_d = 3
+
+            index, loaded, _bm25 = load_cache(paths, _settings())
+        self.assertIsNone(index)
+        self.assertEqual(loaded, [])
+
+    def test_save_cache_seals_what_it_wrote(self) -> None:
+        """The digest recorded on save is the one load verifies against."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            save_cache("index", [_chunk("a", "a.md")], "bm25", paths, _settings())
+            meta = json.loads(paths.cache_metadata.read_text(encoding="utf-8"))
+
+            self.assertEqual(meta["integrity"]["algo"], "hmac-sha256")
+            self.assertEqual(len(meta["integrity"]["digest"]), 64)
+
+            self.faiss.index_d = meta["embedding_dimension"]
+            index, loaded, bm25 = load_cache(paths, _settings())
+        self.assertIsNotNone(index)
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(bm25, "bm25")
+
+    def test_a_cache_that_cannot_be_sealed_is_written_unsigned(self) -> None:
+        """A read-only data dir must not crash the save — just warn, no seal."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            with mock.patch("ai_assistant.rag.index.signing_key", return_value=None):
+                with self.assertLogs("ai_assistant.rag.index", level="WARNING") as caught:
+                    save_cache("index", [_chunk("a", "a.md")], "bm25", paths, _settings())
+            meta = json.loads(paths.cache_metadata.read_text(encoding="utf-8"))
+
+        self.assertIn("unsigned", caught.output[0])
+        self.assertNotIn("integrity", meta)
 
 
 class BuildIndexTests(unittest.TestCase):

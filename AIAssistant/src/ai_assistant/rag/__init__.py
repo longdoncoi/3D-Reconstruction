@@ -15,15 +15,19 @@ from .retrieval import (
     rerank_chunks,
     rrf_fuse,
 )
+from .retrievers import BM25Retriever, FaissVectorRetriever, build_retrievers
 
 __all__ = [
     "IMAGE_EXTS",
+    "BM25Retriever",
     "BaseDocumentLoader",
     "ChunkResult",
     "DocumentLoaderRegistry",
     "E5LlamaEmbedding",
+    "FaissVectorRetriever",
     "RetrievalPipeline",
     "build_index_from_scratch",
+    "build_retrievers",
     "dedup_by_source",
     "expand_project_role_query",
     "expand_with_parent",

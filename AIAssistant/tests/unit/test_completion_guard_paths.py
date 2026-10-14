@@ -218,5 +218,54 @@ class CompletionTests(unittest.TestCase):
         self.assertIn("type", CRITIC_JSON_SCHEMA)
         self.assertEqual(CRITIC_JSON_SCHEMA["type"], "object")
 
+
+class HybridPolicyGateTests(unittest.TestCase):
+    """ADR 0018: the remote branch refuses under the default ``local_only``.
+
+    ``backend_mode`` is only a configuration *read*; the decision to send
+    bytes off-box is made here, in ``constrained_completion``, before the
+    transport is touched — and again inside ``openai_compatible_completion``.
+    """
+
+    def _call(self, backend: str):
+        return constrained_completion(
+            [{"role": "user", "content": "hi"}],
+            max_tokens=8,
+            temperature=0.0,
+            llm_runtime=_FakeRuntime(_llama_response("x")),
+            backend_mode_fn=lambda: backend,
+            openai_compatible_fn=MagicMock(return_value=_llama_response("x")),
+            openai_tools=[],
+            grammar_schema=json.dumps({"type": "object"}),
+            record_token_usage_fn=lambda *a, **kw: None,
+        )
+
+    def test_remote_backend_is_blocked_without_cloud_opt_in(self) -> None:
+        import os
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("AGENT_HYBRID_POLICY", None)
+            with self.assertRaises(RuntimeError) as caught:
+                self._call("openai")
+        self.assertIn("AGENT_HYBRID_POLICY", str(caught.exception))
+
+    def test_remote_backend_runs_once_cloud_is_opted_in(self) -> None:
+        import os
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"AGENT_HYBRID_POLICY": "cloud_allowed"}):
+            result = self._call("openai")
+        self.assertEqual(result, "x")
+
+    def test_local_backend_is_unaffected_by_the_policy(self) -> None:
+        import os
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("AGENT_HYBRID_POLICY", None)
+            self.assertEqual(self._call("llama_cpp"), "x")
+
+
 if __name__ == "__main__":
     unittest.main()

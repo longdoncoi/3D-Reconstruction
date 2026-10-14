@@ -86,6 +86,41 @@ class SandboxRunTests(unittest.TestCase):
         self.assertEqual(result["sandbox"], "docker")
         self.assertEqual(result["return_code"], 0)
 
+    def test_docker_timeout_force_removes_the_container(self) -> None:
+        """Killing the ``docker run`` client does NOT stop the container.
+
+        ADR 0011: the Docker runtime must be as bounded as the local one, so a
+        timeout triggers a follow-up ``docker rm -f`` of the named container.
+        """
+        import subprocess as sp
+
+        with mock.patch(
+            "ai_assistant.tools.sandbox.load_agent_runtime_settings",
+            return_value=_settings(sandbox_runtime="docker"),
+        ):
+            responses = [
+                sp.TimeoutExpired("docker run", 30),
+                SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ]
+            with mock.patch("ai_assistant.tools.sandbox.subprocess.run", side_effect=responses) as sub:
+                result = run("cmake --version", "C:/workspace", 30)
+
+        self.assertIn("timed out", result["error"])
+        self.assertEqual(sub.call_count, 2)
+        run_argv = sub.call_args_list[0].args[0]
+        name = run_argv[run_argv.index("--name") + 1]
+        self.assertTrue(name.startswith("agent-sbx-"))
+        rm_argv = sub.call_args_list[1].args[0]
+        self.assertEqual(rm_argv[:3], ["docker", "rm", "-f"])
+        self.assertEqual(rm_argv[3], name)
+
+    def test_container_removal_failure_stays_silent(self) -> None:
+        """No docker daemon (or a vanished container) must not mask the timeout."""
+        from ai_assistant.tools.sandbox import _force_remove_container
+
+        with mock.patch("ai_assistant.tools.sandbox.subprocess.run", side_effect=OSError("no docker")):
+            _force_remove_container("agent-sbx-gone")  # must not raise
+
     def test_inline_interpreter_code_is_rejected(self) -> None:
         """``python -c`` / ``-m`` must not turn the allow-list into an RCE."""
         for command in (
@@ -120,6 +155,85 @@ class SandboxRunTests(unittest.TestCase):
             with self.subTest(command=command):
                 result = run(command, "C:/workspace", 30)
                 self.assertIn("rejected", result["error"])
+
+    def test_cmake_escape_subcommands_are_blocked(self) -> None:
+        """ADR 0011: ``-E`` itself is allow-listed, so it needs its own gate.
+
+        ``cmake -E env <cmd>`` executed arbitrary commands: naming the
+        executable is not an allow-list if a flag can re-open it.
+        """
+        for command in (
+            "cmake -E env python -c print(1)",
+            "cmake -E chdir .. git push origin main",
+            "cmake -E remove_directory build",
+        ):
+            with self.subTest(command=command):
+                with mock.patch("ai_assistant.tools.sandbox.subprocess.run") as sub:
+                    result = run(command, "C:/workspace", 30)
+                self.assertIn("cmake -E", result["error"])
+                sub.assert_not_called()
+
+    def test_cmake_benign_e_subcommand_still_runs(self) -> None:
+        with mock.patch(
+            "ai_assistant.tools.sandbox.subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout="ok", stderr=""),
+        ) as sub:
+            result = run("cmake -E cmake_echo_color red", "C:/workspace", 30)
+        self.assertEqual(result["return_code"], 0)
+        sub.assert_called_once()
+
+    def test_git_config_injection_is_blocked(self) -> None:
+        result = run("git -c core.sshCommand=touch /tmp/x log", "C:/workspace", 30)
+        self.assertIn("git -c", result["error"])
+
+    def test_git_subcommand_outside_the_allow_list_is_blocked(self) -> None:
+        """The declared subcommand list is enforced, not merely documented."""
+        for command in ("git config user.name", "git daemon"):
+            with self.subTest(command=command):
+                result = run(command, "C:/workspace", 30)
+                self.assertIn("not in the git allow-list", result["error"])
+
+    def test_interpreter_subcommand_outside_the_allow_list_is_blocked(self) -> None:
+        result = run("python randomword", "C:/workspace", 30)
+        self.assertIn("not in the python allow-list", result["error"])
+
+    def test_standalone_dangerous_token_is_blocked_before_parsing(self) -> None:
+        """ADR 0011: ``del``/``rm``/``format``/``shutdown`` die as tokens."""
+        with mock.patch("ai_assistant.tools.sandbox.subprocess.run") as sub:
+            result = run("git commit -m del old files", "C:/workspace", 30)
+        self.assertIn("dangerous command token", result["error"])
+        sub.assert_not_called()
+
+    def test_bare_allow_listed_executable_is_accepted(self) -> None:
+        """A command with no subcommand has nothing left to police."""
+        with mock.patch(
+            "ai_assistant.tools.sandbox.subprocess.run",
+            return_value=SimpleNamespace(returncode=1, stdout="", stderr="usage"),
+        ) as sub:
+            result = run("git", "C:/workspace", 30)
+        self.assertEqual(result["return_code"], 1)
+        sub.assert_called_once()
+
+    def test_allowed_subcommands_are_accepted(self) -> None:
+        for command in ("git status", "git log --oneline", "ruff check src", "ctest -R focused"):
+            with self.subTest(command=command):
+                with mock.patch(
+                    "ai_assistant.tools.sandbox.subprocess.run",
+                    return_value=SimpleNamespace(returncode=0, stdout="ok", stderr=""),
+                ) as sub:
+                    result = run(command, "C:/workspace", 30)
+                self.assertEqual(result["return_code"], 0)
+                sub.assert_called_once()
+
+    def test_test_suite_path_subcommand_is_accepted_by_prefix(self) -> None:
+        """``pytest tests/...`` matches the declared ``tests/`` prefix."""
+        with mock.patch(
+            "ai_assistant.tools.sandbox.subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout="ok", stderr=""),
+        ) as sub:
+            result = run("pytest tests/unit/test_sandbox.py -q", "C:/workspace", 30)
+        self.assertEqual(result["return_code"], 0)
+        sub.assert_called_once()
 
 
 class SandboxWriteFileTests(unittest.TestCase):
@@ -156,6 +270,13 @@ class SandboxWriteFileTests(unittest.TestCase):
     def test_path_not_in_write_roots(self) -> None:
         result = write_file(str(self.root / "notes" / "a.txt"), "x", str(self.root))
         self.assertIn("ALLOWLIST", result["error"])
+
+    def test_policy_and_secret_files_are_denied(self) -> None:
+        """ADR 0011: the agent may not rewrite the rules it runs under."""
+        for name in ("pyproject.toml", ".env", "security.py", "sandbox.py"):
+            with self.subTest(name=name):
+                result = write_file(str(self.root / "src" / name), "x", str(self.root))
+                self.assertIn("denied by sandbox policy", result["error"])
 
     def test_success_writes_file(self) -> None:
         result = write_file(str(self.root / "src" / "out.txt"), "hello", str(self.root))
