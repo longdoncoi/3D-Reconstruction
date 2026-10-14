@@ -18,6 +18,7 @@ from ..state import (
     SEMANTIC_REFLECTION_TOOLS,
     AgentState,
     Executor,
+    Step,
     VerifyResult,
     has_step_type,
 )
@@ -34,9 +35,9 @@ class ToolContext:
     cancel_checker: Callable[[], bool]
 
 
-def _rag_synthesis_update(state: AgentState, steps: list[dict[str, Any]],
+def _rag_synthesis_update(state: AgentState, steps: list[Step],
                           tool_name: str, result: dict[str, Any],
-                          last_step: dict[str, Any], error_count: int) -> dict[str, Any] | None:
+                          last_step: Step, error_count: int) -> dict[str, Any] | None:
     """Build the step_answer synthesis request for verified RAG evidence.
 
     Returns the state update when the executed tool was ``rag_search``,
@@ -85,7 +86,7 @@ def _rag_synthesis_update(state: AgentState, steps: list[dict[str, Any]],
             "error_count": error_count, "synthesize_after_rag": True}
 
 
-def _completion_announcement_update(state: AgentState, steps: list[dict[str, Any]],
+def _completion_announcement_update(state: AgentState, steps: list[Step],
                                       tool_name: str, result: dict[str, Any],
                                       error_count: int) -> dict[str, Any] | None:
     """Announce a dispatched desktop action instead of reflecting on it.
@@ -111,10 +112,10 @@ def _completion_announcement_update(state: AgentState, steps: list[dict[str, Any
     }
 
 
-def _verified_reflection_update(state: AgentState, steps: list[dict[str, Any]],
+def _verified_reflection_update(state: AgentState, steps: list[Step],
                                   messages: list[dict[str, str]], tool_name: str,
                                   verification: dict[str, Any], result: dict[str, Any],
-                                  last_step: dict[str, Any], error_count: int,
+                                  last_step: Step, error_count: int,
                                   allowed_tools: Any, reason: str,
                                   require_membership: bool = True) -> dict[str, Any] | None:
     """Shortcut a verified result with a contract reflection, when eligible.
@@ -149,7 +150,7 @@ class _ToolDispatch:
     tool_name: str
     params: dict[str, Any]
     result: dict[str, Any]
-    last_step: dict[str, Any]
+    last_step: Step
     error_count: int
 
 
@@ -233,7 +234,7 @@ def _record(state: AgentState, ctx: ToolContext, dispatched: _ToolDispatch) -> d
     error_count = dispatched.error_count
 
     steps = list(state["steps"])
-    tool_result_entry: dict[str, Any] = {
+    tool_result_entry: Step = {
         "type": "tool_result", "tool": tool_name,
         "result": result, "iteration": state["iteration"],
     }

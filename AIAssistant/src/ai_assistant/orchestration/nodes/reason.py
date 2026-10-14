@@ -45,6 +45,7 @@ from ..state import (
     NeedsApproval,
     Parser,
     SelectSpecialist,
+    Step,
     has_step_type,
     is_context_exhausted,
 )
@@ -84,7 +85,7 @@ class _Turn:
     """
     state: AgentState
     ctx: ReasonContext
-    steps: list[dict[str, Any]]
+    steps: list[Step]
     iteration: int
     plan: list[str] | None
     tool_call_count: int
@@ -191,7 +192,7 @@ def _handle_step_answer(turn: _Turn) -> dict[str, Any] | None:
     logger.debug(f"[AGENT TRACE] ── Reason: step_answer for plan step {turn.done_count}.")
     logger.info("[NODE: reason] LLM trả lời trực tiếp cho bước kế hoạch (step_answer).")
     turn.steps.append({"type": "step_answer", "content": step_content, "iteration": turn.iteration})
-    reflection_entry: dict[str, Any] = {
+    reflection_entry: Step = {
         "type": "reflection", "tool": "step_answer",
         "result": {"passed": True, "decision": "continue",
                    "reason": "General-knowledge step answered inline without tool."},
@@ -368,11 +369,11 @@ def stable_fingerprint(tool: str, params: dict[str, Any] | None) -> str:
     return json.dumps({"tool": tool, "params": stable}, ensure_ascii=False, sort_keys=True)
 
 
-def _failed_call_fingerprints(steps: list[dict[str, Any]]) -> set[str]:
+def _failed_call_fingerprints(steps: list[Step]) -> set[str]:
     """Fingerprints of every tool call that a later reflection rejected."""
     failed: set[str] = set()
     for index, step in enumerate(steps):
-        if not has_step_type(step, "reflection") or step.get("result", {}).get("passed") is not False:
+        if not has_step_type(step, "reflection") or (step.get("result") or {}).get("passed") is not False:
             continue
         for prior in reversed(steps[:index]):
             if has_step_type(prior, "tool_call"):
@@ -433,9 +434,9 @@ def _dispatch_tool_call(turn: _Turn) -> dict[str, Any]:
                  f"params={str(redact_value(params))[:80]}")
     logger.info("[NODE: reason] LLM quyết định gọi tool: %s, params: %s",
                 tool_name, redact_value(params))
-    tool_call = {"type": "tool_call", "tool": tool_name,
-                 "params": params, "idempotency_key": idempotency_key,
-                 "iteration": turn.iteration}
+    tool_call: Step = {"type": "tool_call", "tool": tool_name,
+                       "params": params, "idempotency_key": idempotency_key,
+                       "iteration": turn.iteration}
     if turn.current_plan_step is not None:
         tool_call["plan_step_index"] = turn.done_count
     turn.steps.append(tool_call)

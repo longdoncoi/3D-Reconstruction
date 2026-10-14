@@ -14,7 +14,7 @@ from ai_assistant.tools.action_manifest import canonical_action, step_matches_ac
 
 from ..helpers import completed_plan_steps
 from ..prompts import CRITIC_PROMPT
-from ..state import AgentState, Completion, ReflectResult, has_step_type
+from ..state import AgentState, Completion, ReflectResult, Step, has_step_type
 
 logger = get_agent_logger("reflect")
 
@@ -107,7 +107,8 @@ def reflect_node(state: AgentState, ctx: ReflectContext) -> dict[str, Any]:
 
     if plan and completed_steps < len(plan) and call["tool"] == "application_action":
         current_step_text = plan[completed_steps]
-        selected_action = result_step.get("result", {}).get("action") or call.get("params", {}).get("action", "")
+        call_params: dict[str, Any] = call.get("params") or {}
+        selected_action = (result_step.get("result") or {}).get("action") or call_params.get("action", "")
         canonical_selected = canonical_action(str(selected_action))
         match = step_matches_action(current_step_text, str(selected_action))
         logger.info("[NODE: reflect] Semantic check | plan_step=%s | action=%s | canonical=%s | match=%s",
@@ -129,12 +130,12 @@ def reflect_node(state: AgentState, ctx: ReflectContext) -> dict[str, Any]:
     return _record_reflection(state, call, reflection)
 
 
-def _record_reflection(state: AgentState, call: dict[str, Any],
+def _record_reflection(state: AgentState, call: Step,
                        reflection: dict[str, Any]) -> dict[str, Any]:
     """Persist critic output and feed a failed review back to the reasoner."""
     steps = list(state["steps"])
-    reflection_step = {"type": "reflection", "tool": call["tool"], "result": reflection,
-                       "iteration": state["iteration"]}
+    reflection_step: Step = {"type": "reflection", "tool": call["tool"], "result": reflection,
+                             "iteration": state["iteration"]}
     if isinstance(call.get("plan_step_index"), int):
         reflection_step["plan_step_index"] = call["plan_step_index"]
     steps.append(reflection_step)

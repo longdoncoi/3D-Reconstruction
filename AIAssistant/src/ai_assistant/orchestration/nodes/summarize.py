@@ -6,13 +6,13 @@ ensuring the ReAct prompt doesn't overflow the LLM context window.
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from ..state import (
     CONTEXT_MESSAGE_LIMIT,
     CONTEXT_SYSTEM_LIMIT,
     CONTEXT_TOTAL_LIMIT,
     OBSERVATION_KEEP_LAST,
+    Step,
     has_step_type,
 )
 
@@ -77,7 +77,7 @@ def summarize_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
     return result
 
 
-def format_code_citation(messages: list[dict[str, str]], steps: list[dict[str, Any]]) -> str | None:
+def format_code_citation(messages: list[dict[str, str]], steps: list[Step]) -> str | None:
     """Return a complete, syntax-highlighted citation for symbol requests."""
     user_msg = next((m.get("content", "") for m in messages if m.get("role") == "user"), "")
     normalized = user_msg.casefold()

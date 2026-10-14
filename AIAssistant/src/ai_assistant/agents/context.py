@@ -36,6 +36,7 @@ from ..observability import (
     span,
 )
 from ..orchestration.specialists.code import is_coding_task
+from ..orchestration.state import Step
 from ..orchestration.supervisor import audit as audit_agent
 from ..orchestration.supervisor import authorise as authorise_delegation
 from ..orchestration.supervisor import delegate, reflect_result, verify_result
@@ -179,7 +180,7 @@ class AgentRunContext:
         language: str,
         request_started: float,
         initial_messages: list[dict[str, str]] | None = None,
-        initial_steps: list[dict] | None = None,
+        initial_steps: list[Step] | None = None,
         initial_iteration: int = 0,
         resume_with_reflection: bool = False,
         event_sink: Callable[[dict], None] | None = None,

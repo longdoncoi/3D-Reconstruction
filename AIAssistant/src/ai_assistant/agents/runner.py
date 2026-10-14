@@ -27,7 +27,7 @@ from ai_assistant.agents.completion import (
 )
 from ai_assistant.domain.errors import ServiceUnavailableError
 from ai_assistant.domain.governance import has_sensitive_keys
-from ai_assistant.orchestration.state import CONTEXT_EXHAUSTED_MESSAGE, has_step_type
+from ai_assistant.orchestration.state import CONTEXT_EXHAUSTED_MESSAGE, Step, has_step_type
 from ai_assistant.tools.action_manifest import validate_action_params
 from ai_assistant.tools.tool_contract import RUNTIME_UNCONFIGURED_RESULT, validate_tool_call
 
@@ -318,7 +318,7 @@ def run_langgraph_agent(
     request_started: float,
     # Optional state for resume
     initial_messages: list[dict[str, str]] | None = None,
-    initial_steps: list[dict] | None = None,
+    initial_steps: list[Step] | None = None,
     initial_iteration: int = 0,
     resume_with_reflection: bool = False,
     event_sink: Callable[[dict], None] | None = None,

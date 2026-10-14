@@ -151,7 +151,7 @@ Qt / HTTP / MCP / A2A
   field rather than a closed-over module function; and a resumed run
   re-validates its tool calls with the real validator instead of a no-op
   (finding 27 — a resumed run may emit *new* calls).
-- The following debt batch (findings 18, 24-pair 7, 19-slice) tightened the
+- The following debt batch (findings 18, 24-pair 7, 19) tightened the
   ReAct loop's structure: `tool_node` is a thin coordinator over `_dispatch`
   (cancel gate, pending-call pairing, payload validation, execution, error
   counting) and `_record` (result/verification steps, circuit breaker, RAG and
@@ -164,11 +164,18 @@ Qt / HTTP / MCP / A2A
   24 pair 7; and every step-discriminator read goes through
   `state.has_step_type(step, <state.StepType>)`, a closed literal vocabulary
   that makes a typo'd routing string a mypy error instead of a condition that
-  silently never matches — the typed-state slice of finding 19. The element
-  type of `AgentState.steps` deliberately stays `dict[str, Any]`: a TypedDict
-  element is not assignable to it (verified with mypy), which would force
-  conversions at the `AgentRunResult`, HTTP and persistence boundaries; typing
-  those elements is the planned follow-up slice.
+  silently never matches — the read side of finding 19. The write side of the
+  same finding is closed too: `AgentState.steps` is `list[state.Step]`, a
+  TypedDict whose `type` key is required and closed and whose payload keys
+  form a declared vocabulary, so an unknown discriminator or an undeclared
+  payload key at any construction site is a mypy error (0 issues over 128
+  files, measured 2026-10-14). The resume path is inside the net:
+  `runner.run_langgraph_agent` and `ContextService` type `initial_steps` as
+  `list[Step]`, and the services that build resume steps
+  (`agents.approval_service`, `agents.ui_action_service`) are checked against
+  the same vocabulary. Steps deserialized from persistence or HTTP still
+  cross the trust boundary as runtime dicts (`Any`); validating their shape
+  is a runtime concern the type layer deliberately does not own.
 - The HITL approval *policy* is domain-owned (`domain/approvals.py`):
   `approval_covers_invocation` (constant-time fingerprint comparison),
   `derive_approval_scope` and `build_approval_preview`. The reason node
@@ -449,7 +456,7 @@ Edge-case test coverage:
   (lifts `orchestration/nodes/reason.py` to 100%).
 
 Coverage of `src/ai_assistant/*` is **100.00% measured (2026-10-14)** with
-branch coverage enabled: 7 814 statements and 2 068 branches, 0 missed and 0
+branch coverage enabled: 7 840 statements and 2 068 branches, 0 missed and 0
 partial, produced by 1 651 tests (1 skipped, 0 failures). Because coverage
 alone cannot detect a test that asserts the wrong direction, the load-bearing
 guards (sandbox allow-list, HITL approval, remote policy, `/health`, cache

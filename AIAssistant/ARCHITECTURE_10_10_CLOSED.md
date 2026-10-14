@@ -7,7 +7,7 @@ một lệnh.
 
 > **Ảnh chụp có ngày, không phải trạng thái hiện tại.** Các con số ở §1 là
 > snapshot của đợt kiểm chứng 2026-10-14 (7 800 stmts / 2 064 branches,
-> 1 625 test, 12 mutant). Giá trị đo mới nhất — 7 814 stmts / 2 068 branches,
+> 1 625 test, 12 mutant). Giá trị đo mới nhất — 7 840 stmts / 2 068 branches,
 > 1 651 test, 16/16 mutant — nằm ở `ARCHITECTURE.md` §Verification và tái lập
 > bằng đúng các lệnh ở mục 8 của tài liệu đó. Không chọn con số nào khi chúng
 > lệch: lấy con số mới nhất và ghi ngày đo.

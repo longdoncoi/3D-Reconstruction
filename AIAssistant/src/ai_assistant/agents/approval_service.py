@@ -19,6 +19,7 @@ from ..application.coordination import TaskCoordinator
 from ..domain.approvals import approval_fingerprint, issue_grant_pair
 from ..domain.errors import AuthorizationError, NotFoundError
 from ..observability import record_approval, record_tool
+from ..orchestration.state import Step
 from ..orchestration.supervisor import audit as audit_agent
 from ..orchestration.supervisor import delegate, verify_result
 from ..ports import LLMRuntime, ToolGateway
@@ -134,7 +135,7 @@ class ApprovalService(ContextService):
         record_tool(tool_name, "error" not in tool_result, time.monotonic())
 
         prior_step_count = len(action["steps"])
-        steps = action["steps"]
+        steps: list[Step] = action["steps"]
         steps.append({
             "type": "tool_result",
             "tool": tool_name,

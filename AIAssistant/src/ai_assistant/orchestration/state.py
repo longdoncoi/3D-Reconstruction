@@ -39,9 +39,46 @@ def has_step_type(step: Mapping[str, Any], expected: StepType) -> bool:
     return step.get("type") == expected
 
 
+class _StepTyped(TypedDict):
+    #: Discriminator every entry carries; routers and guards read it.
+    type: StepType
+
+
+class Step(_StepTyped, total=False):
+    """One entry of the observable step log (finding 19, write side).
+
+    ``type`` is required and closed; payload keys are optional because most
+    steps carry only a subset of them. Typing ``AgentState.steps`` as
+    ``list[Step]`` makes mypy check every construction (unknown ``type`` or
+    unknown payload key = error) and every read (typed instead of ``Any``).
+    TypedDicts are dicts at runtime, so this is a compile-time-only change.
+    """
+
+    content: str
+    tool: str
+    params: dict[str, Any]
+    result: Any
+    iteration: int
+    reason: str
+    error: str
+    plan_step_index: int
+    plan_attempt: int
+    remaining: list[str]
+    missing: list[str]
+    steps: list[str]
+    spec: dict[str, Any] | None
+    tool_hints: list[dict[str, Any]]
+    agent: str
+    scope_id: str
+    action_id: str
+    request_id: str
+    idempotency_key: str
+    remote_endpoint: str | None
+
+
 class AgentState(TypedDict):
     messages:        list[dict[str, str]]   # conversation history
-    steps:           list[dict[str, Any]]   # steps list (for UI)
+    steps:           list[Step]             # steps list (for UI)
     iteration:       int                    # loop iteration count
     temperature:     float                  # LLM generation temperature
     done:            bool                   # has the agent finished

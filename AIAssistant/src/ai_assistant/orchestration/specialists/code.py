@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from ai_assistant.config.logging import get_agent_logger
 from ai_assistant.domain.tools import tool_result_has_evidence, tool_result_succeeded
-from ai_assistant.orchestration.state import has_step_type
+from ai_assistant.orchestration.state import Step, has_step_type
 
 logger = get_agent_logger("coding")
 
@@ -94,7 +94,7 @@ class CodingWorkflowStatus:
     missing: tuple[str, ...]
 
 
-def coding_workflow_status(task: str, steps: list[dict]) -> CodingWorkflowStatus:
+def coding_workflow_status(task: str, steps: list[Step]) -> CodingWorkflowStatus:
     """Compute workflow progress from tool evidence, not from feature names.
 
     A successful tool result is intentionally the only source of progress. A

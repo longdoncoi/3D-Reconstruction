@@ -29,7 +29,7 @@ from ..helpers import (
     plan_step_execution_contract,
 )
 from ..prompts import REASONER_PROMPT
-from ..state import OBSERVATION_SUMMARY_THRESHOLD, AgentState, has_step_type
+from ..state import OBSERVATION_SUMMARY_THRESHOLD, AgentState, Step, has_step_type
 from .summarize import summarize_messages
 
 logger = get_agent_logger("reasoning")
@@ -96,7 +96,7 @@ def _with_reasoner_prompt(messages: list[dict[str, str]]) -> list[dict[str, str]
     return messages
 
 
-def _coding_workflow_message(state: AgentState, steps: list[dict[str, Any]]) -> tuple[Any, dict | None]:
+def _coding_workflow_message(state: AgentState, steps: list[Step]) -> tuple[Any, dict | None]:
     """The coding-workflow status banner, or ``None`` when off or already complete.
 
     Returns ``(coding_status, message)``: the status is needed downstream even
@@ -144,12 +144,12 @@ def _plan_progress_messages(plan: list[str] | None, done_count: int) -> list[dic
     }]
 
 
-def _completed_ui_actions(steps: list[dict[str, Any]]) -> int:
+def _completed_ui_actions(steps: list[Step]) -> int:
     """How many required desktop actions a reflection has already confirmed."""
     return sum(
         1 for step in steps
         if (has_step_type(step, "reflection") and step.get("tool") == "application_action"
-            and step.get("result", {}).get("passed") is True)
+            and (step.get("result") or {}).get("passed") is True)
     )
 
 
@@ -158,7 +158,7 @@ def _user_request(state: AgentState) -> str:
                  if m.get("role") == "user"), "")
 
 
-def _selection_context(state: AgentState, steps: list[dict[str, Any]],
+def _selection_context(state: AgentState, steps: list[Step],
                        plan: list[str] | None, done_count: int) -> _Selection:
     """Resolve the current step, the next expected UI action and the request."""
     required_actions = state.get("required_ui_actions", [])
@@ -205,7 +205,7 @@ def _select_step_contract(state: AgentState, user_request: str, plan: list[str] 
 
 
 def _log_selection(selection: _Selection, step_contract: dict[str, Any],
-                   plan: list[str] | None, done_count: int, steps: list[dict[str, Any]]) -> None:
+                   plan: list[str] | None, done_count: int, steps: list[Step]) -> None:
     """Emit the selection-context and ToolApp-hint diagnostics."""
     done_display = done_count if plan else selection.completed_ui_actions
     logger.info("[NODE: reason] selection context | plan_step=%s | execution=%s | expected_action=%s | completed=%d/%d",
@@ -215,7 +215,7 @@ def _log_selection(selection: _Selection, step_contract: dict[str, Any],
         return
     step = done_display + 1
     failed = sum(1 for s in steps
-                 if has_step_type(s, "reflection") and s.get("result", {}).get("passed") is False)
+                 if has_step_type(s, "reflection") and (s.get("result") or {}).get("passed") is False)
     logger.info("[NODE: reason] ToolApp hint | plan step %d/%d | expected action=%s | failed attempts=%d",
                 step, selection.progress_total, selection.expected_action.get("action"), failed)
     logger.debug("[AGENT TRACE] ── Reason: ToolApp hint; gọi LLM tool-calling")
@@ -235,7 +235,7 @@ def _ui_hint_message(selection: _Selection) -> dict[str, str] | None:
     }
 
 
-def _aggregate_step_answers(state: AgentState, steps: list[dict[str, Any]], messages: list,
+def _aggregate_step_answers(state: AgentState, steps: list[Step], messages: list,
                             selection: _Selection, step_contract: dict[str, Any],
                             coding_status: Any, plan: list[str] | None, done_count: int,
                             iteration: int, tool_call_count: int) -> PreparedReasoning | None:
@@ -312,7 +312,7 @@ def _compact_before_call(messages: list[dict[str, str]]) -> list[dict[str, str]]
 
 
 def _forced_envelope(step_contract: dict[str, Any], current_plan_step: str | None,
-                     steps: list[dict[str, Any]], done_count: int) -> dict[str, Any] | None:
+                     steps: list[Step], done_count: int) -> dict[str, Any] | None:
     """The execution contract decides the next tool before the model is asked."""
     if step_contract["mode"] == "rag_search":
         has_evidence = (has_rag_evidence_for_step(steps, done_count)
@@ -334,7 +334,7 @@ def _forced_envelope(step_contract: dict[str, Any], current_plan_step: str | Non
 
 def prepare_reasoning(
     state: AgentState,
-    steps: list[dict[str, Any]],
+    steps: list[Step],
     plan: list[str] | None,
     iteration: int,
     tool_call_count: int,

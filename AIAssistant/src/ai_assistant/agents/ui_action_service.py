@@ -17,6 +17,7 @@ from typing import Any
 
 from ..application.coordination import TaskCoordinator
 from ..domain.errors import NotFoundError, UnprocessableRequestError
+from ..orchestration.state import Step
 from ..orchestration.supervisor import audit as audit_agent
 from ..orchestration.supervisor import delegate, verify_result
 from ..ports import LLMRuntime, ToolGateway
@@ -69,7 +70,7 @@ class UIActionService(ContextService):
 
         params = action["params"]
         result = {"success": request.success, "action": params["action"], **request.result}
-        steps = [{
+        steps: list[Step] = [{
             "type": "tool_result",
             "tool": "application_action",
             "request_id": request.request_id,
@@ -98,7 +99,7 @@ class UIActionService(ContextService):
     def _chain_next_action(
         self,
         action: dict[str, Any],
-        steps: list[dict[str, Any]],
+        steps: list[Step],
         next_actions: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """Queue the next UI action in a multi-step desktop workflow."""
@@ -135,7 +136,7 @@ class UIActionService(ContextService):
     def _finalize(
         self,
         action: dict[str, Any],
-        steps: list[dict[str, Any]],
+        steps: list[Step],
         success: bool,
     ) -> dict[str, Any]:
         """Finalize the UI action workflow, optionally resuming LangGraph."""
@@ -160,7 +161,7 @@ class UIActionService(ContextService):
     def _resume_langgraph(
         self,
         action: dict[str, Any],
-        steps: list[dict[str, Any]],
+        steps: list[Step],
         success: bool,
     ) -> dict[str, Any]:
         """Resume LangGraph after a desktop UI action acknowledgement."""
