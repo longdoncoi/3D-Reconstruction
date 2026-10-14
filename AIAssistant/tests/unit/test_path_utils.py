@@ -1,6 +1,7 @@
 """Unit tests for agent path-safety utilities."""
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
@@ -66,6 +67,17 @@ class AgentSafePathTests(unittest.TestCase):
         with mock.patch(
             "ai_assistant.tools.builtin.path_utils.os.path.commonpath",
             side_effect=ValueError("Paths don't have the same drive"),
+        ):
+            self.assertIsNone(agent_safe_path("src/app/main.py"))
+
+    def test_a_path_whose_common_root_is_not_the_sandbox_is_rejected(self) -> None:
+        # The other guard outcome: commonpath succeeds but resolves to
+        # something other than the sandbox root. On Windows only a same-drive
+        # absolute input reaches it, so the mismatch is forced via mock to
+        # keep the branch exercised on every platform.
+        with mock.patch(
+            "ai_assistant.tools.builtin.path_utils.os.path.commonpath",
+            return_value=os.path.dirname(self.root),
         ):
             self.assertIsNone(agent_safe_path("src/app/main.py"))
 
