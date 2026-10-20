@@ -39,6 +39,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,6 +47,17 @@ BASE = Path(__file__).resolve().parent.parent
 
 # Architecture-guard mutants run no build (the guard is a CMake script).
 _PLANT: None = None
+
+#: A build that fails because the *output* is still open by a just-finished
+#: test process is an environmental race, not a broken mutant. The linker
+#: says so explicitly.
+_BUILD_RETRIES = 6
+_BUILD_RETRY_DELAY = 3.0
+
+
+def _is_locked_output(output: str) -> bool:
+    """Whether the build failed because a file was locked by a live process."""
+    return "LNK1104" in output or "LNK1181" in output or "cannot open file" in output
 
 
 @dataclass(frozen=True)
@@ -84,6 +96,16 @@ MUTANTS: tuple[Mutant, ...] = (
         "TestPluginHost",
         "TestPluginHost",
         "stale-ABI Plugin loaded (apiVersion gate removed)",
+    ),
+    # ── PluginHost: toolchain/ABI fingerprint gate (same virtual surface but a
+    #    different Qt/MSVC/runtime must be rejected instead of corrupted)
+    Mutant(
+        "src/core/PluginHost.cpp",
+        "if (plugin->abiFingerprint() != IPlugin::kAbiFingerprint) {",
+        "if (false) {",
+        "TestPluginHost",
+        "TestPluginHost",
+        "ABI fingerprint gate removed (mismatched toolchain loaded)",
     ),
     # ── PluginHost: discovery must not probe non-libraries / non-plugin files
     Mutant(
@@ -163,12 +185,93 @@ MUTANTS: tuple[Mutant, ...] = (
     # ── UserManager: PBKDF2 iteration count is part of the stored credential
     #    contract; weakening it must be visible.
     Mutant(
-        "src/core/UserManager.cpp",
+        "src/core/CryptoUtils.cpp",
         "constexpr int kPbkdf2Iterations = 100000;",
         "constexpr int kPbkdf2Iterations = 1;",
         "TestUserManagerCrypto",
         "TestUserManagerCrypto",
         "PBKDF2 iterations weakened 100000 -> 1",
+    ),
+    # ── UserManager: a consumed license key must stay consumed
+    Mutant(
+        "src/core/UserManager.cpp",
+        "if (m_licenseLedger.isUsed(key)) {",
+        "if (false) {",
+        "TestUserManagerCrypto",
+        "TestUserManagerCrypto",
+        "already-used license key accepted (key reuse)",
+    ),
+    # ── OTP: successful verification must consume the code
+    Mutant(
+        "src/core/OtpStore.cpp",
+        "    m_entries.erase(it);\n    return true;",
+        "    return true;",
+        "TestUserManagerCrypto",
+        "TestUserManagerCrypto",
+        "OTP remains valid after successful use (replay)",
+    ),
+    # ── AIRequestQueue: never start a second request while a reply is active
+    Mutant(
+        "src/services/ai/AIRequestQueue.cpp",
+        "if (!m_pending.isEmpty() || m_queued.isEmpty()) return false;",
+        "if (m_queued.isEmpty()) return false;",
+        "TestAIRequestQueue",
+        "TestAIRequestQueue",
+        "queued request starts while another reply is still pending",
+    ),
+    # ── ChatSessionStore: the chat history must be sealed with the OS vault
+    #    before it reaches the disk (plaintext JSON leaks the conversation)
+    Mutant(
+        "src/services/ai/ChatSessionStore.cpp",
+        "    const QString sealed = SecretVault::encrypt(QString::fromUtf8(payload));",
+        "    const QString sealed = QString::fromUtf8(payload);",
+        "TestChatSessionManager",
+        "TestChatSessionManager",
+        "ChatSessionStore: chat history written unencrypted (vault bypassed)",
+    ),
+    # ── ChatSessionStore: a sealed history must be unsealed before it is
+    #    parsed (skipping the step turns the file into unreadable garbage)
+    Mutant(
+        "src/services/ai/ChatSessionStore.cpp",
+        "    const QString plain = SecretVault::decrypt(QString::fromUtf8(raw));",
+        "    const QString plain = QString::fromUtf8(raw);",
+        "TestChatSessionManager",
+        "TestChatSessionManager",
+        "ChatSessionStore: chat history read without unsealing (sealed file parsed as JSON)",
+    ),
+    # ── AtRestCipher: the attachment must be sealed before it reaches the disk
+    #    (the copied original and its thumbnail are the user's files).
+    Mutant(
+        "src/core/AtRestCipher.cpp",
+        "    return kMarker + nonce + cipher + tag;",
+        "    return plain;",
+        "TestAtRestCipher",
+        "TestAtRestCipher",
+        "AtRestCipher: seal() stores the payload in the clear (envelope removed)",
+    ),
+    # ── AtRestCipher: a sealed payload must be unsealed before it is used
+    #    (returning the envelope would hand a ciphertext to the caller).
+    Mutant(
+        "src/core/AtRestCipher.cpp",
+        "    if (!gcmDecrypt(keyMaterial, nonce, associatedData(context), cipher, tag, &plain)) { qWarning() << \"AtRestCipher: the payload could not be unsealed (wrong key, wrong context or tampered bytes).\"; return {}; }\n"
+        "    return plain;",
+        "    if (!gcmDecrypt(keyMaterial, nonce, associatedData(context), cipher, tag, &plain)) { qWarning() << \"AtRestCipher: the payload could not be unsealed (wrong key, wrong context or tampered bytes).\"; return {}; }\n"
+        "    return sealed;",
+        "TestAtRestCipher",
+        "TestAtRestCipher",
+        "AtRestCipher: open() hands back the sealed blob (unseal skipped)",
+    ),
+    # ── FileUtilities: the copied attachment must be sealed in place — a copy
+    #    of the data folder must not hand the user's file over in the clear.
+    Mutant(
+        "src/utils/FileUtilities.cpp",
+        "    const QByteArray sealedOriginal =\n"
+        "        AtRestCipher::seal(originalBytes, QString::fromLatin1(AttachmentContext));",
+        "    const QByteArray sealedOriginal =\n"
+        "        originalBytes;",
+        "TestUtilsLayer",
+        "TestUtilsLayer",
+        "FileUtilities: the copied attachment is stored unencrypted (seal removed)",
     ),
     # ── Mail thread guard: blocking mail I/O on the GUI thread must warn
     Mutant(
@@ -190,6 +293,23 @@ MUTANTS: tuple[Mutant, ...] = (
         "TestAppShell",
         "TestAppShell",
         "deferred services re-created on every call (held pointers dangle)",
+    ),
+    # ── AppConfig: runtime AI settings must be validated before use
+    Mutant(
+        "src/core/AppConfig.cpp",
+        "return (value > 0 && value <= 65535) ? value : 8080;",
+        "return value;",
+        "TestAppConfig",
+        "TestAppConfig",
+        "out-of-range AI server port accepted",
+    ),
+    Mutant(
+        "src/core/AppConfig.cpp",
+        'return value.isEmpty() ? QStringLiteral("python") : value;',
+        "return value;",
+        "TestAppConfig",
+        "TestAppConfig",
+        "blank Python interpreter accepted (empty launch command)",
     ),
     # ── Architecture guard itself: a forbidden plugin include must fail
     Mutant(
@@ -250,14 +370,30 @@ class MutationCheck:
         )
 
     def build(self, target: str, timeout: int = 2400) -> bool:
-        result = self._run(
-            ["cmake", "--build", str(self.build_dir), "--config", self.config,
-             "--target", target],
-            timeout,
-        )
-        if result.returncode != 0:
-            print(f"  build output (tail):\n{result.stdout[-3000:]}\n{result.stderr[-3000:]}")
-        return result.returncode == 0
+        """Build one target; a locked output DLL is retried, not a verdict.
+
+        The mutant that just ran leaves its test executable — and therefore
+        ``AppCore.dll`` — loaded for a moment after the process exits, and
+        the next relink then fails with ``LNK1104``. That is an
+        environmental race, not a mutant that does not compile, so it is
+        retried instead of being reported as INVALID.
+        """
+        for attempt in range(_BUILD_RETRIES):
+            result = self._run(
+                ["cmake", "--build", str(self.build_dir), "--config", self.config,
+                 "--target", target],
+                timeout,
+            )
+            if result.returncode == 0:
+                return True
+            output = f"{result.stdout}\n{result.stderr}"
+            if not _is_locked_output(output) or attempt == _BUILD_RETRIES - 1:
+                print(f"  build output (tail):\n{result.stdout[-3000:]}\n{result.stderr[-3000:]}")
+                return False
+            print(f"  the build output is locked by a running process — retrying "
+                  f"({attempt + 1}/{_BUILD_RETRIES})")
+            time.sleep(_BUILD_RETRY_DELAY)
+        return False
 
     def run_test(self, test: str, timeout: int) -> bool:
         result = self._run(

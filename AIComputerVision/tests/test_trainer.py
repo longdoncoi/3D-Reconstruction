@@ -408,12 +408,12 @@ class ProvenanceRecordingTests(_SandboxedTestCase):
         entry = manifest_mod.load_manifest(cfg.models_dir)["entries"][MODEL_REGISTRY["det"].output]
         self.assertEqual(entry["source_weights_sha256"], sha256_file(cfg.weights_path(MODEL_REGISTRY["det"])))
 
-    def test_a_dataset_yanked_mid_run_records_no_digest(self) -> None:
-        # Recording never guesses either: if the definition vanished between
-        # preflight and publication the entry carries no digest, and the next
-        # ``--skip-unchanged`` retracts its skip rather than assume the dataset
-        # is the one that produced the artifact.
+    def test_a_dataset_yanked_mid_run_still_records_the_pre_train_snapshot(self) -> None:
+        # The snapshot is taken before ``backend.train``: deleting the YAML
+        # halfway through must not erase what the model actually started from.
         cfg = _config(self.root, models=("det",))
+        expected_definition = sha256_file(cfg.data_yaml)
+        expected_content = gate.dataset_content_digest(cfg)
 
         class _YanksTheDataset(FakeBackend):
             def train(self, spec: Any, config: TrainConfig, on_epoch: Any) -> TrainedModel[Any]:
@@ -423,16 +423,50 @@ class ProvenanceRecordingTests(_SandboxedTestCase):
         run(cfg, backend=_YanksTheDataset())
 
         entry = manifest_mod.load_manifest(cfg.models_dir)["entries"][MODEL_REGISTRY["det"].output]
+        self.assertEqual(entry["dataset_sha256"], expected_definition)
+        self.assertEqual(entry["dataset_content_sha256"], expected_content)
+
+    def test_a_snapshot_that_cannot_observe_the_dataset_records_no_digest(self) -> None:
+        # Unreadable/absent data can still reach here when the caller bypassed
+        # preflight; recording nothing is the honest outcome, and the next
+        # ``--skip-unchanged`` treats the absent fields as unproven.
+        cfg = _config(self.root, models=("det",))
+        with mock.patch(
+            "cvtrain.trainer.gate.snapshot_dataset",
+            return_value=gate.DatasetSnapshot(definition_sha256=None, content_sha256=None),
+        ):
+            run(cfg, backend=FakeBackend())
+
+        entry = manifest_mod.load_manifest(cfg.models_dir)["entries"][MODEL_REGISTRY["det"].output]
         self.assertNotIn("dataset_sha256", entry)
         self.assertNotIn("dataset_content_sha256", entry)
 
+    def test_provenance_is_snapshotted_before_training_not_after(self) -> None:
+        # A file added while the backend is training belongs to the *next*
+        # invocation. Recording it here would claim the artifact was trained on
+        # data it never saw.
+        cfg = _config(self.root, models=("det",))
+        before = gate.dataset_content_digest(cfg)
+
+        class _MutatesTheDataset(FakeBackend):
+            def train(self, spec: Any, config: TrainConfig, on_epoch: Any) -> TrainedModel[Any]:
+                (config.data_yaml.parent / "images" / "train" / "mid-run.jpg").write_bytes(b"late")
+                return super().train(spec, config, on_epoch)
+
+        run(cfg, backend=_MutatesTheDataset())
+
+        entry = manifest_mod.load_manifest(cfg.models_dir)["entries"][MODEL_REGISTRY["det"].output]
+        self.assertEqual(entry["dataset_content_sha256"], before)
+        self.assertNotEqual(gate.dataset_content_digest(cfg), before)
+
     def test_records_git_commit_and_dataset_content_sha256(self) -> None:
         cfg = _config(self.root, models=("det",))
+        expected_content = gate.dataset_content_digest(cfg)
         run(cfg, backend=FakeBackend())
         manifest = manifest_mod.load_manifest(cfg.models_dir)
         self.assertIn("git_commit", manifest["last_run"])
         entry = manifest["entries"][MODEL_REGISTRY["det"].output]
-        self.assertIn("dataset_content_sha256", entry)
+        self.assertEqual(entry.get("dataset_content_sha256"), expected_content)
         self.assertEqual(len(entry.get("dataset_content_sha256") or ""), 64)
 
 
@@ -566,6 +600,24 @@ class SkipUnchangedTests(_SandboxedTestCase):
         _, backend = self._run(models=("det",), skip_unchanged=True, workers=4)
         self.assertIn("train:det", backend.calls)
 
+    def test_an_entry_with_the_legacy_exporter_version_is_trained(self) -> None:
+        # The models shipped in ``Models/`` predate the composite exporter
+        # identity: their manifest entry carries the bare ``ultralytics``
+        # version, which no run of this build can reproduce. The skip rule is
+        # fail-closed, so such an entry is *unprovable* and the model is
+        # retrained — never trusted because a legacy string happens to look
+        # close enough (ADR 0007, and the debt table in Docs/SCORECARD.md).
+        self._run(models=("det",), skip_unchanged=True)
+        cfg = _config(self.root, models=("det",), skip_unchanged=True)
+        manifest = manifest_mod.load_manifest(cfg.models_dir)
+        stored = manifest["entries"][MODEL_REGISTRY["det"].output]
+        legacy = manifest_mod.ManifestEntry(**{**stored, "backend_version": "8.4.41"})
+        manifest["entries"][MODEL_REGISTRY["det"].output] = legacy
+        manifest_mod.save_manifest(cfg.models_dir, manifest)
+
+        _, backend = self._run(models=("det",), skip_unchanged=True)
+        self.assertIn("train:det", backend.calls)
+
     def test_a_changed_device_is_trained(self) -> None:
         # Same file name, same hyper-parameters — but a CPU run and a GPU run
         # are different artifacts, so "what this run would build" is no longer
@@ -616,7 +668,7 @@ class SkipUnchangedTests(_SandboxedTestCase):
         _, backend = self._run(models=("det",), skip_unchanged=True)
         self.assertIn("train:det", backend.calls)
 
-    def test_a_changed_dataset_content_inventory_is_trained(self) -> None:
+    def test_a_changed_dataset_content_is_trained(self) -> None:
         self._run(models=("det",), skip_unchanged=True)
         cfg = _config(self.root, models=("det",), skip_unchanged=True)
         new_img = cfg.data_yaml.parent / "images" / "train" / "new.jpg"
@@ -631,9 +683,12 @@ class SkipUnchangedTests(_SandboxedTestCase):
         cfg.data_yaml = cfg.data_yaml.parent / "ghost.yaml"
         manifest = manifest_mod.load_manifest(cfg.models_dir)
         self.assertFalse(gate.already_current(MODEL_REGISTRY["det"], cfg, manifest, FakeBackend.version))
-    def test_missing_content_digest_in_entry_still_allows_skip(self) -> None:
-        # Old manifest entries lack dataset_content_sha256; the content check
-        # should be silently skipped (not treated as a mismatch).
+
+    def test_an_entry_without_a_content_digest_is_trained(self) -> None:
+        # An entry written before ``dataset_content_sha256`` existed, or by an
+        # older inventory algorithm, cannot prove the images are the ones that
+        # produced the artifact. The definition digest alone is not enough:
+        # "we did not record it" must fail closed.
         cfg = _config(self.root, models=("det",), skip_unchanged=True)
         run(cfg, backend=FakeBackend())
         manifest = manifest_mod.load_manifest(cfg.models_dir)
@@ -641,7 +696,7 @@ class SkipUnchangedTests(_SandboxedTestCase):
         manifest_mod.save_manifest(cfg.models_dir, manifest)
 
         _, backend = self._run(models=("det",), skip_unchanged=True)
-        self.assertEqual(backend.calls, ["prepare"])
+        self.assertIn("train:det", backend.calls)
 
     def test_a_backend_upgrade_is_trained(self) -> None:
         # A newer ultralytics exports differently, so the recorded artifact no

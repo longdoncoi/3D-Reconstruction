@@ -52,9 +52,16 @@ class ResolveModelsTests(unittest.TestCase):
     def test_selection_is_canonically_ordered(self) -> None:
         self.assertEqual(resolve_models(["track", "det"]), ("det", "track"))
 
-    def test_unknown_keys_are_ignored(self) -> None:
-        self.assertEqual(resolve_models(["bogus"]), DEFAULT_MODELS)
-        self.assertEqual(resolve_models(["seg", "bogus"]), ("seg",))
+    def test_unknown_keys_are_rejected_instead_of_silently_defaulting(self) -> None:
+        # A typo'd key used to fall back to det+seg: a plausible green run that
+        # trained something the caller never asked for. Fail closed instead.
+        with self.assertRaisesRegex(ValueError, "unknown model key"):
+            resolve_models(["bogus"])
+        with self.assertRaisesRegex(ValueError, "bogus"):
+            resolve_models(["seg", "bogus"])
+
+    def test_duplicate_selection_is_deduplicated_in_registry_order(self) -> None:
+        self.assertEqual(resolve_models(["track", "det", "track"]), ("det", "track"))
 
 
 class TrainConfigTests(unittest.TestCase):
@@ -180,7 +187,9 @@ class ModelRegistryTests(unittest.TestCase):
         spec = ModelSpec("custom", "c.pt", "c.onnx", "c", "role", "label")
         reg = ModelRegistry([spec])
         self.assertEqual(resolve_models(["custom"], registry=reg), ("custom",))
-        self.assertEqual(resolve_models([], registry=reg), DEFAULT_MODELS)
+        # No silent fallback to names the registry does not contain.
+        with self.assertRaisesRegex(ValueError, "legacy default"):
+            resolve_models([], registry=reg)
 
 
 if __name__ == "__main__":

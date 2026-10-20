@@ -1,6 +1,7 @@
 #include "ChatBotDockWidget.h"
 #include "AppConstants.h"
 #include "IUserManager.h"
+#include "IShellService.h"
 #include "IconFactory.h"
 #include <QVBoxLayout>
 #include <QMenu>

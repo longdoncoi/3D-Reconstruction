@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from ai_assistant.adapters.persistence.storage_crypto import AesGcmFieldCipher
 from ai_assistant.bootstrap.modules import RagModule
 from ai_assistant.config.paths import AppPaths
 from ai_assistant.config.rag_config import RAGSettings
@@ -51,7 +52,7 @@ class WireIndexTests(unittest.TestCase):
         ]
         for patcher in self._patches:
             patcher.start()
-        self.rag = RagModule()
+        self.rag = RagModule(cipher=AesGcmFieldCipher(b"w" * 32))
         self.addCleanup(self.rag._reset_index_state)
 
     def tearDown(self) -> None:

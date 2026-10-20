@@ -14,7 +14,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
-from ai_assistant.adapters.a2a_protocol import resolve_remote_specialist
 from ai_assistant.adapters.http.security import GuardedMountedApp, TransportPolicy
 from ai_assistant.bootstrap import server
 
@@ -123,7 +122,11 @@ class ChatbotAgentHolderTests(unittest.TestCase):
             got_b = holder.get()
             holder.rebuild()
             got_c = holder.get()
-            mock_cls.assert_called_with(server.runtime_modules.llm, server.runtime_modules.rag)
+            mock_cls.assert_called_with(
+                server.runtime_modules.llm,
+                server.runtime_modules.rag,
+                server.runtime_modules.chatbot_agent._prompt_builder,
+            )
         self.assertIs(got_a, first)
         self.assertIs(got_b, first)
         self.assertIs(got_c, second)
@@ -166,9 +169,10 @@ class LifespanTests(unittest.TestCase):
         self.mock_logger = self._logger_patch.start()
         self.addCleanup(self._logger_patch.stop)
 
-    def _run_lifespan(self, platform: object, mcp_server: object) -> str:
+    def _run_lifespan(self, platform: object, mcp_server: object,
+                      app: object | None = None) -> str:
         async def drive() -> str:
-            async with server.lifespan(MagicMock()):
+            async with server.lifespan(app if app is not None else MagicMock()):
                 return "yielded"
 
         # lifespan reads the *module-level* platform/mcp_server globals, so the
@@ -176,6 +180,20 @@ class LifespanTests(unittest.TestCase):
         with patch.object(server, "platform", platform), \
                 patch.object(server, "mcp_server", mcp_server):
             return asyncio.run(drive())
+
+    def test_lifespan_without_a_registry_skips_discovery(self) -> None:
+        app = SimpleNamespace(state=SimpleNamespace(a2a_registry=None))
+        with patch("builtins.print"), \
+                patch("ai_assistant.adapters.persistence.checkpointing.cleanup_old_checkpoints"), \
+                patch.object(server, "task_retention_days", return_value=0), \
+                patch.object(server, "_discover_a2a_peers") as discover:
+            result = self._run_lifespan(
+                SimpleNamespace(settings=SimpleNamespace(enable_mcp=False), tasks=MagicMock()),
+                MagicMock(available=False),
+                app=app,
+            )
+        self.assertEqual(result, "yielded")
+        discover.assert_not_called()
 
     def test_lifespan_yields_when_mcp_disabled_and_logs_cleanup_error(self) -> None:
         with patch("builtins.print"), \
@@ -195,6 +213,40 @@ class LifespanTests(unittest.TestCase):
         self.assertIn("Lỗi dọn dẹp checkpoint", self.mock_logger.warning.call_args.args[0])
         self.mock_logger.info.assert_any_call("MCP endpoint disabled by configuration")
 
+    def test_a2a_discovery_noops_without_configured_endpoints(self) -> None:
+        registry = MagicMock()
+        with patch("ai_assistant.settings.a2a_trusted_endpoints", return_value=frozenset()):
+            asyncio.run(server._discover_a2a_peers(registry))
+        registry.discover.assert_not_called()
+
+    def test_a2a_discovery_fetches_the_allowlist_in_sorted_order(self) -> None:
+        registry = MagicMock()
+        registry.discover.return_value = {"https://a.test": object()}
+        with patch(
+            "ai_assistant.settings.a2a_trusted_endpoints",
+            return_value=frozenset({"https://b.test", "https://a.test"}),
+        ):
+            asyncio.run(server._discover_a2a_peers(registry))
+        registry.discover.assert_called_once_with(["https://a.test", "https://b.test"])
+        self.mock_logger.info.assert_any_call(
+            "A2A discovery: %d/%d endpoint(s) reachable", 1, 2,
+        )
+
+    def test_lifespan_logs_a_discovery_failure_without_blocking_startup(self) -> None:
+        async def boom(_registry: object) -> None:
+            msg = "discovery boom"
+            raise RuntimeError(msg)
+
+        with patch("builtins.print"), \
+                patch("ai_assistant.adapters.persistence.checkpointing.cleanup_old_checkpoints"), \
+                patch.object(server, "_discover_a2a_peers", side_effect=boom):
+            result = self._run_lifespan(
+                SimpleNamespace(settings=SimpleNamespace(enable_mcp=False), tasks=MagicMock()),
+                MagicMock(available=False),
+            )
+        self.assertEqual(result, "yielded")
+        self.mock_logger.warning.assert_any_call("A2A discovery failed: discovery boom")
+
     def test_lifespan_uses_mcp_lifespan_when_available(self) -> None:
         settings = SimpleNamespace(enable_mcp=True)
         tasks = MagicMock()
@@ -208,6 +260,44 @@ class LifespanTests(unittest.TestCase):
         self.assertTrue(cm.entered)
         self.assertTrue(cm.exited)
         tasks.close.assert_called_once()
+
+    def test_lifespan_logs_a_pruning_failure_without_blocking_startup(self) -> None:
+        tasks = MagicMock()
+        tasks.prune.side_effect = RuntimeError("prune boom")
+        with patch("builtins.print"), \
+                patch("ai_assistant.adapters.persistence.checkpointing.cleanup_old_checkpoints"), \
+                patch.object(server, "task_retention_days", return_value=30):
+            result = self._run_lifespan(
+                SimpleNamespace(settings=SimpleNamespace(enable_mcp=False), tasks=tasks),
+                MagicMock(available=False),
+            )
+        self.assertEqual(result, "yielded")
+        self.mock_logger.warning.assert_any_call("Task retention pruning failed: prune boom")
+
+    def test_lifespan_skips_pruning_when_the_window_is_disabled(self) -> None:
+        tasks = MagicMock()
+        with patch("builtins.print"), \
+                patch("ai_assistant.adapters.persistence.checkpointing.cleanup_old_checkpoints"), \
+                patch.object(server, "task_retention_days", return_value=0):
+            self._run_lifespan(
+                SimpleNamespace(settings=SimpleNamespace(enable_mcp=False), tasks=tasks),
+                MagicMock(available=False),
+            )
+        tasks.prune.assert_not_called()
+
+    def test_lifespan_does_not_log_when_no_task_was_pruned(self) -> None:
+        tasks = MagicMock()
+        tasks.prune.return_value = 0
+        with patch("builtins.print"), \
+                patch("ai_assistant.adapters.persistence.checkpointing.cleanup_old_checkpoints"), \
+                patch.object(server, "task_retention_days", return_value=30):
+            self._run_lifespan(
+                SimpleNamespace(settings=SimpleNamespace(enable_mcp=False), tasks=tasks),
+                MagicMock(available=False),
+            )
+        self.assertFalse(
+            [call for call in self.mock_logger.info.call_args_list if "Pruned" in str(call)],
+        )
 
     def test_lifespan_warns_when_mcp_unavailable(self) -> None:
         tasks = MagicMock()
@@ -237,19 +327,17 @@ class OptionalProtocolTests(unittest.TestCase):
             tasks=object(),
             plugins=object(),
         )
-        with patch("ai_assistant.orchestration.supervisor.set_remote_specialist_lookup") as mock_set, \
-                patch("ai_assistant.adapters.a2a.build_a2a_router", return_value="router") as mock_build, \
+        with patch("ai_assistant.adapters.a2a.build_a2a_router", return_value="router") as mock_build, \
                 patch.object(server, "agent_bind_host", return_value=bind_host), \
                 patch.object(server, "logger") as mock_logger:
             server._register_optional_protocols(
                 app, platform, mcp, policy if policy is not None else TransportPolicy(),
             )
-        return SimpleNamespace(app=app, mcp=mcp, platform=platform, mock_set=mock_set,
+        return SimpleNamespace(app=app, mcp=mcp, platform=platform,
                                mock_build=mock_build, logger=mock_logger)
 
     def test_registers_a2a_and_mcp_when_enabled_and_available(self) -> None:
         run = self._run(enable_a2a=True, enable_mcp=True, mcp_available=True)
-        run.mock_set.assert_called_once_with(resolve_remote_specialist)
         run.mock_build.assert_called_once_with(
             run.platform.tasks,
             "3D-Reconstruction AI Assistant",
@@ -269,7 +357,6 @@ class OptionalProtocolTests(unittest.TestCase):
 
     def test_skips_mcp_when_sdk_unavailable(self) -> None:
         run = self._run(enable_a2a=True, enable_mcp=True, mcp_available=False)
-        run.mock_set.assert_called_once_with(resolve_remote_specialist)
         run.mock_build.assert_called_once()
         run.app.include_router.assert_called_once()
         run.mcp.register_plugin_tools.assert_not_called()
@@ -277,7 +364,6 @@ class OptionalProtocolTests(unittest.TestCase):
 
     def test_disables_a2a_and_mcp_when_deployment_profile_says_so(self) -> None:
         run = self._run(enable_a2a=False, enable_mcp=False, mcp_available=True)
-        run.mock_set.assert_called_once_with(None)
         run.mock_build.assert_not_called()
         run.app.include_router.assert_not_called()
         run.mcp.register_plugin_tools.assert_not_called()

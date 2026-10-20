@@ -21,14 +21,14 @@ Residual risk (another local process talking to ``127.0.0.1``) is documented in
 from __future__ import annotations
 
 import hmac
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from ipaddress import ip_address
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ...settings import DEFAULT_HOST, DEFAULT_PORT, transport_tokens
+from ...settings import DEFAULT_HOST, DEFAULT_PORT, a2a_tenants, transport_tokens
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "::1", "127.0.0.1"})
 # The deployment bind plus the dev-server port are implicitly allowed loopback
@@ -46,6 +46,9 @@ class TransportPolicy:
     a2a_token: str = ""
     mcp_token: str = ""
     allow_remote_a2a: bool = False
+    #: Bearer token → tenant id for the A2A surface. Empty means single-tenant:
+    #: the single ``a2a_token`` maps every task to ``"default"``.
+    a2a_tenants: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls, *, allowed_origins: tuple[str, ...] = (), allow_remote_a2a: bool = False,
@@ -58,6 +61,7 @@ class TransportPolicy:
             a2a_token=tokens.a2a,
             mcp_token=tokens.mcp,
             allow_remote_a2a=allow_remote_a2a,
+            a2a_tenants=a2a_tenants(env),
         )
 
 
@@ -73,9 +77,8 @@ def _is_loopback(host: str | None) -> bool:
         return host.casefold().endswith(".localhost")
 
 
-def _reject(status_code: int, detail: str) -> None:
+def _reject(status_code: int, detail: str) -> NoReturn:
     raise HTTPException(status_code=status_code, detail=detail)
-
 
 def require_loopback(request: Request, surface: str) -> None:
     """Reject any peer that is not loopback (403)."""
@@ -107,11 +110,12 @@ def require_token(request: Request, token: str, surface: str) -> None:
 
 
 def _evaluate(request: Request, *, policy: TransportPolicy, surface: str, token: str,
-              allow_remote: bool) -> None:
+              allow_remote: bool, token_configured: bool | None = None) -> None:
     """One surface's trust checks, shared by the route guards and mounted apps."""
+    has_token = bool(token) if token_configured is None else token_configured
     if not allow_remote:
         require_loopback(request, surface)
-    elif not token:
+    elif not has_token:
         # A remotely exposed surface without a shared secret stays closed.
         _reject(503, f"{surface} remote access requires a configured access token")
     if token:
@@ -119,9 +123,11 @@ def _evaluate(request: Request, *, policy: TransportPolicy, surface: str, token:
     require_local_origin(request, policy, surface)
 
 
-def _guards(policy: TransportPolicy, *, surface: str, token: str, allow_remote: bool) -> list[Any]:
+def _guards(policy: TransportPolicy, *, surface: str, token: str, allow_remote: bool,
+            token_configured: bool | None = None) -> list[Any]:
     def guard(request: Request) -> None:
-        _evaluate(request, policy=policy, surface=surface, token=token, allow_remote=allow_remote)
+        _evaluate(request, policy=policy, surface=surface, token=token,
+                  allow_remote=allow_remote, token_configured=token_configured)
 
     return [Depends(guard)]
 
@@ -147,8 +153,37 @@ def chat_guards(policy: TransportPolicy | None) -> list[Any]:
 def a2a_guards(policy: TransportPolicy | None) -> list[Any]:
     """A2A surface: loopback until remote access is opted into *with* a token."""
     resolved = policy or TransportPolicy()
+    # A multi-tenant mapping is an access-token configuration even when the
+    # single ``AI_A2A_TOKEN`` is unset; the tenant dependency validates the
+    # bearer against the mapping.
     return _guards(resolved, surface="a2a", token=resolved.a2a_token,
-                   allow_remote=resolved.allow_remote_a2a)
+                   allow_remote=resolved.allow_remote_a2a,
+                   token_configured=bool(resolved.a2a_token or resolved.a2a_tenants))
+
+
+def resolve_a2a_tenant(request: Request, policy: TransportPolicy) -> str:
+    """Resolve the A2A tenant from the bearer token and stash it on the request.
+
+    Multi-tenant mode (``AI_A2A_TENANTS`` configured): the token must be a key
+    in the mapping and the resolved tenant owns the task. Single-tenant mode:
+    the configured ``AI_A2A_TOKEN`` is required when present; on an unguarded
+    loopback desktop deployment every task is owned by ``"default"``.
+    """
+    header = request.headers.get("authorization", "")
+    _, _, value = header.partition(" ")
+    token = value.strip()
+    if policy.a2a_tenants:
+        tenant = policy.a2a_tenants.get(token)
+        if tenant is None:
+            _reject(401, "Missing or invalid a2a credentials")
+    elif policy.a2a_token:
+        if not token or not hmac.compare_digest(token, policy.a2a_token):
+            _reject(401, "Missing or invalid a2a credentials")
+        tenant = "default"
+    else:
+        tenant = "default"
+    request.state.a2a_tenant = tenant
+    return tenant
 
 
 def mcp_exposed_without_token(host: str | None, policy: TransportPolicy) -> bool:
@@ -219,4 +254,5 @@ __all__ = [
     "require_local_origin",
     "require_loopback",
     "require_token",
+    "resolve_a2a_tenant",
 ]

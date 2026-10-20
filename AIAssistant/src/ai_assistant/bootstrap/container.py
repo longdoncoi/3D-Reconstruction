@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..adapters.persistence import SqliteTaskStore
+from ..adapters.persistence.storage_crypto import FieldCipher
 from ..application.coordination import TaskCoordinator
 from ..application.tasks import TaskService
 from ..application.tools import ToolExecutionService
@@ -28,6 +29,7 @@ class PlatformContainer:
     tasks: TaskService
     gateway: ToolGateway
     coordinator: TaskCoordinator
+    storage_cipher: FieldCipher | None = None
 
 
 def _side_effect(policy: str) -> SideEffect:
@@ -81,7 +83,8 @@ def tool_spec_from(entry: Any, executor: ToolExecutor | None) -> ToolSpec | None
 def build_container(base_dir: Path, legacy_tools: "list[Any]",
                     legacy_executors: Mapping[str, ToolExecutor], task_executor: AgentTaskExecutor,
                     coordinator: TaskCoordinator | None = None,
-                    tool_event_sink: ToolEventSink | None = None) -> PlatformContainer:
+                    tool_event_sink: ToolEventSink | None = None,
+                    storage_cipher: FieldCipher | None = None) -> PlatformContainer:
     """Build the DI container.
 
     ``legacy_tools`` is a list of catalog entries (``ToolDefinition`` objects
@@ -120,6 +123,9 @@ def build_container(base_dir: Path, legacy_tools: "list[Any]",
         if coordinator is not None
         else TaskCoordinator(recovery_observer=record_recovery)
     )
-    store = SqliteTaskStore(settings.data_dir / "tasks.sqlite")
+    store = SqliteTaskStore(settings.data_dir / "tasks.sqlite", cipher=storage_cipher)
     task_service = TaskService(store, task_executor, settings.agent_capabilities, shared_coordinator)
-    return PlatformContainer(settings, plugins, tools, task_service, gateway, shared_coordinator)
+    return PlatformContainer(
+        settings, plugins, tools, task_service, gateway, shared_coordinator,
+        storage_cipher=storage_cipher,
+    )

@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import secrets
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -37,8 +38,6 @@ __all__ = [
 def issue_grant_pair(
     tool_name: str,
     parameters: Mapping[str, Any] | None = None,
-    *,
-    run_id: str = "",
 ) -> tuple[str, str]:
     """The two single-use grants one HITL approval authorises (ADR 0010).
 
@@ -49,12 +48,16 @@ def issue_grant_pair(
     LangGraph resume (:class:`~ai_assistant.agents.approval_service`) and the
     durable A2A deterministic loop
     (:class:`~ai_assistant.adapters.orchestration.deterministic`) — mint them
-    here so the token shape, the ``#direct`` suffix, and the approval-id
-    fallback cannot drift between engines.
+    here so the capability-token policy cannot drift between engines.
+
+    Tokens are minted with :mod:`secrets`, not derived from the action id or
+    the invocation fingerprint: a caller that knows either value must still be
+    unable to guess a live grant.
     """
-    fingerprint = approval_fingerprint(tool_name, parameters)
-    run_token = run_id or f"approval-{fingerprint[:16]}"
-    return run_token, f"{run_token}#direct"
+    # The capability is bound to the invocation by the grant store, not by the
+    # token text; keep the fingerprint out of the token itself.
+    return (f"grant-{secrets.token_urlsafe(32)}",
+            f"grant-{secrets.token_urlsafe(32)}")
 
 
 def approval_fingerprint(tool_name: str, parameters: Mapping[str, Any] | None = None) -> str:

@@ -10,10 +10,6 @@ AppConfig& AppConfig::bootstrap() {
     return instance;
 }
 
-AppConfig& AppConfig::instance() {
-    return bootstrap();
-}
-
 void AppConfig::initialize(const QString& appDir) {
     std::unique_lock lock(m_mutex);
     m_appDir = appDir;

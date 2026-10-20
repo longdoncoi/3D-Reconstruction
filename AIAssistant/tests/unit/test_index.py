@@ -16,9 +16,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from ai_assistant.adapters.persistence.storage_crypto import AesGcmFieldCipher
 from ai_assistant.config.paths import AppPaths
 from ai_assistant.config.rag_config import RAGSettings
-from ai_assistant.rag.cache_integrity import seal_payload, signing_key
+from ai_assistant.rag.cache_seal import (
+    BM25_CONTEXT,
+    CHUNKS_CONTEXT,
+    INDEX_CONTEXT,
+    seal_metadata,
+)
 from ai_assistant.rag.domain import ChunkResult
 from ai_assistant.rag.index import (
     build_index_from_scratch,
@@ -69,14 +75,25 @@ def _chunk(text: str, source: str) -> ChunkResult:
     return ChunkResult(text=text, source_path=source, loader_type="md")
 
 
-def _seal(paths: AppPaths) -> None:
-    """Write the metadata ``load_cache`` requires, sealing the files on disk.
+def _cipher() -> AesGcmFieldCipher:
+    return AesGcmFieldCipher(b"c" * 32)
+
+
+def _write_sealed_cache(paths: AppPaths, chunks, bm25, *,
+                        cipher: AesGcmFieldCipher | None = None) -> None:
+    """Write the artifacts the way ``save_cache`` does, already sealed.
 
     The load guards below are about dimension/pickle failures, so they must
-    get past the integrity check first instead of tripping on it.
+    get past the seal first instead of tripping on it.
     """
+    key = cipher or _cipher()
+    paths.cache_index.write_bytes(key.seal_bytes(b"index", context=INDEX_CONTEXT))
+    paths.cache_chunks.write_bytes(
+        key.seal_bytes(pickle.dumps(chunks), context=CHUNKS_CONTEXT))
+    paths.cache_bm25.write_bytes(
+        key.seal_bytes(pickle.dumps(bm25), context=BM25_CONTEXT))
     paths.cache_metadata.write_text(
-        json.dumps({"integrity": seal_payload(signing_key(paths), paths)}),
+        json.dumps({"sealed": seal_metadata(), "embedding_dimension": 3}),
         encoding="utf-8",
     )
 
@@ -106,9 +123,27 @@ class _FakeNp:
     def array(self, data, dtype=None):
         return _FakeArr(data)
 
+    def frombuffer(self, buffer, dtype=None):
+        # The cache path rebuilds the FAISS index from sealed bytes; the
+        # double only has to hand the fake faiss something index-shaped.
+        return _FakeArr(list(buffer))
+
     # faiss API names, mirrored so the doubles stay faithful.
     def normalize_L2(self, arr):  # noqa: N802
         return None
+
+
+class _FakeBytes:
+    """Stand-in for the ``uint8`` array ``faiss.serialize_index`` returns."""
+
+    def __init__(self, data: bytes):
+        self.data = data
+
+    def tobytes(self) -> bytes:
+        return self.data
+
+    def __bytes__(self) -> bytes:
+        return self.data
 
 
 class _FakeFaissIndex:
@@ -129,12 +164,20 @@ class _FakeFaiss:
     def __init__(self, index_d=3):
         self.index_d = index_d
         self.written: list[str] = []
+        self.serialized: list[object] = []
 
     def write_index(self, index, path):
         self.written.append(str(path))
         Path(path).write_bytes(b"index")
 
     def read_index(self, path):
+        return _FakeFaissIndex(self.index_d)
+
+    def serialize_index(self, index):
+        self.serialized.append(index)
+        return _FakeBytes(b"serialized-index")
+
+    def deserialize_index(self, array):
         return _FakeFaissIndex(self.index_d)
 
     def IndexFlatIP(self, dim):  # noqa: N802
@@ -256,12 +299,25 @@ class CacheValidityTests(unittest.TestCase):
         paths.cache_metadata.write_text(json.dumps({
             "fs_hash": get_file_system_hash(paths, settings),
             "embedding_dimension": settings.embedding_dimension,
+            "sealed": seal_metadata(),
         }), encoding="utf-8")
 
     def test_missing_files_are_invalid(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
             self.assertFalse(is_cache_valid(paths, _settings()))
+
+    def test_a_hash_error_is_a_cache_miss_not_a_crash(self):
+        """A filesystem error while hashing the tree must not break the caller."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            settings = _settings()
+            self._write_all(paths, settings)
+            with mock.patch("ai_assistant.rag.index.get_file_system_hash",
+                            side_effect=OSError("disk gone")):
+                with self.assertLogs("ai_assistant.rag.index", level="WARNING") as caught:
+                    self.assertFalse(is_cache_valid(paths, settings))
+        self.assertIn("Cache read error", caught.output[0])
 
     def test_valid_when_metadata_matches(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -298,31 +354,44 @@ class CacheValidityTests(unittest.TestCase):
 class SaveLoadCacheTests(unittest.TestCase):
     def setUp(self):
         self.faiss = _FakeFaiss()
-        self._patchers = _patch_heavy(faiss=self.faiss)
+        self._patchers = _patch_heavy(faiss=self.faiss, numpy=_FakeNp())
         self.addCleanup(lambda: [p.stop() for p in self._patchers])
+        self.cipher = _cipher()
 
     def test_save_cache_writes_everything(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
             settings = _settings()
             chunks = [_chunk("a", "a.md")]
-            save_cache("index", chunks, "bm25", paths, settings)
+            save_cache("index", chunks, "bm25", paths, settings, cipher=self.cipher)
             meta = json.loads(paths.cache_metadata.read_text(encoding="utf-8"))
         self.assertEqual(meta["chunk_count"], 1)
         self.assertEqual(meta["embedding_dimension"], 3)
-        self.assertEqual(self.faiss.written, [str(paths.cache_index)])
+        self.assertEqual(meta["sealed"], seal_metadata())
+        # The index is serialized in memory, never written in the clear.
+        self.assertEqual(self.faiss.serialized, ["index"])
+        self.assertEqual(self.faiss.written, [])
+
+    def test_the_artifacts_on_disk_are_sealed_not_plaintext_pickles(self):
+        """The chunk corpus holds the user's document text — it must not be readable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = _paths(tmp)
+            chunks = [_chunk("confidential prompt", "secret.md")]
+            save_cache("index", chunks, "bm25", paths, _settings(), cipher=self.cipher)
+
+            on_disk = paths.cache_chunks.read_bytes()
+            metadata = paths.cache_metadata.read_text(encoding="utf-8")
+        self.assertTrue(on_disk.startswith(b"enc:v1:"))
+        self.assertNotIn(b"confidential prompt", on_disk)
+        self.assertNotIn("confidential prompt", metadata)
 
     def test_load_cache_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
             chunks = [_chunk("a", "a.md")]
-            with paths.cache_chunks.open("wb") as handle:
-                pickle.dump(chunks, handle)
-            with paths.cache_bm25.open("wb") as handle:
-                pickle.dump("bm25", handle)
-            _seal(paths)
+            _write_sealed_cache(paths, chunks, "bm25")
             self.faiss.index_d = 3
-            index, loaded, bm25 = load_cache(paths, _settings())
+            index, loaded, bm25 = load_cache(paths, _settings(), cipher=self.cipher)
         self.assertEqual(index.d, 3)
         self.assertEqual(loaded, chunks)
         self.assertEqual(bm25, "bm25")
@@ -330,10 +399,9 @@ class SaveLoadCacheTests(unittest.TestCase):
     def test_load_cache_dimension_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
-            paths.cache_chunks.write_bytes(pickle.dumps([]))
-            _seal(paths)
+            _write_sealed_cache(paths, [], "bm25")
             self.faiss.index_d = 99
-            index, loaded, bm25 = load_cache(paths, _settings())
+            index, loaded, bm25 = load_cache(paths, _settings(), cipher=self.cipher)
         self.assertIsNone(index)
         self.assertEqual(loaded, [])
         self.assertIsNone(bm25)
@@ -341,9 +409,11 @@ class SaveLoadCacheTests(unittest.TestCase):
     def test_load_cache_corrupt_pickle_falls_back(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
-            paths.cache_chunks.write_bytes(b"not pickle")
-            _seal(paths)
-            index, loaded, _bm25 = load_cache(paths, _settings())
+            _write_sealed_cache(paths, [], "bm25")
+            # The seal is valid, the payload behind it is not a pickle.
+            paths.cache_chunks.write_bytes(
+                self.cipher.seal_bytes(b"not pickle", context=CHUNKS_CONTEXT))
+            index, loaded, _bm25 = load_cache(paths, _settings(), cipher=self.cipher)
         self.assertIsNone(index)
         self.assertEqual(loaded, [])
 
@@ -351,74 +421,85 @@ class SaveLoadCacheTests(unittest.TestCase):
         """One flipped byte turns the cache into a miss, not into code."""
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
-            with paths.cache_chunks.open("wb") as handle:
-                pickle.dump([_chunk("a", "a.md")], handle)
-            with paths.cache_bm25.open("wb") as handle:
-                pickle.dump("bm25", handle)
-            _seal(paths)
+            _write_sealed_cache(paths, [_chunk("a", "a.md")], "bm25")
             self.faiss.index_d = 3
-            # The pickle itself stays perfectly loadable — only the digest moved.
-            paths.cache_chunks.write_bytes(paths.cache_chunks.read_bytes() + b"x")
+            # The envelope stays structurally valid — only the authentication
+            # tag moved.
+            paths.cache_chunks.write_bytes(paths.cache_chunks.read_bytes()[:-1] + b"x")
 
-            index, loaded, bm25 = load_cache(paths, _settings())
+            index, loaded, bm25 = load_cache(paths, _settings(), cipher=self.cipher)
         self.assertIsNone(index)
         self.assertEqual(loaded, [])
         self.assertIsNone(bm25)
 
-    def test_an_unsealed_cache_is_refused_once_and_rebuilt(self) -> None:
-        """A pre-sealing cache carries no digest: unreadable, then re-sealed."""
+    def test_a_legacy_plaintext_cache_is_refused_and_rebuilt(self) -> None:
+        """A cache written before sealing existed is a miss, not a value to load."""
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
             with paths.cache_chunks.open("wb") as handle:
                 pickle.dump([_chunk("a", "a.md")], handle)
+            with paths.cache_bm25.open("wb") as handle:
+                pickle.dump("bm25", handle)
+            paths.cache_metadata.write_text(
+                json.dumps({"chunk_count": 1}), encoding="utf-8")
 
-            index, loaded, _bm25 = load_cache(paths, _settings())
+            with self.assertLogs("ai_assistant.rag.index", level="WARNING") as caught:
+                index, loaded, _bm25 = load_cache(
+                    paths, _settings(), cipher=self.cipher)
         self.assertIsNone(index)
         self.assertEqual(loaded, [])
+        # The operator is told *why* the cache was dropped: an older, unsealed
+        # cache is a different situation from a corrupt one.
+        self.assertIn("not sealed", caught.output[0])
 
     def test_a_cache_written_by_another_key_is_refused(self) -> None:
         """Same files, different machine key (e.g. a copied data dir)."""
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
-            with paths.cache_chunks.open("wb") as handle:
-                pickle.dump([_chunk("a", "a.md")], handle)
-            with paths.cache_bm25.open("wb") as handle:
-                pickle.dump("bm25", handle)
-            _seal(paths)
-            (paths.data_dir / ".secrets" / "cache_hmac_key").write_bytes(b"y" * 32)
+            _write_sealed_cache(paths, [_chunk("a", "a.md")], "bm25")
+            other = AesGcmFieldCipher(b"y" * 32)
             self.faiss.index_d = 3
 
-            index, loaded, _bm25 = load_cache(paths, _settings())
+            index, loaded, _bm25 = load_cache(paths, _settings(), cipher=other)
         self.assertIsNone(index)
         self.assertEqual(loaded, [])
 
     def test_save_cache_seals_what_it_wrote(self) -> None:
-        """The digest recorded on save is the one load verifies against."""
+        """What save writes is what load reads back."""
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
-            save_cache("index", [_chunk("a", "a.md")], "bm25", paths, _settings())
+            save_cache("index", [_chunk("a", "a.md")], "bm25", paths, _settings(),
+                       cipher=self.cipher)
             meta = json.loads(paths.cache_metadata.read_text(encoding="utf-8"))
 
-            self.assertEqual(meta["integrity"]["algo"], "hmac-sha256")
-            self.assertEqual(len(meta["integrity"]["digest"]), 64)
+            self.assertEqual(meta["sealed"]["algo"], "aes-256-gcm")
+            self.assertEqual(meta["sealed"]["version"], "2")
 
             self.faiss.index_d = meta["embedding_dimension"]
-            index, loaded, bm25 = load_cache(paths, _settings())
+            index, loaded, bm25 = load_cache(paths, _settings(), cipher=self.cipher)
         self.assertIsNotNone(index)
         self.assertEqual(len(loaded), 1)
         self.assertEqual(bm25, "bm25")
 
-    def test_a_cache_that_cannot_be_sealed_is_written_unsigned(self) -> None:
-        """A read-only data dir must not crash the save — just warn, no seal."""
+    def test_the_seal_marker_is_what_makes_a_cache_valid(self) -> None:
+        """A cache without the marker is stale even when its hash matches."""
         with tempfile.TemporaryDirectory() as tmp:
             paths = _paths(tmp)
-            with mock.patch("ai_assistant.rag.index.signing_key", return_value=None):
-                with self.assertLogs("ai_assistant.rag.index", level="WARNING") as caught:
-                    save_cache("index", [_chunk("a", "a.md")], "bm25", paths, _settings())
-            meta = json.loads(paths.cache_metadata.read_text(encoding="utf-8"))
+            settings = _settings()
+            _write_sealed_cache(paths, [], "bm25")
+            fs_hash = get_file_system_hash(paths, settings)
+            paths.cache_metadata.write_text(
+                json.dumps({"fs_hash": fs_hash, "embedding_dimension": 3}),
+                encoding="utf-8",
+            )
+            self.assertFalse(is_cache_valid(paths, settings))
 
-        self.assertIn("unsigned", caught.output[0])
-        self.assertNotIn("integrity", meta)
+            paths.cache_metadata.write_text(
+                json.dumps({"fs_hash": fs_hash, "embedding_dimension": 3,
+                            "sealed": seal_metadata()}),
+                encoding="utf-8",
+            )
+            self.assertTrue(is_cache_valid(paths, settings))
 
 
 class BuildIndexTests(unittest.TestCase):
@@ -569,7 +650,8 @@ class LoadOrBuildTests(unittest.TestCase):
                  mock.patch("ai_assistant.rag.index.save_cache") as save:
                 valid.return_value = True
                 load.return_value = ("idx", [chunk], "bm25")
-                result = load_or_build_index([chunk], object(), paths, _settings())
+                result = load_or_build_index([chunk], object(), paths, _settings(),
+                                             cipher=_cipher())
         self.assertEqual(result, ("idx", [chunk], "bm25"))
         save.assert_not_called()
 
@@ -582,7 +664,8 @@ class LoadOrBuildTests(unittest.TestCase):
                  mock.patch("ai_assistant.rag.index.save_cache") as save:
                 valid.return_value = True
                 build.return_value = ("idx", [chunk], "bm25")
-                result = load_or_build_index([chunk], object(), paths, _settings(), force_rebuild=True)
+                result = load_or_build_index([chunk], object(), paths, _settings(),
+                                             force_rebuild=True, cipher=_cipher())
         self.assertEqual(result, ("idx", [chunk], "bm25"))
         save.assert_called_once()
 
@@ -597,7 +680,8 @@ class LoadOrBuildTests(unittest.TestCase):
                 valid.return_value = True
                 load.return_value = (None, [], None)
                 build.return_value = ("idx2", [chunk], "bm25")
-                result = load_or_build_index([chunk], object(), paths, _settings())
+                result = load_or_build_index([chunk], object(), paths, _settings(),
+                                             cipher=_cipher())
         self.assertEqual(result, ("idx2", [chunk], "bm25"))
 
 

@@ -34,6 +34,8 @@ __all__ = [
     "CHUNK_SIZE",
     "LOCK_NAME",
     "LOCK_STALE_SECONDS",
+    "STEAL_STALE_SECONDS",
+    "STEAL_SUFFIX",
     "atomic_copy",
     "atomic_replace_with_backup",
     "atomic_write_text",
@@ -56,6 +58,17 @@ LOCK_NAME = ".cvtrain.lock"
 
 LOCK_STALE_SECONDS = 24 * 60 * 60
 """Age after which a lock file is treated as abandoned (its process crashed)."""
+
+STEAL_SUFFIX = ".steal"
+"""Suffix of the sidecar claim that serialises stale-lock stealing."""
+
+STEAL_STALE_SECONDS = 60
+"""Age after which a lock-steal claim is itself treated as abandoned.
+
+A process that crashes between claiming and deleting the stale lock would
+otherwise block every future steal forever. The window is short because the
+claim is held only for the few filesystem operations that follow it.
+"""
 
 
 def sha256_file(path: Path) -> str:
@@ -267,6 +280,49 @@ def _held_message(lock: Path) -> str:
     return f"{lock} is held by another cvtrain run; wait for it to finish, or delete the file if no run is active"
 
 
+def _claim_stale_lock(lock: Path) -> Path:
+    """Take a sidecar claim before deleting a stale lock.
+
+    ``O_EXCL`` makes *acquiring* the lock atomic, but the stale path used to
+    have a check-then-delete race: two processes could both see an old mtime,
+    both unlink, and the slower one could delete the lock the faster one had
+    just created. The claim is a second ``O_EXCL`` file; only its owner may
+    unlink a stale lock, so a second stealer is refused instead of racing. A
+    claim crashed mid-steal ages out after :data:`STEAL_STALE_SECONDS`.
+
+    Returns the claim path; the caller releases it in a ``finally``.
+    """
+
+    claim = lock.with_name(lock.name + STEAL_SUFFIX)
+    token = f"{os.getpid()}-{time.time_ns()}"
+    for _ in range(2):
+        try:
+            fd = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            age = _lock_age(claim)
+            if age is not None and age > STEAL_STALE_SECONDS:
+                # A previous stealer died between claiming and unlinking; its
+                # claim is as abandoned as the lock it was going to steal.
+                LOG.warning("Removing stale lock-steal claim %s (age %.0fs)", claim, age)
+                _unlink_quietly(claim)
+                continue
+            raise ConcurrentRunError(_held_message(lock)) from exc
+        except OSError as exc:
+            raise StorageError(f"Cannot create the lock claim {claim}: {exc}") from exc
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(
+                    f"owner pid={os.getpid()} token={token} acquired={datetime.now(timezone.utc).isoformat()}\n"
+                )
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            _unlink_quietly(claim)
+            raise StorageError(f"Cannot write the lock claim {claim}: {exc}") from exc
+        return claim
+    raise ConcurrentRunError(_held_message(lock))
+
+
 def _acquire_lock(lock: Path, stale_after: float) -> str:
     """Create ``lock`` exclusively, replacing it only when it is provably stale.
 
@@ -283,8 +339,21 @@ def _acquire_lock(lock: Path, stale_after: float) -> str:
             last_error = exc
             age = _lock_age(lock)
             if age is not None and age > stale_after:
-                LOG.warning("Stealing stale lock %s (age %.0fs > %.0fs)", lock, age, stale_after)
-                _unlink_quietly(lock)
+                claim = _claim_stale_lock(lock)
+                try:
+                    # Re-check *under the claim*: another process may have
+                    # released the old lock (or replaced it with a fresh one)
+                    # while this process was taking the claim. Deleting a lock
+                    # that changed hands is the race the claim exists to stop.
+                    current_age = _lock_age(lock)
+                    if current_age is None:
+                        continue
+                    if current_age <= stale_after:
+                        raise ConcurrentRunError(_held_message(lock))
+                    LOG.warning("Stealing stale lock %s (age %.0fs > %.0fs)", lock, current_age, stale_after)
+                    _unlink_quietly(lock)
+                finally:
+                    _unlink_quietly(claim)
                 continue
             raise ConcurrentRunError(_held_message(lock)) from exc
         except OSError as exc:

@@ -29,6 +29,7 @@ from .config import (
     MAX_IMGSZ,
     MAX_WORKERS,
     MODEL_REGISTRY,
+    SUPPORTED_ROLES,
     TrainConfig,
 )
 from .dataset import check_data_yaml
@@ -47,6 +48,7 @@ __all__ = [
     "check_device",
     "check_hyperparameters",
     "check_metric_thresholds",
+    "check_model_roles",
     "check_python",
     "check_weights",
     "run",
@@ -103,6 +105,30 @@ def check_dependencies(*, fatal: bool, modules: Sequence[str]) -> list[Check]:
     return checks
 
 
+def check_model_roles(cfg: TrainConfig) -> list[Check]:
+    """Every selected model must have a role the ONNX contract can export.
+
+    ``onnx_contract.contract_for`` rejects an unknown role when the export is
+    validated — which is *after* training, i.e. the most expensive possible
+    moment to learn that a newly registered model family has no C++ parser and
+    no tensor contract. The registry accepts custom roles by design; preflight
+    is where "custom" becomes a fast, actionable failure instead of a wasted
+    run. Unknown keys are reported by ``param.models`` and skipped here so the
+    report stays complete.
+    """
+
+    supported = ", ".join(sorted(SUPPORTED_ROLES))
+    checks: list[Check] = []
+    for key in cfg.models:
+        if key not in MODEL_REGISTRY:
+            continue
+        role = MODEL_REGISTRY[key].role
+        ok = role in SUPPORTED_ROLES
+        detail = role if ok else f"{role!r} is not supported (choose one of: {supported})"
+        checks.append(Check(f"param.role.{key}", ok, detail))
+    return checks
+
+
 def check_hyperparameters(cfg: TrainConfig) -> list[Check]:
     """Validate the resolved hyper-parameters before any work starts.
 
@@ -150,6 +176,7 @@ def check_hyperparameters(cfg: TrainConfig) -> list[Check]:
         ),
         check_device(cfg),
     ]
+    checks.extend(check_model_roles(cfg))
     checks.extend(check_metric_thresholds(cfg.min_metrics))
     return checks
 

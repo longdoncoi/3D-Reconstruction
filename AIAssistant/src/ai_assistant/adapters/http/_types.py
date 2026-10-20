@@ -10,6 +10,7 @@ about what they reach into on the runtime handles (ADR 0001).
 from __future__ import annotations
 
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from typing import Any, Protocol
 
 
@@ -33,6 +34,7 @@ class LLMModuleLike(Protocol):
 
     def estimate_tokens(self, text: str) -> int: ...
     def load_model(self) -> None: ...
+    def model_reload(self) -> AbstractContextManager[None]: ...
 
 
 class RAGModuleLike(Protocol):
@@ -50,13 +52,6 @@ class RAGModuleLike(Protocol):
     def _release_ml_memory(self) -> None: ...
     def release_embedding_for_vision(self) -> None: ...
     def initialize_rag(self, *, force_rebuild: bool, enable_reranker: bool) -> int: ...
-
-
-class AttachmentHelpers(Protocol):
-    """Optional image helpers used by the chat router's ImportError fallback."""
-
-    def _is_image_file(self, path: str) -> bool: ...
-    def _image_to_data_uri(self, path: str) -> str: ...
 
 
 class ActionManifestLike(Protocol):

@@ -20,4 +20,17 @@ struct PointColor {
     unsigned char b = 0;
 };
 
+/**
+ * @brief Immutable point-cloud result shared across the plugin ABI.
+ *
+ * Points and colours are kept in one object so a consumer can never observe
+ * two different reconstruction generations (the old two-call API allowed
+ * that). The service caches the snapshot after a run and hands out a
+ * shared_ptr; readers keep the data alive without copying it.
+ */
+struct PointCloudSnapshot {
+    std::vector<Point3D> points;
+    std::vector<PointColor> colors;
+};
+
 #endif // POINTCLOUDDATA_H

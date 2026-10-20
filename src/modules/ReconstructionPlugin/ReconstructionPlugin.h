@@ -11,7 +11,7 @@
 #include <QToolButton>
 #include <QListWidget>
 
-class CustomProgressDialog;
+class IProgressDialog;
 class ReconstructionRibbonUI;
 
 class ReconstructionPlugin : public QObject, public IPlugin {
@@ -41,7 +41,7 @@ private:
     IAppContext*             m_ctx           = nullptr;
     IReconstructionService*  m_reconSvc      = nullptr;  ///< Looked up from ServiceRegistry
     bool m_isPointCloudVisible = false;
-    CustomProgressDialog* m_progressDialog = nullptr;
+    IProgressDialog* m_progressDialog = nullptr;
 
     QMenu* m_reconstructMenu = nullptr;
     bool m_cancelRequested = false;  ///< true while a stop-requested run is finishing

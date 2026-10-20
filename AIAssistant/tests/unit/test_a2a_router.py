@@ -27,21 +27,24 @@ class _FakeClient:
         return self.outcome
 
 
-def _remote_registry():
-    remote = a2a_protocol.RemoteAgent(
+def _registry_with_remote() -> a2a_protocol.RemoteAgentRegistry:
+    registry = a2a_protocol.RemoteAgentRegistry()
+    registry._agents["http://remote.test"] = a2a_protocol.RemoteAgent(
         url="http://remote.test",
         card={"name": "remote", "skills": [{"id": "supervisor"}]},
         skills={"supervisor": {"id": "supervisor"}},
         last_discovered=0.0,
     )
-    return patch.dict(a2a_protocol._remote_registry, {"http://remote.test": remote}, clear=True)
+    return registry
 
 
 class A2ARouterTests(unittest.TestCase):
     def test_route_delegates_to_the_trusted_client(self):
         client = _FakeClient({"routing": "remote_selected", "agent_url": "http://remote.test", "answer": "ok"})
-        with patch.object(a2a_protocol, "a2a_available", return_value=True), _remote_registry():
-            result = a2a_protocol.A2ARouter(client=client).route("supervisor", "hi", {"k": "v"})
+        with patch.object(a2a_protocol, "a2a_available", return_value=True):
+            result = a2a_protocol.A2ARouter(
+                client=client, registry=_registry_with_remote(),
+            ).route("supervisor", "hi", {"k": "v"})
 
         self.assertEqual(result["source"], "remote")
         self.assertEqual(result["answer"], "ok")
@@ -51,16 +54,19 @@ class A2ARouterTests(unittest.TestCase):
 
     def test_rejected_routing_is_surfaced_as_failure(self):
         client = _FakeClient({"routing": "rejected_policy", "error": "not trusted"})
-        with patch.object(a2a_protocol, "a2a_available", return_value=True), _remote_registry():
-            result = a2a_protocol.A2ARouter(client=client).route("supervisor", "hi")
+        with patch.object(a2a_protocol, "a2a_available", return_value=True):
+            result = a2a_protocol.A2ARouter(
+                client=client, registry=_registry_with_remote(),
+            ).route("supervisor", "hi")
 
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["error"], "not trusted")
 
     def test_no_remote_returns_unavailable(self):
-        with patch.object(a2a_protocol, "a2a_available", return_value=True), \
-                patch.dict(a2a_protocol._remote_registry, {}, clear=True):
-            result = a2a_protocol.A2ARouter(client=_FakeClient({})).route("supervisor", "hi")
+        with patch.object(a2a_protocol, "a2a_available", return_value=True):
+            result = a2a_protocol.A2ARouter(
+                client=_FakeClient({}), registry=a2a_protocol.RemoteAgentRegistry(),
+            ).route("supervisor", "hi")
 
         self.assertEqual(result["status"], "unavailable")
 
@@ -69,8 +75,10 @@ class A2ARouterTests(unittest.TestCase):
         only worth having if the caller declares what it is sending, so the
         transport boundary can refuse independently of the orchestrator."""
         client = _FakeClient({"routing": "rejected_policy", "error": "sensitive data cannot leave"})
-        with patch.object(a2a_protocol, "a2a_available", return_value=True), _remote_registry():
-            result = a2a_protocol.A2ARouter(client=client).route(
+        with patch.object(a2a_protocol, "a2a_available", return_value=True):
+            result = a2a_protocol.A2ARouter(
+                client=client, registry=_registry_with_remote(),
+            ).route(
                 "supervisor", "hi", {"action": "admin.login", "password": "s3cret"},
             )
 
@@ -79,8 +87,10 @@ class A2ARouterTests(unittest.TestCase):
 
     def test_an_ordinary_payload_stays_internal(self):
         client = _FakeClient({"routing": "remote_selected", "agent_url": "http://remote.test"})
-        with patch.object(a2a_protocol, "a2a_available", return_value=True), _remote_registry():
-            a2a_protocol.A2ARouter(client=client).route("supervisor", "hi", {"k": "v"})
+        with patch.object(a2a_protocol, "a2a_available", return_value=True):
+            a2a_protocol.A2ARouter(
+                client=client, registry=_registry_with_remote(),
+            ).route("supervisor", "hi", {"k": "v"})
 
         self.assertEqual(client.calls[0][4], DataClassification.INTERNAL)
 

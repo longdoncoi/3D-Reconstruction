@@ -16,8 +16,9 @@ because ``exist_ok``/``deterministic`` are Ultralytics' names — a second
 backend would spell its own, and a leaf must not know them.
 
 The exported file names are a contract with the Qt application. Keep them in
-sync with ``src/core/AppConstants.h``; ``tests/test_contract.py`` enforces the
-match so the two sides cannot silently drift apart.
+sync with ``src/core/AIConstants.h`` (the constants live there — ``AppConstants.h``
+only includes it); ``tests/test_contract.py`` enforces the match so the two
+sides cannot silently drift apart.
 """
 
 from __future__ import annotations
@@ -51,6 +52,17 @@ MAX_IMGSZ = 4096
 
 MAX_WORKERS = 64
 """Fail-fast ceiling: beyond this the loader only adds contention."""
+
+SUPPORTED_ROLES = frozenset({"detection", "segmentation", "tracking"})
+"""Semantic roles the ONNX contract (and therefore the Qt loader) understands.
+
+A ``ModelSpec`` may carry any role string, but only these three have a tensor
+contract in :mod:`cvtrain.onnx_contract` and a parser in
+``src/services/ai``. Preflight rejects anything else before training starts, so
+an unsupported family fails in seconds instead of after an expensive run —
+``tests/test_contract.py`` cross-checks this set against the contract factory so
+the two cannot drift apart.
+"""
 
 
 @dataclass(frozen=True)
@@ -209,16 +221,37 @@ def resolve_models(
 ) -> tuple[str, ...]:
     """Normalise a user selection into a canonical, ordered tuple of keys.
 
-    An empty selection falls back to :data:`DEFAULT_MODELS` so ``python
-    TrainModel.py --yes`` keeps behaving like the legacy script, while the Qt
-    dialog (which always passes explicit ``--det/--seg/--track`` flags) gets
-    exactly what the user ticked.
+    An empty selection falls back to :data:`DEFAULT_MODELS` (filtered to the
+    keys this registry actually has) so ``python TrainModel.py --yes`` keeps
+    behaving like the legacy script, while the Qt dialog (which always passes
+    explicit ``--det/--seg/--track`` flags) gets exactly what the user ticked.
+
+    Unknown keys are a *rejection*, not a fallback: silently training the
+    default set because the caller typo'd a model key would hide the mistake
+    behind a plausible-looking run. A registry with no default key left is the
+    same class of error (there is nothing the caller asked for we can run), so
+    it is named rather than replaced by a guess.
     """
 
     reg = registry or MODEL_REGISTRY
-    chosen = {str(item) for item in selected} if selected else set()
-    ordered = tuple(key for key in reg.keys() if key in chosen)
-    return ordered or DEFAULT_MODELS
+    requested = tuple(str(item) for item in selected or ())
+    if requested:
+        unknown = [key for key in requested if key not in reg]
+        if unknown:
+            available = ", ".join(reg.keys()) or "none"
+            raise ValueError(
+                f"unknown model key(s): {', '.join(unknown)} (choose from {available})"
+            )
+        chosen = set(requested)
+        return tuple(key for key in reg.keys() if key in chosen)
+    defaults = tuple(key for key in DEFAULT_MODELS if key in reg)
+    if not defaults:
+        available = ", ".join(reg.keys()) or "none"
+        raise ValueError(
+            f"no model selected and none of the legacy default models "
+            f"({', '.join(DEFAULT_MODELS)}) exist in this registry (available: {available})"
+        )
+    return defaults
 
 
 @dataclass

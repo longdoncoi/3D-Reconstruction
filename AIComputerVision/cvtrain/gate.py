@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import math
 import numbers
+from dataclasses import dataclass
 
 from . import manifest as manifest_mod
 from .config import ModelSpec, TrainConfig
@@ -31,12 +32,46 @@ from .fsio import sha256_file
 LOG = logging.getLogger("cvtrain.gate")
 
 __all__ = [
+    "DatasetSnapshot",
+    "InputSnapshot",
     "already_current",
     "dataset_content_digest",
     "dataset_digest",
     "enforce_quality_gate",
+    "snapshot_dataset",
+    "snapshot_inputs",
     "weights_digest",
 ]
+
+
+@dataclass(frozen=True)
+class DatasetSnapshot:
+    """What the dataset looked like when a run started training.
+
+    ``definition_sha256`` is the digest of ``data.yaml`` itself (cheap, O(1)),
+    ``content_sha256`` the fingerprint of everything the YAML references
+    (O(dataset bytes)). Both are optional because the file can be absent or
+    unreadable; ``None`` means "cannot prove", never "matches".
+    """
+
+    definition_sha256: str | None
+    content_sha256: str | None
+
+
+@dataclass(frozen=True)
+class InputSnapshot:
+    """The inputs one model was trained from, captured *before* training ran.
+
+    Recording after training would describe whatever the filesystem looked like
+    when the export finished: a dataset or checkpoint edited mid-run would be
+    misattributed to the artifact, and ``already_current`` would then trust the
+    wrong inputs. The trainer captures this immediately before ``backend.train``
+    and hands it to the manifest recorder.
+    """
+
+    source_weights_sha256: str | None
+    dataset_sha256: str | None
+    dataset_content_sha256: str | None
 
 
 def _usable_metrics(metrics: object) -> dict[str, float]:
@@ -90,8 +125,8 @@ def dataset_digest(cfg: TrainConfig) -> str | None:
 
     Deliberately the *definition*, not the images: this stays O(1) so a
     re-run can cheaply prove the YAML it used. The bytes live in
-    :func:`dataset_content_digest`, which :func:`already_current` also
-    compares whenever the recorded entry carries that digest.
+    :func:`dataset_content_digest`, which :func:`already_current` now requires
+    in addition — an entry without it is retrained, never assumed current.
     """
 
     path = cfg.data_yaml
@@ -111,7 +146,51 @@ def dataset_content_digest(cfg: TrainConfig) -> str | None:
     return dataset_content_fingerprint(cfg.data_yaml)
 
 
-def already_current(spec: ModelSpec, cfg: TrainConfig, manifest: manifest_mod.Manifest, backend_version: str) -> bool:
+def snapshot_dataset(cfg: TrainConfig) -> DatasetSnapshot:
+    """Capture the dataset's definition and content digests once per run.
+
+    Computing the content fingerprint once (instead of once per model and again
+    when recording provenance) keeps a multi-model run O(dataset) rather than
+    O(models x dataset), and the single snapshot is what both the skip rule and
+    the manifest recorder compare against.
+    """
+
+    return DatasetSnapshot(
+        definition_sha256=dataset_digest(cfg),
+        content_sha256=dataset_content_digest(cfg),
+    )
+
+
+def snapshot_inputs(
+    spec: ModelSpec,
+    cfg: TrainConfig,
+    *,
+    dataset: DatasetSnapshot | None = None,
+) -> InputSnapshot:
+    """Capture everything ``spec`` is about to be trained from.
+
+    Called immediately before ``backend.train``. ``dataset`` lets a caller
+    reuse the run-wide :func:`snapshot_dataset` result; when omitted (direct
+    calls, tests) the dataset is looked at here, so the function is never able
+    to return a snapshot that disagrees with its own observation.
+    """
+
+    ds = dataset if dataset is not None else snapshot_dataset(cfg)
+    return InputSnapshot(
+        source_weights_sha256=weights_digest(spec, cfg),
+        dataset_sha256=ds.definition_sha256,
+        dataset_content_sha256=ds.content_sha256,
+    )
+
+
+def already_current(
+    spec: ModelSpec,
+    cfg: TrainConfig,
+    manifest: manifest_mod.Manifest,
+    backend_version: str,
+    *,
+    dataset: DatasetSnapshot | None = None,
+) -> bool:
     """Whether the published ONNX already *is* the artifact this run would build.
 
     The rule is deliberately strict, because "skip" must never hide work the
@@ -125,6 +204,11 @@ def already_current(spec: ModelSpec, cfg: TrainConfig, manifest: manifest_mod.Ma
     * the dataset *definition* still hashes the same (``dataset_sha256``) and
       the ``device`` class matches — a re-pointed dataset or a CPU-vs-GPU run
       is a different artifact behind the same parameters;
+    * the dataset *content* still hashes the same
+      (``dataset_content_sha256``). An entry without that digest is not
+      comparable at all: "we did not record it" means "not vouchable", so the
+      model is retrained rather than skipped on the strength of the cheaper
+      definition digest alone;
     * the backend that produced it is the backend that would produce it now —
       a framework upgrade changes the export, so it invalidates the claim;
     * its digest matches what the manifest recorded for it (a tampered or
@@ -137,6 +221,10 @@ def already_current(spec: ModelSpec, cfg: TrainConfig, manifest: manifest_mod.Ma
     so it never satisfies the second condition and is retrained: provenance we
     do not have cannot be assumed to match. An entry written before a factor
     was recorded fails the same way, for the same reason.
+
+    ``dataset`` reuses a run-wide :func:`snapshot_dataset` result — a
+    multi-model run then hashes the data once instead of once per model. When
+    omitted, this call reads the dataset itself.
 
     The checks run cheapest-first — the two digests (the published artifact and
     a checkpoint that can be hundreds of megabytes) are only computed once
@@ -173,14 +261,13 @@ def already_current(spec: ModelSpec, cfg: TrainConfig, manifest: manifest_mod.Ma
     )
     if recorded != requested:
         return False
-    recorded_dataset = dataset_digest(cfg)
+    recorded_dataset = dataset.definition_sha256 if dataset is not None else dataset_digest(cfg)
     if recorded_dataset is None or entry.get("dataset_sha256") != recorded_dataset:
         return False
     entry_content = entry.get("dataset_content_sha256")
-    if entry_content is not None:
-        recorded_content = dataset_content_digest(cfg)
-        if recorded_content is None or entry_content != recorded_content:
-            return False
+    recorded_content = dataset.content_sha256 if dataset is not None else dataset_content_digest(cfg)
+    if not isinstance(entry_content, str) or not entry_content or entry_content != recorded_content:
+        return False
     if entry.get("sha256") != sha256_file(target):
         return False
     weights_sha = weights_digest(spec, cfg)

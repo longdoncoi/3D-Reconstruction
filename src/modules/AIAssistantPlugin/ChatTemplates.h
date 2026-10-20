@@ -99,6 +99,13 @@ namespace ChatTemplates {
         <div style='margin-bottom:4px;'><a href='%1' style='color:#10a37f; text-decoration:none;'>📎 %2</a></div>
     )";
 
+    /// A sealed attachment has no meaningful "file://" target — the bytes on
+    /// disk are ciphertext, so the OS handler would open garbage. Such an
+    /// attachment is shown by name only.
+    const QString FILE_ATTACHMENT_SEALED = R"(
+        <div style='margin-bottom:4px; color:#10a37f;'>📎 %1</div>
+    )";
+
     const QString AGENT_THINKING = R"(
         <div style='background-color:#202026; border-left: 3px solid #8b5cf6; border-radius: 4px; padding: 8px; margin-bottom: 8px;'>
             <div style='color:#8b5cf6; font-weight:bold; font-size:12px; margin-bottom:4px;'>%1</div>

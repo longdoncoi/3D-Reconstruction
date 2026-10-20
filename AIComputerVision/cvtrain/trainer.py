@@ -191,11 +191,15 @@ def _record_entry(
     target: Path,
     model: TrainedModel[Any],
     backend_version: str,
+    inputs: gate.InputSnapshot,
 ) -> None:
     """Append this model's provenance and flush the manifest immediately.
 
-    Flushing per model (not at the end) means a crash during model 3 of 3 still
-    leaves a verified manifest for models 1 and 2.
+    ``inputs`` was captured *before* ``backend.train`` (see
+    :func:`cvtrain.gate.snapshot_inputs`): recording the filesystem as it looks
+    after a multi-hour run would misattribute a dataset or checkpoint edited
+    mid-run. Flushing per model (not at the end) means a crash during model 3 of
+    3 still leaves a verified manifest for models 1 and 2.
     """
 
     trained_at = manifest_mod.now_utc_iso()
@@ -220,19 +224,15 @@ def _record_entry(
         run_dir=str(model.run_dir),
         metrics=model.metrics,
     )
-    # Both digests are taken through the gate module so that what is written
-    # down here and compared there can never disagree. Absent when the file is
-    # not on disk: leaving the field out is honest, and ``gate.already_current``
-    # re-reads that as "unproven" and retrains.
-    weights_sha = gate.weights_digest(spec, cfg)
-    if weights_sha is not None:
-        entry["source_weights_sha256"] = weights_sha
-    dataset_sha = gate.dataset_digest(cfg)
-    if dataset_sha is not None:
-        entry["dataset_sha256"] = dataset_sha
-    content_sha = gate.dataset_content_digest(cfg)
-    if content_sha is not None:
-        entry["dataset_content_sha256"] = content_sha
+    # The snapshot is the single source of truth for what this artifact was
+    # trained from. Absent values stay absent: leaving the field out is honest,
+    # and ``gate.already_current`` re-reads that as "unproven" and retrains.
+    if inputs.source_weights_sha256 is not None:
+        entry["source_weights_sha256"] = inputs.source_weights_sha256
+    if inputs.dataset_sha256 is not None:
+        entry["dataset_sha256"] = inputs.dataset_sha256
+    if inputs.dataset_content_sha256 is not None:
+        entry["dataset_content_sha256"] = inputs.dataset_content_sha256
     if spec.role == "tracking":
         # The artifact is a detector; association lives in the Qt runtime.
         # Recording the parameters here keeps "tracking" from implying that the
@@ -261,9 +261,16 @@ def _train_all(
     """
 
     total = len(cfg.models)
+    # One content fingerprint for the whole invocation (see
+    # ``gate.snapshot_dataset``): both the skip verdict and the provenance
+    # recorder compare against the same observation, and a three-model run does
+    # not hash the dataset three times.
+    dataset_snapshot = gate.snapshot_dataset(cfg)
     for index, key in enumerate(cfg.models):
         spec = MODEL_REGISTRY[key]
-        if cfg.skip_unchanged and gate.already_current(spec, cfg, manifest, backend.version):
+        if cfg.skip_unchanged and gate.already_current(
+            spec, cfg, manifest, backend.version, dataset=dataset_snapshot
+        ):
             LOG.info("[%d/%d] %s already matches this invocation; skipping", index + 1, total, spec.output)
             kept = (manifest.get("entries") or {}).get(spec.output) or {}
             # Read back through the gate, which tolerates a document a hand has
@@ -273,10 +280,14 @@ def _train_all(
             reporter.skipped(index, spec.key)
             continue
         LOG.info("[%d/%d] Training %s from %s", index + 1, total, spec.label, spec.ckpt)
+        # Capture the inputs *before* the expensive call: the manifest must
+        # describe what training started from, not what the filesystem looked
+        # like when the export finished.
+        inputs = gate.snapshot_inputs(spec, cfg, dataset=dataset_snapshot)
         model = backend.train(spec, cfg, _epoch_reporter(reporter, index, spec.key, heartbeat))
         gate.enforce_quality_gate(cfg, spec, model.metrics)
         target = _export_one(spec, cfg, reporter, index, model, backend)
-        _record_entry(manifest, spec, cfg, target, model, backend.version)
+        _record_entry(manifest, spec, cfg, target, model, backend.version, inputs)
     return [MODEL_REGISTRY[key].output for key in cfg.models]
 
 

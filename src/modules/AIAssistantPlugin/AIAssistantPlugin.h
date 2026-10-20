@@ -18,7 +18,7 @@ class ChatBotDockWidget;
 class QListWidgetItem;
 class QWidget;
 
-class CustomProgressDialog;
+class IProgressDialog;
 
 class AIAssistantPlugin : public QObject, public IPlugin {
     Q_OBJECT
@@ -55,7 +55,7 @@ private slots:
 private:
     bool m_isStartingServer = false;
     bool m_pendingNewChat = false;  // Track if we should create new session on next send
-    CustomProgressDialog* m_progressDialog = nullptr;
+    IProgressDialog* m_progressDialog = nullptr;
     void setupChatbotUI();
     
     void addAttachmentPreview(const QString &filePath, bool isImage);

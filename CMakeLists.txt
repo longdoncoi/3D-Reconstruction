@@ -100,6 +100,26 @@ if(NOT _external_vcpkg_toolchain)
         CACHE PATH "VTK compile-tools package directory" FORCE)
 endif()
 
+# ─── Dependency package locations ────────────────────────────────────────────
+# Local defaults only when the conventional install path exists. Callers can
+# override with -D<PACKAGE>_DIR=... or the matching environment variable, so a
+# fresh machine never has to edit this file.
+function(set_cache_dir var default)
+    if(NOT "${${var}}")
+        if(DEFINED ENV{${var}} AND NOT "$ENV{${var}}" STREQUAL "")
+            file(TO_CMAKE_PATH "$ENV{${var}}" _env_dir)
+            set(${var} "${_env_dir}" CACHE PATH "" FORCE)
+        elseif(EXISTS "${default}")
+            set(${var} "${default}" CACHE PATH "" FORCE)
+        endif()
+    endif()
+endfunction()
+
+set_cache_dir(VTK_DIR "C:/Program Files/VTK/lib/cmake/vtk-9.6")
+set_cache_dir(OpenCV_DIR "C:/opencv/build")
+set_cache_dir(PCL_DIR "C:/Program Files/PCL 1.15.1/cmake")
+set_cache_dir(Eigen3_DIR "C:/Program Files/PCL 1.15.1/3rdParty/Eigen3/share/eigen3/cmake")
+
 project(3D-Reconstruction LANGUAGES CXX)
 
 # ─── Build Performance Options ────────────────────────────────────────────────
@@ -379,16 +399,29 @@ add_library(AppCore SHARED
     src/services/ai/AgentActionManifest.cpp
     src/core/SecretVault.h
     src/core/SecretVault.cpp
+    src/core/AtRestCipher.h
+    src/core/AtRestCipher.cpp
     src/core/SignalBus.h
     src/core/SignalBus.cpp
     src/core/LanguageManager.h
     src/core/LanguageManager.cpp
+    src/core/CryptoUtils.h
+    src/core/CryptoUtils.cpp
+    src/core/LicenseKeyLedger.h
+    src/core/LicenseKeyLedger.cpp
+    src/core/OtpStore.h
+    src/core/OtpStore.cpp
+    src/core/UserAccountStore.h
+    src/core/UserAccountStore.cpp
+    src/core/UserSettingsStore.h
+    src/core/UserSettingsStore.cpp
     src/core/UserManager.h
     src/core/UserManager.cpp
     src/core/IOutgoingMail.h
     src/core/ServiceRegistry.h
     src/core/IReconstructionService.h
     src/core/IAIService.h
+    src/core/IAIModelLoadService.h
     src/core/IMailService.h
     src/core/IAppContext.h
     src/core/IAIAssistantService.h
@@ -400,6 +433,7 @@ add_library(AppCore SHARED
     src/core/IViewerService.h
     src/core/IPlugin.h
     src/core/IShellService.h
+    src/core/IProgressDialog.h
     src/core/IAppPaths.h
     src/core/AIMode.h
     src/core/AppConstants.h
@@ -495,7 +529,9 @@ target_link_libraries(AppCore
         ${onnxruntime_SOURCE_DIR}/lib/onnxruntime.lib
 )
 if(WIN32)
-    target_link_libraries(AppCore PRIVATE crypt32)
+    # crypt32: the DPAPI vault (SecretVault).
+    # bcrypt: the AES-256-GCM envelope of the at-rest cipher (AtRestCipher).
+    target_link_libraries(AppCore PRIVATE crypt32 bcrypt)
 endif()
 
 qt_add_executable(3D-Reconstruction WIN32 MACOSX_BUNDLE)
@@ -560,6 +596,15 @@ target_link_libraries(3D-Reconstruction
 )
 
 set_target_properties(3D-Reconstruction PROPERTIES WIN32_EXECUTABLE ON)
+# The application target is compiled without the unity build on purpose: the
+# coverage gate maps executed lines through the PDB, and a source file that
+# shares a unity translation unit with its neighbours can be inlined away —
+# no code is emitted, the PDB does not mention the file and the exporter
+# reports an empty class.  That makes whole translation units invisible to
+# the measurement (the GUI shell's Main.cpp / MainWindow.cpp were).  One
+# translation unit per file keeps every TU visible; the PCH still absorbs the
+# cost of the heavy VTK/PCL headers.
+set_target_properties(3D-Reconstruction PROPERTIES UNITY_BUILD OFF)
 
 # ─── 11. Post-build: Copy DLLs ───────────────────────────────────────────────
 # AppCore.dll must sit next to the executable (the exe and every plugin import
@@ -752,3 +797,28 @@ if(BUILD_TESTING)
     enable_testing()
     add_subdirectory(tests)
 endif()
+
+# ─── 14. Install rules ───────────────────────────────────────────────────────
+# Portable install tree: exe + AppCore in bin, plugins in bin/plugins and the
+# shipped resources next to them. Callers may override CMAKE_INSTALL_PREFIX.
+include(GNUInstallDirs)
+set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/install" CACHE PATH
+    "Default install prefix for this project")
+
+install(TARGETS 3D-Reconstruction AppCore
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
+install(TARGETS
+        AIAssistantPlugin
+        AIProcessorPlugin
+        ReconstructionPlugin
+        SendMailPlugin
+        UserAuthPlugin
+        ViewerPlugin
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}/plugins
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/plugins)
+
+install(DIRECTORY translations
+    DESTINATION ${CMAKE_INSTALL_BINDIR}
+    OPTIONAL)

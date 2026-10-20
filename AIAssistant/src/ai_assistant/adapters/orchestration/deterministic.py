@@ -55,9 +55,7 @@ class DeterministicAgentOrchestrator:
                 # The durable resume carries the user's decision; bind the
                 # shared single-use grant pair to the exact invocation and
                 # spend the direct token on the immediate execution.
-                direct_token = issue_grant_pair(
-                    pending["tool"], pending["params"], run_id=f"a2a:{task.id}",
-                )[1]
+                direct_token = issue_grant_pair(pending["tool"], pending["params"])[1]
                 self._tools.issue_approval_grant(pending["tool"], pending["params"], direct_token)
                 payload = self._tools.execute(pending["tool"], pending["params"], principal,
                                               correlation_id=task.id, approval_token=direct_token).to_dict()

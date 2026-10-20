@@ -17,7 +17,8 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from ..application.coordination import TaskCoordinator
@@ -61,7 +62,8 @@ class AgentService:
                  tool_gateway: ToolGateway | None = None,
                  checkpointer: Any = None, a2a_router: Any = None,
                  task_coordinator: TaskCoordinator | None = None,
-                 max_concurrent_runs: int = 0) -> None:
+                 max_concurrent_runs: int = 0,
+                 delegate_fn: Callable[..., Any] | None = None) -> None:
         self.llm_runtime = llm_runtime
         # Durability is injected (ADR 0003): the composition root wires the
         # file-backed store; a bare facade (tests, embeds) keeps approvals in
@@ -112,6 +114,10 @@ class AgentService:
             "checkpointer": self._checkpointer,
             "task_coordinator": self.task_coordinator,
         }
+        if delegate_fn is not None:
+            # The composition root injects a delegate bound to its A2A
+            # registry; a bare facade keeps the local-only default.
+            shared["delegate_fn"] = delegate_fn
         self._ctx = AgentRunContext(**shared, a2a_router=a2a_router)
         self._approval_service = ApprovalService(**shared)
         self._ui_action_service = UIActionService(**shared)
@@ -137,35 +143,56 @@ class AgentService:
         """
         return self._session_locks.setdefault(session_id, threading.RLock())
 
+    @contextmanager
+    def _model_lease(self) -> Iterator[None]:
+        """Pin one model backend for the whole run when the runtime supports it.
+
+        Duck-typed runtimes (test doubles and older adapters) may predate the
+        drain contract; they keep the previous behaviour instead of failing.
+        """
+        lease = getattr(self.llm_runtime, "model_lease", None)
+        if callable(lease):
+            with lease():
+                yield
+        else:
+            yield
+
     def execute(self, request: AgentExecuteRequest, *,
                 event_sink: Callable[[dict[str, Any]], None] | None = None,
                 client_host: str = "unknown") -> dict[str, Any]:
         self._cleanup_pending()
         self._require_llm()
-        slots = self._run_slots
-        if slots is not None and not slots.acquire(blocking=False):
-            # Backpressure (ADR 0024): refuse immediately (503) instead of
-            # queueing behind the single local model; the caller retries.
-            msg = ("The agent run budget is exhausted; retry after a running "
-                   "run finishes (AGENT_MAX_CONCURRENT_RUNS).")
-            raise ServiceUnavailableError(msg)
-        try:
-            req_start = time.monotonic()
-            task = request.task
-            session_id = request.session_id or "agent_default"
-            # One run at a time per session (review finding 3): concurrent executes
-            # for the same session share one checkpointer thread_id and would
-            # clobber the coordinator's running record, so they queue here while
-            # other sessions keep running in parallel.  ``cancel``/``approve`` stay
-            # outside this lock on purpose — they must work while a run holds it.
-            with self._session_lock(session_id):
-                return self._execute_locked(
-                    request, session_id=session_id, task=task, req_start=req_start,
-                    event_sink=event_sink, client_host=client_host,
-                )
-        finally:
-            if slots is not None:
-                slots.release()
+        req_start = time.monotonic()
+        task = request.task
+        session_id = request.session_id or "agent_default"
+        # One run at a time per session (review finding 3): concurrent executes
+        # for the same session share one checkpointer thread_id and would
+        # clobber the coordinator's running record, so they queue here while
+        # other sessions keep running in parallel.  ``cancel``/``approve`` stay
+        # outside this lock on purpose — they must work while a run holds it.
+        #
+        # The global budget is acquired *after* the session lock: taking it
+        # first let a run queued behind its own session hold one of the few
+        # global slots, so two same-session requests could consume the entire
+        # budget and 503 unrelated sessions. Now only a run that can actually
+        # execute spends a slot.
+        with self._session_lock(session_id):
+            slots = self._run_slots
+            if slots is not None and not slots.acquire(blocking=False):
+                # Backpressure (ADR 0024): refuse immediately (503) instead of
+                # queueing behind the single local model; the caller retries.
+                msg = ("The agent run budget is exhausted; retry after a running "
+                       "run finishes (AGENT_MAX_CONCURRENT_RUNS).")
+                raise ServiceUnavailableError(msg)
+            try:
+                with self._model_lease():
+                    return self._execute_locked(
+                        request, session_id=session_id, task=task, req_start=req_start,
+                        event_sink=event_sink, client_host=client_host,
+                    )
+            finally:
+                if slots is not None:
+                    slots.release()
 
     def _execute_locked(
         self, request: AgentExecuteRequest, *, session_id: str, task: str,

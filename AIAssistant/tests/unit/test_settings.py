@@ -22,7 +22,9 @@ from ai_assistant.settings import (
     a2a_card_name,
     a2a_card_url,
     a2a_enabled,
+    a2a_max_subscribers,
     a2a_remote_agent_urls,
+    a2a_tenants,
     agent_bind_host,
     agent_bind_port,
     agent_write_roots,
@@ -38,6 +40,7 @@ from ai_assistant.settings import (
     otlp_exporter_endpoint,
     rag_enabled,
     rate_limit_per_minute,
+    task_retention_days,
     transport_tokens,
     vision_llm_enabled,
 )
@@ -404,6 +407,32 @@ class EnvironmentOwnerAccessorTests(unittest.TestCase):
         self.assertEqual(tokens.a2a, "a2a")
         self.assertEqual(tokens.agent, "")
         self.assertEqual(tokens.mcp, "")
+
+    def test_a2a_tenants_parses_the_json_mapping(self) -> None:
+        self.assertEqual(
+            a2a_tenants({"AI_A2A_TENANTS": '{"tok-a": "alpha", "tok-b": "beta"}'}),
+            {"tok-a": "alpha", "tok-b": "beta"},
+        )
+
+    def test_a2a_tenants_fails_closed_on_bad_input(self) -> None:
+        for raw in ("", "not-json", '["tok-a"]', '{"": "alpha"}', '{"tok": ""}'):
+            with self.subTest(raw=raw):
+                self.assertEqual(a2a_tenants({"AI_A2A_TENANTS": raw}), {})
+
+    def test_a2a_max_subscribers_has_a_safe_default(self) -> None:
+        self.assertEqual(a2a_max_subscribers({}), 32)
+        self.assertEqual(a2a_max_subscribers({"AI_A2A_MAX_SUBSCRIBERS": " 8 "}), 8)
+        for raw in ("nope", "0", "-3"):
+            with self.subTest(raw=raw):
+                self.assertEqual(a2a_max_subscribers({"AI_A2A_MAX_SUBSCRIBERS": raw}), 32)
+
+    def test_task_retention_days_defaults_and_allows_disabling(self) -> None:
+        self.assertEqual(task_retention_days({}), 30)
+        self.assertEqual(task_retention_days({"AI_TASK_RETENTION_DAYS": " 7 "}), 7)
+        self.assertEqual(task_retention_days({"AI_TASK_RETENTION_DAYS": "0"}), 0)
+        for raw in ("nope", "-1"):
+            with self.subTest(raw=raw):
+                self.assertEqual(task_retention_days({"AI_TASK_RETENTION_DAYS": raw}), 30)
 
     def test_rag_enabled_parses_the_documented_values(self) -> None:
         for raw, expected in (("1", True), ("true", True), ("OFF", False), ("0", False)):

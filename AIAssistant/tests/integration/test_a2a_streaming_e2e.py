@@ -69,11 +69,14 @@ class _MockTaskStore:
             self.event_reads.append((task_id, since))
             return [event for event in recorded if event["seq"] > since]
 
-    def list(self, *, context_id: str | None = None, limit: int = 100) -> list[AgentTask]:
+    def list(self, *, context_id: str | None = None, limit: int = 100,
+             owner: str | None = None) -> list[AgentTask]:
         with self._lock:
             tasks = list(self._tasks.values())
             if context_id:
                 tasks = [t for t in tasks if t.context_id == context_id]
+            if owner is not None:
+                tasks = [t for t in tasks if t.owner == owner]
             return tasks[:limit]
 
 

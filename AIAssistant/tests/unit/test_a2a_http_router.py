@@ -10,6 +10,7 @@ every closure body is reached end to end.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 import unittest
 from dataclasses import replace
@@ -17,14 +18,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ai_assistant.adapters import a2a_protocol
 from ai_assistant.adapters.a2a_protocol import A2ARouter, RemoteAgent, a2a_available
-from ai_assistant.adapters.a2a_router import build_a2a_router
+from ai_assistant.adapters.a2a_router import _task_pages, build_a2a_router
+from ai_assistant.adapters.http.security import TransportPolicy
 from ai_assistant.domain.security import DataClassification
 from ai_assistant.domain.tasks import AgentTask, TaskStatus
 
@@ -72,45 +74,51 @@ class _FakeService:
         self.event_log[task.id] = list(events or [])
         return task
 
-    def submit(self, capability, message, metadata=None, context_id=None, classification=None):
+    def submit(self, capability, message, metadata=None, context_id=None, classification=None,
+               *, owner="default"):
         self.submitted.append((capability, message, context_id))
         task = replace(_task(f"t-{len(self.submitted)}", context_id=context_id),
-                       status=TaskStatus.SUBMITTED)
+                       status=TaskStatus.SUBMITTED, owner=owner)
         self.store[task.id] = task
         return task
 
-    def get(self, task_id):
-        return self.store.get(task_id)
+    def get(self, task_id, *, owner="default"):
+        task = self.store.get(task_id)
+        if task is None or task.owner != owner:
+            return None
+        return task
 
-    def events(self, task_id):
+    def events(self, task_id, since=0, *, owner="default"):
+        if self.get(task_id, owner=owner) is None:
+            return ()
         if self.on_poll is not None:
             self.on_poll()
-        return tuple(self.event_log.get(task_id, ()))
+        return tuple(self.event_log.get(task_id, ()))[since:]
 
-    def list(self, *, context_id=None, limit=100):
+    def list(self, *, context_id=None, limit=100, owner="default"):
         self.list_limits.append(limit)
         tasks = [
             task for task in self.store.values()
-            if context_id is None or task.context_id == context_id
+            if task.owner == owner and (context_id is None or task.context_id == context_id)
         ]
         return tuple(tasks[:limit])
 
-    def cancel(self, task_id):
-        task = self.store.get(task_id)
+    def cancel(self, task_id, *, owner="default"):
+        task = self.get(task_id, owner=owner)
         if task is None or not self.cancellable:
             return None
         self.store[task_id] = replace(task, status=TaskStatus.CANCELED)
         return self.store[task_id]
 
-    def resume(self, task_id, input_data):
-        task = self.store.get(task_id)
+    def resume(self, task_id, input_data, *, owner="default"):
+        task = self.get(task_id, owner=owner)
         if task is None or not self.resumable:
             return None
         self.store[task_id] = replace(task, status=TaskStatus.WORKING)
         return self.store[task_id]
 
 
-def _client(service: _FakeService) -> TestClient:
+def _client(service: _FakeService, policy=None, max_subscribers=None) -> TestClient:
     """Build the app and call it as a loopback peer.
 
     The A2A surface is loopback-only until remote access is opted into with a
@@ -119,7 +127,9 @@ def _client(service: _FakeService) -> TestClient:
     route handler would run.
     """
     app = FastAPI()
-    app.include_router(build_a2a_router(service, "assistant", "3.0"))
+    app.include_router(build_a2a_router(
+        service, "assistant", "3.0", policy=policy, max_subscribers=max_subscribers,
+    ))
     return TestClient(app, client=("127.0.0.1", 50000), raise_server_exceptions=False)
 
 
@@ -302,6 +312,111 @@ class SubscribeStreamTests(unittest.TestCase):
         # Two frames despite three polls: the unchanged one was suppressed.
         self.assertEqual(body.count("data:"), 2)
         self.assertEqual(body.count('"task"'), 1)
+
+
+class DispatchClassificationTests(unittest.TestCase):
+    """The production delegation shape must survive the egress classifier."""
+
+    def test_session_and_idempotency_keys_stay_internal(self) -> None:
+        from types import SimpleNamespace
+
+        client = MagicMock()
+        client.submit.return_value = {"routing": "remote_selected"}
+        router = A2ARouter(client=client)
+        payload = {
+            "tool": "read_file",
+            "parameters": {"path": "notes.txt"},
+            "session_id": "s1",
+            "idempotency_key": "k1",
+        }
+        router._dispatch(
+            SimpleNamespace(url="https://peer.example"), "research", "read notes", payload,
+        )
+        kwargs = client.submit.call_args.kwargs
+        self.assertEqual(kwargs["classification"], DataClassification.INTERNAL)
+        self.assertEqual(kwargs["metadata"], payload)
+
+
+class SubscribeDeadlineTests(unittest.TestCase):
+    """A non-terminal task must not keep a subscriber forever."""
+
+    def test_the_deadline_ends_a_stream_that_never_reaches_a_terminal_state(self) -> None:
+        service = _FakeService()
+        service.add(_task("t1", status=TaskStatus.WORKING))
+
+        async def collect() -> list[tuple[list[dict], AgentTask]]:
+            pages = []
+            async for page in _task_pages(
+                service, "t1", terminal=frozenset({"completed"}), deadline_seconds=0.0,
+            ):
+                pages.append(page)
+            return pages
+
+        pages = asyncio.run(collect())
+        self.assertEqual(len(pages), 1)
+        self.assertEqual(pages[0][1].status, TaskStatus.WORKING)
+
+    def test_a_service_without_a_cursor_falls_back_to_count_slicing(self) -> None:
+        class _CursorlessService:
+            def __init__(self) -> None:
+                self.task = _task("t1", status=TaskStatus.WORKING)
+
+            def events(self, task_id: str, *, owner: str = "default") -> tuple[dict, ...]:
+                return ({"kind": "progress", "data": {"step": 1}},)
+
+            def get(self, task_id: str, *, owner: str = "default") -> AgentTask | None:
+                return self.task if task_id == "t1" else None
+
+        service = _CursorlessService()
+
+        async def collect() -> list[tuple[list[dict], AgentTask]]:
+            return [
+                page async for page in _task_pages(
+                    service, "t1", terminal=frozenset({"completed"}), deadline_seconds=0.0,
+                )
+            ]
+
+        pages = asyncio.run(collect())
+        self.assertEqual(len(pages), 1)
+        self.assertEqual([event["kind"] for event in pages[0][0]], ["progress"])
+
+
+class SubscriberAdmissionTests(unittest.TestCase):
+    """A flood of open streams is refused before it exhausts the worker."""
+
+    def test_the_limiter_counts_and_releases_slots(self) -> None:
+        from ai_assistant.adapters.a2a_router import _SubscriberLimiter
+
+        limiter = _SubscriberLimiter(1)
+        self.assertTrue(limiter.try_acquire())
+        self.assertFalse(limiter.try_acquire())
+        self.assertEqual(limiter.active, 1)
+        limiter.release()
+        self.assertEqual(limiter.active, 0)
+        limiter.release()  # an extra close must not underflow
+
+    def test_the_cap_refuses_extra_streams_and_releases_on_completion(self) -> None:
+        service = _FakeService()
+        service.add(_task("t1", status=TaskStatus.WORKING))
+
+        app = FastAPI()
+        router = build_a2a_router(service, "assistant", "3.0", max_subscribers=1)
+        app.include_router(router)
+        limiter = getattr(router, "_subscriber_limiter")
+
+        with TestClient(app, client=("127.0.0.1", 50000)) as client:
+            self.assertTrue(limiter.try_acquire())
+            legacy = client.get("/a2a/tasks/t1/events")
+            self.assertEqual(legacy.status_code, 503)
+            self.assertEqual(legacy.headers["retry-after"], "5")
+            standard = client.post("/tasks/t1:subscribe", headers={"A2A-Version": "0.3"})
+            self.assertEqual(standard.status_code, 503)
+
+            limiter.release()
+            service.store["t1"] = replace(service.store["t1"], status=_COMPLETE)
+            finished = client.get("/a2a/tasks/t1/events")
+            self.assertEqual(finished.status_code, 200)
+            self.assertEqual(limiter.active, 0)
 
 
 class LegacyRouteTests(unittest.TestCase):
@@ -531,6 +646,11 @@ class A2ARouterFacadeTests(unittest.TestCase):
     def _remote(self) -> RemoteAgent:
         return RemoteAgent(url="https://r.example.com", card={}, skills={"supervisor": {}})
 
+    def _registry(self) -> a2a_protocol.RemoteAgentRegistry:
+        registry = a2a_protocol.RemoteAgentRegistry()
+        registry._agents["https://r.example.com"] = self._remote()
+        return registry
+
     def test_a2a_available_reflects_sdk_and_setting(self) -> None:
         with patch.object(a2a_protocol, "a2a_enabled", return_value=True), patch.object(
             a2a_protocol, "_sdk_available", return_value=True
@@ -543,51 +663,40 @@ class A2ARouterFacadeTests(unittest.TestCase):
 
     def test_route_unavailable_when_transport_disabled(self) -> None:
         with patch.object(a2a_protocol, "a2a_available", return_value=False):
-            result = A2ARouter().route("supervisor", "hi")
+            result = A2ARouter(registry=self._registry()).route("supervisor", "hi")
         self.assertEqual(result["status"], "unavailable")
 
     def test_route_unavailable_when_no_remote(self) -> None:
-        with patch.object(a2a_protocol, "a2a_available", return_value=True), patch.object(
-            a2a_protocol, "_remote_registry", {}
-        ):
-            result = A2ARouter().route("supervisor", "hi")
+        with patch.object(a2a_protocol, "a2a_available", return_value=True):
+            result = A2ARouter(registry=a2a_protocol.RemoteAgentRegistry()).route("supervisor", "hi")
         self.assertEqual(result["status"], "unavailable")
         self.assertIn("No trusted remote agent", result["error"])
 
     def test_route_success(self) -> None:
         client = self._FakeClient({"routing": "remote_selected", "task": {"id": "t1"}})
-        registry = {"https://r.example.com": self._remote()}
-        with patch.object(a2a_protocol, "a2a_available", return_value=True), patch.object(
-            a2a_protocol, "_remote_registry", registry
-        ):
-            result = A2ARouter(client=client).route("supervisor", "hi", {"k": "v"})
+        with patch.object(a2a_protocol, "a2a_available", return_value=True):
+            result = A2ARouter(client=client, registry=self._registry()).route(
+                "supervisor", "hi", {"k": "v"},
+            )
         self.assertEqual(result["source"], "remote")
         self.assertEqual(result["task"]["id"], "t1")
 
     def test_route_rejected_dispatch_becomes_failure(self) -> None:
         client = self._FakeClient({"routing": "rejected_policy", "error": "not allowed"})
-        registry = {"https://r.example.com": self._remote()}
-        with patch.object(a2a_protocol, "a2a_available", return_value=True), patch.object(
-            a2a_protocol, "_remote_registry", registry
-        ):
-            result = A2ARouter(client=client).route("supervisor", "hi")
+        with patch.object(a2a_protocol, "a2a_available", return_value=True):
+            result = A2ARouter(client=client, registry=self._registry()).route("supervisor", "hi")
         self.assertEqual(result["status"], "failed")
         self.assertIn("not allowed", result["error"])
 
     def test_route_transport_exception_becomes_failure(self) -> None:
         client = self._FakeClient(RuntimeError("socket closed"))
-        registry = {"https://r.example.com": self._remote()}
-        with patch.object(a2a_protocol, "a2a_available", return_value=True), patch.object(
-            a2a_protocol, "_remote_registry", registry
-        ):
-            result = A2ARouter(client=client).route("supervisor", "hi")
+        with patch.object(a2a_protocol, "a2a_available", return_value=True):
+            result = A2ARouter(client=client, registry=self._registry()).route("supervisor", "hi")
         self.assertEqual(result["status"], "failed")
         self.assertIn("socket closed", result["error"])
 
     def test_find_remote_none_when_skill_absent(self) -> None:
-        registry = {"https://r.example.com": self._remote()}
-        with patch.object(a2a_protocol, "_remote_registry", registry):
-            self.assertIsNone(A2ARouter().find_remote("nonexistent"))
+        self.assertIsNone(A2ARouter(registry=self._registry()).find_remote("nonexistent"))
 
 class TaskListLimitClampTests(unittest.TestCase):
     """``limit`` is a caller value: the router clamps it, never trusts it.
@@ -622,9 +731,59 @@ class TaskListLimitClampTests(unittest.TestCase):
 
         service = _FakeService()
         service.add(_task("t-1"))
-        result = _dispatch_json_rpc(service, "tasks/list", {"limit": -1})
+        result = _dispatch_json_rpc(service, "tasks/list", {"limit": -1}, "default")
         self.assertEqual(service.list_limits, [1])
         self.assertEqual(len(result["tasks"]), 1)
+
+
+class MultiTenantOwnershipTests(unittest.TestCase):
+    """One A2A bearer token cannot reach another tenant's task (ADR 0008)."""
+
+    def setUp(self) -> None:
+        self.service = _FakeService()
+        self.policy = TransportPolicy(a2a_tenants={"tok-a": "alpha", "tok-b": "beta"})
+        self.client = _client(self.service, policy=self.policy)
+
+    def _headers(self, token: str) -> dict[str, str]:
+        return {"A2A-Version": "0.3", "Authorization": f"Bearer {token}"}
+
+    def _send(self, token: str) -> dict:
+        response = self.client.post(
+            "/message:send", json=_send_body("hello"), headers=self._headers(token),
+        )
+        self.assertEqual(response.status_code, 200)
+        return response.json()
+
+    def test_each_token_only_sees_its_own_tasks(self) -> None:
+        task_id = self._send("tok-a")["task"]["id"]
+        h_a, h_b = self._headers("tok-a"), self._headers("tok-b")
+
+        self.assertEqual(self.client.get(f"/tasks/{task_id}", headers=h_a).status_code, 200)
+        self.assertEqual(self.client.get(f"/tasks/{task_id}", headers=h_b).status_code, 404)
+        self.assertEqual(self.client.post(f"/tasks/{task_id}:cancel", headers=h_b).status_code, 409)
+        self.assertEqual(
+            self.client.post(f"/tasks/{task_id}:resume", json={"input": {}}, headers=h_b).status_code,
+            409,
+        )
+        self.assertEqual(self.client.post(f"/tasks/{task_id}:subscribe", headers=h_b).status_code, 404)
+        self.assertEqual(self.client.get("/tasks", headers=h_b).json()["tasks"], [])
+        self.assertEqual(len(self.client.get("/tasks", headers=h_a).json()["tasks"]), 1)
+
+    def test_an_unknown_token_is_rejected(self) -> None:
+        response = self.client.post(
+            "/message:send", json=_send_body("hello"), headers=self._headers("not-a-tenant"),
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_single_token_mode_still_requires_that_token(self) -> None:
+        client = _client(_FakeService(), policy=TransportPolicy(a2a_token="secret"))
+        body = _send_body("hello")
+        self.assertEqual(client.post("/message:send", json=body, headers={"A2A-Version": "0.3"}).status_code, 401)
+        self.assertEqual(
+            client.post("/message:send", json=body,
+                        headers={"A2A-Version": "0.3", "Authorization": "Bearer secret"}).status_code,
+            200,
+        )
 
 
 if __name__ == "__main__":

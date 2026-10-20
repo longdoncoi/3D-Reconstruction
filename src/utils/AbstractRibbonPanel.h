@@ -2,6 +2,8 @@
 #define ABSTRACT_RIBBON_PANEL_H
 
 #include <QColor>
+#include <QList>
+#include <QPointer>
 #include <QString>
 #include <QHBoxLayout>
 #include <QObject>
@@ -33,6 +35,7 @@ class APP_EXPORT AbstractRibbonPanel : public QObject {
     Q_OBJECT
 protected:
     AbstractRibbonPanel(IAppContext *ctx, QObject *parent = nullptr);
+    ~AbstractRibbonPanel() override;
 
     /// Creates a QGroupBox (with button row) inside parentPanel's QHBoxLayout.
     /// @return false when parentPanel has no QHBoxLayout to host the group.
@@ -49,12 +52,13 @@ protected:
     void finishPanel(const QString &translatedGroupTitle);
 
     IAppContext *ctx() const { return m_ctx; }
-    QGroupBox   *group() const { return m_group; }
+    QGroupBox   *group() const { return m_group.data(); }
     QHBoxLayout *buttonRow() const { return m_row; }
 
 private:
     IAppContext  *m_ctx = nullptr;
-    QGroupBox    *m_group = nullptr;
+    QPointer<QGroupBox> m_group;
+    QList<QPointer<QGroupBox>> m_groups;
     QVBoxLayout  *m_vbox = nullptr;
     QHBoxLayout  *m_row = nullptr;
     QHBoxLayout  *m_parentLayout = nullptr;

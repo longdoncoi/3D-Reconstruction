@@ -32,6 +32,14 @@ public:
     void resume();
     void stop();
 
+    /**
+     * Request stop and join with a bounded wait. Keeping the timeout explicit
+     * prevents shutdown from blocking forever if a frame is stuck inside the
+     * inference backend. A stuck thread is terminated only as a last resort
+     * (same policy as ReconstructionService's worker teardown).
+     */
+    bool stopAndWait(int timeoutMs = 15000);
+
 signals:
     void frameProcessed(const cv::Mat& frame);
     void finishedTracking();

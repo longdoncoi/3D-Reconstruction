@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <memory>
 #include <vector>
 #include "Global.h"
 #include "PointCloudData.h"
@@ -63,11 +64,16 @@ public:
     /** Lấy danh sách đường dẫn ảnh đã set. */
     virtual QStringList getImageList() const = 0;
 
-    /** Lấy point cloud kết quả (3D points). */
-    virtual const std::vector<Point3D>& getPointCloud() const = 0;
-
-    /** Lấy màu của từng point cloud point. */
-    virtual const std::vector<PointColor>& getPointColors() const = 0;
+    /**
+     * @brief Immutable snapshot of the result, or nullptr when no result is
+     *        available (not finished / result was cleared).
+     *
+     * Points and colours belong to the same reconstruction generation and
+     * stay alive as long as the caller holds the returned pointer. The service
+     * may replace its cached snapshot after a new run without invalidating
+     * copies already handed out to consumers.
+     */
+    virtual std::shared_ptr<const PointCloudSnapshot> pointCloudSnapshot() const = 0;
 
     /** Lấy số lượng điểm trong point cloud kết quả (tránh copy vector). */
     virtual size_t pointCount() const = 0;

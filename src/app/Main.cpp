@@ -76,9 +76,10 @@ int main(int argc, char* argv[])
     MainWindow window;
     window.show();
 
-    // Force the window to paint immediately — deferred services and plugins
-    // will initialize on the next event loop iteration (via QTimer::singleShot).
-    QApplication::processEvents();
+    // Paint the first frame synchronously. Do NOT call processEvents() here:
+    // that would also run the zero-timer that loads deferred services and
+    // plugins, defeating the whole point of deferring them until app.exec().
+    window.repaint();
 
     const int result = app.exec();
     Logger::shutdown();

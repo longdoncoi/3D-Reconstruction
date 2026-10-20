@@ -18,14 +18,31 @@ out.
 Every export is recorded in `Models/manifest.json` with:
 
 - SHA-256 of the artifact and of the base checkpoint actually trained from;
-- the digest of `data.yaml` — renamed classes / moved splits behind an
-  unchanged path are a different experiment, while the images themselves are
-  deliberately not hashed (O(dataset) on every re-run);
-- epochs, imgsz, seed, opset, batch, workers, the device class, and the backend
-  version.
+- the digest of `data.yaml` *and* a content fingerprint of every file the
+  referenced `train`/`val` splits reach — directories, globs, single files,
+  `.txt` listings and list-valued splits — captured **before** `backend.train`
+  starts (amended 2026-10-20; the original revision deliberately hashed only
+  the YAML and was blind to same-path content/glob changes);
+- epochs, imgsz, seed, opset, batch, workers, the device class, and the
+  composite exporter identity (`cvtrain`/`ultralytics`/`torch`/`onnx`), because
+  any of those dependencies can change the emitted graph.
+
+> **Amended 2026-10-20 (ADR 0007): this describes what a run *writes*, not
+> what every checked-in entry holds.** The models shipped in `Models/` were
+> trained before the composite identity existed: their entries carry the legacy
+> bare `backend_version` (`"8.4.41"`), and `yolo11x-tracking.onnx` carries no
+> provenance at all. Such an entry is **unprovable**, so `--skip-unchanged`
+> retrains those models — the fail-closed direction (see ADR 0003's
+> consequence below and the debt table in `Docs/SCORECARD.md`). The honest fix
+> is to retrain them, or to record explicitly that the exporter identity of an
+> artifact is unknown — never to write an identity that was not recorded at
+> training time.
 
 A model is skipped only when *everything* matches; any missing or unknown
 provenance field means "not vouchable" and the model is retrained (fail closed).
+In particular an entry without `dataset_content_sha256` is retrained: the
+cheaper `data.yaml` digest alone does not prove which images produced the
+artifact.
 `--skip-unchanged` never bypasses the quality gate — a kept model is judged
 against the metrics recorded when it was trained.
 

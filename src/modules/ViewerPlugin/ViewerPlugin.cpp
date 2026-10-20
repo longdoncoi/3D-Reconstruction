@@ -20,7 +20,7 @@
 #include <QStyle>
 #include <QPainter>
 #include <QLinearGradient>
-#include "../../utils/CustomProgressDialog.h"
+#include "IProgressDialog.h"
 #include <QApplication>
 #include <QListWidget>
 
@@ -115,6 +115,23 @@ bool ViewerPlugin::initialize(IAppContext* context) {
 }
 
 void ViewerPlugin::cleanup() {
+    // The image list and the navigator are installed into the shell's central
+    // widget, so they are NOT owned by this QObject: they have to be
+    // destroyed here, synchronously, before QPluginLoader unloads this DLL.
+    // Otherwise Qt would delete them later — with their vtable pointing into
+    // unloaded code — and the application would die while quitting.
+    if (m_listUI) {
+        delete m_listUI->widget();
+        delete m_listUI;
+        m_listUI = nullptr;
+    }
+    if (m_navUI) {
+        delete m_navUI->widget();
+        delete m_navUI;
+        m_navUI = nullptr;
+    }
+    // m_viewModel is a child of this plugin: it dies with the plugin object.
+    m_viewModel = nullptr;
 }
 
 void ViewerPlugin::onLoad2DImages() {

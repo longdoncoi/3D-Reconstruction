@@ -1,5 +1,6 @@
 #include "ViewerNavigatorUI.h"
 #include "IAppContext.h"
+#include "IShellService.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>

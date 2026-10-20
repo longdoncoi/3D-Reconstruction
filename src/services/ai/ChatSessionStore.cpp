@@ -1,10 +1,14 @@
 #include "ChatSessionStore.h"
 
+#include "SecretVault.h"
+
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonParseError>
 #include <QUuid>
 
 namespace ChatSessionStore {
@@ -28,9 +32,14 @@ void save(const QList<ChatSession> &sessions, const QString &username,
         sessionArray.append(sessionObject);
     }
 
+    // The chat history is sealed with the OS vault (DPAPI on Windows) before
+    // it reaches the disk: the file must never hold readable content.
+    const QByteArray payload = QJsonDocument(sessionArray).toJson();
+    const QString sealed = SecretVault::encrypt(QString::fromUtf8(payload));
+
     QFile file(sessionsPath(username, configFilePath));
     if (file.open(QIODevice::WriteOnly)) {
-        file.write(QJsonDocument(sessionArray).toJson());
+        file.write(sealed.toUtf8());
         file.close();
     }
 }
@@ -41,9 +50,30 @@ QList<ChatSession> load(const QString &username, const QString &configFilePath)
     QFile file(sessionsPath(username, configFilePath));
     if (!file.open(QIODevice::ReadOnly)) return sessions;
 
-    const QJsonArray sessionArray = QJsonDocument::fromJson(file.readAll()).array();
+    const QByteArray raw = file.readAll();
     file.close();
 
+    // The payload is sealed with the OS vault. A history written before the
+    // vault existed is plain JSON and passes through decrypt() unchanged, so
+    // it still loads and is re-sealed by the next save().
+    const QString plain = SecretVault::decrypt(QString::fromUtf8(raw));
+    // An empty answer is the vault's "cannot be unsealed" signal (a blob
+    // from another user/machine): report no sessions instead of parsing
+    // garbage. An empty file is simply empty.
+    if (plain.isEmpty()) {
+        if (!raw.isEmpty())
+            qWarning() << "ChatSessionStore: chat history could not be decrypted.";
+        return sessions;
+    }
+
+    QJsonParseError parseError{};
+    const QJsonDocument document = QJsonDocument::fromJson(plain.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+        qWarning() << "ChatSessionStore: chat history is not a valid session list.";
+        return sessions;
+    }
+
+    const QJsonArray sessionArray = document.array();
     for (const auto &value : sessionArray) {
         const QJsonObject sessionObject = value.toObject();
         ChatSession session;

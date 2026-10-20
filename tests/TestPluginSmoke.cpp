@@ -1,9 +1,15 @@
 #include <QtTest>
+#include <QApplication>
+#include <QDialog>
 #include <QDir>
+#include <QProcess>
 #include <QStringList>
+#include <QTemporaryDir>
+#include <QTimer>
 
 #include "IPlugin.h"
 #include "PluginHost.h"
+#include "mock/PluginContextMock.h"
 
 /**
  * @brief Smoke test on the real plugin binaries.
@@ -16,21 +22,116 @@
  * The plugin directory is injected at compile time by CMake
  * (PLUGIN_SMOKE_DIR, resolved from the ViewerPlugin target) and the test target
  * depends on every plugin target so the DLLs exist when CTest runs.
+ *
+ * ## Plugin initialization
+ *
+ * The second test initializes and cleans up every shipped plugin against a
+ * stub context (tests/core/mock/PluginContextMock.h).  Each plugin runs in its
+ * **own child process**: the plugins are GUI shells that install themselves
+ * into the shell's widget tree, and letting them share one process leaks
+ * widget ownership from one plugin into the next (the widget of plugin A is
+ * still parented to a shell widget when plugin B tears its own tree down).
+ * The child process keeps that contamination out of the test binary and
+ * turns a crash in one plugin into a reported failure instead of a dead
+ * suite.  The child is this very executable, re-run with
+ * ``--init-plugin <name>``.
  */
 class TestPluginSmoke : public QObject {
     Q_OBJECT
 
 private slots:
     void allShippedPluginsLoadAndResolve();
+    void everyPluginInitializesAndCleansUp();
 };
+
+namespace {
+
+QString pluginDirectory()
+{
+#ifdef PLUGIN_SMOKE_DIR
+    return QStringLiteral(PLUGIN_SMOKE_DIR);
+#else
+    return QString();
+#endif
+}
+
+/// Closes a modal dialog as soon as it appears, so a plugin that asks the
+/// user for something (login, licence) cannot hang the child process.
+class ModalDialogGuard : public QObject {
+public:
+    ModalDialogGuard()
+    {
+        m_timer.setInterval(50);
+        connect(&m_timer, &QTimer::timeout, this, [this] {
+            if (auto *modal = QApplication::activeModalWidget()) {
+                if (auto *dialog = qobject_cast<QDialog *>(modal)) {
+                    dialog->reject();
+                } else {
+                    modal->close();
+                }
+            }
+        });
+    }
+
+    void start() { m_timer.start(); }
+    void stop() { m_timer.stop(); }
+
+private:
+    QTimer m_timer;
+};
+
+/// Child-process entry point: initialize and clean up one plugin.
+int runPluginInitialization(const QString &pluginName)
+{
+    PluginHost host;
+    host.discover(pluginDirectory());
+    if (!host.errors().isEmpty()) {
+        qWarning() << "discovery failed:" << host.errors();
+        return 2;
+    }
+    if (!host.resolveOrder()) {
+        qWarning() << "resolve failed:" << host.errors();
+        return 3;
+    }
+
+    IPlugin *target = nullptr;
+    for (IPlugin *plugin : host.plugins()) {
+        if (plugin->pluginName() == pluginName) {
+            target = plugin;
+            break;
+        }
+    }
+    if (!target) {
+        qWarning() << "plugin not found:" << pluginName;
+        return 4;
+    }
+
+    QTemporaryDir root;
+    if (!root.isValid()) {
+        return 5;
+    }
+    PluginMock::AppContext context(root.path());
+    context.users().signIn(QStringLiteral("tester"));
+
+    ModalDialogGuard modalGuard;
+    modalGuard.start();
+    const bool initialized = target->initialize(&context);
+    modalGuard.stop();
+    if (!initialized) {
+        // A plugin may legitimately decline (e.g. no licence); that is not a
+        // crash and not a failure of the plugin's wiring.
+        qInfo() << "plugin declined initialization:" << pluginName;
+        return 0;
+    }
+    target->cleanup();
+    return 0;
+}
+
+} // namespace
 
 void TestPluginSmoke::allShippedPluginsLoadAndResolve()
 {
-#ifdef PLUGIN_SMOKE_DIR
-    const QString directory = QStringLiteral(PLUGIN_SMOKE_DIR);
-#else
-    const QString directory;
-#endif
+    const QString directory = pluginDirectory();
     QVERIFY2(!directory.isEmpty(), "PLUGIN_SMOKE_DIR was not configured by CMake");
     QVERIFY2(QDir(directory).exists(),
              qPrintable(QStringLiteral("plugin directory not found: ") + directory));
@@ -61,5 +162,62 @@ void TestPluginSmoke::allShippedPluginsLoadAndResolve()
     // plugins were never initialized.
 }
 
-QTEST_MAIN(TestPluginSmoke)
+void TestPluginSmoke::everyPluginInitializesAndCleansUp()
+{
+    const QString directory = pluginDirectory();
+    QVERIFY2(!directory.isEmpty(), "PLUGIN_SMOKE_DIR was not configured by CMake");
+
+    PluginHost host;
+    host.discover(directory);
+    QVERIFY2(host.errors().isEmpty(),
+             qPrintable(host.errors().join(QStringLiteral(" | "))));
+    QVERIFY2(host.resolveOrder(),
+             qPrintable(host.errors().join(QStringLiteral(" | "))));
+
+    const QString self = QCoreApplication::applicationFilePath();
+    QStringList failures;
+    for (IPlugin *plugin : host.plugins()) {
+        const QString name = plugin->pluginName();
+        QProcess child;
+        child.start(self, {QStringLiteral("--init-plugin"), name});
+        if (!child.waitForStarted(30000)) {
+            failures << QStringLiteral("%1: child did not start").arg(name);
+            continue;
+        }
+        if (!child.waitForFinished(120000)) {
+            child.kill();
+            child.waitForFinished(5000);
+            failures << QStringLiteral("%1: timed out").arg(name);
+            continue;
+        }
+        if (child.exitStatus() != QProcess::NormalExit || child.exitCode() != 0) {
+            failures << QStringLiteral("%1: exit code %2 (%3)")
+                             .arg(name)
+                             .arg(child.exitCode())
+                             .arg(child.exitStatus() == QProcess::CrashExit
+                                      ? QStringLiteral("crashed")
+                                      : QStringLiteral("abnormal exit"));
+        }
+    }
+
+    // Every shipped plugin must survive a real initialize()/cleanup() cycle:
+    // a plugin that crashes here would take the whole application down at
+    // start-up.
+    QVERIFY2(failures.isEmpty(), qPrintable(failures.join(QStringLiteral("; "))));
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc > 2 && QByteArray(argv[1]) == "--init-plugin") {
+        // Child process: initialize exactly one plugin and exit.
+        QApplication app(argc, argv);
+        return runPluginInitialization(QString::fromUtf8(argv[2]));
+    }
+    // A custom main (instead of QTEST_MAIN) so the child-process entry point
+    // can share this executable.
+    QApplication app(argc, argv);
+    TestPluginSmoke testObject;
+    return QTest::qExec(&testObject, argc, argv);
+}
+
 #include "TestPluginSmoke.moc"

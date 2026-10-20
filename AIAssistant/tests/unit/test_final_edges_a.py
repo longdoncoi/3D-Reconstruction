@@ -77,6 +77,27 @@ class SqliteTaskStoreTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_owner_is_persisted_and_filters_the_list(self):
+        from ai_assistant.domain.tasks import TaskStatus
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory)
+            try:
+                alpha = _task(owner="alpha", context_id="ctx-alpha")
+                store.create(alpha)
+                store.create(_task(owner="beta", context_id="ctx-alpha"))
+                listed = list(store.list(owner="alpha"))
+                self.assertEqual([task.owner for task in listed], ["alpha"])
+                self.assertEqual(
+                    [task.id for task in store.list(context_id="ctx-alpha", owner="alpha")],
+                    [alpha.id],
+                )
+                self.assertEqual(store.get(alpha.id).owner, "alpha")
+                self.assertEqual(store.get(alpha.id).transition(TaskStatus.WORKING).owner, "alpha")
+                self.assertEqual(len(list(store.list())), 2)
+            finally:
+                store.close()
+
     def test_classification_and_origin_survive_a_reload(self):
         """The row mapper must not rewrite domain state.
 
@@ -106,6 +127,41 @@ class SqliteTaskStoreTests(unittest.TestCase):
                     [(item.classification, item.origin) for item in store.list()],
                     [(DataClassification.RESTRICTED, ExecutionOrigin.REMOTE_A2A)],
                 )
+            finally:
+                store.close()
+
+    def test_the_schema_version_is_recorded_and_not_reapplied(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tasks.sqlite"
+            store = SqliteTaskStore(path)
+            store.create(_task())
+            store.close()
+            reopened = SqliteTaskStore(path)
+            try:
+                self.assertEqual(
+                    reopened._conn.execute("PRAGMA user_version").fetchone()[0], 2,
+                )
+                self.assertEqual(len(list(reopened.list())), 1)
+            finally:
+                reopened.close()
+
+    def test_orphaned_working_tasks_fail_and_emit_one_status_event(self):
+        from ai_assistant.domain.tasks import TaskStatus
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory)
+            try:
+                task = _task()
+                store.create(task)
+                store.save(task.transition(TaskStatus.WORKING))
+                self.assertEqual(store.fail_orphaned(), 1)
+                recovered = store.get(task.id)
+                self.assertEqual(recovered.status, TaskStatus.FAILED)
+                self.assertIn("restart", recovered.error)
+                events = list(store.events(task.id))
+                self.assertEqual(events[-1]["data"]["status"], "failed")
+                # Idempotent: a second startup has nothing left to recover.
+                self.assertEqual(store.fail_orphaned(), 0)
             finally:
                 store.close()
 
@@ -153,6 +209,62 @@ class SqliteTaskStoreTests(unittest.TestCase):
                 )
             finally:
                 store.close()
+
+    def test_prune_removes_only_old_terminal_tasks_and_their_events(self):
+        from ai_assistant.domain.tasks import TaskStatus
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory)
+            try:
+                old = _task()
+                store.create(old)
+                store.save(old.transition(TaskStatus.COMPLETED))
+                store.append_event(old.id, "status", {"status": "completed"})
+
+                active = _task()
+                store.create(active)
+                store.save(active.transition(TaskStatus.WORKING))
+
+                recent = _task()
+                store.create(recent)
+                store.save(recent.transition(TaskStatus.COMPLETED))
+
+                with store._conn:
+                    store._conn.execute(
+                        "UPDATE tasks SET updated_at = ? WHERE id IN (?, ?)",
+                        ("2020-01-01T00:00:00+00:00", old.id, active.id),
+                    )
+
+                self.assertEqual(store.prune(30), 1)
+                self.assertEqual(store.prune(0), 0)
+                self.assertIsNone(store.get(old.id))
+                self.assertEqual(list(store.events(old.id)), [])
+                self.assertEqual(store.get(active.id).status, TaskStatus.WORKING)
+                self.assertEqual(store.get(recent.id).status, TaskStatus.COMPLETED)
+                self.assertEqual(store.prune(30), 0)
+            finally:
+                store.close()
+
+    def test_the_owner_migration_is_idempotent_when_the_column_already_exists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tasks.sqlite"
+            store = SqliteTaskStore(path)
+            store.close()
+
+            legacy = sqlite3.connect(str(path))
+            legacy.execute("PRAGMA user_version = 1")
+            legacy.commit()
+            legacy.close()
+
+            reopened = SqliteTaskStore(path)
+            try:
+                self.assertEqual(
+                    reopened._conn.execute("PRAGMA user_version").fetchone()[0], 2,
+                )
+                columns = {row[1] for row in reopened._conn.execute("PRAGMA table_info(tasks)")}
+                self.assertIn("owner", columns)
+            finally:
+                reopened.close()
 
 
 class RetrievalPipelineTests(unittest.TestCase):

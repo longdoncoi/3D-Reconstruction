@@ -59,12 +59,18 @@ target_sources(AppCore PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIYoloPostProcessor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIAssistant.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIAssistant.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIServerProcessController.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIServerProcessController.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIRequestQueue.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIRequestQueue.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/ChatSessionStore.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/ChatSessionStore.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/ChatSessionManager.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/ChatSessionManager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIService.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIService.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIModelLoadService.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ai/AIModelLoadService.cpp
     
     ${CMAKE_CURRENT_SOURCE_DIR}/mail/MailService.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mail/MailService.cpp

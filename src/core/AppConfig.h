@@ -25,10 +25,6 @@ public:
      */
     static AppConfig& bootstrap();
 
-    /** @deprecated Resolve IAppPaths from ServiceRegistry; direct access only for bootstrap. */
-    [[deprecated("Use ctx->services()->get<IAppPaths>() instead")]]
-    static AppConfig& instance();
-
 public:
     void initialize(const QString& appDir);
 

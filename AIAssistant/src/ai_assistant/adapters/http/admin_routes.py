@@ -101,11 +101,12 @@ def build_admin_router(
     @router.post("/release-vram")
     def release_vram() -> dict[str, Any]:
         try:
-            with llm_module.llm_lock:
-                old_llm, llm_module.llm = llm_module.llm, None
-                del old_llm
-                gc.collect()
-                rag_module._release_ml_memory()
+            with llm_module.model_reload():
+                with llm_module.llm_lock:
+                    old_llm, llm_module.llm = llm_module.llm, None
+                    del old_llm
+                    gc.collect()
+                    rag_module._release_ml_memory()
             logger.info("VRAM released successfully")
         except Exception as error:
             logger.exception("Failed to release VRAM")
@@ -120,15 +121,16 @@ def build_admin_router(
                 "[MODEL SWITCH] Reload requested — current index=%d (%s)",
                 model_idx, llm_module.active_model_desc,
             )
-            with llm_module.llm_lock:
-                old_llm, llm_module.llm = llm_module.llm, None
-                del old_llm
-                gc.collect()
-                rag_module._release_ml_memory()
-            rebuild_chatbot_agent_fn()
-            llm_module.load_model()
-            if llm_module.is_vision_model:
-                rag_module.release_embedding_for_vision()
+            with llm_module.model_reload():
+                with llm_module.llm_lock:
+                    old_llm, llm_module.llm = llm_module.llm, None
+                    del old_llm
+                    gc.collect()
+                    rag_module._release_ml_memory()
+                rebuild_chatbot_agent_fn()
+                llm_module.load_model()
+                if llm_module.is_vision_model:
+                    rag_module.release_embedding_for_vision()
             logger.info(
                 "[MODEL SWITCH] Model reloaded successfully: %s (vision=%s)",
                 llm_module.active_model_desc, llm_module.is_vision_model,

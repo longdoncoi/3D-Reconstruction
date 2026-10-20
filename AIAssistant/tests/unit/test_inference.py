@@ -138,6 +138,19 @@ class OpenAiCompatibleCompletionTests(unittest.TestCase):
         self.assertNotIn("192.168.1.1", body)
         self.assertIn("[REDACTED_IP]", body)
 
+    def test_an_oversized_response_is_refused(self) -> None:
+        """A degraded peer must not be able to make the client buffer forever."""
+        env = {"AGENT_INFERENCE_URL": "http://inference:8000",
+               "AGENT_HYBRID_POLICY": "cloud_allowed"}
+        with mock.patch.dict(os.environ, env):
+            with mock.patch("ai_assistant.llm.inference.urlopen") as m_urlopen:
+                response = mock.MagicMock()
+                response.__enter__.return_value.read.return_value = b"x" * (1_048_576 + 1)
+                m_urlopen.return_value = response
+                with self.assertRaises(RuntimeError) as caught:
+                    openai_compatible_completion([{"role": "user", "content": "x"}])
+        self.assertIn("exceeds", str(caught.exception))
+
     def test_invalid_json_still_parsed_by_caller(self) -> None:
         env = {"AGENT_INFERENCE_URL": "http://inference:8000",
                "AGENT_HYBRID_POLICY": "cloud_allowed"}

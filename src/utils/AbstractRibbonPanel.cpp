@@ -7,8 +7,22 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <utility>
+
 AbstractRibbonPanel::AbstractRibbonPanel(IAppContext *ctx, QObject *parent)
     : QObject(parent), m_ctx(ctx) {}
+
+AbstractRibbonPanel::~AbstractRibbonPanel()
+{
+    // Groups are parented to the shell's tab panel, not to this QObject.
+    // Delete them before the owning plugin DLL is unloaded; otherwise Qt would
+    // destroy their (Qt-owned, but still connected) child widgets later, while
+    // the panel may already be gone. QPointer tolerates a panel that was
+    // destroyed first.
+    for (const QPointer<QGroupBox>& group : std::as_const(m_groups)) {
+        delete group.data();
+    }
+}
 
 bool AbstractRibbonPanel::beginPanel(QWidget *parentPanel, const QString &groupObjectName)
 {
@@ -17,6 +31,7 @@ bool AbstractRibbonPanel::beginPanel(QWidget *parentPanel, const QString &groupO
     m_parentLayout = layout;
 
     m_group = new QGroupBox(parentPanel);
+    m_groups.append(m_group);
     m_group->setObjectName(groupObjectName);
     m_group->setTitle("");
 

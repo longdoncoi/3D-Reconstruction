@@ -142,6 +142,7 @@ class _MemStore:
         self._events: dict[str, list[dict[str, Any]]] = {}
         self._lock = threading.Lock()
         self.closed = False
+        self.pruned: list[int] = []
 
     def create(self, task: AgentTask) -> None:
         with self._lock:
@@ -164,12 +165,29 @@ class _MemStore:
         with self._lock:
             return list(self._events.get(task_id, []))
 
-    def list(self, *, context_id: str | None = None, limit: int = 100) -> list[AgentTask]:
+    def list(self, *, context_id: str | None = None, limit: int = 100,
+             owner: str | None = None) -> list[AgentTask]:
         with self._lock:
             tasks = list(self._tasks.values())
             if context_id:
                 tasks = [t for t in tasks if t.context_id == context_id]
+            if owner is not None:
+                tasks = [t for t in tasks if t.owner == owner]
             return tasks[:limit]
+
+    def close(self) -> None:
+        self.closed = True
+
+    def prune(self, retention_days: int) -> int:
+        self.pruned.append(retention_days)
+        return 2
+
+
+class _BareStore:
+    """A store that predates the pruning contract."""
+
+    def __init__(self) -> None:
+        self.closed = False
 
     def close(self) -> None:
         self.closed = True
@@ -293,6 +311,36 @@ class TaskServiceLifecycleTests(unittest.TestCase):
         only_ctx1 = self.service.list(context_id="ctx-1")
         self.assertEqual(len(only_ctx1), 1)
         self.assertEqual(only_ctx1[0].context_id, "ctx-1")
+
+    def test_task_ownership_scopes_every_operation(self) -> None:
+        self.executor.side_effect = lambda task: time.sleep(0.5) or {"status": "completed"}
+        task = self.service.submit("supervisor", "hello", owner="alpha")
+        self.assertEqual(task.owner, "alpha")
+        self.assertEqual(task.with_metadata({"seen": True}).owner, "alpha")
+
+        self.assertIsNone(self.service.get(task.id, owner="beta"))
+        self.assertEqual(self.service.events(task.id, owner="beta"), ())
+        self.assertIsNone(self.service.cancel(task.id, owner="beta"))
+        self.assertIsNone(self.service.resume(task.id, {"approved": True}, owner="beta"))
+        self.assertEqual(self.service.list(owner="beta"), ())
+        self.assertEqual([item.id for item in self.service.list(owner="alpha")], [task.id])
+
+        self.assertIsNotNone(self.service.cancel(task.id, owner="alpha"))
+
+    def test_prune_delegates_and_zero_disables_the_window(self) -> None:
+        self.assertEqual(self.service.prune(7), 2)
+        self.assertEqual(self.store.pruned, [7])
+        self.assertEqual(self.service.prune(0), 0)
+        self.assertEqual(self.store.pruned, [7])
+
+    def test_prune_is_a_noop_for_stores_without_the_contract(self) -> None:
+        store = _BareStore()
+        service = TaskService(store, self.executor, frozenset({"supervisor"}))
+        try:
+            self.assertEqual(service.prune(30), 0)
+        finally:
+            service.close()
+        self.assertTrue(store.closed)
 
 if __name__ == "__main__":
     unittest.main()

@@ -20,8 +20,16 @@ def agent_safe_path(rel_path: str) -> str | None:
     if ".." in rel_path.split("/"):
         return None
     abs_path = os.path.normpath(os.path.join(project_root, rel_path))
+    real_root = os.path.realpath(project_root)
+    # ``normpath`` alone is not containment: a symlink/junction inside the
+    # project can point anywhere. Resolve the real target and check it too;
+    # writes are separately checked by ``write_sandboxed_file``, but reads
+    # must not follow a link out of the sandbox either.
+    real_path = os.path.realpath(abs_path)
     try:
         if os.path.commonpath([abs_path, os.path.normpath(project_root)]) != os.path.normpath(project_root):
+            return None
+        if os.path.commonpath([real_path, real_root]) != real_root:
             return None
     except ValueError:
         return None

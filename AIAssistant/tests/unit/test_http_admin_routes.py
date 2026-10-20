@@ -57,11 +57,16 @@ class _FakeLLMModule:
         self.load_calls = 0
         self.load_error = load_error
         self.llm_lock = self.lock
+        self.reload_gate_calls = 0
 
     def load_model(self) -> None:
         self.load_calls += 1
         if self.load_error is not None:
             raise self.load_error
+
+    def model_reload(self):
+        self.reload_gate_calls += 1
+        return _NullLock()
 
 
 class _FakeRAGModule:
@@ -147,10 +152,12 @@ def _build_client(
 
 class AdminRoutesTest(unittest.TestCase):
     def test_release_vram_unloads_and_gc_collects(self) -> None:
-        client, _ = _build_client()
+        llm = _FakeLLMModule()
+        client, _ = _build_client(llm=llm)
         response = client.post("/admin/release-vram")
         self.assertEqual(response.status_code, 200)
         self.assertIn("VRAM", response.json()["message"])
+        self.assertEqual(llm.reload_gate_calls, 1)
 
     def test_release_vram_error_returns_500(self) -> None:
         llm = _FakeLLMModule(lock=_FailLock())
@@ -165,6 +172,7 @@ class AdminRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["model"], "fake-model")
         self.assertEqual(llm.load_calls, 1)
+        self.assertEqual(llm.reload_gate_calls, 1)
         self.assertEqual(state["rebuild_calls"], 1)
 
     def test_reload_model_releases_embeddings_for_vision(self) -> None:

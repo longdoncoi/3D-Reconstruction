@@ -412,6 +412,140 @@ class DirectoryLockTests(unittest.TestCase):
                     with directory_lock(target, stale_after=1):
                         pass  # pragma: no cover - the lock is never acquired
 
+    def _stale_lock(self, target: Path) -> Path:
+        lock = target / LOCK_NAME
+        lock.write_text("stale", encoding="utf-8")
+        old = time.time() - 10
+        os.utime(lock, (old, old))
+        return lock
+
+    def test_a_fresh_steal_claim_blocks_a_second_stealer(self) -> None:
+        # Two processes can both observe a stale lock. The sidecar claim makes
+        # the second one refuse instead of deleting the lock the first one is
+        # about to replace.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            target.mkdir()
+            lock = self._stale_lock(target)
+            claim = target / (LOCK_NAME + fsio_mod.STEAL_SUFFIX)
+            claim.write_text("another stealer", encoding="utf-8")
+
+            with self.assertRaises(ConcurrentRunError):
+                with directory_lock(target, stale_after=1):
+                    pass  # pragma: no cover - the lock is never acquired
+            self.assertTrue(lock.exists())
+
+    def test_an_abandoned_steal_claim_is_replaced(self) -> None:
+        # A stealer that crashed after taking the claim must not wedge every
+        # future run: the claim ages out on the same principle as the lock.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            target.mkdir()
+            lock = self._stale_lock(target)
+            claim = target / (LOCK_NAME + fsio_mod.STEAL_SUFFIX)
+            claim.write_text("crashed stealer", encoding="utf-8")
+            old = time.time() - 10_000
+            os.utime(claim, (old, old))
+
+            with self.assertLogs("cvtrain.fsio", level="WARNING") as captured:
+                with directory_lock(target, stale_after=1):
+                    self.assertTrue(lock.exists())
+            self.assertTrue(any("stale lock-steal claim" in line for line in captured.output))
+            self.assertFalse(claim.exists())
+
+    def test_a_claim_that_cannot_be_created_is_typed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            target.mkdir()
+            self._stale_lock(target)
+            real_open = os.open
+
+            def _open(path: str | Path, flags: int) -> int:
+                if str(path).endswith(fsio_mod.STEAL_SUFFIX):
+                    raise OSError("claim denied")
+                return real_open(path, flags)
+
+            with mock.patch("cvtrain.fsio.os.open", side_effect=_open):
+                with self.assertRaises(StorageError) as ctx:
+                    with directory_lock(target, stale_after=1):
+                        pass  # pragma: no cover - the lock is never acquired
+            self.assertIn("claim denied", str(ctx.exception))
+
+    def test_a_claim_whose_token_cannot_be_written_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            target.mkdir()
+            lock = self._stale_lock(target)
+            with mock.patch("cvtrain.fsio.os.fdopen", side_effect=OSError("disk full")):
+                with self.assertRaises(StorageError):
+                    with directory_lock(target, stale_after=1):
+                        pass  # pragma: no cover - the lock is never acquired
+            self.assertFalse((target / (LOCK_NAME + fsio_mod.STEAL_SUFFIX)).exists())
+            self.assertTrue(lock.exists())
+
+    def test_a_lock_that_turns_fresh_while_stealing_is_not_deleted(self) -> None:
+        # The claim closes the window between observing a stale lock and
+        # deleting it: if the lock changed hands, the recheck sees a fresh age.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            target.mkdir()
+            lock = self._stale_lock(target)
+            with mock.patch("cvtrain.fsio._lock_age", side_effect=[10_000.0, 0.0]):
+                with self.assertRaises(ConcurrentRunError):
+                    with directory_lock(target, stale_after=1):
+                        pass  # pragma: no cover - the lock is never acquired
+            self.assertTrue(lock.exists())
+            self.assertFalse((target / (LOCK_NAME + fsio_mod.STEAL_SUFFIX)).exists())
+
+    def test_a_lock_that_survives_two_steal_attempts_is_refused(self) -> None:
+        # Defensive exit: both attempts found the same stale lock and could not
+        # remove it. The run must be refused, never proceed without ownership.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            target.mkdir()
+            lock = self._stale_lock(target)
+            real_open = os.open
+            real_unlink = fsio_mod._unlink_quietly
+
+            def _open(path: str | Path, flags: int) -> int:
+                if str(path).endswith(LOCK_NAME):
+                    raise FileExistsError
+                return real_open(path, flags)
+
+            def _unlink(path: Path) -> None:
+                if path.name == LOCK_NAME:
+                    return
+                real_unlink(path)
+
+            with (
+                mock.patch("cvtrain.fsio.os.open", side_effect=_open),
+                mock.patch("cvtrain.fsio._unlink_quietly", side_effect=_unlink),
+            ):
+                with self.assertRaises(ConcurrentRunError):
+                    with directory_lock(target, stale_after=1):
+                        pass  # pragma: no cover - the lock is never acquired
+            self.assertTrue(lock.exists())
+
+    def test_a_lock_that_vanishes_while_stealing_is_recreated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "Models"
+            target.mkdir()
+            lock = self._stale_lock(target)
+            calls = 0
+
+            def _age(path: Path) -> float | None:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return 10_000.0
+                path.unlink()
+                return None
+
+            with mock.patch("cvtrain.fsio._lock_age", side_effect=_age):
+                with directory_lock(target, stale_after=1) as acquired:
+                    self.assertTrue(acquired.exists())
+            self.assertFalse(lock.exists())
+
 
 class TouchLockTests(unittest.TestCase):
     """The heartbeat that keeps a live run from looking like a crashed one."""

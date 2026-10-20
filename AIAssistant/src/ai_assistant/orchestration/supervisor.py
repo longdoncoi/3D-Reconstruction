@@ -21,34 +21,18 @@ logger = logging.getLogger("ai_assistant.orchestration.supervisor")
 #
 # The supervisor must never import ``ai_assistant.adapters`` (that created an
 # import cycle with ``a2a_protocol``, which needs ``Specialist`` to advertise
-# skills).  Instead the composition root installs the lookup resolved by the
-# A2A adapter via :func:`set_remote_specialist_lookup`; with nothing installed
-# delegation stays strictly local.
+# skills).  Callers that can reach a remote registry pass its resolver as
+# ``delegate(..., remote_lookup=...)``; with no resolver delegation stays
+# strictly local. There is no process-wide installed lookup.
 RemoteSpecialistLookup = Callable[[str], str | None]
-
-_remote_specialist_lookup: RemoteSpecialistLookup | None = None
-_remote_lookup_lock = threading.Lock()
 
 supervisor_logger = get_agent_logger("supervisor")
 verification_logger = get_agent_logger("verification")
 
 
-def set_remote_specialist_lookup(lookup: RemoteSpecialistLookup | None) -> None:
-    """Install (or clear) the A2A remote-specialist resolver.
-
-    The composition root wires
-    ``adapters.a2a_protocol.resolve_remote_specialist`` here at startup so the
-    orchestration layer stays free of adapter imports (ADR 0002).
-    """
-    global _remote_specialist_lookup
-    with _remote_lookup_lock:
-        _remote_specialist_lookup = lookup
-
-
-def _resolve_remote_endpoint(specialist: Specialist) -> str | None:
-    """Ask the installed lookup for a remote endpoint, failing closed."""
-    with _remote_lookup_lock:
-        lookup = _remote_specialist_lookup
+def _resolve_remote_endpoint(specialist: Specialist,
+                             lookup: RemoteSpecialistLookup | None) -> str | None:
+    """Ask the caller-supplied lookup for a remote endpoint, failing closed."""
     if lookup is None:
         return None
     try:
@@ -185,12 +169,18 @@ def delegate(
     tool: str | None = None,
     parameters: dict[str, Any] | None = None,
     prefer_code: bool = False,
+    *,
+    remote_lookup: RemoteSpecialistLookup | None = None,
 ) -> Delegation:
-    """Select exactly one worker role. Workers never delegate further."""
+    """Select exactly one worker role. Workers never delegate further.
+
+    ``remote_lookup`` is the caller's A2A resolver (usually the composition
+    root's registry). Omitting it keeps routing strictly local.
+    """
     specialist, reason, basis = _route(tool, prefer_code)
 
     # A2A: check whether a remote agent can handle this specialist role.
-    remote_endpoint = _resolve_remote_endpoint(specialist)
+    remote_endpoint = _resolve_remote_endpoint(specialist, remote_lookup)
     if remote_endpoint:
         reason += f" (A2A remote: {remote_endpoint})"
         supervisor_logger.info(
@@ -356,6 +346,5 @@ __all__ = [
     "authorise",
     "delegate",
     "reflect_result",
-    "set_remote_specialist_lookup",
     "verify_result",
 ]

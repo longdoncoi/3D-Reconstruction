@@ -214,6 +214,10 @@ class LazyCompositionTests(unittest.TestCase):
             "assert not loaded, f'frameworks imported at import time: {loaded}'\n"
             "s.compose()\n"
             "assert s.app is not None, 'compose() must build the app'\n"
+            "assert s.platform.storage_cipher is not None, 'compose must load the at-rest key'\n"
+            "assert s.agent_service.pending_actions._cipher is s.platform.storage_cipher\n"
+            "assert s.runtime_modules.rag._cipher is s.platform.storage_cipher, \\\n"
+            "    'the RAG cache must be sealed with the same key (ADR 0028)'\n"
             "assert 'logger' in vars(s)\n"
             "app_before = s.app\n"
             "s.compose()  # idempotent: a second call must not rebuild\n"
@@ -225,6 +229,7 @@ class LazyCompositionTests(unittest.TestCase):
                 "USERPROFILE", "HOME")
         env = {k: os.environ[k] for k in keep if k in os.environ}
         env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
+        env["AI_STORAGE_KEY"] = "hex:" + "11" * 32
         proc = subprocess.run(
             [sys.executable, "-c", code],
             capture_output=True,
@@ -234,11 +239,59 @@ class LazyCompositionTests(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
 
-    def test_unknown_attribute_still_raises_attribute_error(self) -> None:
-        """``__getattr__`` composes known names only; typos stay AttributeErrors."""
+    def test_a_failed_build_rolls_the_flag_back_and_the_next_access_retries(self) -> None:
+        code = (
+            "from unittest.mock import patch\n"
+            "import ai_assistant.bootstrap.server as s\n"
+            "with patch('ai_assistant.config.resolve_paths', side_effect=RuntimeError('boom')):\n"
+            "    for _ in range(2):\n"
+            "        try:\n"
+            "            s.compose()\n"
+            "        except RuntimeError:\n"
+            "            pass\n"
+            "        else:\n"
+            "            raise AssertionError('compose must propagate the failure')\n"
+            "        assert s._COMPOSED is False, 'a failure left the composed flag set'\n"
+            "s.compose()\n"
+            "assert s._COMPOSED is True, 'a successful retry must mark the graph composed'\n"
+            "assert s.app is not None, 'the retry must build the app'\n"
+        )
+        keep = ("SYSTEMROOT", "PATH", "PATHEXT", "TEMP", "TMP", "COMSPEC",
+                "USERPROFILE", "HOME")
+        env = {k: os.environ[k] for k in keep if k in os.environ}
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
+        env["AI_STORAGE_KEY"] = "hex:" + "11" * 32
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+        )
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+
+    def test_an_in_process_failure_resets_the_flag(self) -> None:
+        from unittest.mock import patch
+
         from ai_assistant.bootstrap import server as server_module
 
-        server_module.compose()
+        original = server_module._COMPOSED
+        try:
+            with patch.object(server_module, "_compose_once", side_effect=RuntimeError("boom")):
+                with self.assertRaises(RuntimeError):
+                    server_module.compose()
+                self.assertFalse(server_module._COMPOSED)
+        finally:
+            server_module._COMPOSED = original
+
+    def test_unknown_attribute_still_raises_attribute_error(self) -> None:
+        """``__getattr__`` composes known names only; typos stay AttributeErrors."""
+        from unittest.mock import patch
+
+        from ai_assistant.bootstrap import server as server_module
+
+        with patch.dict("os.environ", {"AI_STORAGE_KEY": "hex:" + "11" * 32}):
+            server_module.compose()
         with self.assertRaises(AttributeError):
             getattr(server_module, "_no_such_attribute_xyz")
 

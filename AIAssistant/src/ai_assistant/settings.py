@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -160,6 +161,42 @@ def app_data_dir(env: Mapping[str, str] | None = None) -> str:
     return values.get("APP_DATA_DIR", "").strip()
 
 
+def storage_key(env: Mapping[str, str] | None = None) -> str:
+    """Return the explicit at-rest key override (``""`` when unset).
+
+    ``AI_STORAGE_KEY`` accepts ``base64:<url-safe>``, ``hex:<digits>`` or a
+    bare URL-safe base64 value; the persistence adapter validates the decoded
+    length. Keeping the raw string here preserves ADR 0001's single owner for
+    environment reads while the crypto adapter owns key parsing.
+    """
+    values = os.environ if env is None else env
+    return values.get("AI_STORAGE_KEY", "").strip()
+
+
+def storage_key_location(env: Mapping[str, str] | None = None) -> tuple[Path, bool]:
+    """Resolve where the generated local at-rest key lives.
+
+    Returns ``(path, explicit)``. ``AI_STORAGE_KEY_FILE`` is the explicit
+    deployment/secret-store path; when it is set a missing file must fail
+    startup instead of silently generating a replacement key (which would make
+    existing state unreadable). Without it the key lives outside
+    ``APP_DATA_DIR`` (``%LOCALAPPDATA%`` on Windows, ``$XDG_CONFIG_HOME`` on
+    POSIX) so a backup of the data volume does not automatically copy the key
+    with the ciphertext.
+    """
+    values = os.environ if env is None else env
+    raw = values.get("AI_STORAGE_KEY_FILE", "").strip()
+    if raw:
+        return Path(raw).expanduser(), True
+    if sys.platform == "win32":
+        root = values.get("LOCALAPPDATA", "").strip() or values.get("APPDATA", "").strip()
+        base = Path(root).expanduser() if root else Path.home() / "AppData" / "Local"
+    else:
+        root = values.get("XDG_CONFIG_HOME", "").strip()
+        base = Path(root).expanduser() if root else Path.home() / ".config"
+    return base / "3d-reconstruction" / "ai_assistant.key", False
+
+
 def max_request_bytes(env: Mapping[str, str] | None = None) -> int:
     """Return the request-body cap for every HTTP surface (2 MiB default)."""
     values = os.environ if env is None else env
@@ -210,6 +247,60 @@ def transport_tokens(env: Mapping[str, str] | None = None) -> TransportTokens:
         a2a=values.get("AI_A2A_TOKEN", "").strip(),
         mcp=values.get("AI_MCP_TOKEN", "").strip(),
     )
+
+
+def a2a_tenants(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Read the A2A bearer-token → tenant mapping from ``env``.
+
+    ``AI_A2A_TENANTS`` is a JSON object mapping each accepted bearer token to
+    the tenant id that owns its tasks. When empty the surface stays
+    single-tenant: the single ``AI_A2A_TOKEN`` maps every task to ``"default"``.
+    """
+    import json
+
+    values = os.environ if env is None else env
+    raw = values.get("AI_A2A_TENANTS", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(token): str(tenant) for token, tenant in parsed.items() if token and tenant}
+
+
+def a2a_max_subscribers(env: Mapping[str, str] | None = None) -> int:
+    """Admission cap for concurrent A2A SSE subscribers.
+
+    A deadline bounds each stream; this bounds how many can be open at once.
+    Invalid and non-positive values fall back to the documented default rather
+    than disabling the guard.
+    """
+    values = os.environ if env is None else env
+    raw = values.get("AI_A2A_MAX_SUBSCRIBERS", "").strip()
+    try:
+        limit = int(raw)
+    except ValueError:
+        return 32
+    return limit if limit > 0 else 32
+
+
+def task_retention_days(env: Mapping[str, str] | None = None) -> int:
+    """Days to keep terminal A2A tasks (``AI_TASK_RETENTION_DAYS``).
+
+    ``0`` disables pruning (forensic deployments). Invalid and negative values
+    keep the documented 30-day default rather than accidentally retaining
+    everything.
+    """
+    values = os.environ if env is None else env
+    raw = values.get("AI_TASK_RETENTION_DAYS", "").strip()
+    try:
+        days = int(raw)
+    except ValueError:
+        return 30
+    return days if days >= 0 else 30
 
 
 # ── One-time process environment bootstrap ──────────────────────────────────

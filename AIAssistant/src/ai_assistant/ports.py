@@ -157,7 +157,11 @@ class TaskStore(Protocol):
         """
         ...
 
-    def list(self, *, context_id: str | None = None, limit: int = 100) -> Iterable[AgentTask]: ...
+    def list(self, *, context_id: str | None = None, limit: int = 100, owner: str | None = None) -> Iterable[AgentTask]: ...
+
+    def prune(self, retention_days: int) -> int:
+        """Delete terminal tasks older than ``retention_days``; return the count."""
+        ...
 
 
 class LLMRuntime(Protocol):
@@ -188,9 +192,21 @@ class RagContextPort(Protocol):
     def get_context(self, query: str, query_image_b64: str | None = None, result_k: int | None = None) -> tuple[Any, ...]: ...
 
 
+class VisionRuntimePort(Protocol):
+    """What the chatbot specialist needs from the LLM runtime handle.
+
+    The handle is a *runtime* concern (backend, lock, lease) — the prompt
+    building lives behind :class:`PromptBuilder`. Declaring the one flag the
+    specialist reads keeps the boundary typed: a collaborator typed ``Any``
+    cannot be checked, and an unchecked collaborator is exactly how a chat
+    route ends up calling a method that does not exist (ADR 0029).
+    """
+
+    is_vision_model: bool
+
+
 class AgentTaskExecutor(Protocol):
     def __call__(self, task: AgentTask) -> dict[str, Any]: ...
-
 
 ToolEventSink = Callable[[ToolRequest, ToolResult], None]
 
@@ -215,3 +231,69 @@ class PendingActionPort(Protocol):
     def load(self) -> None: ...
     def save(self) -> None: ...
     def cleanup(self, cutoff: float) -> bool: ...
+
+
+class StorageCryptoError(RuntimeError):
+    """Base class for at-rest storage failures (ADR 0027/0028).
+
+    The exception lives in ``ports`` so a layer that only holds a
+    :class:`FieldCipher` can react to a failed seal without importing the
+    adapter that implements it.
+    """
+
+
+class StorageKeyError(StorageCryptoError):
+    """The key is missing, malformed or does not match the ciphertext."""
+
+
+class StorageDecryptionError(StorageCryptoError):
+    """A sealed field failed authentication or could not be decoded."""
+
+
+#: The at-rest envelope marker (ADR 0027/0028/0029). It is a *contract*, not
+#: an implementation detail: the persistence adapters seal with it, the
+#: kernel helpers recognise it, and the Qt client produces the same bytes.
+#: Keeping the literal here is what lets a kernel module (which may not
+#: import an adapter) tell a sealed file from a plaintext one.
+SEALED_BINARY_PREFIX = b"enc:v1:"
+
+#: The associated-data context of a chat attachment file. The Qt client seals
+#: the attachment it stores with exactly this context, so the AI service can
+#: open it with the platform at-rest key (ADR 0029). It is a contract between
+#: two processes, which is why it lives here.
+CHAT_ATTACHMENT_CONTEXT = "chat.attachment"
+
+
+class FieldCipher(Protocol):
+    """Authenticating cipher for state that reaches local disk (ADR 0027/0028).
+
+    The composition root loads one key and injects the cipher into every
+    adapter that persists user content: the task store, the pending-action
+    store and the RAG cache. The protocol lives in ``ports`` so those adapters
+    and the ``rag`` layer share one inward-facing contract instead of
+    importing each other.
+
+    ``context`` names the field being sealed. It becomes the AEAD associated
+    data, so a ciphertext moved to a different field fails authentication
+    instead of being read as if it belonged there.
+    """
+
+    def seal(self, value: str, *, context: str) -> str:
+        """Return an authenticated envelope for ``value`` bound to ``context``."""
+        ...
+
+    def open(self, value: str, *, context: str) -> str:
+        """Return the plaintext, accepting legacy unsealed values unchanged."""
+        ...
+
+    def is_sealed(self, value: str) -> bool:
+        """Return whether ``value`` already carries the sealed envelope."""
+        ...
+
+    def seal_bytes(self, value: bytes, *, context: str) -> bytes:
+        """Return an authenticated binary envelope for ``value``."""
+        ...
+
+    def open_bytes(self, value: bytes, *, context: str) -> bytes:
+        """Return the plaintext bytes, refusing anything not sealed."""
+        ...

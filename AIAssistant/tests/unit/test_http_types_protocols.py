@@ -23,7 +23,6 @@ PROTOCOLS = (
     _types.LoggerLike,
     _types.LLMModuleLike,
     _types.RAGModuleLike,
-    _types.AttachmentHelpers,
     _types.ActionManifestLike,
     _types.PluginSpecLike,
     _types.PluginRegistryLike,
@@ -135,10 +134,6 @@ class ConcreteFakesMatchProtocolTests(unittest.TestCase):
         for name in ("force_rebuild", "enable_reranker"):
             with self.subTest(keyword_only=name):
                 self.assertEqual(params[name].kind, inspect.Parameter.KEYWORD_ONLY)
-
-    def test_attachment_helpers_declare_both_helpers(self) -> None:
-        self.assertTrue(callable(_types.AttachmentHelpers._is_image_file))
-        self.assertTrue(callable(_types.AttachmentHelpers._image_to_data_uri))
 
 
 if __name__ == "__main__":

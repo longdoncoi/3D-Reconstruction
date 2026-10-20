@@ -13,8 +13,7 @@ VideoTrackerThread::VideoTrackerThread(IAIService* aiService, const QString& vid
 }
 
 VideoTrackerThread::~VideoTrackerThread() {
-    stop();
-    wait();
+    stopAndWait();
 }
 
 void VideoTrackerThread::pause() {
@@ -33,6 +32,21 @@ void VideoTrackerThread::stop() {
     m_stopRequested = true;
     m_paused = false;
     m_pauseCondition.wakeAll();
+}
+
+bool VideoTrackerThread::stopAndWait(int timeoutMs) {
+    stop();
+    if (!isRunning())
+        return true;
+
+    if (wait(static_cast<unsigned long>(timeoutMs)))
+        return true;
+
+    qWarning() << "[VideoTrackerThread] Worker did not stop within"
+               << timeoutMs << "ms; terminating it.";
+    terminate();
+    wait(2000);
+    return false;
 }
 
 void VideoTrackerThread::run() {

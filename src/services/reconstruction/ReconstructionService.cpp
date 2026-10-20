@@ -44,12 +44,15 @@ void ReconstructionService::setImages(const QStringList& paths) {
     
     std::unique_lock lock(m_mutex);
     m_pipeline->setImages(stdPaths);
+    m_snapshot.reset();
 }
 
 bool ReconstructionService::loadCameraParams(const QString& filePath) {
     if (m_running) return false;
     std::unique_lock lock(m_mutex);
-    return m_pipeline->loadCameraParams(filePath);
+    const bool ok = m_pipeline->loadCameraParams(filePath);
+    if (ok) m_snapshot.reset();
+    return ok;
 }
 
 void ReconstructionService::configure(int densityLevel, int maxFeatures, bool autoClean) {
@@ -82,6 +85,12 @@ void ReconstructionService::configure(int densityLevel, int maxFeatures, bool au
 bool ReconstructionService::reconstruct() {
     if (m_running.exchange(true)) return false; // Already running
     m_cancelRequested = false; // cờ hủy thuộc đúng một lần chạy
+    {
+        // The previous result is no longer current; drop the cached snapshot
+        // before the worker starts mutating the pipeline.
+        std::unique_lock lock(m_mutex);
+        m_snapshot.reset();
+    }
 
     // Worker được move vào QThread nội bộ (service layer sở hữu thread,
     // không bao giờ thuộc về plugin). Worker emit finished(bool) từ
@@ -158,32 +167,27 @@ QStringList ReconstructionService::getImageList() const {
     return result;
 }
 
-const std::vector<Point3D>& ReconstructionService::getPointCloud() const {
-    static const std::vector<Point3D> s_empty;
-    if (m_running || !m_pipeline) return s_empty;
-    std::shared_lock lock(m_mutex);
-    const auto& src = m_pipeline->getPointCloud();
-    static std::vector<Point3D> s_converted;
-    s_converted.clear();
-    s_converted.reserve(src.size());
-    for (const auto& p : src) {
-        s_converted.push_back({p.x, p.y, p.z});
-    }
-    return s_converted;
-}
+std::shared_ptr<const PointCloudSnapshot> ReconstructionService::pointCloudSnapshot() const {
+    std::unique_lock lock(m_mutex);
+    if (m_running || !m_pipeline || !m_pipeline->hasResult())
+        return {};
 
-const std::vector<PointColor>& ReconstructionService::getPointColors() const {
-    static const std::vector<PointColor> s_empty;
-    if (m_running || !m_pipeline) return s_empty;
-    std::shared_lock lock(m_mutex);
-    const auto& src = m_pipeline->getPointColors();
-    static std::vector<PointColor> s_converted;
-    s_converted.clear();
-    s_converted.reserve(src.size());
-    for (const auto& c : src) {
-        s_converted.push_back({c[0], c[1], c[2]});
+    if (!m_snapshot) {
+        auto snapshot = std::make_shared<PointCloudSnapshot>();
+
+        const auto& srcPoints = m_pipeline->getPointCloud();
+        snapshot->points.reserve(srcPoints.size());
+        for (const auto& p : srcPoints)
+            snapshot->points.push_back({p.x, p.y, p.z});
+
+        const auto& srcColors = m_pipeline->getPointColors();
+        snapshot->colors.reserve(srcColors.size());
+        for (const auto& c : srcColors)
+            snapshot->colors.push_back({c[0], c[1], c[2]});
+
+        m_snapshot = std::move(snapshot);
     }
-    return s_converted;
+    return m_snapshot;
 }
 
 size_t ReconstructionService::pointCount() const {
@@ -202,4 +206,5 @@ void ReconstructionService::processPointCloud() {
     if (m_running) return;
     std::unique_lock lock(m_mutex);
     m_pipeline->processPointCloud();
+    m_snapshot.reset();
 }

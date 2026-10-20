@@ -4,7 +4,7 @@ Three seams here have no runtime test: ``AgentSkill.__repr__`` (the debugging
 aid a reviewer actually reads when a card looks wrong), the module-scope
 ``a2a-sdk`` probe (it runs exactly once at import, so the ``ImportError`` arm
 is invisible unless the module is re-imported with the SDK masked) and the
-remote-lookup loop behind the supervisor's dependency-inverted port (ADR 0002).
+registry lookup behind the supervisor's injected port (ADR 0002).
 
 The probe tests reload ``a2a_protocol`` on purpose: reloading re-executes the
 real ``try``/``except`` block against a controlled ``sys.modules``. Because a
@@ -29,9 +29,8 @@ from ai_assistant.adapters.a2a_protocol import (
     AgentCard,
     AgentSkill,
     RemoteAgent,
+    RemoteAgentRegistry,
     build_agent_card,
-    discover_remote_agents,
-    get_remote_registry,
 )
 
 # Captured before any test reloads the module; used to put it back exactly as
@@ -87,14 +86,29 @@ class SdkProbeTests(_ReloadableAdapterTest):
     def test_the_probe_marks_the_transport_available_when_the_sdk_imports(self):
         _install_fake_a2a()
         importlib.reload(a2a_protocol)
-        self.assertTrue(a2a_protocol._sdk_available)
         self.assertTrue(a2a_protocol.a2a_available())
+        self.assertTrue(a2a_protocol._sdk_available)
 
     def test_the_probe_falls_back_to_local_only_mode_when_the_sdk_is_missing(self):
         _remove_fake_a2a()
         importlib.reload(a2a_protocol)
-        self.assertFalse(a2a_protocol._sdk_available)
         self.assertFalse(a2a_protocol.a2a_available())
+        self.assertFalse(a2a_protocol._sdk_available)
+
+    def test_the_probe_is_skipped_when_a2a_is_disabled(self):
+        _install_fake_a2a()
+        importlib.reload(a2a_protocol)
+        with patch.object(a2a_protocol, "a2a_enabled", return_value=False):
+            self.assertFalse(a2a_protocol._sdk_present())
+        self.assertFalse(a2a_protocol._sdk_available)
+
+    def test_the_probe_result_is_cached_after_the_first_call(self):
+        _install_fake_a2a()
+        importlib.reload(a2a_protocol)
+        self.assertTrue(a2a_protocol._sdk_present())
+        # Second call takes the cached branch and must not re-import.
+        with patch.object(a2a_protocol, "a2a_enabled", return_value=True):
+            self.assertTrue(a2a_protocol._sdk_present())
 
 
 class RemoteSpecialistLookupTests(_ReloadableAdapterTest):
@@ -104,23 +118,34 @@ class RemoteSpecialistLookupTests(_ReloadableAdapterTest):
         super().setUp()
         _install_fake_a2a()
         importlib.reload(a2a_protocol)
+        self.registry = a2a_protocol.RemoteAgentRegistry()
 
     def test_a_discovered_advertisement_resolves_to_its_endpoint(self):
-        registry = a2a_protocol._remote_registry
-        registry["http://remote.test/a2a"] = SimpleNamespace(skills=["chatbot", "code"])
-        registry["http://other.test/a2a"] = SimpleNamespace(skills=["research"])
+        self.registry._agents["http://remote.test/a2a"] = SimpleNamespace(
+            skills=["chatbot", "code"],
+        )
+        self.registry._agents["http://other.test/a2a"] = SimpleNamespace(skills=["research"])
         self.assertEqual(
-            a2a_protocol.resolve_remote_specialist("research"), "http://other.test/a2a",
+            self.registry.resolve("research"), "http://other.test/a2a",
         )
 
     def test_an_unadvertised_specialist_delegates_locally(self):
-        a2a_protocol._remote_registry["http://remote.test/a2a"] = SimpleNamespace(
-            skills=["chatbot"],
-        )
-        self.assertIsNone(a2a_protocol.resolve_remote_specialist("verification"))
+        self.registry._agents["http://remote.test/a2a"] = SimpleNamespace(skills=["chatbot"])
+        self.assertIsNone(self.registry.resolve("verification"))
 
     def test_an_empty_registry_delegates_locally(self):
-        self.assertIsNone(a2a_protocol.resolve_remote_specialist("chatbot"))
+        self.assertIsNone(self.registry.resolve("chatbot"))
+
+    def test_resolution_is_disabled_with_the_transport(self):
+        self.registry._agents["http://remote.test/a2a"] = SimpleNamespace(skills=["chatbot"])
+        with patch.object(a2a_protocol, "a2a_available", return_value=False):
+            self.assertIsNone(self.registry.resolve("chatbot"))
+
+    def test_find_returns_the_agent_not_only_its_url(self):
+        agent = SimpleNamespace(skills=["code"])
+        self.registry._agents["http://remote.test/a2a"] = agent
+        self.assertIs(self.registry.find("code"), agent)
+        self.assertIsNone(self.registry.find("research"))
 
 
 
@@ -166,14 +191,26 @@ class AgentCardTests(unittest.TestCase):
 # ── Remote discovery paths (moved from test_coverage_boost4) ───
 
 class RemoteDiscoveryTests(unittest.TestCase):
-    """Coverage for remote agent discovery."""
+    """Coverage for remote agent discovery on an owned registry instance."""
 
-    def test_discover_no_urls_returns_registry(self) -> None:
-        with patch.object(a2a_protocol, "_remote_registry", {}), patch.object(
-            a2a_protocol, "a2a_remote_agent_urls", return_value=[]
+    def test_discover_no_urls_returns_snapshot(self) -> None:
+        registry = RemoteAgentRegistry()
+        with patch.object(
+            a2a_protocol, "a2a_trusted_endpoints", return_value=frozenset()
         ):
-            result = discover_remote_agents()
+            result = registry.discover()
         self.assertEqual(result, {})
+
+    def test_discover_defaults_to_the_deployment_allowlist(self) -> None:
+        registry = RemoteAgentRegistry()
+        with patch.object(
+            a2a_protocol, "a2a_trusted_endpoints", return_value=frozenset({"https://remote.test"})
+        ), patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.__enter__.return_value.read.return_value = b'{"name":"R","skills":[]}'
+            mock_urlopen.return_value = mock_resp
+            registry.discover()
+        self.assertIn("https://remote.test", mock_urlopen.call_args.args[0].full_url)
 
     def test_discover_success_populates_registry(self) -> None:
         payload = {
@@ -181,76 +218,70 @@ class RemoteDiscoveryTests(unittest.TestCase):
             "url": "https://remote.example.com",
             "skills": [{"id": "supervisor", "name": "Supervisor"}, {"id": "", "name": "ignored"}],
         }
-        with patch.object(a2a_protocol, "_remote_registry", {}), patch(
-            "urllib.request.urlopen"
-        ) as mock_urlopen:
+        registry = RemoteAgentRegistry()
+        with patch("urllib.request.urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.__enter__.return_value.read.return_value = json.dumps(payload).encode("utf-8")
             mock_urlopen.return_value = mock_resp
-            result = discover_remote_agents(["https://remote.example.com"])
+            result = registry.discover(["https://remote.example.com"])
 
         self.assertIn("https://remote.example.com", result)
         self.assertIn("supervisor", result["https://remote.example.com"].skills)
 
     def test_discover_failure_is_swallowed(self) -> None:
-        with patch.object(a2a_protocol, "_remote_registry", {}), patch(
-            "urllib.request.urlopen", side_effect=OSError("unreachable")
-        ):
-            result = discover_remote_agents(["https://remote.example.com"])
+        registry = RemoteAgentRegistry()
+        with patch("urllib.request.urlopen", side_effect=OSError("unreachable")):
+            result = registry.discover(["https://remote.example.com"])
         self.assertEqual(result, {})
 
-    def test_get_remote_registry_returns_copy(self) -> None:
-        with patch.object(a2a_protocol, "_remote_registry", {"u": RemoteAgent(url="u", card={}, skills={})}):
-            snapshot = get_remote_registry()
-        self.assertIn("u", snapshot)
+    def test_snapshot_returns_a_copy(self) -> None:
+        registry = RemoteAgentRegistry()
+        registry._agents["u"] = RemoteAgent(url="u", card={}, skills={})
+        snapshot = registry.snapshot()
+        snapshot.pop("u")
+        self.assertIn("u", registry.snapshot())
 
     def test_discover_uses_well_known_url(self) -> None:
         base = "https://remote.example.com"
-        with patch.object(a2a_protocol, "_remote_registry", {}), patch(
-            "urllib.request.urlopen"
-        ) as mock_urlopen:
+        registry = RemoteAgentRegistry()
+        with patch("urllib.request.urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.__enter__.return_value.read.return_value = b'{"name":"R","skills":[]}'
             mock_urlopen.return_value = mock_resp
-            discover_remote_agents([base])
+            registry.discover([base])
         request = mock_urlopen.call_args.args[0]
         self.assertIn(".well-known/agent.json", request.full_url)
 
     def test_discover_refuses_non_http_urls(self) -> None:
-        with patch.object(a2a_protocol, "_remote_registry", {}), patch(
-            "urllib.request.urlopen"
-        ) as mock_urlopen:
-            result = discover_remote_agents(["ftp://evil.example.com", "not-a-url"])
+        registry = RemoteAgentRegistry()
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            result = registry.discover(["ftp://evil.example.com", "not-a-url"])
         self.assertEqual(result, {})
         mock_urlopen.assert_not_called()
 
     def test_discover_refuses_oversized_cards(self) -> None:
-        import json as _json
-
         payload = {"name": "R", "skills": [], "pad": "x" * 64}
-        body = _json.dumps(payload).encode("utf-8")
-        with patch.object(a2a_protocol, "_remote_registry", {}), patch(
-            "urllib.request.urlopen"
-        ) as mock_urlopen, patch.object(
+        body = json.dumps(payload).encode("utf-8")
+        registry = RemoteAgentRegistry()
+        with patch("urllib.request.urlopen") as mock_urlopen, patch.object(
             a2a_protocol, "_DISCOVERY_MAX_BYTES", 10
         ):
             mock_resp = MagicMock()
             mock_resp.__enter__.return_value.read.return_value = body
             mock_urlopen.return_value = mock_resp
-            result = discover_remote_agents(["https://remote.example.com"])
+            result = registry.discover(["https://remote.example.com"])
         # Refused by the size gate, not parsed: without the gate this valid
         # JSON would populate the registry and the mutant would survive.
         self.assertEqual(result, {})
 
     def test_discover_refuses_invalid_json_and_non_object(self) -> None:
         for body in (b"not-json{", b'["not", "an", "object"]'):
-            with self.subTest(body=body), patch.object(
-                a2a_protocol, "_remote_registry", {}
-            ), patch("urllib.request.urlopen") as mock_urlopen:
+            registry = RemoteAgentRegistry()
+            with self.subTest(body=body), patch("urllib.request.urlopen") as mock_urlopen:
                 mock_resp = MagicMock()
                 mock_resp.__enter__.return_value.read.return_value = body
                 mock_urlopen.return_value = mock_resp
-                result = discover_remote_agents(["https://remote.example.com"])
+                result = registry.discover(["https://remote.example.com"])
             self.assertEqual(result, {})
 
     def test_discover_keeps_base_when_peer_advertises_foreign_host(self) -> None:
@@ -259,30 +290,43 @@ class RemoteDiscoveryTests(unittest.TestCase):
             "url": "https://evil.example.com/a2a",
             "skills": [{"id": "code", "name": "Code"}],
         }
-        with patch.object(a2a_protocol, "_remote_registry", {}), patch(
-            "urllib.request.urlopen"
-        ) as mock_urlopen:
+        registry = RemoteAgentRegistry()
+        with patch("urllib.request.urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.__enter__.return_value.read.return_value = json.dumps(payload).encode("utf-8")
             mock_urlopen.return_value = mock_resp
-            result = discover_remote_agents(["https://remote.example.com"])
+            result = registry.discover(["https://remote.example.com"])
         self.assertEqual(result["https://remote.example.com"].url, "https://remote.example.com")
         self.assertIn("code", result["https://remote.example.com"].skills)
 
-    def test_discover_accepts_advertised_url_under_base(self) -> None:
+    def test_discover_rejects_a_lookalike_host_prefix(self) -> None:
+        payload = {
+            "name": "Remote",
+            "url": "https://remote.example.com.evil/a2a",
+            "skills": [{"id": "code", "name": "Code"}],
+        }
+        registry = RemoteAgentRegistry()
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            mock_resp = MagicMock()
+            mock_resp.__enter__.return_value.read.return_value = json.dumps(payload).encode("utf-8")
+            mock_urlopen.return_value = mock_resp
+            result = registry.discover(["https://remote.example.com"])
+        self.assertEqual(result["https://remote.example.com"].url, "https://remote.example.com")
+        self.assertIn("code", result["https://remote.example.com"].skills)
+
+    def test_discover_keeps_base_even_when_card_advertises_a_subpath(self) -> None:
         payload = {
             "name": "Remote",
             "url": "https://remote.example.com/a2a",
             "skills": [{"id": "code", "name": "Code"}, "not-a-dict"],
         }
-        with patch.object(a2a_protocol, "_remote_registry", {}), patch(
-            "urllib.request.urlopen"
-        ) as mock_urlopen:
+        registry = RemoteAgentRegistry()
+        with patch("urllib.request.urlopen") as mock_urlopen:
             mock_resp = MagicMock()
             mock_resp.__enter__.return_value.read.return_value = json.dumps(payload).encode("utf-8")
             mock_urlopen.return_value = mock_resp
-            result = discover_remote_agents(["https://remote.example.com"])
-        self.assertEqual(result["https://remote.example.com"].url, "https://remote.example.com/a2a")
+            result = registry.discover(["https://remote.example.com"])
+        self.assertEqual(result["https://remote.example.com"].url, "https://remote.example.com")
 
 if __name__ == "__main__":
     unittest.main()

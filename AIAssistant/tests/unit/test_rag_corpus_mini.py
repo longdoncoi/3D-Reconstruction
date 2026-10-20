@@ -16,6 +16,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from ai_assistant.adapters.persistence.storage_crypto import AesGcmFieldCipher
 from ai_assistant.config.paths import AppPaths
 from ai_assistant.config.rag_config import RAGSettings
 from ai_assistant.rag.embeddings import HashingEmbeddingEncoder
@@ -55,6 +56,8 @@ class RagEndToEndTests(unittest.TestCase):
         self.encoder = HashingEmbeddingEncoder(self.settings.embedding_dimension)
         self.registry = DocumentLoaderRegistry.create_default(
             self.settings.chunk_chars, self.settings.overlap_chars)
+        # The cache is sealed with the at-rest cipher (ADR 0028).
+        self.cipher = AesGcmFieldCipher(b"m" * 32)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -63,7 +66,8 @@ class RagEndToEndTests(unittest.TestCase):
         chunks = scan_documents(self.paths, self.registry)
         self.assertGreater(len(chunks), 0, "the corpus must produce chunks")
         return load_or_build_index(
-            chunks, self.encoder, self.paths, self.settings, force_rebuild=True)
+            chunks, self.encoder, self.paths, self.settings, force_rebuild=True,
+            cipher=self.cipher)
 
     def test_scan_build_and_retrieve_returns_context(self) -> None:
         index, chunks, bm25 = self._build()
@@ -104,15 +108,19 @@ class RagEndToEndTests(unittest.TestCase):
     def test_cache_roundtrip_serves_without_rebuilding(self) -> None:
         index, chunks, _bm25 = self._build()
         self.assertTrue(is_cache_valid(self.paths, self.settings), "cache must be persisted")
-        loaded_index, loaded_chunks, loaded_bm25 = load_cache(self.paths, self.settings)
+        loaded_index, loaded_chunks, loaded_bm25 = load_cache(
+            self.paths, self.settings, cipher=self.cipher)
         self.assertIsNotNone(loaded_index)
         self.assertEqual(len(loaded_chunks), len(chunks))
         self.assertIsNotNone(loaded_bm25)
         self.assertEqual(loaded_index.ntotal, index.ntotal)
 
+        # The corpus is on disk in the clear only if the seal was skipped.
+        self.assertNotIn(b"DevManager", self.paths.cache_chunks.read_bytes())
+
         # Second build attempt must hit the cache (no rebuild of the corpus).
         cached_index, cached_chunks, cached_bm25 = load_or_build_index(
-            [], None, self.paths, self.settings)
+            [], None, self.paths, self.settings, cipher=self.cipher)
         self.assertIsNotNone(cached_index)
         self.assertEqual(len(cached_chunks), len(chunks))
         self.assertIsNotNone(cached_bm25)

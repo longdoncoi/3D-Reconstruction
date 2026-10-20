@@ -23,12 +23,14 @@ public:
     void cleanup() override { m_log->append("cleanup:" + m_name); }
     int loadOrder() const override { return order; }
     int apiVersion() const override { return version; }
+    quint64 abiFingerprint() const override { return abi; }
     QStringList dependencies() const override { return deps; }
     QString loadPhase() const override { return phase; }
 
     bool initializeSucceeds = true;
     int order = 100;
     int version = IPlugin::kApiVersion;
+    quint64 abi = IPlugin::kAbiFingerprint;
     QStringList deps;
     QString phase = QStringLiteral("default");
 
@@ -57,6 +59,7 @@ private slots:
     void shutdownCleansUpInReverseInitOrder();
     void missingDirectoryIsReported();
     void apiVersionMismatchIsRejected();
+    void abiFingerprintMismatchIsRejected();
     void loaderFailureIsReported();
 
 private:
@@ -291,6 +294,30 @@ void TestPluginHost::apiVersionMismatchIsRejected()
     QVERIFY(host.isEmpty());
     QCOMPARE(host.errors().size(), 1);
     QVERIFY(host.errors().first().contains(QStringLiteral("API version")));
+    QVERIFY(log.isEmpty());
+}
+
+void TestPluginHost::abiFingerprintMismatchIsRejected()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QDir pluginsDir(dir.filePath("plugins"));
+    QVERIFY(QDir().mkpath(pluginsDir.path()));
+
+    QStringList log;
+    FakePlugin stale("stale-abi", &log);
+    stale.abi = IPlugin::kAbiFingerprint ^ 0x1ULL; // different toolchain/runtime
+    const QMap<QString, FakePlugin *> byFile{{"StaleAbiPlugin.dll", &stale}};
+    QVERIFY(writeFile(pluginsDir.filePath("StaleAbiPlugin.dll")));
+
+    PluginHost host([&byFile](const QString &path, QString *) -> IPlugin * {
+        return byFile.value(QFileInfo(path).fileName());
+    });
+
+    QCOMPARE(host.discover(pluginsDir.path()), 0);
+    QVERIFY(host.isEmpty());
+    QCOMPARE(host.errors().size(), 1);
+    QVERIFY(host.errors().first().contains(QStringLiteral("ABI fingerprint")));
     QVERIFY(log.isEmpty());
 }
 

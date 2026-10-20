@@ -9,13 +9,11 @@
 #include <QProcess>
 #include <QToolButton>
 #include <QGroupBox>
-#include <QFutureWatcher>
-#include <atomic>
 
 #include "IAppContext.h"
 #include "IAIService.h"
 
-class CustomProgressDialog;
+class IProgressDialog;
 #include <QTextBrowser>
 #include <QProgressBar>
 #include <QPushButton>
@@ -23,6 +21,7 @@ class CustomProgressDialog;
 class AITrainDockWidget;
 class AIProcessorRibbonUI;
 class VideoTrackerThread;
+class IAIModelLoadService;
 class QTimer;
 class QMenu;
 
@@ -62,7 +61,8 @@ private:
 
     IAppContext*   m_ctx         = nullptr;
     IAIService*    m_aiSvc       = nullptr;  ///< Looked up from ServiceRegistry
-    CustomProgressDialog *m_progressDialog = nullptr;
+    IAIModelLoadService* m_modelLoader = nullptr; ///< AppCore-owned async loader
+    IProgressDialog *m_progressDialog = nullptr;
     QProcess *m_tensorboardProcess = nullptr;
     QTimer *m_tensorboardWaitTimer = nullptr;
 
@@ -87,11 +87,8 @@ private:
     // Tab buttons
     AIProcessorRibbonUI* m_ribbonUI = nullptr;
 
-    // Async model loading
-    QFutureWatcher<void>* m_modelLoadWatcher = nullptr;
+    // Async model loading is owned by IAIModelLoadService (AppCore).
     bool m_modelsLoading = false;
-    std::atomic<bool> m_cancelModelLoad{false};
-    QMetaObject::Connection m_modelLoadStopConn;
 
     VideoTrackerThread* m_trackerThread = nullptr;
     bool m_trackingPaused = false;

@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import base64
 import os
+from collections.abc import Callable
 from typing import TYPE_CHECKING
+
+from .ports import SEALED_BINARY_PREFIX
 
 if TYPE_CHECKING:
     from PIL import Image
@@ -22,13 +25,36 @@ if TYPE_CHECKING:
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"}
 
 
+def read_sealed_or_plain(path: str, unseal: Callable[[bytes], bytes] | None = None) -> bytes:
+    """Read a file that may be sealed at rest (ADR 0029).
+
+    The chat attachments are sealed with the platform at-rest key, so the
+    AI service has to open them before it can show them to the model. The
+    ``unseal`` callable is **injected**: this module is a kernel leaf and may
+    not import an adapter, so the caller owns the key.
+
+    A file that is not a sealed envelope is returned unchanged, so an
+    attachment written before sealing existed still loads.
+    """
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    if unseal is not None and raw.startswith(SEALED_BINARY_PREFIX):
+        return unseal(raw)
+    return raw
+
+
 def is_image_file(filepath: str) -> bool:
     """Check if a file has a recognized image extension."""
     return os.path.splitext(filepath)[1].lower() in IMAGE_EXTS
 
 
-def image_to_data_uri(filepath: str, max_dim: int = 512) -> str:
-    """Read an image, scale it down, and return a base64 data URI."""
+def image_to_data_uri(filepath: str, max_dim: int = 512, *,
+                      unseal: Callable[[bytes], bytes] | None = None) -> str:
+    """Read an image, scale it down, and return a base64 data URI.
+
+    ``unseal`` opens a file that was sealed at rest (see
+    :func:`read_sealed_or_plain`).
+    """
     import io
 
     ext = os.path.splitext(filepath)[1].lower()
@@ -37,10 +63,11 @@ def image_to_data_uri(filepath: str, max_dim: int = 512) -> str:
         ".bmp": "bmp", ".gif": "gif", ".webp": "webp"
     }
     mime = mime_map.get(ext, "jpeg")
+    raw = read_sealed_or_plain(filepath, unseal)
 
     try:
         from PIL import Image
-        img: "Image.Image" = Image.open(filepath)
+        img: "Image.Image" = Image.open(io.BytesIO(raw))
         w, h = img.size
         if max(w, h) > max_dim:
             ratio = max_dim / max(w, h)
@@ -56,8 +83,7 @@ def image_to_data_uri(filepath: str, max_dim: int = 512) -> str:
     except Exception:
         # PIL is optional: without it (or if decoding fails) fall back to
         # base64-encoding the raw file so callers keep getting a usable URI.
-        with open(filepath, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("utf-8")
+        b64 = base64.b64encode(raw).decode("utf-8")
 
     return f"data:image/{mime};base64,{b64}"
 

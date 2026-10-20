@@ -39,6 +39,8 @@ Pillow>=10.0.0
 # Real (not faked) integration deps — see the note above.
 huggingface_hub>=0.23.0
 mcp>=1.0.0
+# At-rest encryption is exercised with the real AES-GCM provider.
+cryptography>=42.0.0
 coverage>=7.0
 mypy>=1.10.0
 import-linter>=2.0.0

@@ -210,7 +210,9 @@ vtkSmartPointer<vtkImageActor> DicomLoader::createSlice(
     data->GetCenter(center);
 
     // Ma trận reslice chuẩn y khoa (RAS)
-    static const double kAxes[3][16] = {
+    // Unique name across unity-build translation units: CrosshairGeometry.cpp
+    // already owns an anonymous-namespace kAxes (MSVC C4459 fails /WX).
+    static const double kSliceAxes[3][16] = {
         // Sagittal (0): Anterior -> Right (+Y), Superior -> Top (+Z)
         { 0, 0, 1, 0,
           1, 0, 0, 0,
@@ -229,7 +231,7 @@ vtkSmartPointer<vtkImageActor> DicomLoader::createSlice(
     };
 
     vtkNew<vtkMatrix4x4> axes;
-    axes->DeepCopy(kAxes[orientation]);
+    axes->DeepCopy(kSliceAxes[orientation]);
     axes->SetElement(0, 3, center[0]);
     axes->SetElement(1, 3, center[1]);
     axes->SetElement(2, 3, center[2]);

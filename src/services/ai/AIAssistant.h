@@ -2,7 +2,6 @@
 #define AIASSISTANT_H
 
 #include <QObject>
-#include <QProcess>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QList>
@@ -14,6 +13,8 @@
 #include "Global.h"
 #include "IAIAssistantService.h"
 #include "ChatSessionManager.h"
+#include "AIRequestQueue.h"
+#include "AIServerProcessController.h"
 
 class ILanguageService;
 class IUserManager;
@@ -73,9 +74,7 @@ protected:
     void markServerReady();
 
 private slots:
-    void onProcessReadyRead();
-    void onProcessError();
-    void onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus);
+    void onServerFinished(int exitCode, bool crashed);
     void onReplyFinished(QNetworkReply* reply);
 
 private:
@@ -84,22 +83,13 @@ private:
     IAppPaths* m_paths = nullptr;        ///< injected by AppShell (composition root)
     QString m_pythonInterpreter;         ///< injected by AppShell (config, default "python")
     int m_serverPort = 8080;             ///< injected by AppShell (config, default 8080)
-    struct QueuedCompletionRequest {
-        QString sessionId;
-        QJsonObject payload;
-        int retryCount = 0;
-        bool isAgent = false;
-        bool isApproval = false;
-        bool isUiActionAck = false;
-        int insertAfterIndex = -1;
-    };
+    using QueuedCompletionRequest = AICompletionRequest;
 
-    QProcess *aiServerProcess;
+    AIServerProcessController m_server;
     /// Injected transport (test seam) or owned by this object when null.
     QNetworkAccessManager *networkManager;
     ChatSessionManager m_sessions; ///< session collection + current pointer
-    QMap<QNetworkReply*, QueuedCompletionRequest> m_pendingRequests;
-    QList<QueuedCompletionRequest> m_queuedRequests;
+    AIRequestQueue m_requests;     ///< queued work + in-flight replies
     // Maps requestId → {sessionId, insertAfterIndex} so that the
     // ui-action ACK response is inserted at the correct position
     // instead of being appended to the end of the conversation.
@@ -118,7 +108,6 @@ private:
                                   const QStringList &attachments) const;
     bool isRecoverableConnectionError(QNetworkReply::NetworkError error) const;
     void appendAssistantMessage(const QString &sessionId, const QString &content, int insertAfterIndex = -1);
-    void startServerProcess(int modelIndex);
     /// Clears all in-flight request state (queued requests, pending replies,
     /// pending UI-action sessions) and resets thinking/recovery flags.
     /// Called whenever the backend generation is torn down (stop/restart).

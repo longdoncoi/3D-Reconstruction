@@ -67,10 +67,10 @@ static QPixmap createAvatarPixmap(const QString &username, const QString &avatar
 // ─── Initialize ───────────────────────────────────────────────────────────────
 bool UserAuthPlugin::initialize(IAppContext* context) {
     m_context = context;
-    s_lang = context->services()->get<ILanguageService>();
-    s_users = context->services()->get<IUserManager>();
+    s_lang = context->services()->getRequired<ILanguageService>();
+    s_users = context->services()->getRequired<IUserManager>();
 
-    auto* paths = context->services()->get<IAppPaths>();
+    auto* paths = context->services()->getRequired<IAppPaths>();
     QString configDir = QFileInfo(paths ? paths->configPath() : QString()).absolutePath();
     QDir().mkpath(configDir);
     QString configPath = configDir + "/Config_User.ini";
@@ -397,7 +397,7 @@ void UserAuthPlugin::onOpenSettings() {
 }
 
 void UserAuthPlugin::onChangeAvatar() {
-    AvatarCropperDialog dlg(m_currentUser, m_context->services()->get<IAppPaths>(),
+    AvatarCropperDialog dlg(m_currentUser, m_context->services()->getRequired<IAppPaths>(),
                             m_context->shell()->dialogParent());
     if (dlg.exec() == QDialog::Accepted) {
         setupMenus();

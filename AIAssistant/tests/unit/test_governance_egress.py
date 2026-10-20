@@ -48,12 +48,28 @@ class SensitivePayloadTests(unittest.TestCase):
         """It carries the approval action id: leaking it would forge a grant."""
         self.assertTrue(has_sensitive_keys({"continuation": "internal-context"}))
 
-    def test_session_correlation_ids_count_as_sensitive(self) -> None:
-        """Task events must not let a log reader join sessions."""
+    def test_session_correlation_ids_are_redacted_but_not_egress_secrets(self) -> None:
+        """Task events must not let a log reader join sessions, but a remote
+        delegation still needs the correlation ids for routing/deduplication."""
         for key in ("session_id", "request_id", "idempotency_key", "context_id"):
             with self.subTest(key=key):
-                self.assertTrue(has_sensitive_keys({key: "abc"}))
+                self.assertFalse(has_sensitive_keys({key: "abc"}))
                 self.assertEqual(redact_value({key: "abc"})[key], "[redacted]")
+
+    def test_the_real_remote_delegation_payload_is_allowed(self) -> None:
+        """Regression for the shape ``agents/graph_wiring`` actually sends.
+
+        The egress classifier used to reject ``session_id``/``idempotency_key``,
+        so every remote A2A delegation was classified RESTRICTED and refused by
+        the client before it left the process.
+        """
+        payload = {
+            "tool": "read_file",
+            "parameters": {"path": "notes.txt"},
+            "session_id": "s1",
+            "idempotency_key": "k1",
+        }
+        self.assertFalse(has_sensitive_keys(payload))
 
 
 class ValueScrubTests(unittest.TestCase):

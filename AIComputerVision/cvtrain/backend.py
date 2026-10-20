@@ -20,15 +20,24 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from importlib import metadata
 from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
 
+from . import __version__
 from .config import ModelSpec, TrainConfig
 from .errors import BackendUnavailableError
 
 LOG = logging.getLogger("cvtrain.backend")
 
-__all__ = ["EpochCallback", "TrainedModel", "TrainingBackend", "UltralyticsBackend", "train_kwargs"]
+__all__ = [
+    "EpochCallback",
+    "TrainedModel",
+    "TrainingBackend",
+    "UltralyticsBackend",
+    "exporter_identity",
+    "train_kwargs",
+]
 
 EpochCallback = Callable[[int, int], None]
 """``(epoch_index, epoch_total)`` — 0-based index, 1-based total."""
@@ -56,6 +65,40 @@ class TrainedModel(Generic[H]):
     """Directory holding this run's logs/weights — recorded as provenance."""
 
 
+def _package_version(name: str) -> str:
+    """Installed distribution version, or ``"unknown"`` when it is absent."""
+
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def exporter_identity(ultralytics_version: str) -> str:
+    """Canonical identity of the stack that produced an export.
+
+    ``ultralytics.__version__`` alone is not enough: the same Ultralytics build
+    delegates ONNX export to ``torch`` and the ``onnx`` package, and either can
+    change the graph it emits. Recording all four versions means a
+    ``--skip-unchanged`` verdict is invalidated when any export-relevant
+    dependency moves, which is the direction a false "unchanged" costs hours.
+
+    The format is a stable, greppable ``name=version;...`` string. ``unknown``
+    is deliberate rather than an omission: a missing piece of the stack is
+    still a fact, and comparing two unknowns does not prove anything by itself
+    — the rest of the entry has to match as well.
+    """
+
+    return ";".join(
+        (
+            f"cvtrain={__version__}",
+            f"ultralytics={ultralytics_version}",
+            f"torch={_package_version('torch')}",
+            f"onnx={_package_version('onnx')}",
+        )
+    )
+
+
 @runtime_checkable
 class TrainingBackend(Protocol[H]):
     """What the orchestrator needs from an ML framework.
@@ -67,7 +110,12 @@ class TrainingBackend(Protocol[H]):
     """
 
     version: str
-    """Framework version, recorded in the manifest as provenance."""
+    """Composite exporter identity, recorded in the manifest as provenance.
+
+    It names every export-relevant dependency (see :func:`exporter_identity`),
+    not just the high-level framework: a backend upgrade and a ``torch``/``onnx``
+    upgrade can both change the graph a re-run would build.
+    """
 
     def required_modules(self, cfg: TrainConfig) -> tuple[str, ...]:
         """Importable modules this backend needs *for this run* — handed to preflight.
@@ -183,7 +231,7 @@ class UltralyticsBackend:
             ) from exc
         self._yolo = YOLO
         self._settings = SETTINGS
-        self.version = str(ultralytics.__version__)
+        self.version = exporter_identity(str(ultralytics.__version__))
 
     def prepare(self, cfg: TrainConfig) -> None:
         self._ensure_loaded()

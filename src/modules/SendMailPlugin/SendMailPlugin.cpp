@@ -78,4 +78,13 @@ bool SendMailPlugin::initialize(IAppContext *context)
 
 void SendMailPlugin::cleanup()
 {
+    // Destroy MainWindow-parented dock widgets before the plugin DLL unloads.
+    if (m_dockUI) {
+        if (m_ctx && m_ctx->shell())
+            m_ctx->shell()->deleteDockWidget(m_dockUI->dockWidget());
+        delete m_dockUI;
+        m_dockUI = nullptr;
+    }
+    delete m_ribbonUI;
+    m_ribbonUI = nullptr;
 }

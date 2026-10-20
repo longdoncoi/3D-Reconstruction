@@ -15,6 +15,8 @@ from ai_assistant.settings import (
     agent_inference_url,
 )
 
+_MAX_RESPONSE_BYTES = 1_048_576  # 1 MiB, same bound as the A2A client
+
 
 def strip_think_tags(text: str) -> str:
     """Remove ``<think>…</think>`` blocks emitted by reasoning-mode models."""
@@ -70,7 +72,11 @@ def openai_compatible_completion(messages: list[dict[str, Any]], **params: Any) 
         method="POST",
     )
     with urlopen(request, timeout=timeout) as response:
-        payload: dict[str, Any] = json.loads(response.read())
+        body = response.read(_MAX_RESPONSE_BYTES + 1)
+        if len(body) > _MAX_RESPONSE_BYTES:
+            msg = f"Remote inference response exceeds {_MAX_RESPONSE_BYTES} bytes"
+            raise RuntimeError(msg)
+        payload: dict[str, Any] = json.loads(body)
         return payload
 
 

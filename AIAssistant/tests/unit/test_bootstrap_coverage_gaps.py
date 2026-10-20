@@ -47,6 +47,68 @@ class BootstrapServerCoverageGaps(unittest.TestCase):
         self.assertIs(module.llm, backend)
         self.assertEqual(module.active_model_desc, "adopted")
 
+    def test_model_reload_waits_for_an_active_lease(self) -> None:
+        import threading
+
+        from ai_assistant.bootstrap.modules import LlmModule
+
+        module = LlmModule(registry=MagicMock(), paths=MagicMock(), model_idx=0,
+                           use_vision_llm=False)
+        lease_entered = threading.Event()
+        release_lease = threading.Event()
+        reload_done = threading.Event()
+
+        def hold_lease() -> None:
+            with module.model_lease():
+                lease_entered.set()
+                release_lease.wait(5)
+
+        def swap_model() -> None:
+            with module.model_reload():
+                reload_done.set()
+
+        holder = threading.Thread(target=hold_lease)
+        holder.start()
+        self.assertTrue(lease_entered.wait(2))
+        swapper = threading.Thread(target=swap_model)
+        swapper.start()
+        self.assertFalse(reload_done.wait(0.1), "reload started before the lease ended")
+        release_lease.set()
+        holder.join(2)
+        self.assertTrue(reload_done.wait(2))
+        swapper.join(2)
+
+    def test_a_new_lease_waits_for_an_active_reload(self) -> None:
+        import threading
+
+        from ai_assistant.bootstrap.modules import LlmModule
+
+        module = LlmModule(registry=MagicMock(), paths=MagicMock(), model_idx=0,
+                           use_vision_llm=False)
+        reload_entered = threading.Event()
+        release_reload = threading.Event()
+        lease_entered = threading.Event()
+
+        def hold_reload() -> None:
+            with module.model_reload():
+                reload_entered.set()
+                release_reload.wait(5)
+
+        def take_lease() -> None:
+            with module.model_lease():
+                lease_entered.set()
+
+        swapper = threading.Thread(target=hold_reload)
+        swapper.start()
+        self.assertTrue(reload_entered.wait(2))
+        leaser = threading.Thread(target=take_lease)
+        leaser.start()
+        self.assertFalse(lease_entered.wait(0.1), "a lease entered during a reload")
+        release_reload.set()
+        swapper.join(2)
+        self.assertTrue(lease_entered.wait(2))
+        leaser.join(2)
+
     def test_llm_load_reload_and_estimate(self) -> None:
         """Cover LlmModule load/reload/estimate paths."""
         from ai_assistant.bootstrap.modules import LlmModule
@@ -72,9 +134,10 @@ class BootstrapServerCoverageGaps(unittest.TestCase):
         """Cover RagModule retrieval branches (initialize_rag / get_context)."""
         import os
 
+        from ai_assistant.adapters.persistence.storage_crypto import AesGcmFieldCipher
         from ai_assistant.bootstrap.modules import RagModule
 
-        rag = RagModule()
+        rag = RagModule(cipher=AesGcmFieldCipher(b"g" * 32))
         self.assertTrue(hasattr(rag.initialize_rag, "__call__"))
         self.assertTrue(hasattr(rag.get_context, "__call__"))
         self.assertTrue(hasattr(rag.release_embedding_for_vision, "__call__"))

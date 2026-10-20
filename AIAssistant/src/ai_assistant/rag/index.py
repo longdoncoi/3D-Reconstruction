@@ -14,8 +14,16 @@ from ai_assistant.config.paths import AppPaths
 from ai_assistant.config.rag_config import RAGSettings
 from ai_assistant.image_utils import load_image_for_embedding
 from ai_assistant.llm.hardware import release_ml_memory
+from ai_assistant.ports import FieldCipher, StorageCryptoError
 
-from .cache_integrity import recorded_digest, seal_payload, signing_key, verify_cache
+from .cache_seal import (
+    BM25_CONTEXT,
+    CHUNKS_CONTEXT,
+    INDEX_CONTEXT,
+    is_sealed_metadata,
+    read_metadata,
+    seal_metadata,
+)
 from .domain import ChunkResult
 from .nlp_utils import tokenize_vn
 
@@ -71,14 +79,14 @@ def is_cache_valid(paths: AppPaths, settings: RAGSettings) -> bool:
     if not all(p.exists() for p in required):
         logger.debug("Cache miss: files missing")
         return False
-        
+
     try:
-        with paths.cache_metadata.open("r", encoding="utf-8") as f:
-            meta = json.load(f)
+        meta = read_metadata(paths.cache_metadata)
         current_hash = get_file_system_hash(paths, settings)
         valid: bool = (meta.get("fs_hash") == current_hash
-                       and meta.get("embedding_dimension") == settings.embedding_dimension)
-                 
+                       and meta.get("embedding_dimension") == settings.embedding_dimension
+                       and is_sealed_metadata(meta))
+
         if not valid:
             logger.info("Cache stale (built_at=%s)", meta.get("built_at", "?"))
         else:
@@ -91,21 +99,43 @@ def is_cache_valid(paths: AppPaths, settings: RAGSettings) -> bool:
         return valid
 
 
-def save_cache(index: Any, chunks: list[ChunkResult], bm25: Any, paths: AppPaths, settings: RAGSettings, model_idx: int = 0) -> None:
+def _serialize_index(faiss_module: Any, index: Any) -> bytes:
+    """The index as bytes, so it can be sealed before it reaches the disk.
+
+    ``faiss.write_index`` would put the vectors on disk in the clear first;
+    serializing in memory keeps the plaintext index out of the file system
+    entirely.
+    """
+    return bytes(faiss_module.serialize_index(index))
+
+
+def _deserialize_index(faiss_module: Any, payload: bytes) -> Any:
+    """Rebuild the index from sealed bytes."""
+    import numpy as np
+
+    return faiss_module.deserialize_index(np.frombuffer(payload, dtype="uint8"))
+
+
+def save_cache(index: Any, chunks: list[ChunkResult], bm25: Any, paths: AppPaths,
+               settings: RAGSettings, model_idx: int = 0, *,
+               cipher: FieldCipher) -> None:
     import faiss as _faiss
     t = time.monotonic()
-    
+
     # The cache directory may not exist yet (first run on a fresh data dir, or
     # a hand-built AppPaths in tests) — create it before writing.
     paths.cache_index.parent.mkdir(parents=True, exist_ok=True)
-    _faiss.write_index(index, str(paths.cache_index))
-    
-    with paths.cache_chunks.open("wb") as f:
-        pickle.dump(chunks, f, protocol=pickle.HIGHEST_PROTOCOL)
-        
-    with paths.cache_bm25.open("wb") as f:
-        pickle.dump(bm25, f, protocol=pickle.HIGHEST_PROTOCOL)
-        
+    # Every artifact is sealed before it is written (ADR 0028): the chunk
+    # corpus and the BM25 model hold the user's document text, so a copy of
+    # the data volume must not hand over a readable copy of it.
+    artifacts = (
+        (paths.cache_index, _serialize_index(_faiss, index), INDEX_CONTEXT),
+        (paths.cache_chunks, pickle.dumps(chunks, protocol=pickle.HIGHEST_PROTOCOL), CHUNKS_CONTEXT),
+        (paths.cache_bm25, pickle.dumps(bm25, protocol=pickle.HIGHEST_PROTOCOL), BM25_CONTEXT),
+    )
+    for path, payload, context in artifacts:
+        path.write_bytes(cipher.seal_bytes(payload, context=context))
+
     meta = {
         "fs_hash": get_file_system_hash(paths, settings),
         "chunk_count": len(chunks),
@@ -115,45 +145,53 @@ def save_cache(index: Any, chunks: list[ChunkResult], bm25: Any, paths: AppPaths
         "embedding_dimension": settings.embedding_dimension,
         "chunk_chars": settings.chunk_chars,
         "cache_version": settings.cache_version,
+        # Records that the artifacts on disk are sealed; a cache without this
+        # block is a miss (see ``is_sealed_metadata``).
+        "sealed": seal_metadata(),
     }
-    # Seal the three artifacts just written: ``load_cache`` refuses to unpickle
-    # a cache whose digest does not match (see rag/cache_integrity.py).
-    key = signing_key(paths)
-    if key is not None:
-        meta["integrity"] = seal_payload(key, paths)
-    else:
-        logger.warning("RAG cache written unsigned — no key could be minted")
-    
     with paths.cache_metadata.open("w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
-        
+
     total_mb = sum(p.stat().st_size for p in [paths.cache_index, paths.cache_chunks, paths.cache_bm25]) / 1024**2
     logger.info("Cache saved: %.1fs | %.1fMB | %d chunks", time.monotonic()-t, total_mb, len(chunks))
 
 
-def load_cache(paths: AppPaths, settings: RAGSettings) -> tuple[Any, list[ChunkResult], Any]:
+def load_cache(paths: AppPaths, settings: RAGSettings, *,
+               cipher: FieldCipher) -> tuple[Any, list[ChunkResult], Any]:
     import faiss as _faiss
     t = time.monotonic()
 
     def _read() -> tuple[Any, list[ChunkResult], Any]:
-        if not verify_cache(signing_key(paths), paths, recorded_digest(paths)):
-            # Tampered, truncated or written before sealing existed. Refuse
-            # *before* unpickling anything and let the caller rebuild; a cache
-            # is data, never code.
-            logger.warning("RAG cache integrity check failed — refusing to unpickle %s",
+        meta = read_metadata(paths.cache_metadata)
+        if not is_sealed_metadata(meta):
+            # Written before sealing existed, or by another version: the
+            # artifacts cannot be trusted, so the cache is a miss and the
+            # caller rebuilds it (the corpus is derived, so this is cheap).
+            logger.warning("RAG cache is not sealed — refusing to load %s",
                            paths.cache_chunks)
             return None, [], None
+        try:
+            index_payload = cipher.open_bytes(
+                paths.cache_index.read_bytes(), context=INDEX_CONTEXT)
+            chunks_payload = cipher.open_bytes(
+                paths.cache_chunks.read_bytes(), context=CHUNKS_CONTEXT)
+            bm25_payload = cipher.open_bytes(
+                paths.cache_bm25.read_bytes(), context=BM25_CONTEXT)
+        except (OSError, StorageCryptoError) as error:
+            # Unreadable or not authentic (wrong key, tampered, planted): a
+            # miss — never an unpickled payload.
+            logger.warning("RAG cache could not be opened: %s", error)
+            return None, [], None
 
-        index = _faiss.read_index(str(paths.cache_index))
+        index = _deserialize_index(_faiss, index_payload)
         if index.d != settings.embedding_dimension:
             msg = f"FAISS dimension {index.d} does not match {settings.embedding_dimension}"
             raise ValueError(msg)
 
-        with paths.cache_chunks.open("rb") as f:
-            chunks = pickle.load(f)  # noqa: S301
-
-        with paths.cache_bm25.open("rb") as f:
-            bm25 = pickle.load(f)  # noqa: S301
+        # The bytes were authenticated by the AEAD above: a payload that does
+        # not verify is never unpickled, so this cannot run planted code.
+        chunks = pickle.loads(chunks_payload)  # noqa: S301
+        bm25 = pickle.loads(bm25_payload)  # noqa: S301
 
         logger.info("Cache loaded: %.1fs | chunks=%d", time.monotonic()-t, len(chunks))
         logger.debug(f"       chunks={len(chunks)}  (from Cache/)")
@@ -314,18 +352,18 @@ def build_index_from_scratch(chunks: list[ChunkResult], embed_model: Any, settin
     return index, chunks, bm25
 
 
-def load_or_build_index(chunks: list[ChunkResult], embed_model: Any, paths: AppPaths, settings: RAGSettings, force_rebuild: bool = False, model_idx: int = 0) -> tuple[Any, list[ChunkResult], Any]:
+def load_or_build_index(chunks: list[ChunkResult], embed_model: Any, paths: AppPaths, settings: RAGSettings, force_rebuild: bool = False, model_idx: int = 0, *, cipher: FieldCipher) -> tuple[Any, list[ChunkResult], Any]:
     if not force_rebuild and is_cache_valid(paths, settings):
         logger.debug("       [CACHE HIT]")
-        index, chunks_loaded, bm25 = load_cache(paths, settings)
+        index, chunks_loaded, bm25 = load_cache(paths, settings, cipher=cipher)
         if index is not None:
             return index, chunks_loaded, bm25
         logger.debug(" load failed, rebuilding...")
     logger.debug("       [CACHE MISS] Building index...")
     logger.info("Cache miss — rebuilding")
-    
+
     index, chunks_loaded, bm25 = build_index_from_scratch(chunks, embed_model, settings)
-    save_cache(index, chunks_loaded, bm25, paths, settings, model_idx)
+    save_cache(index, chunks_loaded, bm25, paths, settings, model_idx, cipher=cipher)
     return index, chunks_loaded, bm25
 
 

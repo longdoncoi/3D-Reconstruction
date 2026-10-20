@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import unicodedata
+from collections.abc import Callable
 from typing import Any
 
 logger = logging.getLogger("ai_assistant.llm.prompts")
@@ -62,8 +63,12 @@ def _normalize_for_intent(text: str) -> str:
 
 
 class DefaultPromptBuilder:
-    def __init__(self, chars_per_token: float = 2.2):
+    def __init__(self, chars_per_token: float = 2.2, *,
+                 unseal: Callable[[bytes], bytes] | None = None):
         self.chars_per_token = chars_per_token
+        # Chat attachments are sealed at rest (ADR 0029); the unseal callable
+        # is injected because this layer may not import a persistence adapter.
+        self._unseal = unseal
 
     def is_character_query(self, query: str) -> bool:
         normalized = _normalize_for_intent(query)
@@ -176,7 +181,7 @@ class DefaultPromptBuilder:
         for att in attachments:
             if os.path.isfile(att) and is_image_file(att):
                 try:
-                    data_uri = image_to_data_uri(att)
+                    data_uri = image_to_data_uri(att, unseal=self._unseal)
                     content_parts.append({"type": "image_url", "image_url": {"url": data_uri}})
                     has_images = True
                 except Exception:

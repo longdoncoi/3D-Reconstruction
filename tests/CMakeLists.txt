@@ -1,6 +1,12 @@
 find_package(Qt6 REQUIRED COMPONENTS Test Core)
 set(CMAKE_AUTOMOC ON)
 
+# PCL is looked up first: its config resolves the VTK installation the
+# project was built against and therefore fills VTK_INCLUDE_DIRS for the
+# targets below (VTK_INCLUDE_DIRS stays empty otherwise).
+find_package(PCL REQUIRED COMPONENTS common filters io)
+find_package(OpenCV REQUIRED COMPONENTS core)
+
 # Architecture guard — plugin boundaries + UserManager singleton usage.
 # Encodes the invariants documented in AGENTS.md; runs in milliseconds.
 add_test(NAME TestArchitectureBoundaries
@@ -31,9 +37,23 @@ qt_add_executable(TestPluginHost TestPluginHost.cpp)
 target_link_libraries(TestPluginHost PRIVATE Qt6::Test Qt6::Core AppCore)
 add_test(NAME TestPluginHost COMMAND TestPluginHost)
 
+# Test AIModelLoadService — AppCore-owned worker lifetime/cancellation contract.
+qt_add_executable(TestAIModelLoadService TestAIModelLoadService.cpp)
+target_include_directories(TestAIModelLoadService PRIVATE
+    ../src/core
+    ../src/services/ai
+    ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(TestAIModelLoadService PRIVATE
+    Qt6::Test Qt6::Core ${OpenCV_LIBS} AppCore)
+add_test(NAME TestAIModelLoadService COMMAND TestAIModelLoadService)
+
 # Smoke test on real plugin DLLs — must run after the plugin targets exist.
 qt_add_executable(TestPluginSmoke TestPluginSmoke.cpp)
-target_link_libraries(TestPluginSmoke PRIVATE Qt6::Test Qt6::Core Qt6::Widgets AppCore)
+# The stub context mirrors ISceneService, whose interface speaks VTK types.
+# VTK_INCLUDE_DIRS is only filled in by find_package(PCL) further down, so the
+# imported targets are used here instead of the raw variable.
+target_include_directories(TestPluginSmoke PRIVATE ../src ../tests/core ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(TestPluginSmoke PRIVATE Qt6::Test Qt6::Core Qt6::Widgets ${OpenCV_LIBS} AppCore VTK::CommonCore VTK::GUISupportQt)
 target_compile_definitions(TestPluginSmoke PRIVATE
     PLUGIN_SMOKE_DIR="$<TARGET_FILE_DIR:ViewerPlugin>")
 add_dependencies(TestPluginSmoke
@@ -67,6 +87,8 @@ qt_add_executable(TestMailMimeParser
 target_include_directories(TestMailMimeParser PRIVATE ../src/core ../src/services/mail)
 target_link_libraries(TestMailMimeParser PRIVATE Qt6::Test Qt6::Core)
 add_test(NAME TestMailMimeParser COMMAND TestMailMimeParser)
+# Subject is a source file → keep it out of the unity TU (see TestCrosshairGeometry).
+set_target_properties(TestMailMimeParser PROPERTIES UNITY_BUILD OFF)
 
 # Test Camera Params Parser
 find_package(OpenCV REQUIRED COMPONENTS core)
@@ -77,9 +99,10 @@ qt_add_executable(TestCameraParamsParser
 target_include_directories(TestCameraParamsParser PRIVATE ../src/services/reconstruction)
 target_link_libraries(TestCameraParamsParser PRIVATE Qt6::Test Qt6::Core ${OpenCV_LIBS})
 add_test(NAME TestCameraParamsParser COMMAND TestCameraParamsParser)
+# Subject is a source file → keep it out of the unity TU (see TestCrosshairGeometry).
+set_target_properties(TestCameraParamsParser PROPERTIES UNITY_BUILD OFF)
 
 # Test PointCloudFilter
-find_package(PCL REQUIRED COMPONENTS common filters io)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc features2d calib3d)
 
 qt_add_executable(TestPointCloudFilter TestPointCloudFilter.cpp ../src/services/reconstruction/PointCloudFilter.cpp)
@@ -94,6 +117,8 @@ target_link_libraries(TestPointCloudFilter PRIVATE
     ${OpenCV_LIBS}
 )
 add_test(NAME TestPointCloudFilter COMMAND TestPointCloudFilter)
+# Subject is a source file → keep it out of the unity TU (see TestCrosshairGeometry).
+set_target_properties(TestPointCloudFilter PROPERTIES UNITY_BUILD OFF)
 
 # Source dùng chung cho các test integration của reconstruction pipeline.
 set(RECON_PIPELINE_SOURCES
@@ -214,12 +239,25 @@ target_include_directories(TestChatSessionManager PRIVATE ../src/services/ai)
 target_link_libraries(TestChatSessionManager PRIVATE Qt6::Test Qt6::Core AppCore)
 add_test(NAME TestChatSessionManager COMMAND TestChatSessionManager)
 
+# Test AtRestCipher — the AES-256-GCM envelope shared with the Python service:
+# byte layout, associated data, key resolution and the fail-closed policy.
+qt_add_executable(TestAtRestCipher TestAtRestCipher.cpp)
+target_include_directories(TestAtRestCipher PRIVATE ../src/core)
+target_link_libraries(TestAtRestCipher PRIVATE Qt6::Test Qt6::Core AppCore)
+add_test(NAME TestAtRestCipher COMMAND TestAtRestCipher)
+
 # Test AIAssistant — request state machine + injected transport (no sockets,
 # no Python child process; the ready transition is driven via the protected seam).
 qt_add_executable(TestAIAssistant TestAIAssistant.cpp)
 target_include_directories(TestAIAssistant PRIVATE ../src/services/ai)
 target_link_libraries(TestAIAssistant PRIVATE Qt6::Test Qt6::Core Qt6::Network AppCore)
 add_test(NAME TestAIAssistant COMMAND TestAIAssistant)
+
+# Test AIRequestQueue — pending/queued bookkeeping without HTTP or a process.
+qt_add_executable(TestAIRequestQueue TestAIRequestQueue.cpp)
+target_include_directories(TestAIRequestQueue PRIVATE ../src/services/ai)
+target_link_libraries(TestAIRequestQueue PRIVATE Qt6::Test Qt6::Core Qt6::Network AppCore)
+add_test(NAME TestAIRequestQueue COMMAND TestAIRequestQueue)
 
 # Test AI Yolo PostProcessor
 qt_add_executable(TestAIYoloPostProcessor
@@ -231,6 +269,8 @@ target_include_directories(TestAIYoloPostProcessor PRIVATE
 )
 target_link_libraries(TestAIYoloPostProcessor PRIVATE Qt6::Test Qt6::Core ${OpenCV_LIBS})
 add_test(NAME TestAIYoloPostProcessor COMMAND TestAIYoloPostProcessor)
+# Subject is a source file → keep it out of the unity TU (see TestCrosshairGeometry).
+set_target_properties(TestAIYoloPostProcessor PROPERTIES UNITY_BUILD OFF)
 
 # Test UserManager crypto (PBKDF2 password hashing + SecretVault)
 qt_add_executable(TestUserManagerCrypto TestUserManagerCrypto.cpp)
@@ -274,6 +314,107 @@ target_include_directories(TestCrosshairGeometry PRIVATE
 )
 target_link_libraries(TestCrosshairGeometry PRIVATE Qt6::Test Qt6::Core)
 add_test(NAME TestCrosshairGeometry COMMAND TestCrosshairGeometry)
+
+# ── Unity build must stay off for targets whose *subject* is a source file ──
+# The coverage gate maps executed lines through the PDB.  When the subject is
+# compiled into the same unity translation unit as the test, MSVC inlines it
+# away, no code is emitted for it, the PDB does not mention the file and the
+# exporter reports an empty class — the file silently measures 0 %.  (This is
+# exactly what happened to CrosshairGeometry.cpp.)  A separate translation
+# unit keeps the subject measurable.
+set_target_properties(TestCrosshairGeometry PROPERTIES UNITY_BUILD OFF)
+
+# Test PluginHelpers — the plugin helpers that carry real logic: the mail
+# preview renderer, the inbox row factory, the attachment preview factory and
+# the prediction logger.  They are compiled into the test (the plugins do not
+# export them) and kept out of the unity build so the exporter can map them.
+qt_add_executable(TestPluginHelpers
+    TestPluginHelpers.cpp
+    ../src/modules/SendMailPlugin/MailMessageFormatter.cpp
+    ../src/modules/SendMailPlugin/MailInboxItemFactory.cpp
+    ../src/modules/AIAssistantPlugin/AIAttachmentPreviewFactory.cpp
+    ../src/modules/AIProcessorPlugin/AIPredictionLogger.cpp
+)
+target_include_directories(TestPluginHelpers PRIVATE
+    ../src/core
+    ../src/utils
+    ../src/modules/SendMailPlugin
+    ../src/modules/AIAssistantPlugin
+    ../src/modules/AIProcessorPlugin
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(TestPluginHelpers PRIVATE
+    Qt6::Test Qt6::Core Qt6::Widgets
+    ${OpenCV_LIBS}
+    AppCore
+)
+add_test(NAME TestPluginHelpers COMMAND TestPluginHelpers)
+# QTEST_MAIN → QApplication; CI không có desktop → offscreen platform plugin.
+set_tests_properties(TestPluginHelpers PROPERTIES
+    ENVIRONMENT_MODIFICATION "QT_QPA_PLATFORM=set:offscreen")
+# Subject is a source file → keep it out of the unity TU (see TestCrosshairGeometry).
+set_target_properties(TestPluginHelpers PROPERTIES UNITY_BUILD OFF)
+
+# Test UtilsLayer — the shared utility layer (src/utils/**) that every plugin
+# links against: file/thumbnail handling, markdown rendering, icon factory,
+# theming, logging, dialogs and the ribbon scaffolding.  These helpers were
+# the least measured part of src/; this target pins their contract.
+qt_add_executable(TestUtilsLayer TestUtilsLayer.cpp)
+target_link_libraries(TestUtilsLayer PRIVATE Qt6::Test Qt6::Core Qt6::Widgets AppCore)
+add_test(NAME TestUtilsLayer COMMAND TestUtilsLayer)
+# QTEST_MAIN → QApplication; CI không có desktop → offscreen platform plugin.
+set_tests_properties(TestUtilsLayer PROPERTIES
+    ENVIRONMENT_MODIFICATION "QT_QPA_PLATFORM=set:offscreen")
+
+# Test CrosshairManager — the MPR crosshair overlay: three views, the
+# reslice pipeline, the hit-tested anchor and the drag state machine.
+# CrosshairManager is not exported by AppCore, so the translation unit is
+# compiled into the test (and kept out of the unity build so the exporter
+# can map it).
+qt_add_executable(TestCrosshairManager
+    TestCrosshairManager.cpp
+    ../src/services/scene/CrosshairManager.cpp
+    ../src/services/scene/CrosshairGeometry.cpp
+)
+target_include_directories(TestCrosshairManager PRIVATE
+    ../src/services/scene
+    ${VTK_INCLUDE_DIRS}
+)
+target_link_libraries(TestCrosshairManager PRIVATE
+    Qt6::Test Qt6::Core
+    ${VTK_LIBRARIES}
+)
+add_test(NAME TestCrosshairManager COMMAND TestCrosshairManager)
+set_target_properties(TestCrosshairManager PROPERTIES UNITY_BUILD OFF)
+
+# Test ViewerLoaders — the file → VTK actor loaders of the 2-D/3-D viewer.
+# Both classes are exported by AppCore; the test only needs their headers.
+qt_add_executable(TestViewerLoaders TestViewerLoaders.cpp)
+target_include_directories(TestViewerLoaders PRIVATE
+    ../src/services/viewer
+    ${OpenCV_INCLUDE_DIRS}
+    ${VTK_INCLUDE_DIRS}
+)
+target_link_libraries(TestViewerLoaders PRIVATE
+    Qt6::Test Qt6::Core
+    ${OpenCV_LIBS}
+    ${VTK_LIBRARIES}
+    AppCore
+)
+add_test(NAME TestViewerLoaders COMMAND TestViewerLoaders)
+
+# ── UTF-8 source literals in the tests ───────────────────────────────────────
+# The test sources contain Vietnamese literals (mail previews, user-facing
+# strings).  Without /utf-8 MSVC decodes them with the system code page, so
+# the expected strings end up mangled and the assertions compare garbage.
+# The application targets already compile with /utf-8 (root CMakeLists.txt);
+# the tests did not.
+if(MSVC)
+    get_property(_test_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(_test_target IN LISTS _test_targets)
+        target_compile_options(${_test_target} PRIVATE /utf-8)
+    endforeach()
+endif()
 
 # ── Test reporting on Windows ────────────────────────────────────────────────
 # QtTest writes its report to stderr; Qt on Windows silently drops stderr when

@@ -52,7 +52,7 @@ QWidget* ShellService::getTabPanel(const QString& tabName)
     return nullptr;
 }
 
-CustomProgressDialog* ShellService::getProgressDialog()
+IProgressDialog* ShellService::getProgressDialog()
 {
     return m_progressDialog;
 }
@@ -70,6 +70,15 @@ void ShellService::addDockWidget(Qt::DockWidgetArea area, QDockWidget* dockWidge
     if (auto* mw = qobject_cast<QMainWindow*>(m_menuParent.data())) {
         mw->addDockWidget(area, dockWidget);
     }
+}
+
+void ShellService::deleteDockWidget(QDockWidget* dockWidget)
+{
+    if (!dockWidget)
+        return;
+    if (auto* mw = qobject_cast<QMainWindow*>(m_menuParent.data()))
+        mw->removeDockWidget(dockWidget);
+    delete dockWidget;
 }
 
 QWidget* ShellService::dialogParent()

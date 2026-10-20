@@ -11,6 +11,7 @@ Everything here answers with a single :class:`~cvtrain.checks.Check` named
 
 from __future__ import annotations
 
+import glob
 import hashlib
 from pathlib import Path
 from typing import Any
@@ -121,12 +122,34 @@ def check_data_yaml(path: Path) -> Check:
     missing = [key for key in ("train", "val", "names") if key not in parsed]
     if missing:
         return Check("dataset", False, f"missing required key(s): {', '.join(missing)} in {path}")
-    if not parsed.get("names"):
-        return Check("dataset", False, f"'names' must define at least one class in {path}")
+    class_count = _names_count(parsed.get("names"))
+    if class_count is None:
+        # A scalar or an empty container is not a class list: ``len()`` on it
+        # used to raise a bare TypeError from inside a check whose whole job is
+        # to report malformed input as a verdict, not a traceback.
+        return Check(
+            "dataset",
+            False,
+            f"'names' must define at least one class as a mapping or list in {path}",
+        )
     missing_paths = missing_dataset_paths(parsed, path.parent)
     if missing_paths:
         return Check("dataset", False, "missing path(s): " + "; ".join(missing_paths))
-    return Check("dataset", True, f"{path} ({len(parsed.get('names') or [])} classes)")
+    return Check("dataset", True, f"{path} ({class_count} classes)")
+
+
+def _names_count(names: object) -> int | None:
+    """Classes a ``names`` value declares, or ``None`` when the shape is unusable.
+
+    Both shapes Ultralytics accepts are supported: a list of names and an
+    ``{index: name}`` mapping. Anything else — a scalar, an empty container — is
+    not a class list, and measuring it with ``len()`` is exactly the crash a
+    malformed ``data.yaml`` used to cause.
+    """
+
+    if isinstance(names, (dict, list, tuple)):
+        return len(names) if names else None
+    return None
 
 
 def dataset_class_count(path: Path) -> int | None:
@@ -158,12 +181,7 @@ def dataset_class_count(path: Path) -> int | None:
         return None
     if not isinstance(parsed, dict):
         return None
-    names = parsed.get("names")
-    if isinstance(names, dict):
-        return len(names)
-    if isinstance(names, (list, tuple)):
-        return len(names)
-    return None
+    return _names_count(parsed.get("names"))
 
 
 def _digest_file(digest: Any, label: str, path: Path, *, relative_name: str | None = None) -> None:
@@ -186,14 +204,114 @@ def _digest_file(digest: Any, label: str, path: Path, *, relative_name: str | No
     digest.update(b"\n")
 
 
+def _is_remote(value: str) -> bool:
+    """Whether a split reference points off this machine (nothing to hash)."""
+
+    return "://" in value
+
+
+def _relative_name(path: Path, base: Path) -> str:
+    """Stable digest name: relative to the dataset root when possible."""
+
+    try:
+        return path.relative_to(base).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _reference_paths(value: str, base: Path) -> list[Path]:
+    """Local paths one split reference names, with globs expanded in sorted order.
+
+    Ultralytics accepts a directory, a single file (including a ``.txt`` listing)
+    and a glob such as ``images/train/*.jpg``. All three have to reach the
+    fingerprint, or ``--skip-unchanged`` would trust a dataset whose glob now
+    selects different images. Sorting keeps the digest deterministic across
+    filesystems.
+    """
+
+    raw = Path(value).expanduser()
+    target = raw if raw.is_absolute() else base / raw
+    if any(char in value for char in "*?["):
+        return [Path(match) for match in sorted(glob.glob(str(target), recursive=True))]
+    return [target]
+
+
+def _listing_paths(listing: Path, base: Path) -> list[Path]:
+    """Files named by a ``train.txt``-style listing.
+
+    Blank lines and ``#`` comments are ignored. Entries are resolved relative to
+    the dataset root first (Ultralytics' convention) and to the listing's own
+    folder second, so both shapes found in the wild work. An entry that exists
+    nowhere still contributes a missing marker: creating the file later must
+    change the fingerprint, because it changes what the dataset *is*.
+    """
+
+    try:
+        text = listing.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    paths: list[Path] = []
+    for line in text.splitlines():
+        entry = line.strip()
+        if not entry or entry.startswith("#") or _is_remote(entry):
+            continue
+        raw = Path(entry).expanduser()
+        if raw.is_absolute():
+            paths.append(raw)
+            continue
+        candidates = [base / raw]
+        if listing.parent != base:
+            candidates.append(listing.parent / raw)
+        paths.append(next((candidate for candidate in candidates if candidate.exists()), candidates[0]))
+    return paths
+
+
+def _split_files(value: object, base: Path) -> list[tuple[Path, str]]:
+    """``(path, digest name)`` pairs one ``train``/``val`` value contributes.
+
+    Handles every shape Ultralytics documents: a directory tree, a glob, a
+    single file, a ``.txt`` listing of paths, and a list mixing them. A value
+    the framework resolves itself (a URL, a non-string) contributes nothing —
+    ``missing_dataset_paths`` leaves it alone for the same reason.
+    """
+
+    if isinstance(value, (list, tuple)):
+        files: list[tuple[Path, str]] = []
+        for item in value:
+            if isinstance(item, str) and not _is_remote(item):
+                files.extend(_split_files(item, base))
+        return files
+    if not isinstance(value, str) or _is_remote(value):
+        return []
+    files = []
+    for target in _reference_paths(value, base):
+        if target.is_dir():
+            children = sorted(
+                (child for child in target.rglob("*") if child.is_file()),
+                key=lambda child: child.relative_to(target).as_posix(),
+            )
+            files.extend((child, child.relative_to(target).as_posix()) for child in children)
+        elif target.is_file():
+            files.append((target, _relative_name(target, base)))
+            if target.suffix.lower() == ".txt":
+                files.extend((entry, _relative_name(entry, base)) for entry in _listing_paths(target, base))
+        else:
+            # A literal path that does not exist (or a glob that currently
+            # matches nothing literal): hash a stable marker so creating and
+            # deleting the file move the fingerprint in both directions.
+            files.append((target, value.replace("\\", "/")))
+    return files
+
+
 def dataset_content_fingerprint(path: Path) -> str | None:
     """Compute a content fingerprint of the files a dataset YAML references.
 
     Returns ``None`` when the YAML file is absent or unreadable. Combines the
     raw hash of ``data.yaml`` with the relative path and contents of every file
-    in the referenced ``train``/``val`` splits. Hashing the bytes — not just
-    ``(name, size)`` — is what detects an image replaced by different pixels
-    under the same name and the same file size.
+    reachable from the referenced ``train``/``val`` splits — directory trees,
+    globs, single files, ``.txt`` listings and list-valued splits alike.
+    Hashing the bytes — not just ``(name, size)`` — is what detects an image
+    replaced by different pixels under the same name and the same file size.
 
     The cost is O(dataset bytes) per check. That is deliberate: the fingerprint
     exists so ``--skip-unchanged`` can prove the data, and an inventory that a
@@ -224,20 +342,15 @@ def dataset_content_fingerprint(path: Path) -> str | None:
         return digest.hexdigest()
 
     base = dataset_base(parsed, path.parent)
+    # One entry per (split, relative name): a file reachable through two routes
+    # is still one fact about the dataset, and deduplicating keeps the digest
+    # independent of how the YAML spells its references.
+    files: dict[tuple[str, str], Path] = {}
     for key in ("train", "val"):
-        value = parsed.get(key)
-        if not isinstance(value, str) or "://" in value:
-            continue
-        target = Path(value) if Path(value).is_absolute() else base / value
-        if target.is_dir():
-            def _relative(child: Path) -> str:
-                return child.relative_to(target).as_posix()
-
-            files = sorted((child for child in target.rglob("*") if child.is_file()), key=_relative)
-            for child in files:
-                _digest_file(digest, key, child, relative_name=_relative(child))
-        elif target.is_file():
-            _digest_file(digest, key, target)
+        for target, name in _split_files(parsed.get(key), base):
+            files.setdefault((key, name), target)
+    for (key, name), target in sorted(files.items()):
+        _digest_file(digest, key, target, relative_name=name)
 
     return digest.hexdigest()
 

@@ -234,6 +234,23 @@ class CompositionRootTests(_CliTestCase):
 
 
 class ManifestCommandTests(_CliTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # The manifest commands only read or adopt ``Models/``; they must
+        # never start a training run. Patching the orchestrator makes that a
+        # property of the *test* rather than of the current code — and it keeps
+        # a regression that lets a mode fall through from training against the
+        # machine's real dataset and checkpoints.
+        patcher = mock.patch("cvtrain.cli.trainer.run", return_value=0)
+        self.trainer_run = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_the_manifest_commands_never_start_a_training_run(self) -> None:
+        models_dir = self._models_dir()
+        main(["--write-manifest", "--models-dir", str(models_dir)])
+        main(["--verify-manifest", "--models-dir", str(models_dir)])
+        self.trainer_run.assert_not_called()
+
     def test_write_manifest_scans_and_returns_ok(self) -> None:
         models_dir = self._models_dir()
         (models_dir / MODEL_REGISTRY["det"].output).write_bytes(b"det-bytes")

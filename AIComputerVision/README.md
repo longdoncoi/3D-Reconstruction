@@ -32,7 +32,9 @@ AIComputerVision/
 │  └─ logging_setup.py    # Định dạng log ra stdout
 ├─ Models/                # *.onnx xuất bản (Git LFS) + manifest.json + advisory lock
 ├─ runs/                  # Log huấn luyện của Ultralytics (git-ignored)
-├─ Docs/adr/              # 6 Architecture Decision Record cho các quyết định dưới đây
+├─ Docs/adr/              # 7 Architecture Decision Record cho các quyết định dưới đây
+├─ Docs/SCORECARD.md      # Số đo các gate + bảng nợ đang mở (nguồn sự thật của "10/10")
+├─ scripts/               # Công cụ kiểm chứng (mutation check) — ngoài package
 ├─ requirements.txt       # Dependency runtime đã pin phiên bản
 ├─ pyproject.toml         # Cổng ruff / mypy / coverage cho thư mục này
 └─ tests/                 # Unit test offline (không cần trọng số mô hình)
@@ -56,7 +58,7 @@ AIComputerVision/
 | `fsio.py` | Primitive hệ thống tệp dùng chung: `sha256_file`, ghi nguyên tử (staging + `os.replace` + fsync thư mục), sao chép có backup `.bak`, và **advisory lock** `Models/.cvtrain.lock` (pid+token, chống steal, quá hạn sau 24 h, heartbeat mỗi epoch qua `touch_lock`). |
 | `preflight.py` | Kiểm tra fail-fast: môi trường (`env.*`) và siêu tham số (`param.*`) — `epochs`, `imgsz`, `batch`, `workers`, `opset` (cửa sổ `MIN_OPSET=11..MAX_OPSET=21`), `device`, từng ngưỡng `--min-metric`. Nhận danh sách dependency từ backend thay vì hard-code framework. |
 | `gate.py` | Chính sách (không phải luồng điều khiển): `already_current` trả lời "ONNX đã publish có đúng những gì lần gọi này sẽ build không?" (quy tắc `--skip-unchanged`); `enforce_quality_gate` trả lời "artifact có đủ tốt để giữ không?" (mục Quality gate). |
-| `backend.py` | Protocol `TrainingBackend` (`prepare`/`train`/`export` + `required_modules`) và adapter `UltralyticsBackend` — nơi duy nhất được import `ultralytics`, và chỉ khi huấn luyện thực sự chạy. |
+| `backend.py` | Protocol `TrainingBackend` (`prepare`/`train`/`export` + `required_modules`) và adapter `UltralyticsBackend` — nơi duy nhất được import `ultralytics`, và chỉ khi huấn luyện thực sự chạy. `exporter_identity()` ghi cả `cvtrain`/`ultralytics`/`torch`/`onnx` vào provenance, vì cả bốn đều có thể đổi graph được xuất. |
 | `trainer.py` | Điều phối “điều gì xảy ra”: preflight → huấn luyện từng model → quality gate → export ONNX → **kiểm tra hợp đồng tensor** → publish nguyên tử (kèm backup) → ghi manifest → xác minh lại. Không bao giờ import `ultralytics`. |
 | `manifest.py` | Schema manifest dạng `TypedDict`, đọc/ghi (`schema_version` + migration `_MIGRATIONS`), xác minh hai chiều, và cách ly manifest không parse được thành `manifest.json.corrupt-<timestamp>`. |
 | `onnx_contract.py` | Hợp đồng tensor mà `AIProcessor.cpp` giả định: một input NCHW float32, output detection rank-3, hai output segmentation (một rank-4 proto), opset ≤ runtime được pin, và một smoke inference bằng chính ONNX Runtime trước khi publish. |
@@ -70,9 +72,11 @@ AIComputerVision/
 | `TrainModel.py` | Entry point mà `AITrainDockWidget` của Qt gọi (`python TrainModel.py …`). Chỉ khoảng vài dòng: bật logging rồi ủy quyền cho `cvtrain.cli.main()`. |
 | `Models/` | Sản phẩm: `yolo11n.onnx`, `yolo11n-seg.onnx`, `yolo11x-tracking.onnx` (Git LFS), `manifest.json` (provenance), `Models/.cvtrain.lock` (advisory lock, git-ignored) và `Models/*.onnx.bak` (một thế hệ khôi phục, git-ignored). |
 | `runs/` | Log huấn luyện mà Ultralytics ghi ra (git-ignored). `--runs-dir` di chuyển nó. |
-| `Docs/adr/` | 6 ADR: 0001 đồ thị phụ thuộc một chiều + composition root; 0002 protocol `TrainingBackend`; 0003 manifest provenance + `--skip-unchanged` fail-closed; 0004 advisory lock, publish nguyên tử, quality gate; 0005 lỗi lưu trữ có kiểu, sở hữu lock, tiến trình đơn điệu; 0006 dependency có điều kiện, input fail-closed, heartbeat lock. |
+| `Docs/adr/` | 7 ADR: 0001 đồ thị phụ thuộc một chiều + composition root; 0002 protocol `TrainingBackend`; 0003 manifest provenance + `--skip-unchanged` fail-closed; 0004 advisory lock, publish nguyên tử, quality gate; 0005 lỗi lưu trữ có kiểu, sở hữu lock, tiến trình đơn điệu; 0006 dependency có điều kiện, input fail-closed, heartbeat lock; 0007 mọi claim phải được *pin* bằng test/mutant hoặc bị xóa. |
+| `Docs/SCORECARD.md` | Số đo của từng gate kèm ngày đo, bảng nợ đang mở, và quy tắc "claim nào đã được ghim". Một nơi duy nhất để trả lời "package này đã ổn chưa". |
+| `scripts/mutation_check.py` | Đảo chiều từng quyết định trọng yếu một lần và bắt suite phải đỏ (ADR 0007). Danh sách mutant *là* hợp đồng: một guard không có mutant là một guard chưa ai ghim. |
 | `requirements.txt` | Dependency runtime đã pin: `ultralytics==8.4.41`, `PyYAML==6.0.2`, `onnx==1.21.0`, `onnxslim==0.1.91`, `onnxruntime>=1.20.1` (khớp `ONNXRUNTIME_VERSION` trong `CMakeLists.txt`), `tensorboard==2.15.2` (chỉ cần khi `--tensorboard`). `torch` dùng khoảng `>=2.7,<3`: bản CPU/CUDA chia sẻ cùng số version và được chọn bằng index cài đặt. |
-| `pyproject.toml` | Cấu hình ruff (`E/W/F/I/BLE/S/RUF`), mypy (strict, `files = ["cvtrain", "tests", "TrainModel.py"]`) và coverage (branch, `fail_under = 100`). Không phải package cài đặt được. |
+| `pyproject.toml` | Cấu hình ruff (`E/W/F/I/BLE/S/RUF`), mypy (strict, `files = ["cvtrain", "tests", "scripts", "TrainModel.py"]`) và coverage (branch, `fail_under = 100`). Không phải package cài đặt được. |
 
 ### Giải thích từng file test trong `tests/`
 
@@ -124,7 +128,7 @@ dependency có điều kiện, input fail-closed và heartbeat lock.
 Sơ đồ trên là một **hợp đồng**, không phải gợi ý: `tests/test_architecture.py`
 parse `cvtrain/*.py` bằng `ast` và làm đỏ build khi có import nằm ngoài bản đồ
 đó — một module import “hàng xóm” mà nó không được biết, một file mới chưa
-khai báo phụ thuộc trong bảng đó, stack nặng (`ultralytics`, `yaml`) bị chạm
+khai báo phụ thuộc trong bảng đó, stack nặng (`ultralytics`, `torch`, `yaml`) bị chạm
 từ nơi khác ngoài owner duy nhất hoặc bị import ở cấp module thay vì lazy, hay
 lớp cụ thể `UltralyticsBackend` được nhắc tới ngoài `cli.py`. Kiến trúc không
 thể mục nát trong im lặng chừng nào suite còn xanh.
@@ -270,9 +274,9 @@ khoảng `0..1` (precision, recall, mAP, fitness), không dành cho loss.
 
 ## Hợp đồng mô hình (C++ ↔ Python)
 
-Tên file xuất bản là một hợp đồng với `src/core/AppConstants.h`. Thay đổi bên
-nào cũng phải được phản chiếu sang bên kia; `tests/test_contract.py` làm
-đỏ CI nếu hai bên lệch nhau.
+Tên file xuất bản là một hợp đồng với `src/core/AIConstants.h` (hằng số nằm ở
+đó; `AppConstants.h` chỉ `#include` nó). Thay đổi bên nào cũng phải được phản
+chiếu sang bên kia; `tests/test_contract.py` làm đỏ CI nếu hai bên lệch nhau.
 
 | Lựa chọn | Trọng số gốc     | File xuất bản         | Vai trò       |
 |----------|------------------|-----------------------|---------------|
@@ -325,10 +329,14 @@ lại mang tính thông tin.
 ## Manifest & provenance
 
 Mỗi model xuất bản được ghi vào `Models/manifest.json` kèm SHA-256, kích thước,
-đường dẫn dataset *và digest của `data.yaml`*, digest nội dung các file
-`train`/`val`, mọi siêu tham số, thiết bị tính
-toán, digest của checkpoint gốc mà nó thực sự được huấn luyện từ đó, phiên bản
-backend đã tạo ra nó, và (best-effort) các metric. Mục `tracking` còn mang khối
+đường dẫn dataset *và digest của `data.yaml`*, digest nội dung của mọi file
+mà `train`/`val` tham chiếu — kể cả directory, glob, file đơn, listing `.txt`
+và split dạng list — mọi siêu tham số, thiết bị tính toán, digest của checkpoint
+gốc, **composite exporter identity** (`cvtrain`, `ultralytics`, `torch`, `onnx`)
+đã tạo ra nó, và (best-effort) các metric. Các digest được chụp **trước khi**
+`backend.train` chạy: file dataset hay checkpoint bị sửa giữa lần chạy không
+bao giờ được gán nhầm cho artifact, và lần sau `--skip-unchanged` sẽ huấn luyện
+lại thay vì tin một mục thiếu `dataset_content_sha256`. Mục `tracking` còn mang khối
 `tracker` (`algorithm`, `iou_threshold`, `scope`, `implementation`) vì phần
 association nằm ở Qt chứ không ở graph. Header của lần chạy
 (`last_run`) ghi lại lời gọi đã tạo ra nó — tham số, hạng device, phiên bản
@@ -348,8 +356,10 @@ phải vấn đề của lần chạy này, trong khi lệnh `--verify-manifest`
 nguyên cuộc quét hai chiều đầy đủ. ONNX lạc loài được *báo cáo* một cách có chủ
 đích thay vì được nhận làm con nuôi: `--write-manifest` chỉ dựng lại các mục
 cho các model trong hợp đồng, vì bảo chứng cho một ONNX không rõ nguồn sẽ trao
-cho nó một xác minh sạch mà không có provenance nào phía sau. Cách xử lý là xoá
-file hoặc xuất bản lại từ pipeline. Manifest không parse được sẽ bị cách ly thành
+cho nó một xác minh sạch mà không có provenance nào phía sau. Lệnh này cũng
+xoá các mục mà file tương ứng đã biến mất — quét đĩa mô tả hiện tại, không giữ
+lại bằng chứng ma. Cách xử lý ONNX lạc loài là xoá file hoặc xuất bản lại từ
+pipeline. Manifest không parse được sẽ bị cách ly thành
 `manifest.json.corrupt-<timestamp>` trước khi trả về một bộ khung, để lần ghi kế
 tiếp không thể lặng lẽ xoá mất kỷ lục duy nhất về những gì đang nằm trên đĩa.
 Đường khôi phục đó thuộc về các lần chạy, không thuộc về các phán quyết:
@@ -428,23 +438,50 @@ ruff check .
 python -m mypy
 coverage run -m unittest discover -s tests -v
 coverage report
+python scripts/mutation_check.py
 ```
 
-Cả bốn đều được cấu hình bởi `pyproject.toml` trong thư mục này: ruff chọn
+Ruff, mypy và coverage được cấu hình bởi `pyproject.toml` trong thư mục này: ruff chọn
 `E/W/F/I/BLE/S/RUF`, mypy chạy với bộ tuỳ chọn strict trên
-`files = ["cvtrain", "tests", "TrainModel.py"]` (nên lệnh `python -m mypy` trần
+`files = ["cvtrain", "tests", "scripts", "TrainModel.py"]` (nên lệnh `python -m mypy` trần
 đã bao phủ package), và coverage theo branch với `fail_under = 100`. `cvtrain`
 bị chặn ở **100% statement và branch coverage** — mọi dòng đều được diễn chạy,
 nên code mới phải đi kèm test của nó.
 
+Coverage chỉ chứng minh quyết định được *chạy*, không chứng minh nó đúng chiều.
+`scripts/mutation_check.py` đảo từng quyết định trọng yếu **một lần** rồi bắt
+suite phải đỏ. Danh sách 57 mutant trong script **là hợp đồng** (ADR 0007): nó
+phủ fail-closed provenance, quality gate, hợp đồng ONNX dùng chung với runtime
+Qt, thứ tự publish, advisory lock, giao thức progress và taxonomy mã thoát — một
+guard không có mutant là một guard chưa ai ghim. Mutant sống sót, mutant treo
+(`HUNG`) hoặc anchor đã cũ đều làm bước CI thất bại.
+
+Script chạy trong **sandbox**: nó copy package + test + nguồn C++ vào thư mục
+tạm rồi đảo chiều *bản copy*, nên cây làm việc không bị ghi, và một mutant lọt
+vào nhánh huấn luyện sẽ fail nhanh ở preflight thay vì chạy thật trên dataset
+của máy.
+
+> **Quy tắc của ADR 0007:** mọi claim trong tài liệu này và trong các ADR phải
+> được **pin** bằng test hoặc mutant, hoặc bị sửa thành điều đúng. Claim không
+> pin được thì không được viết ra.
+>
+> Số đo cụ thể của từng cổng, ngày đo và bảng nợ đang mở nằm ở
+> [`Docs/SCORECARD.md`](Docs/SCORECARD.md) — một nơi duy nhất để trả lời "package
+> này đã ổn chưa".
+
 Bảng các file test và nội dung từng file nằm ở mục [Layout](#layout) phía trên.
-Hai điều đáng nói thêm:
+Ba điều đáng nói thêm:
 
 * `tests/test_architecture.py` không chỉ buộc kiến trúc mà còn buộc **chính
   README này**: khối Layout phải liệt kê đúng các module của package, và mọi
   tuỳ chọn dòng lệnh được nhắc tới phải được CLI chấp nhận (và cả chiều ngược
   lại — CLI không được có cờ nào không được tài liệu hoá). Tài liệu sai
   thì test đỏ.
+* `tests/test_contract.py` và `tests/test_qt_contract.py` buộc **hai chiều**
+  với phía C++: tên file ONNX, trần opset theo ONNX Runtime được pin trong
+  `CMakeLists.txt`, hằng schema tensor, ngưỡng IoU của tracker, argv/nhãn
+  checkbox và regex `pct=` của dock Qt. Chúng còn có *presence guard*: nếu file
+  C++ bị đổi tên, contract phải đỏ chứ không âm thầm tự tắt.
 * Bộ suite offline giả lập framework ML, nên drift API trong `ultralytics` được
   pin chỉ có thể bắt được bằng cách huấn luyện thật. Workflow
   `.github/workflows/cvtrain-nightly.yml` chạy stack thật (CPU torch) trên một

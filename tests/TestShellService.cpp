@@ -4,6 +4,7 @@
 #include "CustomProgressDialog.h"
 
 #include <QMap>
+#include <QPointer>
 #include <QSignalSpy>
 #include <QMainWindow>
 #include <QDockWidget>
@@ -106,6 +107,26 @@ private slots:
         QCOMPARE(spy.count(), 1);
     }
 
+    void nullBusIsTolerated() {
+        // The shell is constructed by AppShell with a bus, but the service
+        // must not dereference a missing one during teardown/unit use.
+        ShellService shell(nullptr);
+        shell.updateMenuStates();
+    }
+
+    void nonMainWindowParentIsHandled() {
+        SignalBus bus;
+        ShellService shell(&bus);
+        QWidget parent;
+        shell.setMenuParent(&parent);
+
+        QDockWidget dock(QStringLiteral("PlainDock"), &parent);
+        shell.addDockWidget(Qt::LeftDockWidgetArea, &dock); // not a QMainWindow: no-op
+        QCOMPARE(dock.isVisible(), false);
+        QVERIFY(shell.centralWidget() == nullptr);
+        shell.deleteDockWidget(nullptr); // documented no-op
+    }
+
     void progressDialogRoundTrip() {
         SignalBus bus;
         FakeLanguageService language;
@@ -114,15 +135,25 @@ private slots:
 
         CustomProgressDialog dialog(&language);
         shell.setProgressDialog(&dialog);
-        QCOMPARE(shell.getProgressDialog(), &dialog);
+        QCOMPARE(shell.getProgressDialog(), static_cast<IProgressDialog*>(&dialog));
 
         // Dialog bị hủy trước service → lookup trả nullptr.
         {
             CustomProgressDialog temporary(&language);
             shell.setProgressDialog(&temporary);
-            QCOMPARE(shell.getProgressDialog(), &temporary);
+            QCOMPARE(shell.getProgressDialog(), static_cast<IProgressDialog*>(&temporary));
         }
         QVERIFY(shell.getProgressDialog() == nullptr);
+    }
+
+    void progressDialogStopSignalIsExposedThroughInterface() {
+        FakeLanguageService language;
+        CustomProgressDialog dialog(&language);
+        IProgressDialog* progress = &dialog;
+
+        QSignalSpy spy(progress, &IProgressDialog::stopRequested);
+        QVERIFY(QMetaObject::invokeMethod(progress, "stopRequested"));
+        QCOMPARE(spy.count(), 1);
     }
 
     void addDockWidgetDelegatesToMainWindow() {
@@ -133,6 +164,18 @@ private slots:
         QDockWidget dock(QStringLiteral("TestDock"), &window);
         shell.addDockWidget(Qt::RightDockWidgetArea, &dock);
         QCOMPARE(window.dockWidgetArea(&dock), Qt::RightDockWidgetArea);
+    }
+
+    void deleteDockWidgetRemovesAndDestroysIt() {
+        SignalBus bus;
+        ShellService shell(&bus);
+        QMainWindow window;
+        shell.setMenuParent(&window);
+        auto* dock = new QDockWidget(QStringLiteral("PluginDock"), &window);
+        shell.addDockWidget(Qt::RightDockWidgetArea, dock);
+        QPointer<QDockWidget> guard(dock);
+        shell.deleteDockWidget(dock);
+        QVERIFY(guard.isNull());
     }
 
     void centralWidgetDelegatesToMainWindow() {

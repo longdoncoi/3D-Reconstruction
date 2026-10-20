@@ -45,6 +45,15 @@ int PluginHost::discover(const QString &directory, const QString &nameFilter) {
                                 .arg(IPlugin::kApiVersion);
                 continue;
             }
+            if (plugin->abiFingerprint() != IPlugin::kAbiFingerprint) {
+                m_errors << QStringLiteral(
+                                "Plugin %1: incompatible ABI fingerprint 0x%2 (host 0x%3) — "
+                                "rebuild it with the same Qt/MSVC/configuration")
+                                .arg(fileName)
+                                .arg(plugin->abiFingerprint(), 0, 16)
+                                .arg(IPlugin::kAbiFingerprint, 0, 16);
+                continue;
+            }
             m_plugins.append(plugin);
         } else {
             m_errors << QStringLiteral("Failed to load plugin %1: %2").arg(fileName, error);

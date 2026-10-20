@@ -2,10 +2,14 @@
 #define USER_MANAGER_H
 
 #include "IUserManager.h"
+#include "LicenseKeyLedger.h"
+#include "OtpStore.h"
+#include "UserAccountStore.h"
+#include "UserSettingsStore.h"
+
 #include <QObject>
-#include <QDateTime>
-#include <QSettings>
 #include <shared_mutex>
+
 #include "Global.h"
 
 /**
@@ -16,6 +20,7 @@
  *   - service-locator: ctx->services()->get<IUserManager>()
  */
 class AppShell;
+class QSettings;
 class TestUserManagerCrypto; // regex test access
 class TestMailCredentialLifecycle; // credential lifecycle test access
 class TestSmtpOutbox; // SMTP outbox test access
@@ -106,26 +111,15 @@ private:
 private:
     explicit UserManager(QObject *parent = nullptr);
 
-    QString hashPassword(const QString &password) const;
-    static bool verifyPassword(const QString &password, const QString &storedHash);
-    void    ensureDefaultAdmin();
-    void    loadUsers();
-    void    saveUsers();
-    void    loadLicenseKeys();
-    void    saveLicenseKeys();
-
     mutable std::shared_mutex m_mutex;
     QString m_configPath;
     QSettings *m_settings = nullptr;
     QString    m_currentUsername;
 
-    QMap<QString, UserInfo> m_users;
-    QMap<QString, QString>  m_passwordHashes; // username -> PBKDF2/legacy hash (never leaves the manager)
-    QMap<QString, bool>     m_licenseKeys; // key -> isUsed
-    QMap<QString, QString>  m_keyOwners;   // key -> username
-
-    struct OtpEntry { QString otp; QDateTime expiry; };
-    QMap<QString, OtpEntry> m_otpStore; // email -> entry
+    UserAccountStore  m_accounts;
+    LicenseKeyLedger  m_licenseLedger;
+    OtpStore          m_otpStore;
+    UserSettingsStore m_userSettings;
 
     IOutgoingMail *m_outgoingMail = nullptr; ///< injected, not owned
 };

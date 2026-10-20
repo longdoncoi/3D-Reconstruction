@@ -11,6 +11,7 @@ import json
 import queue
 import threading
 from collections.abc import Iterable
+from functools import partial
 from typing import TYPE_CHECKING, Any, Callable
 
 from fastapi import APIRouter, Request
@@ -29,7 +30,52 @@ if TYPE_CHECKING:
     from ai_assistant.agents.service import AgentService
 
 
-def _stream_langgraph_execution(run: Callable[[Callable[[dict[str, Any], None]], dict[str, Any]]]) -> StreamingResponse:  # type: ignore[misc]
+def _cancel_agent_run(agent_service: "AgentService", session_id: str) -> None:
+    """Best-effort cooperative cancel when the SSE client disconnects.
+
+    The run is already on a worker thread; without this a dropped browser/Qt
+    connection leaves it consuming the local model until completion.
+    """
+    try:
+        agent_service.cancel(AgentCancelRequest(session_id=session_id or "agent_default"))
+    except Exception:
+        # The run may have finished between the disconnect and this callback.
+        pass
+
+
+def _sse_events(events: queue.Queue[tuple[str, object]],
+                on_disconnect: Callable[[], None] | None = None) -> Iterable[str]:
+    """Turn worker events into SSE frames and cancel a dropped run.
+
+    Kept separate from the thread/response wiring so the disconnect path is
+    testable without an HTTP transport: closing this generator before a
+    ``result``/``error`` frame is exactly what Starlette does when the client
+    drops the connection.
+    """
+    finished = False
+    try:
+        yield 'event: status\ndata: {"status": "running"}\n\n'
+        while True:
+            kind, value = events.get()
+            if kind == "step":
+                yield f"event: step\ndata: {json.dumps(value, ensure_ascii=False)}\n\n"
+            elif kind == "result":
+                finished = True
+                yield f"event: done\ndata: {json.dumps(value, ensure_ascii=False)}\n\n"
+                return
+            else:
+                finished = True
+                yield f"event: error\ndata: {json.dumps({'detail': value}, ensure_ascii=False)}\n\n"
+                return
+    finally:
+        if not finished and on_disconnect is not None:
+            on_disconnect()
+
+
+def _stream_langgraph_execution(
+    run: Callable[[Callable[[dict[str, Any]], None]], dict[str, Any]],
+    on_disconnect: Callable[[], None] | None = None,
+) -> StreamingResponse:
     """Stream agent node/tool steps as they happen over SSE."""
     events: queue.Queue[tuple[str, object]] = queue.Queue()
 
@@ -41,22 +87,8 @@ def _stream_langgraph_execution(run: Callable[[Callable[[dict[str, Any], None]],
 
     threading.Thread(target=worker, daemon=True, name="agent-sse").start()
 
-    def stream() -> Iterable[str]:
-        yield 'event: status\ndata: {"status": "running"}\n\n'
-        while True:
-            kind, value = events.get()
-            if kind == "step":
-                yield f"event: step\ndata: {json.dumps(value, ensure_ascii=False)}\n\n"
-            elif kind == "result":
-                payload = value
-                yield f"event: done\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                return
-            else:
-                yield f"event: error\ndata: {json.dumps({'detail': value}, ensure_ascii=False)}\n\n"
-                return
-
     return StreamingResponse(
-        stream(),
+        _sse_events(events, on_disconnect),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -91,7 +123,8 @@ def build_agent_router(agent_service: "AgentService | None" = None,
             return _stream_langgraph_execution(
                 lambda sink: agent_service.execute(
                     request, event_sink=sink, client_host=client_host,
-                )
+                ),
+                on_disconnect=partial(_cancel_agent_run, agent_service, request.session_id),
             )
         return agent_service.execute(request, client_host=client_host)
 

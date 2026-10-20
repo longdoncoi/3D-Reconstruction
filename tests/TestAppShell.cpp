@@ -12,6 +12,7 @@
 #include "AppShell.h"
 #include "AppConfig.h"
 #include "IAIAssistantService.h"
+#include "IAIModelLoadService.h"
 #include "IAIService.h"
 #include "IAppPaths.h"
 #include "ILanguageService.h"
@@ -115,6 +116,7 @@ void TestAppShell::phaseOneRegistersCoreServicesOnly()
     // them right before loadPlugins().
     QVERIFY(!m_registry->get<IReconstructionService>());
     QVERIFY(!m_registry->get<IAIService>());
+    QVERIFY(!m_registry->get<IAIModelLoadService>());
     QVERIFY(!m_registry->get<IAIAssistantService>());
     QVERIFY(!m_registry->get<IMailService>());
 }
@@ -144,11 +146,13 @@ void TestAppShell::deferredPhaseIsIdempotent()
     ISceneService* scene = m_registry->get<ISceneService>();
     auto* recon = m_registry->get<IReconstructionService>();
     auto* ai = m_registry->get<IAIService>();
+    auto* modelLoader = m_registry->get<IAIModelLoadService>();
     auto* assistant = m_registry->get<IAIAssistantService>();
     auto* mail = m_registry->get<IMailService>();
     QVERIFY(scene);
     QVERIFY(recon);
     QVERIFY(ai);
+    QVERIFY(modelLoader);
     QVERIFY(assistant);
     QVERIFY(mail);
 
@@ -158,6 +162,7 @@ void TestAppShell::deferredPhaseIsIdempotent()
     QCOMPARE(m_registry->get<ISceneService>(), scene);
     QCOMPARE(m_registry->get<IReconstructionService>(), recon);
     QCOMPARE(m_registry->get<IAIService>(), ai);
+    QCOMPARE(m_registry->get<IAIModelLoadService>(), modelLoader);
     QCOMPARE(m_registry->get<IAIAssistantService>(), assistant);
     QCOMPARE(m_registry->get<IMailService>(), mail);
 }

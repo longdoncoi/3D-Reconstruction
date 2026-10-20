@@ -9,7 +9,7 @@ from typing import Any
 from unittest import mock
 
 from cvtrain.checks import Check, PreflightReport, module_available
-from cvtrain.config import MODEL_REGISTRY, TrainConfig
+from cvtrain.config import MODEL_REGISTRY, ModelSpec, TrainConfig, register_model_spec
 from cvtrain.preflight import (
     MAX_EPOCHS,
     MAX_IMGSZ,
@@ -21,6 +21,7 @@ from cvtrain.preflight import (
     check_device,
     check_hyperparameters,
     check_metric_thresholds,
+    check_model_roles,
     check_python,
     check_weights,
     run,
@@ -63,6 +64,7 @@ class HyperparameterTests(unittest.TestCase):
             names,
             {
                 "param.models",
+                "param.role.det",
                 "param.epochs",
                 "param.imgsz",
                 "param.batch",
@@ -114,6 +116,27 @@ class HyperparameterTests(unittest.TestCase):
         self.assertIn("bogus", failed[0].detail)
         # The weights check skips unknown keys so the report stays complete.
         self.assertEqual(check_weights(cfg), [])
+
+    def test_an_unsupported_role_fails_in_preflight_not_after_training(self) -> None:
+        # A custom registry entry is allowed to exist, but exporting it would
+        # fail in ``contract_for`` only after the expensive run. Preflight is
+        # where the mismatch must surface.
+        spec = ModelSpec("pose_check", "pose.pt", "pose.onnx", "pose", "pose", "Pose")
+        try:
+            register_model_spec(spec)
+            cfg = TrainConfig(models=("pose_check",))
+            [role_check] = check_model_roles(cfg)
+            self.assertFalse(role_check.ok)
+            self.assertEqual(role_check.name, "param.role.pose_check")
+            self.assertIn("not supported", role_check.detail)
+            failed = [check.name for check in check_hyperparameters(cfg) if not check.ok]
+            self.assertEqual(failed, ["param.role.pose_check"])
+        finally:
+            MODEL_REGISTRY._specs.pop("pose_check", None)
+
+    def test_every_built_in_role_is_supported(self) -> None:
+        checks = check_model_roles(TrainConfig(models=("det", "seg", "track")))
+        self.assertTrue(all(check.ok for check in checks), [check.line() for check in checks])
 
     def test_absurd_hyper_parameters_fail_fast(self) -> None:
         cases = (

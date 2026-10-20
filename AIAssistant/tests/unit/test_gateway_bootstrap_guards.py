@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from ai_assistant.adapters.persistence.storage_crypto import AesGcmFieldCipher
 from ai_assistant.application.coordination import TaskCoordinator
 from ai_assistant.bootstrap.container import PlatformContainer, build_container, tool_spec_from
 from ai_assistant.bootstrap.runtime import PlatformToolGateway
@@ -99,6 +100,23 @@ class BootstrapContainerTests(unittest.TestCase):
             self.assertIsNotNone(container.tools)
             self.assertIsNotNone(container.tasks)
             self.assertIsNotNone(container.gateway)
+            self.assertIsNone(container.storage_cipher)
+
+    def test_build_container_injects_the_storage_cipher(self) -> None:
+        cipher = AesGcmFieldCipher(b"z" * 32)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            container = build_container(
+                Path(tmpdir),
+                [],
+                {},
+                MagicMock(),
+                storage_cipher=cipher,
+            )
+            try:
+                self.assertIs(container.storage_cipher, cipher)
+                self.assertIs(container.tasks._store._cipher, cipher)
+            finally:
+                container.tasks.close()
 
     def test_build_container_with_legacy_tools(self) -> None:
         """build_container handles legacy tool dicts."""

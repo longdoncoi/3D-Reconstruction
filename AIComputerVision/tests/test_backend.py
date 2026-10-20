@@ -17,6 +17,7 @@ import types
 import unittest
 from collections.abc import Iterator
 from fractions import Fraction
+from importlib import metadata
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -27,6 +28,7 @@ from cvtrain.backend import (
     TrainingBackend,
     UltralyticsBackend,
     _run_timestamp,
+    exporter_identity,
     metrics_from,
     train_kwargs,
 )
@@ -222,11 +224,63 @@ class LazyImportTests(_SandboxedTestCase):
         self.assertEqual(backend.version, "")
         self.assertIsNone(backend._yolo)
 
-    def test_version_is_learned_on_first_use(self) -> None:
+    def test_version_records_the_whole_export_stack_on_first_use(self) -> None:
+        # Ultralytics delegates the export to torch/onnx; a change in either can
+        # change the graph, so all four identities belong in the provenance.
         with _stub_ultralytics():
             backend = UltralyticsBackend()
             backend.prepare(self.cfg)
-            self.assertEqual(backend.version, "8.4.41-stub")
+        fields = dict(part.split("=", 1) for part in backend.version.split(";"))
+        self.assertEqual(fields["cvtrain"], "1.0.0")
+        self.assertEqual(fields["ultralytics"], "8.4.41-stub")
+        self.assertIn("torch", fields)
+        self.assertIn("onnx", fields)
+
+    def test_the_identity_carries_the_actual_version_of_each_dependency(self) -> None:
+        # The *value* of every field, not only its presence. Asserting that the
+        # key exists is not enough: an identity that hardcoded ``onnx=unknown``
+        # would still carry the key, would still pass the test above, and would
+        # silently disable the rule this function exists for — an ``onnx``
+        # upgrade has to invalidate a ``--skip-unchanged`` verdict, because
+        # ``onnx`` can change the exported graph.
+        def _versions(name: str) -> str:
+            return {"torch": "2.7.0", "onnx": "1.21.0"}.get(name, "0.0.0")
+
+        with mock.patch("cvtrain.backend.metadata.version", side_effect=_versions):
+            identity = exporter_identity("8.4.41")
+        self.assertEqual(
+            identity,
+            "cvtrain=1.0.0;ultralytics=8.4.41;torch=2.7.0;onnx=1.21.0",
+        )
+
+    def test_a_moved_dependency_changes_the_exporter_identity(self) -> None:
+        # The second half of the rule above: each field must be *read* from the
+        # installed distribution, so a dependency that moves is visible in the
+        # manifest. A hardcoded constant would make every identity identical.
+        def _versions(name: str) -> str:
+            return {"torch": "2.7.0", "onnx": "1.21.0"}.get(name, "0.0.0")
+
+        with mock.patch("cvtrain.backend.metadata.version", side_effect=_versions):
+            first = exporter_identity("8.4.41")
+        with mock.patch(
+            "cvtrain.backend.metadata.version",
+            side_effect=lambda name: {"torch": "2.8.0", "onnx": "1.21.0"}.get(name, "0.0.0"),
+        ):
+            second = exporter_identity("8.4.41")
+        self.assertNotEqual(first, second, "a torch upgrade must change the exporter identity")
+
+    def test_a_missing_export_dependency_is_named_not_omitted(self) -> None:
+        # "unknown" is a fact about the environment; silently dropping the key
+        # would let a partial stack look like a complete identity.
+        def _missing(name: str) -> str:
+            raise metadata.PackageNotFoundError(name)
+
+        with mock.patch("cvtrain.backend.metadata.version", side_effect=_missing):
+            identity = exporter_identity("9.9.9")
+        self.assertEqual(
+            identity,
+            "cvtrain=1.0.0;ultralytics=9.9.9;torch=unknown;onnx=unknown",
+        )
 
     def test_missing_dependency_raises_a_typed_error_not_a_traceback(self) -> None:
         backend = UltralyticsBackend()

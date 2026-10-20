@@ -271,20 +271,18 @@ class AuditWriteTests(unittest.TestCase):
 
 
 class RemoteLookupRuntimeTests(unittest.TestCase):
-    """``set_remote_specialist_lookup`` must fail closed, never open."""
+    """The injected remote lookup must fail closed, never open."""
 
-    def tearDown(self) -> None:
-        supervisor.set_remote_specialist_lookup(None)
-
-    def test_installing_and_removing_a_lookup(self):
-        supervisor.set_remote_specialist_lookup(lambda name: f"http://x/{name}")
-        self.assertIsNotNone(supervisor._remote_specialist_lookup)
-        supervisor.set_remote_specialist_lookup(None)
-        self.assertIsNone(supervisor._remote_specialist_lookup)
+    def test_no_lookup_means_no_remote_endpoint(self):
+        delegation = delegate("read it", "s1", tool="read_file")
+        self.assertIsNone(delegation.remote_endpoint)
+        self.assertNotIn("(A2A remote:", delegation.reason)
 
     def test_a_resolved_endpoint_is_appended_to_the_reason(self):
-        supervisor.set_remote_specialist_lookup(lambda name: "http://remote:8080/a2a")
-        delegation = delegate("read it", "s1", tool="read_file")
+        delegation = delegate(
+            "read it", "s1", tool="read_file",
+            remote_lookup=lambda _name: "http://remote:8080/a2a",
+        )
         self.assertEqual(delegation.remote_endpoint, "http://remote:8080/a2a")
         self.assertIn("(A2A remote: http://remote:8080/a2a)", delegation.reason)
 
@@ -293,13 +291,12 @@ class RemoteLookupRuntimeTests(unittest.TestCase):
             msg = "registry unavailable"
             raise RuntimeError(msg)
 
-        supervisor.set_remote_specialist_lookup(_boom)
-        delegation = delegate("read it", "s1", tool="read_file")
+        delegation = delegate("read it", "s1", tool="read_file", remote_lookup=_boom)
         self.assertIsNone(delegation.remote_endpoint)
         self.assertNotIn("(A2A remote:", delegation.reason)
 
-    def test_no_lookup_means_no_remote_endpoint(self):
-        self.assertIsNone(supervisor._resolve_remote_endpoint(Specialist.CODE))
+    def test_the_resolver_directly_handles_no_lookup(self):
+        self.assertIsNone(supervisor._resolve_remote_endpoint(Specialist.CODE, None))
 
 
 class SpecialisationBranchTests(unittest.TestCase):

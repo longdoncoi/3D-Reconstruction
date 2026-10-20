@@ -12,7 +12,7 @@
 #include "IAppContext.h"
 class QPushButton;
 
-class CustomProgressDialog;
+class IProgressDialog;
 class ViewerRibbonUI;
 class ViewerNavigatorUI;
 class ViewerListUI;
@@ -58,7 +58,7 @@ private:
     ViewerNavigatorUI *m_navUI = nullptr;
     ViewerRibbonUI *m_ribbonUI = nullptr;
     ViewerListUI *m_listUI = nullptr;
-    CustomProgressDialog *m_progressDialog = nullptr;
+    IProgressDialog *m_progressDialog = nullptr;
     ViewerViewModel *m_viewModel = nullptr;
 };
 

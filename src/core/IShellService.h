@@ -6,7 +6,7 @@
 class QMenu;
 class QMenuBar;
 class QWidget;
-class CustomProgressDialog;
+class IProgressDialog;
 
 /**
  * @brief UI-shell contract: named menus, tab panels and the shared progress
@@ -38,13 +38,22 @@ public:
     virtual QWidget* getTabPanel(const QString& tabName) = 0;
 
     /** Progress dialog dùng chung (owned by the shell, không owned by caller). */
-    virtual CustomProgressDialog* getProgressDialog() = 0;
+    virtual IProgressDialog* getProgressDialog() = 0;
 
     /** Đăng ký panel cho một tab key (gọi từ MainWindow khi build UI). */
     virtual void registerTabPanel(const QString& key, QWidget* panel) = 0;
 
     /** Gắn QDockWidget vào shell UI. */
     virtual void addDockWidget(Qt::DockWidgetArea area, class QDockWidget* dockWidget) = 0;
+
+    /**
+     * Remove AND delete a dock widget created by a plugin. Plugin::cleanup()
+     * must call this for every dock it owns: after cleanup the host unloads
+     * the plugin DLL, and a surviving widget whose vtable lives in that DLL
+     * would crash later. Synchronous delete is deliberate (deleteLater may
+     * not run before the unload).
+     */
+    virtual void deleteDockWidget(class QDockWidget* dockWidget) = 0;
 
     /** Widget cha chuẩn cho các hộp thoại (dialogs/message boxes). */
     virtual QWidget* dialogParent() = 0;

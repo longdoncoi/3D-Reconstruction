@@ -318,6 +318,7 @@ class ContextService:
         tool_registry: Any = None,
         checkpointer: Any = None,
         task_coordinator: TaskCoordinator | None = None,
+        delegate_fn: Callable[..., Any] | None = None,
     ) -> None:
         self._ctx = AgentRunContext(
             llm_runtime=llm_runtime,
@@ -327,6 +328,7 @@ class ContextService:
             tool_registry=tool_registry,
             checkpointer=checkpointer,
             task_coordinator=TaskCoordinator() if task_coordinator is None else task_coordinator,
+            delegate_fn=delegate if delegate_fn is None else delegate_fn,
         )
 
     @property

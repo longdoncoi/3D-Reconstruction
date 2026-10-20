@@ -65,13 +65,13 @@ MainWindow::MainWindow(QWidget *parent)
 
   // 7. Progress dialog (owned by MainWindow, referenced by AppShell)
   auto *dlg = new CustomProgressDialog(
-      context()->services()->get<ILanguageService>(), this);
+      context()->services()->getRequired<ILanguageService>(), this);
   m_shell->setProgressDialog(dlg);
 
   // 8. Language service (theme was applied once in main() before the shell was built)
 
   // 9. Connect language service (interface from the registry)
-  auto *langSvc = context()->services()->get<ILanguageService>();
+  auto *langSvc = context()->services()->getRequired<ILanguageService>();
   connect(langSvc, &ILanguageService::languageChanged, this,
           &MainWindow::onLanguageChanged);
   connect(langSvc, &ILanguageService::languageChanged, m_shell->signalBus(),
@@ -86,6 +86,12 @@ MainWindow::~MainWindow() {
   // Fallback khi cửa sổ bị destroy mà không qua closeEvent (ví dụ qApp->quit()
   // giữa chừng): plugins vẫn phải được cho cơ hội dọn dẹp.
   shutdownPlugins();
+  // Destroy the service graph while the widget tree is still alive, instead
+  // of relying on QObject's child-deletion order (which runs only in the
+  // QMainWindow base destructor, after this class's members are gone).
+  // Plugins have already been shut down and their docks deleted, so no
+  // consumer can call into these services from a destructor.
+  m_shell.reset();
   delete ui;
 }
 

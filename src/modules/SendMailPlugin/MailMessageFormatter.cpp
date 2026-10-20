@@ -7,12 +7,29 @@ namespace {
 
 QString decodeQuotedPrintable(const QString &input)
 {
-    QByteArray bytes;
+    // Only the "=XX" escapes are byte sequences; the rest of the text is
+    // already decoded and must stay untouched.  The previous implementation
+    // funnelled *everything* through Latin-1 bytes and decoded the result as
+    // UTF-8, which replaced every non-Latin-1 character (Vietnamese!) with
+    // U+FFFD — a plain-text Vietnamese mail body was rendered as garbage.
+    QString result;
+    QByteArray pending;
+
+    const auto flush = [&] {
+        if (pending.isEmpty()) {
+            return;
+        }
+        result += QString::fromUtf8(pending);
+        pending.clear();
+    };
+
     for (int i = 0; i < input.length(); ++i) {
         if (input[i] == '=' && i + 1 < input.length()) {
             if ((input[i + 1] == '\r' && i + 2 < input.length() && input[i + 2] == '\n') ||
                 input[i + 1] == '\n') {
+                // Soft line break: removed, as the RFC prescribes.
                 i += (input[i + 1] == '\r') ? 2 : 1;
+                flush();
                 continue;
             }
 
@@ -21,15 +38,17 @@ QString decodeQuotedPrintable(const QString &input)
                 bool ok = false;
                 const int byte = hexStr.toInt(&ok, 16);
                 if (ok && byte >= 0 && byte <= 255) {
-                    bytes.append(static_cast<char>(byte));
+                    pending.append(static_cast<char>(byte));
                     i += 2;
                     continue;
                 }
             }
         }
-        bytes.append(input[i].toLatin1());
+        flush();
+        result += input[i];
     }
-    return QString::fromUtf8(bytes);
+    flush();
+    return result;
 }
 
 bool looksLikeHtml(const QString &body)

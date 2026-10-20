@@ -46,11 +46,16 @@ class ChatRequest(BaseModel):
 
 def _scan_attachments_for_image(
     attachments: list[str], rag_module: "RAGModuleLike", logger: "LoggerLike",
+    unseal: Callable[[bytes], bytes] | None = None,
 ) -> str | None:
     """Return the first attached image as a data URI, else ``None``.
 
     ``image_utils`` ships with the full runtime; fall back to the rag_module
     helpers when the RAG extras are not installed (offline CI).
+
+    ``unseal`` opens an attachment that was sealed at rest (ADR 0029) — the
+    chat attachments live encrypted on disk, so the route has to open them
+    before the model can see them.
     """
     def fallback_is_image(_path: str) -> bool:
         return False
@@ -58,11 +63,17 @@ def _scan_attachments_for_image(
     def fallback_to_data_uri(_path: str) -> str:
         return ""
 
+    image_check: Callable[[str], bool]
+    data_uri_fn: Callable[[str], str]
     try:
         from ai_assistant.image_utils import image_to_data_uri, is_image_file
 
-        image_check: Callable[[str], bool] = is_image_file
-        data_uri_fn: Callable[[str], str] = image_to_data_uri
+        image_check = is_image_file
+
+        def _to_data_uri(path: str) -> str:
+            return image_to_data_uri(path, unseal=unseal)
+
+        data_uri_fn = _to_data_uri
     except ImportError:
         image_check = getattr(rag_module, "_is_image_file", fallback_is_image)
         data_uri_fn = getattr(rag_module, "_image_to_data_uri", fallback_to_data_uri)
@@ -83,6 +94,7 @@ def build_chat_router(
     llm_n_ctx: int,
     logger: "LoggerLike",
     policy: TransportPolicy | None = None,
+    unseal: Callable[[bytes], bytes] | None = None,
 ) -> APIRouter:
     """Create the /v1/chat/completions APIRouter.
 
@@ -97,6 +109,7 @@ def build_chat_router(
     logger:            Application logger.
     policy:            Transport trust policy (ADR 0008) — loopback peer,
                        allowed origin and optional ``AI_AGENT_TOKEN`` bearer.
+    unseal:            Opens an attachment sealed at rest (ADR 0029).
     """
     router = APIRouter(tags=["chat"], dependencies=chat_guards(policy))
 
@@ -108,7 +121,7 @@ def build_chat_router(
         req_start = time.monotonic()
         user_query = request.messages[-1].content
         attachments = request.messages[-1].attachments or []
-        query_image_b64 = _scan_attachments_for_image(attachments, rag_module, logger)
+        query_image_b64 = _scan_attachments_for_image(attachments, rag_module, logger, unseal)
 
         client_host = http_req.client.host if http_req.client else "unknown"
         logger.info(

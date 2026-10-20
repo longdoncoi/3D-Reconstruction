@@ -24,11 +24,19 @@ class TestMailCredentialLifecycle : public QObject {
     Q_OBJECT
 
 private slots:
+    void initTestCase();
     void noCredentialsWithoutLogin();
     void credentialsCachedForCurrentUser();
     void credentialsInvalidatedOnLogout();
     void blockingMailGuardWarnsOnGuiThread();
 };
+
+void TestMailCredentialLifecycle::initTestCase()
+{
+    // See TestUserManagerCrypto: the default admin credential is provisioned
+    // explicitly in tests, never hard-coded in production code.
+    qputenv("APP_ADMIN_INITIAL_PASSWORD", "1");
+}
 
 void TestMailCredentialLifecycle::blockingMailGuardWarnsOnGuiThread()
 {

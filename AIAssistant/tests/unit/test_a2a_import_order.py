@@ -9,9 +9,9 @@ disable A2A (``supervisor.delegate()`` then never consulted the remote
 registry).
 
 The fix moved ``Specialist`` into ``ai_assistant.domain.specialists`` and made
-the supervisor take the remote lookup through dependency inversion
-(:func:`orchestration.supervisor.set_remote_specialist_lookup`), with the
-composition root installing the adapter's resolver.  These tests pin that
+``delegate`` accept the remote resolver as an argument. The composition root
+binds its registry into that argument, so the orchestration layer has neither an
+adapter import nor a process-wide installed lookup. These tests pin that
 invariant so the cycle can never be reintroduced.
 """
 from __future__ import annotations
@@ -25,6 +25,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ai_assistant.adapters import a2a_protocol
+from ai_assistant.agents.service import AgentService
 from ai_assistant.domain.specialists import Specialist
 from ai_assistant.orchestration import supervisor
 
@@ -68,17 +69,18 @@ class OrchestrationDoesNotImportAdaptersTest(unittest.TestCase):
             ["supervisor", "chatbot", "toolapp", "research", "desktop_workflow", "code", "verification"],
         )
 
-    def test_delegate_stays_local_without_an_installed_lookup(self) -> None:
-        """No resolver installed → delegation never reaches for a remote."""
-        with patch.object(supervisor, "_remote_specialist_lookup", None):
-            delegation = supervisor.delegate("read the config", "s1", tool="read_file")
+    def test_delegate_stays_local_without_a_lookup(self) -> None:
+        """No resolver argument → delegation never reaches for a remote."""
+        delegation = supervisor.delegate("read the config", "s1", tool="read_file")
         self.assertIsNone(delegation.remote_endpoint)
         self.assertNotIn("A2A remote", delegation.reason)
 
-    def test_delegate_consults_the_installed_lookup(self) -> None:
-        """The composition-root-installed resolver drives remote routing."""
-        with patch.object(supervisor, "_remote_specialist_lookup", lambda _sid: "http://remote.test"):
-            delegation = supervisor.delegate("read the config", "s2", tool="read_file")
+    def test_delegate_consults_the_injected_lookup(self) -> None:
+        """The caller-supplied resolver drives remote routing."""
+        delegation = supervisor.delegate(
+            "read the config", "s2", tool="read_file",
+            remote_lookup=lambda _sid: "http://remote.test",
+        )
         self.assertEqual(delegation.remote_endpoint, "http://remote.test")
         self.assertIn("A2A remote: http://remote.test", delegation.reason)
 
@@ -89,15 +91,25 @@ class OrchestrationDoesNotImportAdaptersTest(unittest.TestCase):
             msg = "registry offline"
             raise RuntimeError(msg)
 
-        with patch.object(supervisor, "_remote_specialist_lookup", _boom):
-            delegation = supervisor.delegate("read the config", "s3", tool="read_file")
+        delegation = supervisor.delegate(
+            "read the config", "s3", tool="read_file", remote_lookup=_boom,
+        )
         self.assertIsNone(delegation.remote_endpoint)
 
-    def test_adapter_resolver_matches_the_supervisor_port(self) -> None:
-        """``resolve_remote_specialist`` satisfies the supervisor's port shape."""
-        self.assertTrue(callable(a2a_protocol.resolve_remote_specialist))
+    def test_registry_resolver_matches_the_supervisor_port(self) -> None:
+        """``RemoteAgentRegistry.resolve`` satisfies the supervisor's port shape."""
+        registry = a2a_protocol.RemoteAgentRegistry()
+        self.assertTrue(callable(registry.resolve))
         with patch.object(a2a_protocol, "a2a_available", return_value=False):
-            self.assertIsNone(a2a_protocol.resolve_remote_specialist("code"))
+            self.assertIsNone(registry.resolve("code"))
+
+    def test_agent_service_exposes_the_injected_delegate_to_the_run_context(self) -> None:
+        """A facade built without wiring keeps the local default; an injected
+        delegate reaches every run path through ``AgentRunContext``."""
+        sentinel = object()
+        service = AgentService(delegate_fn=sentinel)
+        self.assertIs(service._ctx.delegate_fn, sentinel)
+        self.assertIsNot(AgentService()._ctx.delegate_fn, sentinel)
 
     def test_agent_card_capabilities_still_cover_every_specialist(self) -> None:
         """The module-level domain import keeps the default card complete."""
@@ -107,49 +119,44 @@ class OrchestrationDoesNotImportAdaptersTest(unittest.TestCase):
 
 
 class CompositionRootWiresTheRemoteLookupTest(unittest.TestCase):
-    """Dependency inversion only helps if the composition root installs it.
+    """Dependency injection only helps if the composition root supplies it.
 
-    Nothing else in the suite reads the composition root, so deleting the
-    install call would leave every test here green while A2A remote delegation
-    silently stopped working — the resolver would exist, satisfy the port test
-    above, and never be reachable.
+    Nothing else in the suite reads the composition root's A2A wiring, so
+    dropping the ``delegate_fn`` argument would leave every test here green while
+    remote delegation silently stopped working.
     """
 
     SERVER = Path(__file__).resolve().parents[2] / "src" / "ai_assistant" / "bootstrap" / "server.py"
 
-    def _install_calls(self) -> list[ast.Call]:
-        tree = ast.parse(self.SERVER.read_text(encoding="utf-8"))
-        return [
-            node
-            for node in ast.walk(tree)
+    def setUp(self) -> None:
+        self.source = self.SERVER.read_text(encoding="utf-8")
+
+    def test_the_server_binds_the_registry_into_the_supervisor_delegate(self) -> None:
+        self.assertIn("remote_lookup=a2a_registry.resolve", self.source)
+
+    def test_the_server_injects_the_delegate_into_the_agent_service(self) -> None:
+        tree = ast.parse(self.source)
+        calls = [
+            node for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id == "set_remote_specialist_lookup"
+            and node.func.id == "AgentService"
         ]
+        self.assertEqual(len(calls), 1, "expected exactly one AgentService construction")
+        keywords = {keyword.arg for keyword in calls[0].keywords}
+        self.assertIn("delegate_fn", keywords)
 
-    def test_startup_installs_the_adapter_resolver(self) -> None:
-        """The server wires ``resolve_remote_specialist`` at startup."""
-        calls = self._install_calls()
-        self.assertTrue(calls, "the composition root never installs the remote-specialist lookup")
-        installed = {
-            arg.id
-            for call in calls
-            for arg in call.args
-            if isinstance(arg, ast.Name)
-        }
-        self.assertIn("resolve_remote_specialist", installed)
+    def test_the_router_and_resolver_share_one_registry_instance(self) -> None:
+        self.assertIn("A2ARouter(registry=a2a_registry)", self.source)
+        self.assertIn("a2a_registry = RemoteAgentRegistry()", self.source)
 
-    def test_shutdown_clears_the_lookup(self) -> None:
-        """A restart must not reuse a resolver bound to a torn-down adapter."""
-        self.assertTrue(
-            any(
-                len(call.args) == 1
-                and isinstance(call.args[0], ast.Constant)
-                and call.args[0].value is None
-                for call in self._install_calls()
-            ),
-            "the server must clear the lookup on shutdown",
-        )
+    def test_no_process_wide_lookup_remains(self) -> None:
+        self.assertNotIn("set_remote_specialist_lookup", self.source)
+
+    def test_the_composition_root_injects_the_at_rest_cipher(self) -> None:
+        self.assertIn("storage_cipher = load_storage_cipher()", self.source)
+        self.assertIn("storage_cipher=storage_cipher", self.source)
+        self.assertIn("cipher=platform.storage_cipher", self.source)
 
 
 if __name__ == "__main__":

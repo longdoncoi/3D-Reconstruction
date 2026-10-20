@@ -184,11 +184,13 @@ class ApprovalExecutionTests(_ServiceFixture):
         tool, params, run_token = gateway.issue_approval_grant.call_args_list[0].args
         direct_token = gateway.issue_approval_grant.call_args_list[1].args[2]
         self.assertEqual((tool, params), ("read_file", {"path": "notes.txt"}))
-        self.assertEqual(run_token, "a-1")
-        # The direct-execution grant is namespaced off the run token.
-        self.assertEqual(direct_token, "a-1#direct")
+        # The grants are opaque and independent: neither is derived from the
+        # action id, and the direct execution spends exactly the second one.
+        self.assertTrue(run_token.startswith("grant-"))
+        self.assertTrue(direct_token.startswith("grant-"))
+        self.assertNotEqual(run_token, direct_token)
         gateway.execute_approved.assert_called_once_with(
-            "read_file", {"path": "notes.txt"}, "a-1#direct"
+            "read_file", {"path": "notes.txt"}, direct_token
         )
 
     def test_approved_result_appends_tool_and_verification_steps(self) -> None:
@@ -228,7 +230,10 @@ class ApprovalExecutionTests(_ServiceFixture):
         kwargs = runner.call_args.kwargs
         self.assertTrue(kwargs["approval_granted"])
         self.assertEqual(kwargs["approval_scope"], "scope-1")
-        self.assertEqual(kwargs["approval_token"], "a-1")
+        self.assertEqual(
+            kwargs["approval_token"],
+            gateway.issue_approval_grant.call_args_list[0].args[2],
+        )
         self.assertTrue(kwargs["granted_fingerprint"])
         self.assertEqual(kwargs["initial_iteration"], 2)
         self.assertEqual(kwargs["prior_step_count"], 1)

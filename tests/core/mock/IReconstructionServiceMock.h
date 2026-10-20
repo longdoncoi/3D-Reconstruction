@@ -17,14 +17,7 @@ public:
     bool isRunning() const override { return false; }
     void stopReconstruction() override {}
     QStringList getImageList() const override { return {}; }
-    const std::vector<Point3D>& getPointCloud() const override {
-        static const std::vector<Point3D> s_empty;
-        return s_empty;
-    }
-    const std::vector<PointColor>& getPointColors() const override {
-        static const std::vector<PointColor> s_empty;
-        return s_empty;
-    }
+    std::shared_ptr<const PointCloudSnapshot> pointCloudSnapshot() const override { return {}; }
     size_t pointCount() const override { return 0; }
     bool hasResult() const override { return false; }
     void processPointCloud() override {}

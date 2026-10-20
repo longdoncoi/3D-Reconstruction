@@ -180,6 +180,43 @@ class AgentServiceFacadeTests(unittest.TestCase):
         with self.assertRaises(ModelNotLoadedError):
             service.execute(AgentExecuteRequest(task="do something"))
 
+    def test_model_lease_uses_and_falls_back_from_the_runtime_gate(self) -> None:
+        class _Gate:
+            def __init__(self) -> None:
+                self.entered = False
+                self.exited = False
+
+            def __enter__(self):
+                self.entered = True
+                return self
+
+            def __exit__(self, *exc) -> bool:
+                self.exited = True
+                return False
+
+        class _LeasedRuntime:
+            llm = object()
+            llm_lock = threading.RLock()
+
+            def __init__(self) -> None:
+                self.gate = _Gate()
+
+            def model_lease(self):
+                return self.gate
+
+        leased = _LeasedRuntime()
+        service = AgentService(llm_runtime=leased)
+        with service._model_lease():
+            pass
+        self.assertTrue(leased.gate.entered)
+        self.assertTrue(leased.gate.exited)
+
+        legacy = AgentService(llm_runtime=SimpleNamespace(
+            llm=object(), llm_lock=threading.RLock(),
+        ))
+        with legacy._model_lease():
+            pass
+
     def test_execute_delegates_to_agent_runner(self) -> None:
         mock_llm = MagicMock()
         mock_llm.llm = MagicMock()

@@ -1,5 +1,7 @@
 #include "ChatImageViewer.h"
 
+#include "FileUtilities.h"
+
 ChatImageViewer::ChatImageViewer(const QString &imagePath, QWidget *parent) : QDialog(parent) {
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     setAttribute(Qt::WA_TranslucentBackground);
@@ -22,7 +24,12 @@ ChatImageViewer::ChatImageViewer(const QString &imagePath, QWidget *parent) : QD
     layout->addWidget(topBar);
 
     QLabel *imgLabel = new QLabel(this);
-    QPixmap pix(imagePath);
+    // The attachment is sealed at rest: it must be unsealed before the pixmap
+    // is built — the file on disk is a ciphertext, not an image.
+    const QByteArray bytes =
+        FileUtilities::readAttachment(imagePath, QString::fromLatin1(FileUtilities::AttachmentContext));
+    QPixmap pix;
+    if (!bytes.isEmpty()) pix.loadFromData(bytes);
     if (!pix.isNull()) {
         QSize screenSize = screen()->size();
         QSize maxSize(screenSize.width() * 0.8, screenSize.height() * 0.8);

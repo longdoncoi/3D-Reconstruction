@@ -33,13 +33,13 @@
 #include "AppConstants.h"
 #include "ChatMessageRenderer.h"
 #include "IAppPaths.h"
-#include "../../utils/CustomProgressDialog.h"
+#include "IProgressDialog.h"
 #include "../../utils/ModernMessageBox.h"
 
 
 bool AIAssistantPlugin::initialize(IAppContext* context) {
     m_ctx = context;
-    m_aiAssistant = m_ctx->services()->get<IAIAssistantService>();
+    m_aiAssistant = m_ctx->services()->getRequired<IAIAssistantService>();
     
     if (m_aiAssistant) {
         m_aiAssistant->reloadSessions();
@@ -213,7 +213,7 @@ bool AIAssistantPlugin::initialize(IAppContext* context) {
     });
     
     m_progressDialog = m_ctx->shell()->getProgressDialog();
-    connect(m_progressDialog, &CustomProgressDialog::stopRequested, this, &AIAssistantPlugin::onProgressStopped);
+    connect(m_progressDialog, &IProgressDialog::stopRequested, this, &AIAssistantPlugin::onProgressStopped);
 
     connect(m_ctx->signalBus(), &SignalBus::userChanged, this, [this](const QString &username) {
         if (m_aiAssistant) {
@@ -236,6 +236,17 @@ bool AIAssistantPlugin::initialize(IAppContext* context) {
 }
 
 void AIAssistantPlugin::cleanup() {
+    // Dock widgets are parented to the MainWindow, not to this plugin. They
+    // must be destroyed before QPluginLoader unloads this DLL; otherwise Qt
+    // would later delete widgets whose implementation lives in unloaded code.
+    if (m_dockUI) {
+        if (m_ctx && m_ctx->shell())
+            m_ctx->shell()->deleteDockWidget(m_dockUI->dockWidget());
+        delete m_dockUI;
+        m_dockUI = nullptr;
+    }
+    delete m_ribbonUI;
+    m_ribbonUI = nullptr;
 }
 
 void AIAssistantPlugin::setupChatbotUI() {
@@ -429,7 +440,7 @@ void AIAssistantPlugin::onChatLinkClicked(const QUrl &url) {
         if (path.startsWith("/")) path.remove(0, 1);
         
         // Resolve relative path against the configured project root.
-        auto* paths = m_ctx->services()->get<IAppPaths>();
+        auto* paths = m_ctx->services()->getRequired<IAppPaths>();
         QString absPath = QDir(paths ? paths->projectRootDir() : QString()).absoluteFilePath(path);
         
         if (QFileInfo::exists(absPath)) {
@@ -557,7 +568,7 @@ void AIAssistantPlugin::onAttachFile() {
 
 void AIAssistantPlugin::addAttachmentPreview(const QString &filePath, bool isImage) {
     if (!m_dockUI) return;
-    auto* paths = m_ctx->services()->get<IAppPaths>();
+    auto* paths = m_ctx->services()->getRequired<IAppPaths>();
     if (!paths) return;
     FileUtilities::AttachmentResult result = FileUtilities::processAttachment(
         filePath,

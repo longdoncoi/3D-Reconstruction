@@ -10,9 +10,11 @@
 - **Một hàm duy nhất, idempotent, có thứ tự.** `compose()` build cả object
   graph theo đúng thứ tự phụ thuộc (logging → proactor patch → registry →
   env toggles → instances → container → services → app → router → A2A/MCP).
-  Khoá `RLock`; cờ `_COMPOSED` đặt **trước** body: lỗi giữa chừng propagate
-  ở lần gọi đầu và để module ở trạng thái composed-but-broken — không
-  retry half-built graph (chạy lại `setup_logging` sẽ nhân đôi mọi handler).
+  Khoá `RLock`; cờ `_COMPOSED` đặt trước body để chặn back-edge
+  `compose() → _register_optional_protocols() → compose()`; nếu body raise,
+  wrapper công khai reset cờ về `False` và propagate lỗi, nên lần access sau
+  retry thay vì coi graph dở dang là đã composed (retry an toàn: handler log
+  cũ bị thay, không nhân đôi output).
 - **Ba lối vào, một semantics.** `main()` và `bootstrap_runtime()` gọi
   `compose()` không điều kiện; accessor đầu tiên của một tên trong
   `_COMPOSED_NAMES` (`server.app`, `from server import llm_module`, …) kích

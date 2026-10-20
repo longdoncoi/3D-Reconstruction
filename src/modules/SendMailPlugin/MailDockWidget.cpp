@@ -6,7 +6,7 @@
 #include "MailSettingsDialog.h"
 #include "IAppContext.h"
 #include "IShellService.h"
-#include "CustomProgressDialog.h"
+#include "IProgressDialog.h"
 #include "ModernMessageBox.h"
 #include "IUserManager.h"
 
@@ -18,6 +18,7 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -37,7 +38,7 @@
 MailDockWidget::MailDockWidget(IAppContext *ctx, QObject *parent)
     : QObject(parent), m_ctx(ctx)
 {
-    m_mail = m_ctx->services()->get<IMailService>();
+    m_mail = m_ctx->services()->getRequired<IMailService>();
     loadFilterSettings();
     setupUi();
 }
@@ -302,7 +303,7 @@ void MailDockWidget::refreshInbox()
     auto *progress = m_ctx->shell()->getProgressDialog();
     progress->setLabelText(m_ctx->translate("mail.loading_inbox"));
     progress->setRange(0, 0);
-    connect(progress, &CustomProgressDialog::stopRequested, progress, &CustomProgressDialog::hide, Qt::UniqueConnection);
+    connect(progress, &IProgressDialog::stopRequested, progress, &IProgressDialog::hide, Qt::UniqueConnection);
     progress->show();
     progress->centerOnWidget(m_dock);
     // Repaint without re-entering user input (see ViewerPlugin).

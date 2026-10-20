@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.testclient import TestClient
 
 from ai_assistant.adapters.http.security import (
@@ -24,6 +24,7 @@ from ai_assistant.adapters.http.security import (
     agent_guards,
     mcp_exposed_without_token,
     mcp_guarded_app,
+    resolve_a2a_tenant,
 )
 
 _LOCAL = ("127.0.0.1", 50000)
@@ -118,6 +119,31 @@ class A2ASurfaceGuardTests(unittest.TestCase):
             200,
         )
 
+    def test_remote_a2a_accepts_a_tenant_mapping_as_the_credential_source(self) -> None:
+        policy = TransportPolicy(allow_remote_a2a=True, a2a_tenants={"tok-a": "alpha"})
+        response = _client(policy, a2a_guards, peer=_REMOTE).get(
+            "/probe", headers={"Authorization": "Bearer tok-a"},
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_resolve_a2a_tenant_enforces_the_single_token(self) -> None:
+        policy = TransportPolicy(a2a_token="secret")
+        app = FastAPI()
+
+        @app.get("/probe")
+        def probe(request: Request) -> dict[str, str]:
+            return {"tenant": resolve_a2a_tenant(request, policy)}
+
+        client = TestClient(app, client=_LOCAL)
+        self.assertEqual(client.get("/probe").status_code, 401)
+        self.assertEqual(
+            client.get("/probe", headers={"Authorization": "Bearer wrong"}).status_code,
+            401,
+        )
+        response = client.get("/probe", headers={"Authorization": "Bearer secret"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"tenant": "default"})
+
 
 class PolicyLoadingTests(unittest.TestCase):
     def test_from_env_reads_tokens_and_settings(self) -> None:
@@ -140,6 +166,10 @@ class PolicyLoadingTests(unittest.TestCase):
         self.assertEqual(policy.a2a_token, "")
         self.assertEqual(policy.mcp_token, "")
         self.assertFalse(policy.allow_remote_a2a)
+
+    def test_from_env_reads_the_a2a_tenant_mapping(self) -> None:
+        policy = TransportPolicy.from_env(env={"AI_A2A_TENANTS": '{"tok-a": "alpha"}'})
+        self.assertEqual(policy.a2a_tenants, {"tok-a": "alpha"})
 
 
 class MountedMCPGuardTests(unittest.TestCase):

@@ -29,8 +29,7 @@ public:
     bool isRunning() const override;
     void stopReconstruction() override;
     QStringList getImageList() const override;
-    const std::vector<Point3D>& getPointCloud() const override;
-    const std::vector<PointColor>& getPointColors() const override;
+    std::shared_ptr<const PointCloudSnapshot> pointCloudSnapshot() const override;
     size_t pointCount() const override;
     bool hasResult() const override;
     void processPointCloud() override;
@@ -52,6 +51,9 @@ private:
     /// predicate truyền vào pipeline. Reset ở đầu mỗi lần reconstruct().
     std::atomic<bool> m_cancelRequested{false};
     mutable std::shared_mutex m_mutex;
+    /// Cached ABI-neutral result. Built once per completed run and replaced
+    /// (never mutated in place) so callers holding a snapshot stay valid.
+    mutable std::shared_ptr<const PointCloudSnapshot> m_snapshot;
     /// QThread nội bộ chạy ReconstructionWorker (moveToThread pattern);
     /// không bao giờ move `this` — chỉ worker được move. Ownership tường minh:
     /// service xóa cả hai trong finishRun()/destructor sau khi join thread.

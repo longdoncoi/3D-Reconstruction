@@ -1,12 +1,37 @@
 #include "ChatMessageRenderer.h"
 #include "ChatTemplates.h"
+#include "FileUtilities.h"
 #include "../../utils/HtmlUtilities.h"
+#include <QHash>
 #include <QTextBrowser>
 #include <QUrl>
 #include <QFileInfo>
 #include <QStringList>
 
 namespace {
+
+/// The chat history embeds the attachment image as a data: URL: the file on
+/// disk is sealed, so the HTML renderer cannot read it from the file system
+/// any more. The result is cached because the history is re-rendered on every
+/// streamed answer.
+QString attachmentImageDataUrl(const QString &path) {
+    static QHash<QString, QString> cache;
+    const auto cached = cache.constFind(path);
+    if (cached != cache.constEnd()) return cached.value();
+
+    const QByteArray bytes =
+        FileUtilities::readAttachment(path, QString::fromLatin1(FileUtilities::AttachmentContext));
+    if (bytes.isEmpty()) return {};
+
+    const bool isJpeg = path.endsWith(".jpg") || path.endsWith(".jpeg");
+    const QString mimeType = isJpeg ? QStringLiteral("image/jpeg") : QStringLiteral("image/png");
+    const QString url = QStringLiteral("data:") + mimeType + QStringLiteral(";base64,")
+                        + QString::fromLatin1(bytes.toBase64());
+    if (cache.size() >= 24) cache.clear();
+    cache.insert(path, url);
+    return url;
+}
+
 int commonStepPrefixLength(const QJsonArray& previous, const QJsonArray& current) {
     const int limit = qMin(previous.size(), current.size());
     int index = 0;
@@ -262,7 +287,21 @@ QString ChatMessageRenderer::buildMessageHtml(const QString &role, const QString
             for (const auto &v : attachments) {
                 QString path = v.toString();
                 if (path.endsWith(".png") || path.endsWith(".jpg") || path.endsWith(".jpeg")) {
-                    innerAtt += ChatTemplates::IMAGE_ATTACHMENT.arg(path).arg(QUrl::fromLocalFile(path).toString());
+                    const QString imageUrl = attachmentImageDataUrl(path);
+                    if (imageUrl.isEmpty()) {
+                        // The attachment could not be unsealed: show its name
+                        // instead of a broken image.
+                        innerAtt += ChatTemplates::FILE_ATTACHMENT
+                                    .arg(QUrl::fromLocalFile(path).toString())
+                                    .arg(QFileInfo(path).fileName());
+                    } else {
+                        innerAtt += ChatTemplates::IMAGE_ATTACHMENT.arg(path).arg(imageUrl);
+                    }
+                } else if (FileUtilities::isSealedAttachment(path)) {
+                    // A sealed file is ciphertext on disk: a "file://" link
+                    // would hand the OS handler garbage, so the name is shown
+                    // without a link.
+                    innerAtt += ChatTemplates::FILE_ATTACHMENT_SEALED.arg(QFileInfo(path).fileName());
                 } else {
                     innerAtt += ChatTemplates::FILE_ATTACHMENT
                                 .arg(QUrl::fromLocalFile(path).toString())

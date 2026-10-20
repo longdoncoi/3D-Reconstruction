@@ -35,50 +35,58 @@ class LoopbackCheckTests(unittest.TestCase):
 
 
 def _agent(*, vision: bool = False):
+    """Wire the specialist with a mock LLM handle and a mock prompt builder.
+
+    The prompt builder is a *separate* collaborator from the LLM handle: the
+    specialist used to reach the prompt methods through the handle, which only
+    worked while they were one object and broke the chat route outright once
+    they were split.
+    """
     llm = MagicMock()
-    llm._is_character_query.return_value = False
     llm.is_vision_model = vision
+    prompts = MagicMock()
+    prompts.is_character_query.return_value = False
     rag = MagicMock()
     rag.get_context.return_value = ("docs", "code", [{"img": 1}])
-    return ChatbotAgent(llm, rag), llm, rag
+    return ChatbotAgent(llm, rag, prompts), llm, prompts, rag
 
 
 class VisionArmTests(unittest.TestCase):
     def test_a_vision_model_with_an_image_uses_the_vision_builder(self):
-        agent, llm, _ = _agent(vision=True)
-        llm.build_vision_messages.return_value = [{"role": "user", "content": "v"}]
+        agent, _llm, prompts, _rag = _agent(vision=True)
+        prompts.build_vision_messages.return_value = [{"role": "user", "content": "v"}]
         prepared, meta = agent.build_messages(
             [{"role": "user", "content": "hi"}], "what is this", "img-uri", "vi",
         )
-        llm.build_vision_messages.assert_called_once()
-        llm.build_text_messages.assert_not_called()
+        prompts.build_vision_messages.assert_called_once()
+        prompts.build_messages.assert_not_called()
         self.assertEqual(prepared, [{"role": "user", "content": "v"}])
         self.assertEqual(meta, {"suppress_citations": False})
 
     def test_chunks_are_dropped_when_no_image_is_attached(self):
-        agent, llm, _ = _agent(vision=False)
-        llm.build_text_messages.return_value = []
+        agent, _llm, prompts, _rag = _agent(vision=False)
+        prompts.build_messages.return_value = []
         agent.build_messages([{"role": "user", "content": "hi"}], "q", None, "vi")
-        _, kwargs = llm.build_text_messages.call_args
+        _, kwargs = prompts.build_messages.call_args
         _ = kwargs  # positional call; chunks were cleared before dispatch
-        llm.build_vision_messages.assert_not_called()
+        prompts.build_vision_messages.assert_not_called()
 
 
 class CleanAnswerTests(unittest.TestCase):
     def test_a_plain_answer_passes_through(self):
-        agent, llm, _ = _agent()
+        agent, _llm, prompts, _rag = _agent()
         self.assertEqual(agent.clean_answer("a [1]", {}, "stop"), "a [1]")
-        llm._strip_reference_citations_for_character_answer.assert_not_called()
+        prompts.strip_citations.assert_not_called()
 
     def test_character_answers_lose_their_citations(self):
-        agent, llm, _ = _agent()
-        llm._strip_reference_citations_for_character_answer.return_value = "clean"
+        agent, _llm, prompts, _rag = _agent()
+        prompts.strip_citations.return_value = "clean"
         self.assertEqual(
             agent.clean_answer("a [1]", {"suppress_citations": True}, "stop"), "clean",
         )
 
     def test_a_truncated_answer_warns_the_user(self):
-        agent, _, _ = _agent()
+        agent, _, _, _ = _agent()
         self.assertIn("incomplete", agent.clean_answer("half", {}, "length"))
 
 

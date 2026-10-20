@@ -81,6 +81,25 @@ class AgentSafePathTests(unittest.TestCase):
         ):
             self.assertIsNone(agent_safe_path("src/app/main.py"))
 
+    def test_a_symlink_that_leaves_the_sandbox_is_rejected(self) -> None:
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        link = os.path.join(self.root, "escape")
+        try:
+            os.symlink(outside.name, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are not available for this user")
+        self.assertIsNone(agent_safe_path("escape/secret.txt"))
+
+    def test_a_realpath_mismatch_is_rejected_even_without_a_symlink(self) -> None:
+        # Force the second containment check so its false branch is exercised
+        # on platforms where creating symlinks needs elevated privileges.
+        with mock.patch(
+            "ai_assistant.tools.builtin.path_utils.os.path.commonpath",
+            side_effect=[self.root, os.path.dirname(self.root)],
+        ):
+            self.assertIsNone(agent_safe_path("src/app/main.py"))
+
     def test_constant_defaults_present(self) -> None:
         self.assertIn(".exe", _AGENT_BLOCKED_EXTS)
         self.assertIn(".git", _AGENT_BLOCKED_DIRS)

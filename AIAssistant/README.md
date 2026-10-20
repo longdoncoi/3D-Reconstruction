@@ -124,7 +124,7 @@ AIAssistant/
 │  │  ├─ index.py                     # Xây/dựng cache/lưu chỉ mục FAISS + BM25
 │  │  ├─ retrievers.py                # Retriever sản xuất trên FAISS đã cache + bảng BM25
 │  │  ├─ retrieval.py                 # Pipeline truy xuất + định dạng context
-│  │  ├─ cache_integrity.py           # Niêm phong HMAC cho cache on-disk (pickle + FAISS)
+│  │  ├─ cache_seal.py                # Định dạng cache RAG đã niêm phong (ADR 0028)
 │  │  ├─ domain.py                    # Model domain của RAG (chunk, hit…)
 │  │  └─ nlp_utils.py                 # Tiện ích NLP phục vụ RAG
 │  │
@@ -152,7 +152,7 @@ AIAssistant/
 │  │  ├─ a2a_payloads.py              # Build payload, map state, redaction dữ liệu nhạy cảm
 │  │  ├─ a2a_router.py                # Router FastAPI A2A: /message:send, /tasks/*, /a2a/tasks/*
 │  │  ├─ a2a_client.py                # TrustedA2AClient — transport remota duy nhất, allowlist-only
-│  │  ├─ a2a_protocol.py              # Dịch giữa A2A và specialist (resolve_remote_specialist)
+│  │  ├─ a2a_protocol.py              # RemoteAgentRegistry + A2ARouter (khám phá và định tuyến A2A)
 │  │  ├─ mcp.py                       # McpToolServer — máy chủ công cụ MCP
 │  │  ├─ http/
 │  │  │  ├─ __init__.py               # HTTP adapters package
@@ -170,7 +170,8 @@ AIAssistant/
 │  │     ├─ __init__.py               # Persistence adapters package
 │  │     ├─ checkpointing.py          # Checkpointer LangGraph hoán đổi được, fallback an toàn
 │  │     ├─ pending_store.py          # PendingActionStore bền vững (file-backed) cho phê duyệt
-│  │     └─ sqlite_store.py           # TaskStore lưu SQLite
+│  │     ├─ sqlite_store.py           # TaskStore lưu SQLite
+│  │     └─ storage_crypto.py         # AES-256-GCM field cipher cho state at-rest (ADR 0027)
 │  │
 │  ├─ plugins/                        # ── LỚP PLUGINS: nạp plugin bên thứ ba ──
 │  │  ├─ __init__.py                  # Export Plugin, PluginRegistry, ToolPlugin
@@ -214,12 +215,13 @@ AIAssistant/
 ├─ scripts/
 │  ├─ mutation_check.py               # Đảo từng quyết định trọng yếu; test sở hữu phải fail
 │  ├─ generate_sbom.py                # CycloneDX: distribution từ lock + artifact GGUF (ADR 0023)
+│  ├─ rekey_storage.py                # Xoay khoá at-rest: --verify / --dry-run / xoay (ADR 0030)
 │  └─ verify_models.py                # Pre-flight OK/MISSING/MISMATCH cho GGUF đã tải (ADR 0023)
 ├─ tests/
 │  ├─ unit/                           # Hành vi từng module (concurrency, approval, streaming…)
 │  ├─ integration/                    # Composition root, orchestration, A2A e2e, guard ranh giới AST
 │  └─ contract/                       # Hợp đồng Qt ↔ server và multi-agent
-├─ Docs/adr/                          # 25 Architecture Decision Record (0001–0025)
+├─ Docs/adr/                          # 31 Architecture Decision Record (0001–0031)
 ├─ Docs/archive/                      # Tài liệu đã hạ cấp (giữ để tham chiếu)
 ├─ Docs/RUNBOOK.md                    # SLO, cảnh báo, quy trình production (ADR 0024)
 ├─ Dockerfile                         # Image non-root (không kèm trọng số; mount Models/ + data)
@@ -293,11 +295,26 @@ không import `rag`, và `agents/` không import adapter nào — persistence ch
   công cụ chạy, và composition root tiêm cho nó event sink: mọi thực thi đều
   được ghi thành **một dòng JSON đã redact** trên logger `agent.tools`
   (`observability/tool_events.py`).
-* **Cache RAG được niêm phong, không được tin.** `save_cache` niêm phong FAISS
-  index, chunk pickle và BM25 pickle bằng một key nằm **ngoài** thư mục cache
-  (`<data_dir>/.secrets/cache_hmac_key`, 0600); `load_cache`
-  (`rag/cache_integrity.py`) coi thiếu key, thiếu record hoặc digest lệch là
-  **cache miss** — không bao giờ là code để chạy.
+* **Cache RAG được niêm phong, không được tin — và không đọc được** (ADR 0028).
+  `Cache/chunks.pkl` chứa **nguyên văn** tài liệu người dùng đã index (kèm ảnh
+  base64), `bm25.pkl` chứa corpus đã token hoá, `faiss_index.bin` chứa
+  embedding. Cả ba giờ được **mã hoá** bằng **đúng key** của ADR 0027 (một key
+  cho mọi thứ app ghi ra đĩa), nên một bản sao volume dữ liệu không còn đọc
+  được corpus. Index FAISS được **serialize trong RAM** rồi mới seal — không
+  bao giờ chạm đĩa ở dạng rõ. Cache không xác thực được (sai key, bị sửa,
+  chưa seal, cache của version cũ) là **miss** → dựng lại, không bao giờ
+  unpickle payload chưa xác thực.
+* **State cục bộ được mã hoá at-rest** (ADR 0027). `adapters/persistence/storage_crypto.py`
+  bọc **theo field** bằng AES-256-GCM: envelope `enc:v1:<base64(nonce||ciphertext)>`,
+  nonce random 96-bit cho từng field, và **tên field làm associated data** nên
+  ciphertext bị chuyển sang cột khác sẽ fail authentication. `compose()` nạp key
+  **một lần** (fail-closed) rồi tiêm vào `SqliteTaskStore` và
+  `PendingActionStore`; đọc state đã seal mà thiếu/sai key thì **abort**, không
+  bao giờ trả ciphertext lên tầng trên. Key lấy từ `AI_STORAGE_KEY` →
+  `AI_STORAGE_KEY_FILE` → tự sinh một lần ở `%LOCALAPPDATA%`/`$XDG_CONFIG_HOME`
+  (**ngoài** `APP_DATA_DIR`, nên backup volume không mang theo key). Cột chỉ mô tả
+  (id, status, owner, timestamp) vẫn plaintext để SQL filter/retention/tenant
+  còn chạy trên chỉ mục thật.
 * **Hủy job được đo đúng chỗ runner dừng.** `TaskCoordinator.cancel()` đóng dấu
   `cancelled_at`, `finish()` báo delta qua observer mà composition root tiêm vào
   histogram Prometheus `agent_recovery_seconds`.
@@ -347,7 +364,9 @@ không import `rag`, và `agents/` không import adapter nào — persistence ch
   `adapters/a2a_client.TrustedA2AClient` (allowlist-only); allowlist là tập hợp
   triển khai từ `settings.a2a_trusted_endpoints()` — không cấu hình gì thì mọi
   điều phối remota fail closed (ADR 0012). Supervisor chỉ chạm A2A qua đảo ngược
-  phụ thuộc (`set_remote_specialist_lookup`).
+  phụ thuộc: `compose()` tạo một `RemoteAgentRegistry`, tiêm cùng instance đó
+  vào `A2ARouter` và vào `functools.partial(delegate, remote_lookup=…)` của
+  `AgentService`; không còn lookup toàn tiến trình.
 * **Từ vựng bàn giao là dữ liệu registry, không phải luồng điều khiển:**
   `TRANSFER_TARGETS` trong `domain/specialists.py` là nơi đặt tên duy nhất cho
   mọi handoff; routing theo công cụ là bảng `_TOOL_ROUTE_RULES` được `_route`
@@ -414,11 +433,21 @@ với các specialist logic**. Cách này giữownership rõ ràng và các bư�
   đã persist so với `get_args(StepType)`. Không request HTTP/A2A inbound nào
   mang trường `steps` — có test ghim điều đó.
 * **Cứng hoá transport.** ADR 0008 — peer loopback + allow-list `Origin` + bearer
-  tuỳ chọn theo từng bề mặt, A2A remota không thể bật khi thiếu `AI_A2A_TOKEN`
-  (fail closed). ADR 0009 — phê duyệt là capability dùng một lần, gắn với đúng
+  tuỳ chọn theo từng bề mặt, A2A remota không thể bật khi thiếu credential:
+  `AI_A2A_TOKEN` (single-tenant) hoặc mapping `AI_A2A_TENANTS` (mỗi token sở
+  hữu task riêng). ADR 0009 — phê duyệt là capability dùng một lần, gắn với đúng
   lời gọi (`approval_fingerprint` + grant store). ADR 0010 — domain sở hữu một
   chính sách redaction duy nhất. ADR 0011 — sandbox lệnh từ chối code interpreter
   nội tuyến (`-c`, `-m`, `-`) và shell substitution.
+* **Mã hoá at-rest cho state cục bộ** (ADR 0027). Prompt, đối số tool, kết quả
+  model và event log không còn nằm plaintext trên đĩa. Key được **tiêm** từ
+  composition root (không có global), đọc thiếu/sai key thì **fail closed**,
+  và row plaintext cũ được seal đúng **một lần** nhờ `PRAGMA user_version = 3`.
+* **Cache RAG dùng chung key đó** (ADR 0028). `Cache/chunks.pkl` là **bản sao
+  thứ hai của corpus tài liệu** (kèm ảnh base64) — nên nó được seal như mọi
+  thứ khác, **một key cho tất cả**. HMAC cũ bị bỏ (GCM đã tự xác thực), index
+  FAISS được serialize trong RAM trước khi seal, và cache không xác thực
+  được thì là **miss** → dựng lại, không bao giờ unpickle payload chưa xác thực.
 * **Di sản đã xoá, không phải được tài liệu hoá** (ADR 0006/0012/0013/0014).
   Package `modules/` và shim `legacy/` không còn tồn tại; mọi production import
   đi thẳng `ai_assistant.*`. Hợp đồng import-linter và guard AST giữ `modules`
@@ -483,6 +512,7 @@ Hugging Face + SHA-256; kiểm tra trước khi chạy server:
 ```powershell
 python AIAssistant/scripts/verify_models.py          # OK/MISSING/MISMATCH, exit 1 nếu lệch pin
 python AIAssistant/scripts/generate_sbom.py --output sbom.json   # CycloneDX: lock (version + SHA-256) + model artifacts
+python AIAssistant/scripts/rekey_storage.py --verify  # Kiểm tra khoá at-rest có mở được state không (ADR 0030)
 ```
 
 Biến runtime đặt trong `AIAssistant/.env` (git-ignored); bắt đầu từ
@@ -548,9 +578,10 @@ PYTHONPATH=src python scripts/mutation_check.py
 Các cổng là **cấu hình**, không phải cờ dòng lệnh: `pyproject.toml` sở hữu breadth
 lint (`E/W/F/I/BLE/S/RUF/C90/N/TRY`, complexity ≤ 15), thiết lập mypy strict và
 sàn coverage theo branch (`fail_under = 100`), nên lần chạy cục bộ và CI đo cùng
-một thứ. Theo lần đo ngày 2026-10-16 (các con số đo được được ghi lại trong
+một thứ. Theo lần đo ngày 2026-10-20 (các con số đo được được ghi lại trong
 `Docs/SCORECARD.md` — bản local, không theo git): **100.00%** statement *và*
-branch toàn package, và **39/39** kill trong mutation check.
+branch toàn package (9 021 statement / 2 360 branch, 1 975 test), và **67/67**
+kill trong mutation check.
 
 * `tests/unit/` — hành vi từng module, gồm cả các ca biên về concurrency, phê
   duyệt và streaming.
@@ -558,10 +589,10 @@ branch toàn package, và **39/39** kill trong mutation check.
   và các guard ranh giới layer bằng AST.
 * `tests/contract/` — hợp đồng Qt ↔ server và wiring multi-agent.
 * `scripts/mutation_check.py` — đảo từng quyết định trọng yếu (allowlist sandbox,
-  phê duyệt HITL, `/health`, niêm phong cache, các cuộc đua cancel…) và **bắt
+  phê duyệt HITL, `/health`, niêm phong cache, mã hoá at-rest, các cuộc đua cancel…) và **bắt
   buộc** test sở hữu phải fail; CI chạy lại con số này mỗi lần push (mutant recompose
   được ghim bằng timeout 180s — ADR 0022). Con số là một đo lường, không phải mục
-  tiêu: nó tái lập được khi cài `faiss-cpu`, `rank-bm25` và `mcp`
+  tiêu: nó tái lập được khi cài `faiss-cpu`, `rank-bm25`, `mcp` và `cryptography`
   (`requirements-test.lock`).
 * `evals/` — hai eval tất định, offline chạy trong CI trên mọi push/PR chạm
   `AIAssistant/**` (`run_tool_eval.py` cho envelope tool-call — 16 case gồm
@@ -587,7 +618,7 @@ branch toàn package, và **39/39** kill trong mutation check.
 | `README.md` (file này) | Điểm vào duy nhất: layout, kiến trúc, API, cài đặt, kiểm thử |
 | `Docs/SCORECARD.md` | Các metric đo được (coverage, mutation, lint, type, eval) — bản local, không theo git |
 | [`Docs/RUNBOOK.md`](Docs/RUNBOOK.md) | Vận hành production: SLO, cảnh báo, quota, checkpoint, luân chuyển pin model |
-| [`Docs/adr/`](Docs/adr/) | 25 Architecture Decision Record (0001–0025) |
+| [`Docs/adr/`](Docs/adr/) | 31 Architecture Decision Record (0001–0031) |
 | [`Docs/archive/`](Docs/archive/) | Tài liệu đã hạ cấp, giữ lại để tham chiếu lịch sử |
 
 > `Docs/` chỉ chứa `adr/`, `archive/`, `RUNBOOK.md` và `SCORECARD.md`. Các bản
@@ -620,7 +651,13 @@ Các quyết định trọng yếu, theo thứ tự:
 [0022](Docs/adr/0022-true-lazy-strict-10-10.md) root lười đúng nghĩa, strict 10/10,
 [0023](Docs/adr/0023-artifact-pinning-production-gates.md) pin artifact & cổng production fail-closed,
 [0024](Docs/adr/0024-admission-governor.md) governor admission (rate limit, run budget, SLO),
-[0025](Docs/adr/0025-eval-expansion.md) eval mở rộng (adversarial, gateway, multilingual, baseline).
+[0025](Docs/adr/0025-eval-expansion.md) eval mở rộng (adversarial, gateway, multilingual, baseline),
+[0026](Docs/adr/0026-a2a-registry-owned-by-composition-root.md) A2A registry & remote lookup thuộc composition root,
+[0027](Docs/adr/0027-at-rest-encryption-local-state.md) mã hoá at-rest cho state cục bộ,
+[0028](Docs/adr/0028-sealed-rag-cache.md) cache RAG cũng được niêm phong,
+[0029](Docs/adr/0029-prompt-builder-as-a-port.md) prompt builder là một port riêng,
+[0030](Docs/adr/0030-at-rest-key-rotation.md) xoay khoá at-rest,
+[0031](Docs/adr/0031-sealed-chat-attachments.md) file đính kèm chat cũng được niêm phong.
 
 Cài đặt trong lúc phát triển: `pip install -e AIAssistant`. Cấu hình triển khai
 nằm trong `config/*.toml`; các ADR ràng buộc nằm trong `Docs/adr/`.

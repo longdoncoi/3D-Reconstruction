@@ -127,7 +127,7 @@ class ApprovalResumeTests(unittest.TestCase):
         self.assertTrue(tools.grants, "a grant must be issued before execution")
         tool, token = tools.grants[0]
         self.assertEqual(tool, "write")
-        self.assertTrue(token.startswith("a2a:"))
+        self.assertTrue(token.startswith("grant-"))
         self.assertEqual(len(tools.calls), 1)
         self.assertEqual(tools.calls[0][2], token)  # the same token is spent
 

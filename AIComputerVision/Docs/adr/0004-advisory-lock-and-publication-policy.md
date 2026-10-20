@@ -20,7 +20,12 @@ ONNX on disk is worse than no ONNX.
   read-train-write window. A second run fails fast with `ConcurrentRunError`
   (exit `2`) instead of racing. The lock is released with the process; a lock
   older than `LOCK_STALE_SECONDS` (24 h) is treated as abandoned and replaced
-  with a warning, so a crash cannot wedge the next run forever.
+  with a warning, so a crash cannot wedge the next run forever. Stealing is
+  serialised by a `.cvtrain.lock.steal` sidecar claim (`O_EXCL`) and rechecks
+  the lock age under that claim (amended 2026-10-20): the previous
+  check-then-delete path let two processes both observe the same stale lock
+  and the slower one delete the lock the faster one had just created. A claim
+  abandoned by a crashed stealer ages out after `STEAL_STALE_SECONDS` (60 s).
 - Publishing replaces the previous ONNX in place and keeps one generation at
   `<name>.onnx.bak`. The backup is a recovery artifact only: it has no manifest
   entry, `--verify-manifest` ignores it, and `--skip-unchanged` never trusts it.

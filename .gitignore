@@ -121,6 +121,7 @@ CMakeLists.txt.user*
 /AIAssistant/.ruff_cache/
 # mutation_check's in-flight lock — its absence is what "safe to mutate" means.
 /AIAssistant/scripts/.mutation_check.lock
+/AIComputerVision/scripts/.mutation_check.lock
 /AIAssistant/Models/.cache/
 **/__pycache__/
 /AIComputerVision/runs/
@@ -134,6 +135,8 @@ CMakeLists.txt.user*
 # Advisory lock a training run holds over Models/ (cvtrain.fsio), and copies of
 # a manifest that could not be parsed (cvtrain.manifest). Never tracked.
 /AIComputerVision/Models/.cvtrain.lock
+# Sidecar claim that serialises stealing a stale lock; abandoned only by a crash.
+/AIComputerVision/Models/.cvtrain.lock.steal
 /AIComputerVision/Models/manifest.json.corrupt-*
 
 # Custom App Ignores

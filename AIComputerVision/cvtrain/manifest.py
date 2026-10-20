@@ -49,7 +49,8 @@ SCHEMA_VERSION = 1
 """Version of the document shape this build writes. See :func:`migrate`."""
 
 # Adding optional entry fields (batch, workers, backend_version,
-# source_weights_sha256, device, dataset_sha256) deliberately does *not* bump
+# source_weights_sha256, device, dataset_sha256, dataset_content_sha256)
+# deliberately does *not* bump
 # this: ``ManifestEntry`` is ``total=False``, so their absence is a shape this
 # build already knows how to read, and the consumer that cares —
 # ``gate.already_current`` — treats a missing value as "provenance we do not
@@ -86,11 +87,14 @@ class ManifestEntry(TypedDict, total=False):
     workers: int
 
     backend_version: str
-    """Version of the framework that produced this artifact.
+    """Composite exporter identity of the stack that produced this artifact.
 
-    Recorded *per entry* (the document-level ``ultralytics`` field describes
-    only the last run) because :func:`cvtrain.gate.already_current` has to
-    know which exporter wrote the file it is being asked to trust."""
+    Names ``cvtrain``, ``ultralytics``, ``torch`` and ``onnx``; see
+    :func:`cvtrain.backend.exporter_identity`. Recorded *per entry* (the
+    document-level ``ultralytics`` field describes only the last run) because
+    :func:`cvtrain.gate.already_current` has to know which exporter wrote the
+    file it is being asked to trust — an Ultralytics upgrade is not the only
+    dependency that can change the emitted graph."""
 
     device: str
     """Compute device class the artifact was trained on (``auto`` when unset).
@@ -100,15 +104,21 @@ class ManifestEntry(TypedDict, total=False):
     compares rather than an interesting fact nobody checks."""
 
     dataset_sha256: str
-    """Digest of ``data.yaml`` as it was when the artifact was trained.
+    """Digest of ``data.yaml`` captured *before* the artifact was trained.
 
     The path is not provenance: the YAML defines the classes, the splits and
     the image locations, so an edited file behind an unchanged name is a
-    different experiment. Absent when the file was not on disk while recording,
-    which makes ``--skip-unchanged`` retrain rather than assume it matches."""
+    different experiment. Absent when the file could not be read before
+    training, which makes ``--skip-unchanged`` retrain rather than assume it
+    matches."""
 
     dataset_content_sha256: str
-    """Digest of the dataset contents (relative paths and file bytes) when recorded."""
+    """Digest of the dataset contents captured before training.
+
+    Covers the bytes and relative names reachable from every ``train``/``val``
+    reference shape (directory, glob, single file, ``.txt`` listing, list).
+    ``gate.already_current`` requires it: an entry without it is unproven, not
+    automatically current."""
 
     source_weights_sha256: str
     """Digest of the base checkpoint the model was actually trained from.
@@ -178,7 +188,12 @@ class Manifest(TypedDict, total=False):
     entries: dict[str, ManifestEntry]
     last_run: LastRun
     ultralytics: str
-    """Version of the backend that produced the last run (key is historical)."""
+    """Composite exporter identity of the last run (key is historical).
+
+    Despite the name, the value is the full ``cvtrain``/``ultralytics``/
+    ``torch``/``onnx`` identity written by the backend. Per-entry values live
+    in ``backend_version``; this header field only describes the latest run.
+    """
     updated_at: str
 
 
@@ -433,7 +448,8 @@ def build_from_scan(models_dir: Path) -> Manifest:
     adopted: vouching for an unknown ONNX would hand it a clean verification
     with no provenance behind it, so ``verify_manifest`` reports a stray
     instead. Any training metadata already recorded in the manifest is
-    preserved as long as the file content is unchanged.
+    preserved as long as the file content is unchanged, while entries whose
+    file is gone are pruned — a scan describes the directory as it is now.
     """
 
     manifest = load_manifest(models_dir)
@@ -441,6 +457,15 @@ def build_from_scan(models_dir: Path) -> Manifest:
     entries = manifest["entries"]
 
     scanned = now_utc_iso()
+    # A scan describes the directory as it is now, so an entry whose file is
+    # gone is stale evidence rather than provenance worth keeping. Without this
+    # ``--write-manifest`` left a deleted model recorded forever, and the next
+    # ``--verify-manifest`` reported a ghost the scan itself could have pruned.
+    for filename in sorted(entries):
+        if not (models_dir / filename).exists():
+            LOG.info("Pruning manifest entry for missing file: %s", filename)
+            del entries[filename]
+
     for spec in MODEL_REGISTRY.values():
         path = models_dir / spec.output
         if not path.exists():

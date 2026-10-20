@@ -15,6 +15,8 @@ import time.
 from __future__ import annotations
 
 import json
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,10 +26,7 @@ from ai_assistant.domain.security import DataClassification
 from ai_assistant.domain.specialists import Specialist
 from ai_assistant.settings import (
     DEFAULT_BASE_URL,
-    a2a_card_name,
-    a2a_card_url,
     a2a_enabled,
-    a2a_remote_agent_urls,
     a2a_trusted_endpoints,
 )
 
@@ -36,20 +35,23 @@ from .a2a_payloads import build_agent_card as _build_agent_card_payload
 
 logger = get_agent_logger("a2a")
 
-# ── A2A configuration (ADR 0001: read through settings accessors) ──
-
-A2A_ENABLED = a2a_enabled()
-A2A_REMOTE_AGENTS: frozenset[str] = frozenset(
-    url.strip()
-    for url in a2a_remote_agent_urls()
-    if url.strip()
-)
-A2A_CARD_NAME = a2a_card_name()
-A2A_CARD_URL = a2a_card_url()
+# ── A2A configuration (ADR 0001) ─────────────────────────────────────────────
+#
+# Nothing here is read at import time: ``a2a_enabled()`` and
+# ``a2a_trusted_endpoints()`` are consulted when the transport is actually
+# used, so importing this adapter never freezes the process environment and
+# tests can reconfigure A2A without reloading the module.
 
 # ── Remote Agent ─────────────────────────────────────────────────────────────
 
-_remote_registry: dict[str, Any] = {}
+#: Discovery cards are small JSON documents; anything larger is a broken or
+#: hostile peer. Bounded like the trusted transport (a2a_client, 1 MiB).
+_DISCOVERY_TIMEOUT = 5.0
+_DISCOVERY_MAX_BYTES = 1_048_576
+
+
+def _is_http_url(value: str) -> bool:
+    return value.startswith("http://") or value.startswith("https://")
 
 
 @dataclass
@@ -59,6 +61,108 @@ class RemoteAgent:
     card: dict[str, Any]
     skills: dict[str, dict[str, Any]]  # skill_id → skill dict
     last_discovered: float = field(default=0.0)
+
+
+class RemoteAgentRegistry:
+    """Thread-safe index of discovered remote agents.
+
+    The composition root owns exactly one instance and injects it into the
+    supervisor's resolver and the A2A router, so there is no process-wide
+    registry to patch or reset between runs. All mutation/read paths take the
+    instance lock because discovery runs in a startup worker thread while
+    request threads resolve specialists.
+    """
+
+    def __init__(self) -> None:
+        self._agents: dict[str, RemoteAgent] = {}
+        self._lock = threading.RLock()
+
+    def find(self, specialist_id: str) -> RemoteAgent | None:
+        """Return the first agent advertising ``specialist_id``."""
+        with self._lock:
+            agents = list(self._agents.values())
+        for agent in agents:
+            if specialist_id in agent.skills:
+                return agent
+        return None
+
+    def resolve(self, specialist_id: str) -> str | None:
+        """Return the endpoint advertising ``specialist_id``, or ``None``."""
+        if not a2a_available():
+            return None
+        with self._lock:
+            items = list(self._agents.items())
+        for url, agent in items:
+            if specialist_id in agent.skills:
+                return url
+        return None
+
+    def snapshot(self) -> dict[str, RemoteAgent]:
+        """A shallow copy of the current registry (safe to iterate)."""
+        with self._lock:
+            return dict(self._agents)
+
+    def discover(self, urls: list[str] | None = None) -> dict[str, RemoteAgent]:
+        """Fetch Agent Cards from HTTP(S) endpoints and populate the registry.
+
+        Hardened (ADR 0002/0008): only ``http(s)`` URLs are fetched, the body is
+        bounded to :data:`_DISCOVERY_MAX_BYTES`, and the registry always stores
+        the allowlisted base that discovery was addressed to. A card cannot
+        choose the dispatch endpoint: :class:`TrustedA2AClient` compares the
+        endpoint against the deployment allowlist by exact equality, so a
+        subpath or lookalike host in the card would otherwise either bypass the
+        check or make dispatch fail.
+        """
+        from urllib.request import Request, urlopen
+
+        targets = urls if urls is not None else sorted(a2a_trusted_endpoints())
+        if not targets:
+            return self.snapshot()
+
+        for base_url in targets:
+            if not isinstance(base_url, str) or not _is_http_url(base_url):
+                logger.warning("Refusing to discover non-HTTP agent URL: %r", base_url)
+                continue
+            card_url = (base_url if base_url.rstrip("/").endswith(".well-known/agent.json")
+                        else base_url.rstrip("/") + "/.well-known/agent.json")
+            try:
+                req = Request(card_url, headers={"Accept": "application/json"})
+                with urlopen(req, timeout=_DISCOVERY_TIMEOUT) as resp:
+                    raw = resp.read(_DISCOVERY_MAX_BYTES + 1)
+                if len(raw) > _DISCOVERY_MAX_BYTES:
+                    logger.warning("Refusing oversized Agent Card at %s (%d bytes)", card_url, len(raw))
+                    continue
+                try:
+                    card_data = json.loads(raw.decode("utf-8"))
+                except ValueError as error:
+                    logger.warning("Failed to discover agent at %s: %s", card_url, error)
+                    continue
+                if not isinstance(card_data, dict):
+                    logger.warning("Refusing non-object Agent Card at %s", card_url)
+                    continue
+                skills = {}
+                for skill in card_data.get("skills", []):
+                    if not isinstance(skill, dict):
+                        continue
+                    skill_id = skill.get("id", "")
+                    if skill_id:
+                        skills[skill_id] = skill
+                advertised = card_data.get("url")
+                if isinstance(advertised, str) and advertised.rstrip("/") != base_url.rstrip("/"):
+                    logger.info(
+                        "Agent Card at %s advertises %s; keeping the allowlisted discovery base",
+                        card_url, advertised,
+                    )
+                with self._lock:
+                    self._agents[base_url] = RemoteAgent(
+                        url=base_url, card=card_data, skills=skills,
+                        last_discovered=time.time(),
+                    )
+                logger.info("Discovered remote agent: %s (%d skills)", base_url, len(skills))
+            except Exception as error:
+                logger.warning("Failed to discover agent at %s: %s", card_url, error)
+
+        return self.snapshot()
 
 
 # ── Agent Skill ───────────────────────────────────────────────────────────────
@@ -131,16 +235,17 @@ class A2ARouter:
     delegation caller gets an explicit ``source``/``status`` result.
     """
 
-    def __init__(self, client: Any | None = None) -> None:
+    def __init__(self, client: Any | None = None,
+                 registry: "RemoteAgentRegistry | None" = None) -> None:
         # Injectable for tests; otherwise a per-agent allowlist client is built.
         self._client = client
+        # The composition root passes its registry; a bare router stays
+        # local-only with an empty one instead of reaching for module state.
+        self._registry = registry if registry is not None else RemoteAgentRegistry()
 
     def find_remote(self, specialist_id: str) -> Any | None:
         """Find a remote agent whose skills include ``specialist_id``."""
-        for agent in _remote_registry.values():
-            if specialist_id in agent.skills:
-                return agent
-        return None
+        return self._registry.find(specialist_id)
 
     def route(self, specialist_id: str, task: str,
               params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -203,19 +308,35 @@ class A2ARouter:
 
 # ── Optional SDK import ──────────────────────────────────────────────────────
 
-_sdk_available = False
-try:
-    if A2A_ENABLED:
-        from a2a.types import AgentCard as _SdkAgentCard  # noqa: F401
-        _sdk_available = True
-        logger.info("a2a-sdk loaded successfully")
-except ImportError:
-    logger.info("a2a-sdk not installed — A2A layer operates in local-only mode")
+#: ``None`` = not probed yet, ``True``/``False`` = cached result. The SDK cannot
+#: appear at runtime, so one probe per process is enough; keeping it lazy means
+#: importing this adapter has no configuration-dependent side effects.
+_sdk_available: bool | None = None
+_sdk_probe_lock = threading.Lock()
+
+
+def _sdk_present() -> bool:
+    """Import-probe the optional ``a2a`` SDK once, on first use."""
+    global _sdk_available
+    with _sdk_probe_lock:
+        if _sdk_available is None:
+            if not a2a_enabled():
+                _sdk_available = False
+            else:
+                try:
+                    from a2a.types import AgentCard as _SdkAgentCard  # noqa: F401
+                except ImportError:
+                    logger.info("a2a-sdk not installed — A2A layer operates in local-only mode")
+                    _sdk_available = False
+                else:
+                    logger.info("a2a-sdk loaded successfully")
+                    _sdk_available = True
+        return _sdk_available
 
 
 def a2a_available() -> bool:
     """Return True when the A2A transport can be used."""
-    return a2a_enabled() and _sdk_available
+    return a2a_enabled() and _sdk_present()
 
 
 # NOTE (ADR 0013): this module used to carry its own ``_text_message`` /
@@ -241,24 +362,6 @@ def _default_capabilities() -> list[str]:
     cycles (the orchestration layer no longer imports this adapter).
     """
     return [specialist.value for specialist in Specialist]
-
-
-def resolve_remote_specialist(specialist_id: str) -> str | None:
-    """Return the first trusted remote endpoint advertising ``specialist_id``.
-
-    This is the adapter behind the supervisor's remote-lookup port (ADR 0002).
-    The composition root installs it via
-    ``orchestration.supervisor.set_remote_specialist_lookup`` so the
-    orchestration layer never imports this adapter. Returns ``None`` when A2A is
-    disabled, the SDK is missing, or no discovered agent offers the skill —
-    delegation then stays local.
-    """
-    if not a2a_available():
-        return None
-    for url, agent in _remote_registry.items():
-        if specialist_id in agent.skills:
-            return url
-    return None
 
 
 def build_agent_card(
@@ -304,102 +407,14 @@ def build_agent_card(
     )
 
 
-# ── Remote Agent Discovery ───────────────────────────────────────────────────
-
-_DISCOVERY_TIMEOUT = 5.0
-#: Discovery cards are small JSON documents; anything larger is a broken or
-#: hostile peer. Bounded like the trusted transport (a2a_client, 1 MiB).
-_DISCOVERY_MAX_BYTES = 1_048_576
-
-
-def _is_http_url(value: str) -> bool:
-    return value.startswith("http://") or value.startswith("https://")
-
-
-def discover_remote_agents(urls: list[str] | None = None) -> dict[str, Any]:
-    """Fetch Agent Cards from remote endpoints and populate the registry.
-
-    Hardened (ADR 0002/0008): only ``http(s)`` URLs are fetched, the body is
-    bounded to :data:`_DISCOVERY_MAX_BYTES`, and an advertised ``url`` that
-    disagrees with the discovered base is kept as the base — the transport
-    (:class:`TrustedA2AClient`) still enforces the deployment allowlist at
-    dispatch time, so a peer cannot redirect discovery into an untrusted
-    endpoint.
-    """
-    import json
-    from urllib.request import Request, urlopen
-
-    targets = urls if urls is not None else list(A2A_REMOTE_AGENTS)
-    if not targets:
-        return _remote_registry
-
-    for base_url in targets:
-        if not isinstance(base_url, str) or not _is_http_url(base_url):
-            logger.warning("Refusing to discover non-HTTP agent URL: %r", base_url)
-            continue
-        card_url = (base_url if base_url.rstrip("/").endswith(".well-known/agent.json")
-                    else base_url.rstrip("/") + "/.well-known/agent.json")
-        try:
-            req = Request(card_url, headers={"Accept": "application/json"})
-            with urlopen(req, timeout=_DISCOVERY_TIMEOUT) as resp:
-                raw = resp.read(_DISCOVERY_MAX_BYTES + 1)
-            if len(raw) > _DISCOVERY_MAX_BYTES:
-                logger.warning("Refusing oversized Agent Card at %s (%d bytes)", card_url, len(raw))
-                continue
-            try:
-                card_data = json.loads(raw.decode("utf-8"))
-            except ValueError as error:
-                logger.warning("Failed to discover agent at %s: %s", card_url, error)
-                continue
-            if not isinstance(card_data, dict):
-                logger.warning("Refusing non-object Agent Card at %s", card_url)
-                continue
-            skills = {}
-            for skill in card_data.get("skills", []):
-                if not isinstance(skill, dict):
-                    continue
-                skill_id = skill.get("id", "")
-                if skill_id:
-                    skills[skill_id] = skill
-            advertised = card_data.get("url")
-            # Keep the discovered base unless the peer advertises a URL under
-            # it (e.g. base + "/a2a"): dispatch allowlist checks the base, so
-            # a peer cannot redirect discovery to a different host.
-            base_norm = base_url.rstrip("/")
-            if isinstance(advertised, str) and advertised.rstrip("/").startswith(base_norm):
-                effective_url = advertised
-            else:
-                effective_url = base_url
-            _remote_registry[base_url] = RemoteAgent(
-                url=str(effective_url or base_url), card=card_data, skills=skills,
-                last_discovered=__import__("time").time(),
-            )
-            logger.info("Discovered remote agent: %s (%d skills)", base_url, len(skills))
-        except Exception as error:
-            logger.warning("Failed to discover agent at %s: %s", card_url, error)
-
-    return _remote_registry
-
-
-def get_remote_registry() -> dict[str, Any]:
-    """Return the current remote agent registry (read-only view)."""
-    return dict(_remote_registry)
-
-
 # ── A2A Configuration End ────────────────────────────────────────────────────
 
 __all__ = [
-    "A2A_CARD_NAME",
-    "A2A_CARD_URL",
-    "A2A_ENABLED",
-    "A2A_REMOTE_AGENTS",
     "A2ARouter",
     "AgentCard",
     "AgentSkill",
     "RemoteAgent",
+    "RemoteAgentRegistry",
     "a2a_available",
     "build_agent_card",
-    "discover_remote_agents",
-    "get_remote_registry",
-    "resolve_remote_specialist",
 ]

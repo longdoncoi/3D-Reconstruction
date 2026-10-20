@@ -11,14 +11,34 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ai_assistant.application.agent_runs import AgentRunService
     from ai_assistant.domain.tasks import AgentTask
+    from ai_assistant.llm.contracts import PromptBuilder
     from ai_assistant.orchestration.specialists import ChatbotAgent
+    from ai_assistant.ports import FieldCipher
 
 logger = logging.getLogger(__name__)
+
+
+def attachment_unsealer(cipher: "FieldCipher") -> Callable[[bytes], bytes]:
+    """Return a callable that opens a chat attachment sealed at rest.
+
+    The Qt client seals the attached file with the platform at-rest key
+    (ADR 0031), and the AI service has to open it before the model can see
+    the image. The key stays in the cipher that the composition root owns;
+    this only hands out the one operation the readers need.
+    """
+    from ai_assistant.ports import CHAT_ATTACHMENT_CONTEXT
+
+    def unseal(raw: bytes) -> bytes:
+        return cipher.open_bytes(raw, context=CHAT_ATTACHMENT_CONTEXT)
+
+    return unseal
 
 
 class LlmModule:
@@ -40,6 +60,40 @@ class LlmModule:
         self._paths = paths
         self._model_idx = model_idx
         self._use_vision_llm = use_vision_llm
+        # Model-reload drain: a run holds a lease for its whole lifetime, and a
+        # reload waits for every lease before swapping the backend. New leases
+        # wait while a reload is in progress, so a run sees one model end to end.
+        self._model_condition = threading.Condition()
+        self._active_leases = 0
+        self._reloading = False
+
+    @contextmanager
+    def model_lease(self) -> Iterator[Any]:
+        """Pin the current backend for one run; reloads wait for the lease."""
+        with self._model_condition:
+            while self._reloading:
+                self._model_condition.wait()
+            self._active_leases += 1
+        try:
+            yield self.llm
+        finally:
+            with self._model_condition:
+                self._active_leases -= 1
+                self._model_condition.notify_all()
+
+    @contextmanager
+    def model_reload(self) -> Iterator[None]:
+        """Wait for active runs, block new leases, then swap the model."""
+        with self._model_condition:
+            self._reloading = True
+            while self._active_leases:
+                self._model_condition.wait()
+        try:
+            yield
+        finally:
+            with self._model_condition:
+                self._reloading = False
+                self._model_condition.notify_all()
 
     def _adopt_backend(self, backend: Any) -> bool:
         """Bind a freshly loaded backend to this instance.
@@ -96,9 +150,14 @@ class RagModule:
     Instance-based replacement for the former ``_RAGModule`` class-level
     state. All index state lives on the instance, so the composition root
     owns exactly one and tests can build isolated doubles.
+
+    The at-rest cipher is injected: the cache on disk holds the user's
+    document corpus, so it is sealed with the same key as the task store
+    (ADR 0027/0028). There is no "no cipher" mode — a cache that cannot be
+    sealed is not written.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, cipher: FieldCipher) -> None:
         self.rag_lock = threading.RLock()
         self.knowledge_index = None
         self.knowledge_chunks: list[Any] = []
@@ -106,6 +165,7 @@ class RagModule:
         self.embed_model_ref: Any = None
         self._reranker = None
         self._pipeline: Any = None     # the live retrieval handle (/health and admin reset it)
+        self._cipher = cipher
         self.CHUNK_CHARS = 1200
         self.MAX_CONTEXT_CHARS = 9000
 
@@ -167,7 +227,7 @@ class RagModule:
 
         index = chunks = bm25 = None
         if not force_rebuild and is_cache_valid(paths, settings):
-            index, chunks, bm25 = load_cache(paths, settings)
+            index, chunks, bm25 = load_cache(paths, settings, cipher=self._cipher)
 
         if index is None:
             registry = DocumentLoaderRegistry.create_default(
@@ -181,7 +241,8 @@ class RagModule:
             # Cache is missing/stale: force the build path so the fs hash is
             # computed once (scan already happened above).
             index, chunks, bm25 = load_or_build_index(
-                scanned, encoder, paths, settings, force_rebuild=True)
+                scanned, encoder, paths, settings, force_rebuild=True,
+                cipher=self._cipher)
 
         if index is None or not chunks:
             logger.warning("RAG: index unavailable after load/build")
@@ -241,20 +302,24 @@ class ChatbotAgentHolder:
     model/RAG reload can replace the agent without re-registering the router.
     """
 
-    def __init__(self, llm_module: LlmModule, rag_module: RagModule) -> None:
+    def __init__(self, llm_module: LlmModule, rag_module: RagModule,
+                 prompt_builder: "PromptBuilder") -> None:
         self._llm_module = llm_module
         self._rag_module = rag_module
+        self._prompt_builder = prompt_builder
         self._agent: ChatbotAgent | None = None
 
     def get(self) -> ChatbotAgent:
         if self._agent is None:
             from ai_assistant.orchestration.specialists import ChatbotAgent
-            self._agent = ChatbotAgent(self._llm_module, self._rag_module)
+            self._agent = ChatbotAgent(
+                self._llm_module, self._rag_module, self._prompt_builder)
         return self._agent
 
     def rebuild(self) -> None:
         from ai_assistant.orchestration.specialists import ChatbotAgent
-        self._agent = ChatbotAgent(self._llm_module, self._rag_module)
+        self._agent = ChatbotAgent(
+            self._llm_module, self._rag_module, self._prompt_builder)
 
 
 class RuntimeModules:
@@ -268,10 +333,10 @@ class RuntimeModules:
     with an ``AttributeError`` deep inside a task run.
     """
 
-    def __init__(self, llm: LlmModule, rag: RagModule) -> None:
+    def __init__(self, llm: LlmModule, rag: RagModule, prompt_builder: "PromptBuilder") -> None:
         self.llm = llm
         self.rag = rag
-        self.chatbot_agent = ChatbotAgentHolder(llm, rag)
+        self.chatbot_agent = ChatbotAgentHolder(llm, rag, prompt_builder)
         self.agent_run_service: AgentRunService | None = None
 
     def execute_a2a_task(self, task: AgentTask) -> dict[str, Any]:

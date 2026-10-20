@@ -28,10 +28,18 @@ class TaskService:
         self._worker_lock = threading.RLock()
         self._closing = False
         self._store_closed = False
+        # A previous process cannot have left a live worker behind: reconcile
+        # its non-terminal rows before this service accepts new work. Detection
+        # is class-level so duck-typed test stores keep their old behaviour.
+        reconcile = getattr(type(self._store), "fail_orphaned", None)
+        if callable(reconcile):
+            reconcile(self._store)
 
     def submit(self, capability: str, message: str, metadata: Mapping[str, Any] | None = None,
-               context_id: str | None = None, classification: DataClassification = DataClassification.INTERNAL) -> AgentTask:
-        task = AgentTask.new(capability, message, context_id=context_id, metadata=dict(metadata or {}), classification=classification)
+               context_id: str | None = None, classification: DataClassification = DataClassification.INTERNAL,
+               *, owner: str = "default") -> AgentTask:
+        task = AgentTask.new(capability, message, context_id=context_id, metadata=dict(metadata or {}),
+                             classification=classification, owner=owner)
         if capability not in self._capabilities:
             task = task.transition(TaskStatus.REJECTED, error=f"Unsupported capability: {capability}")
             self._store.create(task)
@@ -42,20 +50,28 @@ class TaskService:
         self._start(task.id)
         return task
 
-    def get(self, task_id: str) -> AgentTask | None:
-        return self._store.get(task_id)
+    def get(self, task_id: str, *, owner: str = "default") -> AgentTask | None:
+        task = self._store.get(task_id)
+        if task is None or task.owner != owner:
+            return None
+        return task
 
     @property
     def capabilities(self) -> frozenset[str]:
         return self._capabilities
 
-    def events(self, task_id: str, since: int = 0) -> tuple[dict[str, Any], ...]:
+    def events(self, task_id: str, since: int = 0, *, owner: str = "default") -> tuple[dict[str, Any], ...]:
         """Return only the events after the store-native ``since`` cursor.
 
         SQLite pages by ``rowid`` (cost is O(new events)); stores without a
         cursor are read once and sliced by count, so the SSE poll loop stops
-        re-reading the whole log on every tick either way.
+        re-reading the whole log on every tick either way. Ownership is
+        checked before streaming so a subscriber that only holds a task id
+        cannot read another tenant's event log.
         """
+        task = self._store.get(task_id)
+        if task is None or task.owner != owner:
+            return ()
         store_events = self._store.events
         try:
             events = tuple(store_events(task_id, since=since))
@@ -64,8 +80,18 @@ class TaskService:
             events = tuple(store_events(task_id))[since:]
         return events
 
-    def list(self, *, context_id: str | None = None, limit: int = 100) -> tuple[AgentTask, ...]:
-        return tuple(self._store.list(context_id=context_id, limit=limit))
+    def list(self, *, context_id: str | None = None, limit: int = 100,
+             owner: str = "default") -> tuple[AgentTask, ...]:
+        return tuple(self._store.list(context_id=context_id, limit=limit, owner=owner))
+
+    def prune(self, retention_days: int) -> int:
+        """Delete terminal tasks past the retention window (0 disables it)."""
+        if retention_days <= 0:
+            return 0
+        prune = getattr(type(self._store), "prune", None)
+        if not callable(prune):
+            return 0
+        return int(prune(self._store, retention_days))
 
     def close(self, timeout_seconds: float = 5.0) -> None:
         """Gracefully drain active workers before releasing durable storage."""
@@ -86,9 +112,11 @@ class TaskService:
             if not self._workers:
                 self._close_store()
 
-    def cancel(self, task_id: str) -> AgentTask | None:
+    def cancel(self, task_id: str, *, owner: str = "default") -> AgentTask | None:
         task = self._store.get(task_id)
-        if task is None or task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELED, TaskStatus.REJECTED}:
+        if task is None or task.owner != owner:
+            return None
+        if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELED, TaskStatus.REJECTED}:
             return None
         cancelled = task.transition(TaskStatus.CANCELED)
         if not self._save_if_status(cancelled, task.status):
@@ -118,10 +146,12 @@ class TaskService:
         self._store.save(task)
         return True
 
-    def resume(self, task_id: str, input_data: Mapping[str, Any]) -> AgentTask | None:
+    def resume(self, task_id: str, input_data: Mapping[str, Any], *, owner: str = "default") -> AgentTask | None:
         """Resume an explicitly paused task with a durable user or desktop response."""
         task = self._store.get(task_id)
-        if task is None or task.status != TaskStatus.INPUT_REQUIRED:
+        if task is None or task.owner != owner:
+            return None
+        if task.status != TaskStatus.INPUT_REQUIRED:
             return None
         continuation = task.metadata.get("agent_run.continuation")
         if not isinstance(continuation, dict):

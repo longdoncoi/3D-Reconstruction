@@ -5,12 +5,17 @@ returns canned results, so no LangGraph infrastructure is needed.
 """
 from __future__ import annotations
 
+import queue
 import unittest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ai_assistant.adapters.http.agent_routes import build_agent_router
+from ai_assistant.adapters.http.agent_routes import (
+    _cancel_agent_run,
+    _sse_events,
+    build_agent_router,
+)
 
 
 class _FakeAgentService:
@@ -119,6 +124,34 @@ class AgentRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "approved")
         self.assertEqual(service.calls[0][0], "approve")
+
+    def test_disconnect_cancels_the_running_agent(self) -> None:
+        cancelled = []
+        events: queue.Queue = queue.Queue()
+        iterator = iter(_sse_events(events, on_disconnect=lambda: cancelled.append(True)))
+        self.assertIn("event: status", next(iterator))
+        iterator.close()  # what Starlette does when the client drops
+        self.assertEqual(cancelled, [True])
+
+    def test_a_completed_stream_is_not_cancelled(self) -> None:
+        cancelled = []
+        events: queue.Queue = queue.Queue()
+        events.put(("result", {"status": "completed"}))
+        list(_sse_events(events, on_disconnect=lambda: cancelled.append(True)))
+        self.assertEqual(cancelled, [])
+
+    def test_the_disconnect_callback_targets_the_owning_session(self) -> None:
+        service = _FakeAgentService()
+        _cancel_agent_run(service, "s1")
+        self.assertEqual(service.calls[0][0], "cancel")
+        self.assertEqual(service.calls[0][1].session_id, "s1")
+
+    def test_a_disconnect_after_the_run_finished_is_ignored(self) -> None:
+        class _Gone(_FakeAgentService):
+            def cancel(self, request):
+                raise RuntimeError
+
+        _cancel_agent_run(_Gone(), "s1")
 
     def test_request_validation_rejects_bad_language(self) -> None:
         client, _ = _build_client()

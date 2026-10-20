@@ -175,13 +175,52 @@ MUTANTS: tuple[Mutant, ...] = (
         ("tests.unit.test_http_health_routes",),
         "/health always claims ready",
     ),
-    # ── RAG cache seal fail-closed ───────────────────────────────────────────
+    # ── RAG cache seal fail-closed (ADR 0028) ─────────────────────────────────
+    # The cache holds a second copy of the user's document corpus, so it must
+    # be sealed on disk and never loaded without being authenticated.
     Mutant(
-        "src/ai_assistant/rag/cache_integrity.py",
-        "if key is None or not recorded:\n        return False",
-        "if key is None or not recorded:\n        return True",
-        ("tests.unit.test_rag_cache_integrity", "tests.unit.test_index"),
-        "unverifiable cache trusted (fail-open)",
+        "src/ai_assistant/rag/index.py",
+        "        path.write_bytes(cipher.seal_bytes(payload, context=context))",
+        "        path.write_bytes(payload)",
+        ("tests.unit.test_index",),
+        "the cache artifacts are written to disk in the clear",
+    ),
+    Mutant(
+        "src/ai_assistant/rag/index.py",
+        "        if not is_sealed_metadata(meta):",
+        "        if False:",
+        ("tests.unit.test_index",),
+        "a cache that was never sealed is loaded instead of rebuilt",
+    ),
+    Mutant(
+        "src/ai_assistant/rag/index.py",
+        '        "sealed": seal_metadata(),',
+        '        "sealed": {},',
+        ("tests.unit.test_index",),
+        "the seal marker is not recorded (the cache can never be a hit)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/storage_crypto.py",
+        "            return self._aead.decrypt(\n"
+        "                raw[:_NONCE_BYTES], raw[_NONCE_BYTES:], _associated_data(context),\n"
+        "            )\n"
+        "        except (InvalidTag, ValueError) as error:",
+        "            return self._aead.decrypt(\n"
+        "                raw[:_NONCE_BYTES], raw[_NONCE_BYTES:], _associated_data(context),\n"
+        "            )\n"
+        "        except ValueError as error:",
+        ("tests.unit.test_storage_crypto",),
+        "a tampered binary envelope escapes as a raw crypto error",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/storage_crypto.py",
+        "        if not is_sealed_bytes(value):\n"
+        '            message = f"{context} is not a sealed envelope"\n'
+        "            raise StorageDecryptionError(message)",
+        "        if not is_sealed_bytes(value):\n"
+        "            return value",
+        ("tests.unit.test_index", "tests.unit.test_storage_crypto"),
+        "an unsealed binary artifact is accepted as plaintext (legacy cache loaded)",
     ),
     # ── Cancel that races the worker ─────────────────────────────────────────
     Mutant(
@@ -290,6 +329,13 @@ MUTANTS: tuple[Mutant, ...] = (
         "oversized Agent Card buffered whole (memory DoS via discovery)",
     ),
     Mutant(
+        "src/ai_assistant/adapters/a2a_protocol.py",
+        "                        url=base_url, card=card_data, skills=skills,",
+        '                        url=str(card_data.get("url") or base_url), card=card_data, skills=skills,',
+        ("tests.unit.test_a2a_protocol_guards",),
+        "Agent Card controls the dispatch endpoint (allowlist bypass)",
+    ),
+    Mutant(
         "src/ai_assistant/tools/builtin/vcs_tools.py",
         "if sub_rejection:",
         "if False:",
@@ -343,12 +389,57 @@ MUTANTS: tuple[Mutant, ...] = (
     # machine — a timeout here IS the guard being load-bearing.
     Mutant(
         "src/ai_assistant/bootstrap/server.py",
-        "if _COMPOSED:\n            return\n        _COMPOSED = True",
+        "if _COMPOSED:\n"
+        "            return\n"
+        "        # Set before the body so the compose() → _register_optional_protocols()\n"
+        "        # → compose() back-edge terminates instead of rebuilding. The public\n"
+        "        # wrapper resets it if the body raises.\n"
+        "        _COMPOSED = True",
         "_COMPOSED = True",
         ("tests.integration.test_composition_root_bootstrap",),
         "second compose() rebuilds the graph (duplicate handlers and routers)",
         timeout_seconds=180,
         kill_on_timeout=True,
+    ),
+    Mutant(
+        "src/ai_assistant/bootstrap/server.py",
+        "except BaseException:\n        _COMPOSED = False\n        raise",
+        "except BaseException:\n        raise",
+        ("tests.integration.test_composition_root_bootstrap",),
+        "a failed compose leaves the flag set (half-built graph looks ready)",
+    ),
+    # ── A2A per-tenant task ownership ─────────────────────────────────────────
+    Mutant(
+        "src/ai_assistant/adapters/http/security.py",
+        "if tenant is None:",
+        "if False:",
+        ("tests.unit.test_http_security", "tests.unit.test_a2a_http_router"),
+        "an unknown A2A tenant token is accepted instead of 401",
+    ),
+    Mutant(
+        "src/ai_assistant/application/tasks.py",
+        "def get(self, task_id: str, *, owner: str = \"default\") -> AgentTask | None:\n"
+        "        task = self._store.get(task_id)\n"
+        "        if task is None or task.owner != owner:",
+        "def get(self, task_id: str, *, owner: str = \"default\") -> AgentTask | None:\n"
+        "        task = self._store.get(task_id)\n"
+        "        if task is None:",
+        ("tests.unit.test_task_lifecycle_guards", "tests.unit.test_a2a_http_router"),
+        "a task can be read across tenant boundaries",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/sqlite_store.py",
+        "if context_id is not None and owner is not None:",
+        "if False:",
+        ("tests.unit.test_final_edges_a",),
+        "the owner filter is dropped when listing tasks",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/sqlite_store.py",
+        "if retention_days <= 0:",
+        "if False:",
+        ("tests.unit.test_final_edges_a",),
+        "a disabled retention window still prunes tasks",
     ),
     # ── Production gates & admission governor (ADR 0023/0024) ────────────────
     Mutant(
@@ -385,6 +476,143 @@ MUTANTS: tuple[Mutant, ...] = (
         "if False:",
         ("tests.unit.test_session_serialization",),
         "run budget removed (unbounded concurrent runs)",
+    ),
+    # ── At-rest encryption of local state (ADR 0027) ─────────────────────────
+    # The encryption guards fail *closed* everywhere: a missing key, a wrong
+    # key or a tampered row must abort the read instead of handing the caller
+    # ciphertext or an empty store. Coverage cannot see that direction, so
+    # each decision is inverted here.
+    Mutant(
+        "src/ai_assistant/adapters/persistence/storage_crypto.py",
+        "    if explicit:\n"
+        '        message = f"AI_STORAGE_KEY_FILE does not exist: {path}"\n'
+        "        raise StorageKeyError(message)",
+        "    if False:",
+        ("tests.unit.test_storage_crypto",),
+        "a missing explicit key file is replaced by a fresh key (existing state orphaned)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/storage_crypto.py",
+        "            plaintext = self._aead.decrypt(\n"
+        "                raw[:_NONCE_BYTES], raw[_NONCE_BYTES:], _associated_data(context),\n"
+        "            )\n"
+        "        except (InvalidTag, ValueError) as error:",
+        "            plaintext = self._aead.decrypt(\n"
+        "                raw[:_NONCE_BYTES], raw[_NONCE_BYTES:], _associated_data(context),\n"
+        "            )\n"
+        "        except ValueError as error:",
+        ("tests.unit.test_storage_crypto",),
+        "a tampered envelope escapes as a raw crypto error instead of a decryption failure",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/storage_crypto.py",
+        "        if len(key) != KEY_BYTES:\n"
+        '            message = f"at-rest key must decode to exactly {KEY_BYTES} bytes"\n'
+        "            raise StorageKeyError(message)",
+        "        if False:",
+        ("tests.unit.test_storage_crypto",),
+        "an at-rest key of the wrong length is accepted",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/storage_crypto.py",
+        "    if _create_key_file(path, key):\n"
+        "        return AesGcmFieldCipher(key)\n"
+        "    # Another process won the O_EXCL race; its key is the one on disk.\n"
+        "    return AesGcmFieldCipher(_read_key_file(path))",
+        "    if _create_key_file(path, key):\n"
+        "        return AesGcmFieldCipher(key)\n"
+        "    return AesGcmFieldCipher(key)",
+        ("tests.unit.test_storage_crypto",),
+        "the process that lost the key-creation race keeps its own key (processes disagree)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/storage_crypto.py",
+        "    _fsync_directory(path.parent)\n"
+        "    return True",
+        "    return True",
+        ("tests.unit.test_storage_crypto",),
+        "the key file's directory entry is never flushed (a crash orphans every row)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/pending_store.py",
+        "                if self._cipher is None:\n"
+        "                    if is_sealed(raw):",
+        "                if self._cipher is None:\n"
+        "                    if False:",
+        ("tests.unit.test_pending_store_crypto",),
+        "sealed pending actions are silently dropped instead of failing closed",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/pending_store.py",
+        "                if self._cipher is not None:\n"
+        '                    raw = self._cipher.seal(raw, context="pending.actions")',
+        "                if False:\n"
+        '                    raw = self._cipher.seal(raw, context="pending.actions")',
+        ("tests.unit.test_pending_store_crypto",),
+        "pending actions are written to disk as plaintext",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/sqlite_store.py",
+        "    if cipher is None:\n"
+        "        if is_sealed(value):",
+        "    if cipher is None:\n"
+        "        if False:",
+        ("tests.unit.test_sqlite_store_crypto",),
+        "sealed task state is served as ciphertext instead of failing closed",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/sqlite_store.py",
+        "            if cipher is not None and version < 3:\n"
+        "                self._seal_legacy_rows(cipher)\n"
+        '                self._conn.execute("PRAGMA user_version = 3")',
+        "            if False:\n"
+        "                self._seal_legacy_rows(cipher)\n"
+        '                self._conn.execute("PRAGMA user_version = 3")',
+        ("tests.unit.test_sqlite_store_crypto",),
+        "legacy plaintext task rows are never migrated to ciphertext",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/sqlite_store.py",
+        "    if value is None or is_sealed(value):\n"
+        "        return value",
+        "    if value is None:\n"
+        "        return value",
+        ("tests.unit.test_sqlite_store_crypto",),
+        "an already-sealed column is sealed a second time (state becomes unreadable)",
+    ),
+    # ── At-rest key rotation (ADR 0030) ──────────────────────────────────────
+    # The rotation is the only path that rewrites sealed state. It has to
+    # fail closed in two directions: a value the old key cannot open must
+    # abort the whole rotation, and a rotation that aborts must leave the
+    # state exactly as it was — half of it re-encrypted would be readable
+    # with neither key.
+    Mutant(
+        "src/ai_assistant/adapters/persistence/storage_crypto.py",
+        "    except StorageDecryptionError:\n"
+        "        new.open(value, context=context)\n"
+        "        return value, False",
+        "    except StorageDecryptionError:\n"
+        "        return value, False",
+        ("tests.unit.test_storage_rekey",),
+        "the rotation rewrites a value the old key cannot open (wrong key accepted)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/sqlite_store.py",
+        "        with self._lock, self._conn:\n"
+        "            for task_id, message, result, error, metadata in self._conn.execute(",
+        "        with self._lock:\n"
+        "            for task_id, message, result, error, metadata in self._conn.execute(",
+        ("tests.unit.test_storage_rekey",),
+        "the rotation is not one transaction (an aborted rotation leaves half the state re-encrypted)",
+    ),
+    Mutant(
+        "scripts/rekey_storage.py",
+        "    report = _inspect(state_dir, old, new)\n"
+        "    if report.failures:",
+        "    report = _inspect(state_dir, old, new)\n"
+        "    if False:",
+        ("tests.unit.test_storage_rekey",),
+        "the rotation starts without checking that the old key opens the state",
     ),
 )
 

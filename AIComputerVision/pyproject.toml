@@ -24,7 +24,7 @@ ignore = [
 # build failure rather than a runtime surprise. Run with `python -m mypy`.
 [tool.mypy]
 python_version = "3.11"
-files = ["cvtrain", "tests", "TrainModel.py"]
+files = ["cvtrain", "tests", "scripts", "TrainModel.py"]
 ignore_missing_imports = false
 show_error_codes = true
 disallow_untyped_defs = true

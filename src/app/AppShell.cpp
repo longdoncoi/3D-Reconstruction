@@ -11,6 +11,7 @@
 #include "SettingsService.h"
 #include "ReconstructionService.h"
 #include "AIService.h"
+#include "AIModelLoadService.h"
 #include "IReconstructionService.h"
 #include "IAIService.h"
 #include "IAIAssistantService.h"
@@ -22,10 +23,11 @@
 #include "ILanguageService.h"
 #include "AppConfig.h"
 #include "Logger.h"
-#include "CustomProgressDialog.h"
+#include "IProgressDialog.h"
 #include "ShellService.h"
 #include "AIProcessor.h"
 #include "AIAssistant.h"
+#include <QMainWindow>
 #include <QMenuBar>
 #include <QMenu>
 #include <QWidget>
@@ -86,7 +88,7 @@ AppShell::~AppShell() {
 void AppShell::initializeServices() {
     // ── Phase 1: Critical services (needed for UI immediately) ────────────────
     m_sceneService    = std::make_unique<SceneService>(
-        m_registry->get<IUserPreferences>(), m_vtkWidget, this);
+        m_registry->getRequired<IUserPreferences>(), m_vtkWidget, this);
     m_viewerService = std::make_unique<ViewerService>(m_sceneService.get(), m_signalBus, this);
     m_settingsService = std::make_unique<SettingsService>(
         AppConfig::bootstrap().configPath());
@@ -112,19 +114,25 @@ void AppShell::initializeDeferredServices() {
     m_aiService    = std::make_unique<AIService>(this);
     m_registry->registerService<IAIService>(m_aiService.get());
 
+    // Async model loading is owned by AppCore, not by the plugin: a plugin
+    // can be unloaded while the worker is still running (see
+    // IAIModelLoadService). It is destroyed before m_aiService.
+    m_aiModelLoadService = std::make_unique<AIModelLoadService>(m_aiService.get(), this);
+    m_registry->registerService<IAIModelLoadService>(m_aiModelLoadService.get());
+
     // Assistant module (session state lives in AIAssistant; persistence in
     // ChatSessionStore — see src/services/ai)
     m_aiAssistant  = std::make_unique<AIAssistant>(
-        m_registry->get<ILanguageService>(),
-        m_registry->get<IUserManager>(),
-        m_registry->get<IAppPaths>(),
+        m_registry->getRequired<ILanguageService>(),
+        m_registry->getRequired<IUserManager>(),
+        m_registry->getRequired<IAppPaths>(),
         AppConfig::bootstrap().pythonInterpreter(),
         AppConfig::bootstrap().aiServerPort(),
         this);
     m_registry->registerService<IAIAssistantService>(m_aiAssistant.get());
 
     // Mail module
-    m_mailService  = std::make_unique<MailService>(m_registry->get<IUserManager>());
+    m_mailService  = std::make_unique<MailService>(m_registry->getRequired<IUserManager>());
     m_registry->registerService<IMailService>(m_mailService.get());
 }
 
@@ -150,17 +158,17 @@ void AppShell::setMenuBar(QMenuBar* bar) {
     m_shellService->setMenuBar(bar);
 }
 
-void AppShell::setProgressDialog(CustomProgressDialog* dlg) {
+void AppShell::setProgressDialog(IProgressDialog* dlg) {
     m_shellService->setProgressDialog(dlg);
 }
 
 // ─── Language ────────────────────────────────────────────────────────────────
 QString AppShell::translate(const QString& key) {
-    auto* lang = m_registry->get<ILanguageService>();
+    auto* lang = m_registry->getRequired<ILanguageService>();
     return lang ? lang->translate(key) : key;
 }
 
 void AppShell::setLanguage(const QString& lang) {
-    auto* service = m_registry->get<ILanguageService>();
+    auto* service = m_registry->getRequired<ILanguageService>();
     if (service) service->setLanguage(lang);
 }

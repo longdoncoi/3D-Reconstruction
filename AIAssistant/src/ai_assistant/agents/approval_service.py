@@ -19,7 +19,7 @@ from ..domain.errors import AuthorizationError, NotFoundError
 from ..observability import record_approval, record_tool
 from ..orchestration.state import Step
 from ..orchestration.supervisor import audit as audit_agent
-from ..orchestration.supervisor import delegate, verify_result
+from ..orchestration.supervisor import verify_result
 from ..tools.tool_contract import RUNTIME_UNCONFIGURED_RESULT
 from .context import RESUME_ACTION_ID, ContextService, append_tool_result_turn
 from .models import AgentApproveRequest
@@ -101,9 +101,7 @@ class ApprovalService(ContextService):
         # this invocation (minted by the shared domain policy): one for the
         # direct execution performed here and one for at most one re-dispatch
         # of the identical call inside the resumed graph.
-        run_token, direct_token = issue_grant_pair(
-            tool_name, tool_params, run_id=action.get("action_id", ""),
-        )
+        run_token, direct_token = issue_grant_pair(tool_name, tool_params)
         if self._ctx.tool_gateway is not None:
             self._ctx.tool_gateway.issue_approval_grant(tool_name, tool_params, run_token)
             self._ctx.tool_gateway.issue_approval_grant(tool_name, tool_params, direct_token)
@@ -122,7 +120,7 @@ class ApprovalService(ContextService):
         # Same routing inputs as the original run (``graph_wiring`` passes
         # ``prefer_code`` too): verification must not classify the call under
         # a different specialist just because it happens on the resume path.
-        delegation = delegate(
+        delegation = self._ctx.delegate_fn(
             action["task"], action["session_id"], tool_name, tool_params,
             prefer_code=self._ctx.is_coding_task_fn(action["task"]),
         )

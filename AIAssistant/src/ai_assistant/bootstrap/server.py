@@ -48,6 +48,7 @@ from ai_assistant.settings import (
     load_agent_runtime_settings,
     load_local_dotenv,
     settings_config_dir,
+    task_retention_days,
     vision_llm_enabled,
 )
 
@@ -62,13 +63,10 @@ if TYPE_CHECKING:
     from ai_assistant.config import AppPaths, ModelRegistry, RAGSettings
     from ai_assistant.tools import ToolRegistry
 
-# The composition root owns the process environment (ADR 0001): merge ``.env``
-# and apply the library-quieting defaults *before* the imports below read the
-# environment — the A2A banner and the transport policy both do so at import
-# time. Without this step the file was parsed by tests only and the running
-# server never saw the tokens an operator put there (LANGSMITH_API_KEY, …).
-load_local_dotenv(Path(__file__).resolve().parents[3])  # project root (``.env.example``'s directory)
-apply_startup_environment_defaults()
+# The composition root owns the process environment (ADR 0001): ``compose()``
+# merges ``.env`` and applies the library-quieting defaults *before* importing
+# the A2A/transport modules that snapshot their settings. Importing this module
+# therefore still reads no configuration.
 
 
 def _ensure_package_root_on_path(package_root: str) -> None:
@@ -145,16 +143,54 @@ def _resolve_model_idx(argv: list[str], models: list[dict[str, Any]]) -> int:
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
+async def _discover_a2a_peers(registry: Any) -> None:
+    """Populate the remote A2A registry from the deployment allowlist.
+
+    Discovery is a startup concern, not an import concern: the blocking HTTP
+    fetch runs in a worker thread. With no configured endpoints — the default
+    — this is a no-op, so a stock desktop install never touches the network.
+    """
+    import asyncio
+
+    from ai_assistant.settings import a2a_trusted_endpoints
+
+    endpoints = a2a_trusted_endpoints()
+    if not endpoints:
+        return
+    discovered = await asyncio.to_thread(registry.discover, sorted(endpoints))
+    logger.info("A2A discovery: %d/%d endpoint(s) reachable", len(discovered), len(endpoints))
+
+
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         from ai_assistant.adapters.persistence.checkpointing import cleanup_old_checkpoints
         cleanup_old_checkpoints()
     except Exception as e:
         logger.warning(f"Lỗi dọn dẹp checkpoint: {e}")
 
+    registry = getattr(getattr(app, "state", None), "a2a_registry", None)
+    if registry is not None:
+        try:
+            await _discover_a2a_peers(registry)
+        except Exception as e:
+            logger.warning(f"A2A discovery failed: {e}")
+
+    try:
+        retention_days = task_retention_days()
+        if retention_days > 0:
+            removed = platform.tasks.prune(retention_days)
+            if removed:
+                logger.info(
+                    "Pruned %d task(s) past the %d-day retention window",
+                    removed, retention_days,
+                )
+    except Exception as e:
+        logger.warning(f"Task retention pruning failed: {e}")
+
     total = time.monotonic() - _SERVER_START_TIME
-    logger.info("Server ready in %.1fs — http://127.0.0.1:8080", total)
+    logger.info("Server ready in %.1fs — http://%s:%d", total,
+                agent_bind_host(), agent_bind_port())
     print(f"[SUCCESS] AI Server started successfully ({total:.1f}s)", flush=True)
     try:
         if not platform.settings.enable_mcp:
@@ -193,26 +229,22 @@ def _register_optional_protocols(
 ) -> None:
     """Wire the A2A and MCP surfaces according to the deployment profile.
 
-    Dependency inversion (ADR 0002): the supervisor never imports the A2A
-    adapter; the composition root installs its remote-specialist resolver.
+    The remote-specialist resolver is injected into ``AgentService`` by
+    :func:`compose`; this function only mounts the HTTP surface, so enabling or
+    disabling A2A can never leave a stale process-wide lookup behind.
     """
     compose()
     from ai_assistant.adapters.a2a import build_a2a_router
-    from ai_assistant.adapters.a2a_protocol import resolve_remote_specialist
     from ai_assistant.adapters.http.security import (
         mcp_exposed_without_token,
         mcp_guarded_app,
     )
-    from ai_assistant.orchestration.supervisor import set_remote_specialist_lookup
 
     if platform.settings.enable_a2a:
-        set_remote_specialist_lookup(resolve_remote_specialist)
         app.include_router(build_a2a_router(
             platform.tasks, "3D-Reconstruction AI Assistant", "3.0.0",
             policy=transport_policy,
         ))
-    else:
-        set_remote_specialist_lookup(None)
     if platform.settings.enable_mcp and mcp_server.available:
         if mcp_exposed_without_token(agent_bind_host(), transport_policy):
             # Fail closed (ADR 0008): an exposed bind without AI_MCP_TOKEN
@@ -289,11 +321,19 @@ def compose() -> None:
 
     Idempotent and re-entrant (``RLock``): entry points call it
     unconditionally and internal helpers guard their first use of composed
-    state with it. The flag is set before the body, so a failure re-raises on
-    the first attempt and leaves the module composed-but-broken rather than
-    retrying a half-built graph (a second ``setup_logging`` would duplicate
-    every handler).
+    state with it. A failed build rolls the ``_COMPOSED`` flag back, so the
+    next access retries instead of treating a half-built graph as ready.
     """
+    global _COMPOSED
+    try:
+        _compose_once()
+    except BaseException:
+        _COMPOSED = False
+        raise
+
+
+def _compose_once() -> None:
+    """The actual build; the public wrapper owns failure rollback."""
     global _COMPOSED, logger, LOG_FILE_PATH, _paths, _registry, MODELS
     global FALLBACK_TEXT_MODEL, MODEL_IDX, active_model_desc, _rag_settings
     global EMBED_MODEL_NAME, USE_VISION_LLM
@@ -302,13 +342,22 @@ def compose() -> None:
     with _COMPOSE_LOCK:
         if _COMPOSED:
             return
+        # Set before the body so the compose() → _register_optional_protocols()
+        # → compose() back-edge terminates instead of rebuilding. The public
+        # wrapper resets it if the body raises.
         _COMPOSED = True
+
+        # Environment first (ADR 0001): the modules imported below snapshot
+        # A2A/transport settings at import time, so ``.env`` must be merged
+        # before the first of those imports.
+        load_local_dotenv(PACKAGE_ROOT)
+        apply_startup_environment_defaults()
 
         # Heavy imports live here — not at module top — so importing this
         # module pulls no third-party framework (ADR 0022). ``settings`` is
         # the only ai_assistant module imported at top level: it owns the
         # process environment and is pure standard library.
-        from ai_assistant.adapters.a2a_protocol import A2ARouter
+        from ai_assistant.adapters.a2a_protocol import A2ARouter, RemoteAgentRegistry
         from ai_assistant.adapters.http import (
             build_admin_router,
             build_agent_router,
@@ -320,6 +369,7 @@ def compose() -> None:
         from ai_assistant.adapters.orchestration import LangGraphAgentOrchestrator
         from ai_assistant.adapters.persistence.checkpointing import build_checkpointer
         from ai_assistant.adapters.persistence.pending_store import PendingActionStore
+        from ai_assistant.adapters.persistence.storage_crypto import load_storage_cipher
         from ai_assistant.agents.service import AgentService
         from ai_assistant.application.agent_runs import AgentRunService
         from ai_assistant.bootstrap.app_factory import create_app
@@ -328,6 +378,7 @@ def compose() -> None:
             LlmModule,
             RagModule,
             RuntimeModules,
+            attachment_unsealer,
         )
         from ai_assistant.config import (
             RAGSettings,
@@ -336,6 +387,7 @@ def compose() -> None:
             setup_logging,
         )
         from ai_assistant.llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
+        from ai_assistant.llm.prompts import DefaultPromptBuilder
         from ai_assistant.tools import action_manifest
         from ai_assistant.tools.factory import create_tool_registry, platform_executors
 
@@ -372,10 +424,24 @@ def compose() -> None:
         # ``vision_llm_enabled()`` reported the operator's choice.
         USE_VISION_LLM = vision_llm_enabled()
 
+        # At-rest key loading is fail-closed: a malformed environment key, a
+        # missing AI_STORAGE_KEY_FILE or an unreadable key file aborts compose
+        # before any task/pending/cache adapter can open state it cannot
+        # decrypt. It runs before the runtime modules are built because the
+        # RAG module seals the cache with the same key.
+        storage_cipher = load_storage_cipher()
+
         # Runtime module graph: instance-based handles owned here and injected
         # into the tool catalog, the services and the routers. The model wiring
         # context is captured on the LLM instance, so nothing has to read a
         # module global later (admin reload included).
+        # The prompt builder is a separate collaborator from the LLM
+        # runtime handle: the chatbot specialist needs both, and the chat
+        # route broke when the two were still one object (ADR 0029).
+        # ``unseal`` opens a chat attachment that was sealed at rest by the
+        # Qt client with the same platform key (ADR 0031).
+        _unseal_attachment = attachment_unsealer(storage_cipher)
+
         runtime_modules = RuntimeModules(
             llm=LlmModule(
                 registry=_registry,
@@ -383,7 +449,11 @@ def compose() -> None:
                 model_idx=MODEL_IDX,
                 use_vision_llm=USE_VISION_LLM,
             ),
-            rag=RagModule(),
+            rag=RagModule(cipher=storage_cipher),
+            prompt_builder=DefaultPromptBuilder(
+                chars_per_token=CHARS_PER_TOKEN,
+                unseal=_unseal_attachment,
+            ),
         )
 
         # The composition root owns the single tool catalog, coordinator and
@@ -396,16 +466,33 @@ def compose() -> None:
             list(_tool_registry.get_all()),
             platform_executors(_tool_registry),
             runtime_modules.execute_a2a_task,
+            storage_cipher=storage_cipher,
+        )
+        # One registry instance owned by this composition root. The supervisor
+        # gets a delegate bound to its resolver, and the A2A router gets the
+        # same instance — no process-wide lookup that a second composition
+        # (tests, embedded hosts) could observe or overwrite.
+        from functools import partial
+
+        from ai_assistant.orchestration.supervisor import delegate as supervisor_delegate
+
+        a2a_registry = RemoteAgentRegistry()
+        delegate_fn = (
+            partial(supervisor_delegate, remote_lookup=a2a_registry.resolve)
+            if platform.settings.enable_a2a else None
         )
         agent_service = AgentService(
             tool_gateway=platform.gateway,
             llm_runtime=runtime_modules.llm,
             tool_registry=_tool_registry,
             checkpointer=build_checkpointer(),
-            a2a_router=A2ARouter(),
+            a2a_router=A2ARouter(registry=a2a_registry),
             task_coordinator=platform.coordinator,
-            pending_actions=PendingActionStore(_pending_actions_path()),
+            pending_actions=PendingActionStore(
+                _pending_actions_path(), cipher=platform.storage_cipher,
+            ),
             max_concurrent_runs=load_agent_runtime_settings().max_concurrent_runs,
+            delegate_fn=delegate_fn,
         )
         # The MCP adapter owns one server instance bound to the shared gateway;
         # ``mcp_server`` is what the admin routes import (the old
@@ -428,6 +515,10 @@ def compose() -> None:
         # HTTP surface, mounted once, sharing one parsed policy object so
         # loopback/origin/token enforcement cannot drift between adapters.
         app = create_app(platform.settings, lifespan)
+        # Lifespan discovery reads the registry from the app state: the app is
+        # the object FastAPI hands back to its own lifespan, so no module-level
+        # handle is needed.
+        app.state.a2a_registry = a2a_registry
         transport_policy = TransportPolicy.from_env(
             allowed_origins=platform.settings.allowed_origins,
             allow_remote_a2a=platform.settings.allow_remote_a2a,
@@ -449,6 +540,7 @@ def compose() -> None:
             llm_n_ctx=LLM_N_CTX,
             logger=logger,
             policy=transport_policy,
+            unseal=_unseal_attachment,
         ))
         app.include_router(build_admin_router(
             llm_module=runtime_modules.llm,

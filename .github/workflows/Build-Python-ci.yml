@@ -10,14 +10,26 @@ on:
     paths:
       - "AIAssistant/**"
       - "AIComputerVision/**"
-      # Contract header mirrored by AIComputerVision/tests/test_contract.py.
+      # Files read by AIComputerVision/tests/test_contract.py. AppConstants.h
+      # only includes AIConstants.h; the contract itself lives in the latter,
+      # so both are listed (as are the other C++/CMake files the tests parse).
       - "src/core/AppConstants.h"
+      - "src/core/AIConstants.h"
+      - "src/core/AppManifest.json"
+      - "src/services/ai/AIYoloPostProcessor.h"
+      - "src/services/ai/AIProcessor.cpp"
+      - "CMakeLists.txt"
   pull_request:
     branches: [main]
     paths:
       - "AIAssistant/**"
       - "AIComputerVision/**"
       - "src/core/AppConstants.h"
+      - "src/core/AIConstants.h"
+      - "src/core/AppManifest.json"
+      - "src/services/ai/AIYoloPostProcessor.h"
+      - "src/services/ai/AIProcessor.cpp"
+      - "CMakeLists.txt"
   workflow_dispatch:
 
 concurrency:
@@ -141,7 +153,11 @@ jobs:
     # at 100% (statements and branches) because cvtrain holds two contracts with
     # the Qt application.
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The mutation step is the expensive one: it runs the whole suite once per
+    # mutant (57 decisions, ADR 0007), so the budget has to cover the suite
+    # multiplied by the mutant count plus the baseline run. Measured locally:
+    # ~14 s per suite run.
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
@@ -165,11 +181,23 @@ jobs:
         run: python -m mypy
 
       - name: Syntax check
-        run: python -m compileall -q AIComputerVision/cvtrain AIComputerVision/TrainModel.py AIComputerVision/tests
+        run: python -m compileall -q AIComputerVision/cvtrain AIComputerVision/TrainModel.py AIComputerVision/tests AIComputerVision/scripts
 
       - name: "Unit tests (coverage gate: 100%)"
         working-directory: AIComputerVision
         run: |
           coverage run -m unittest discover -s tests -v
           coverage report
+
+      - name: Mutation check — load-bearing guards
+        working-directory: AIComputerVision
+        # Inverts one decision at a time (fail-closed provenance, the quality
+        # gate, the ONNX export contract, preflight fail-fast, the safe
+        # stale-lock steal, manifest integrity, the publication order, the
+        # progress protocol, the exit-code taxonomy) and requires the owning
+        # suite to fail. 57 decisions, one per guard the package's docs claim
+        # to protect (ADR 0007). Runs after coverage because it rewrites
+        # cvtrain sources in place and restores them byte-for-byte in a
+        # finally, guarded by a lock file.
+        run: python scripts/mutation_check.py
 

@@ -1,13 +1,10 @@
 #include "AIAssistant.h"
 #include "AgentActionManifest.h"
-#include <QStandardPaths>
 #include "AppConstants.h"
 #include "IAppPaths.h"
 #include "IUserManager.h"
 #include "ILanguageService.h"
 #include <QDebug>
-#include <QFile>
-#include <QFileInfo>
 #include <QJsonDocument>
 #include <QDateTime>
 
@@ -22,13 +19,18 @@ AIAssistant::AIAssistant(ILanguageService* lang, IUserManager* users,
       m_pythonInterpreter(pythonInterpreter.isEmpty() ? QStringLiteral("python")
                                                       : pythonInterpreter),
       m_serverPort(serverPort),
-      aiServerProcess(new QProcess(this)),
+      m_server(lang, paths, m_pythonInterpreter, nullptr),
       networkManager(injectedNetwork ? injectedNetwork
                                      : new QNetworkAccessManager(this)) {
 
-    connect(aiServerProcess, &QProcess::readyReadStandardOutput, this, &AIAssistant::onProcessReadyRead);
-    connect(aiServerProcess, &QProcess::readyReadStandardError, this, &AIAssistant::onProcessError);
-    connect(aiServerProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &AIAssistant::onProcessFinished);
+    connect(&m_server, &AIServerProcessController::serverStatusChanged,
+            this, [this](const QString &status) { emit serverStatusChanged(status); });
+    connect(&m_server, &AIServerProcessController::errorOccurred,
+            this, [this](const QString &message) { emit errorOccurred(message); });
+    connect(&m_server, &AIServerProcessController::serverReady,
+            this, &AIAssistant::markServerReady);
+    connect(&m_server, &AIServerProcessController::processFinished,
+            this, &AIAssistant::onServerFinished);
     connect(networkManager, &QNetworkAccessManager::finished, this, &AIAssistant::onReplyFinished);
 
     loadAllSessions(); // cũng chọn session cuối cùng làm hiện tại
@@ -48,44 +50,15 @@ AIAssistant::~AIAssistant() {
 void AIAssistant::startServer(int modelIndex) {
     stopServer();
     m_serverRecoveryAttempts = 0;
-    startServerProcess(modelIndex);
-}
-
-void AIAssistant::startServerProcess(int modelIndex) {
-    const QStringList models = AppConstants::AIAssistant::modelNames();
-    QString modelName = (modelIndex >= 0 && modelIndex < models.size()) ? models.at(modelIndex) : "Unknown Model";
-    qDebug() << "[AI Server] Starting server with model index:" << modelIndex << "(" << modelName << ")";
     m_currentModelIndex = modelIndex;
     m_serverReadyEmitted = false;
-    
-    // Đảm bảo kết nối lại tín hiệu cho tiến trình mới
-    disconnect(aiServerProcess, nullptr, this, nullptr);
-    connect(aiServerProcess, &QProcess::readyReadStandardOutput, this, &AIAssistant::onProcessReadyRead);
-    connect(aiServerProcess, &QProcess::readyReadStandardError, this, &AIAssistant::onProcessError);
-    connect(aiServerProcess, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &AIAssistant::onProcessFinished);
-
-    QString sp = (m_paths ? m_paths->aiAssistantDir() : QString()) + "/" + AppConstants::AIServer::chatbotScript();
-    if (QFileInfo::exists(sp)) {
-        emit serverStatusChanged(m_lang->translate("ai.starting_server"));
-        
-        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        env.insert("PYTHONUNBUFFERED", "1");
-        env.insert("PYTHONIOENCODING", "utf-8");
-        env.insert("APP_DATA_DIR", QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
-        aiServerProcess->setProcessEnvironment(env);
-        
-        aiServerProcess->setWorkingDirectory(m_paths->aiAssistantDir());
-        aiServerProcess->start(m_pythonInterpreter, QStringList() << "-u" << sp << QString::number(modelIndex));
-    } else {
-        emit errorOccurred(m_lang->translate("ai.missing_script"));
-    }
+    m_server.start(modelIndex);
 }
 
 void AIAssistant::resetTransientRequestState() {
     // Discard anything in flight — the backend behind it is gone/going.
-    m_queuedRequests.clear();
-    const auto activeReplies = m_pendingRequests.keys();
-    m_pendingRequests.clear();
+    const auto activeReplies = m_requests.pendingReplies();
+    m_requests.clear();
     for (QNetworkReply *reply : activeReplies) {
         if (reply) reply->abort();
     }
@@ -100,19 +73,7 @@ void AIAssistant::resetTransientRequestState() {
 
 void AIAssistant::stopServer() {
     resetTransientRequestState();
-
-    // Ngắt toàn bộ kết nối để tránh nhận tín hiệu finished khi chủ động tắt
-    disconnect(aiServerProcess, nullptr, this, nullptr);
-
-    if (aiServerProcess->state() != QProcess::NotRunning) {
-        // Keep the detached AI-server process running after Qt exits.
-        aiServerProcess->terminate();
-        if (!aiServerProcess->waitForFinished(1000)) {
-            aiServerProcess->kill();
-            aiServerProcess->waitForFinished(AppConstants::AIServer::STOP_SERVER_TIMEOUT_MS);
-        }
-    }
-
+    m_server.stop();
 }
 
 void AIAssistant::switchModel(int index) {
@@ -196,20 +157,14 @@ void AIAssistant::restartServer() {
         // Discard anything in flight — the backend behind it is gone/going.
         resetTransientRequestState();
 
-        // Kill aiServerProcess — the server-manager wrapper.
-        disconnect(aiServerProcess, nullptr, this, nullptr);
-        if (aiServerProcess->state() != QProcess::NotRunning) {
-            aiServerProcess->terminate();
-            if (!aiServerProcess->waitForFinished(1000)) {
-                aiServerProcess->kill();
-                aiServerProcess->waitForFinished(AppConstants::AIServer::STOP_SERVER_TIMEOUT_MS);
-            }
-        }
+        // Stop the server-manager wrapper. The controller owns the bounded
+        // terminate/kill sequence and disconnects its own process signals.
+        m_server.stop();
 
         // Give the OS a moment to free port 8080 before the new ServerManager
         // instance probes /health and (re)spawns a fresh AI Server.
         QTimer::singleShot(800, this, [this]() {
-            startServerProcess(m_currentModelIndex);
+            m_server.start(m_currentModelIndex);
         });
     };
 
@@ -252,11 +207,7 @@ void AIAssistant::deleteSession(const QString &sessionId) {
     // selection (last remaining session, or none when the list is empty).
     if (!m_sessions.remove(sessionId)) return;
 
-    for (int i = m_queuedRequests.size() - 1; i >= 0; --i) {
-        if (m_queuedRequests[i].sessionId == sessionId) {
-            m_queuedRequests.removeAt(i);
-        }
-    }
+    m_requests.removeQueuedForSession(sessionId);
     m_isThinking = hasPendingWork();
 
     if (m_sessions.isEmpty()) newChat();
@@ -278,17 +229,7 @@ bool AIAssistant::isSessionThinking(const QString &sessionId) const {
 }
 
 int AIAssistant::sessionThinkingInsertIndex(const QString &sessionId) const {
-    for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end(); ++it) {
-        if (it.value().sessionId == sessionId) {
-            return it.value().insertAfterIndex;
-        }
-    }
-    for (const auto &req : m_queuedRequests) {
-        if (req.sessionId == sessionId) {
-            return req.insertAfterIndex;
-        }
-    }
-    return -1;
+    return m_requests.insertIndexForSession(sessionId);
 }
 
 ChatSession* AIAssistant::currentSession() {
@@ -300,19 +241,11 @@ ChatSession* AIAssistant::getSession(const QString &sessionId) {
 }
 
 bool AIAssistant::hasPendingWork() const {
-    return !m_pendingRequests.isEmpty() || !m_queuedRequests.isEmpty();
+    return m_requests.hasWork();
 }
 
 bool AIAssistant::hasPendingRequestForSession(const QString &sessionId) const {
-    for (auto it = m_pendingRequests.begin(); it != m_pendingRequests.end(); ++it) {
-        if (it.value().sessionId == sessionId) return true;
-    }
-
-    for (const QueuedCompletionRequest &request : m_queuedRequests) {
-        if (request.sessionId == sessionId) return true;
-    }
-
-    return false;
+    return m_requests.hasRequestForSession(sessionId);
 }
 
 QJsonObject AIAssistant::buildCompletionPayload(const QList<QJsonObject> &messages) const {
@@ -396,26 +329,27 @@ void AIAssistant::enqueueCompletionRequest(const QString &sessionId, const QJson
     request.sessionId = sessionId;
     request.payload = payload;
     request.insertAfterIndex = insertAfterIndex;
-    m_queuedRequests.append(request);
+    m_requests.enqueue(request);
     m_isThinking = true;
     processNextQueuedRequest();
 }
 
 void AIAssistant::processNextQueuedRequest() {
-    if (!m_pendingRequests.isEmpty() || m_queuedRequests.isEmpty()) {
+    if (m_requests.hasPending() || !m_requests.hasQueued()) {
         m_isThinking = hasPendingWork();
         return;
     }
 
     if (!m_serverReadyEmitted) {
         m_isThinking = true;
-        if (aiServerProcess->state() == QProcess::NotRunning) {
-            startServerProcess(m_currentModelIndex);
+        if (!m_server.isRunning()) {
+            m_server.start(m_currentModelIndex);
         }
         return;
     }
 
-    const QueuedCompletionRequest request = m_queuedRequests.takeFirst();
+    QueuedCompletionRequest request;
+    if (!m_requests.takeNext(request)) return;
 
     QString baseUrl = AppConstants::AIServer::baseUrl(m_serverPort);
     QString urlStr;
@@ -439,7 +373,7 @@ void AIAssistant::processNextQueuedRequest() {
 
     qDebug() << "[AI Server] req urlStr:" << urlStr;
     QNetworkReply *reply = networkManager->post(req, QJsonDocument(request.payload).toJson());
-    m_pendingRequests[reply] = request;
+    m_requests.registerReply(reply, request);
     m_isThinking = true;
 }
 
@@ -558,7 +492,7 @@ void AIAssistant::retryAgentTask(const QString &sessionId, int msgIndex) {
     for (int index = 0; index <= msgIndex; ++index) conversation.append(sess->messages.at(index));
     request.payload = buildAgentPayload(conversation, msg["content"].toString(), attachments);
     request.payload["session_id"] = sessionId;
-    m_queuedRequests.append(request);
+    m_requests.enqueue(request);
     m_isThinking = true;
     processNextQueuedRequest();
     emit historyChanged();
@@ -625,7 +559,7 @@ void AIAssistant::executeAgentTask(const QString &sessionId, const QString &task
     request.isAgent = true;
     request.isApproval = false;
 
-    m_queuedRequests.append(request);
+    m_requests.enqueue(request);
     m_isThinking = true;
     processNextQueuedRequest();
 }
@@ -642,7 +576,7 @@ void AIAssistant::approveAgentAction(const QString &sessionId, const QString &ac
     request.isAgent = true;
     request.isApproval = true;
 
-    m_queuedRequests.append(request);
+    m_requests.enqueue(request);
     m_isThinking = true;
     processNextQueuedRequest();
 }
@@ -659,7 +593,7 @@ void AIAssistant::rejectAgentAction(const QString &sessionId, const QString &act
     request.isAgent = true;
     request.isApproval = true;
 
-    m_queuedRequests.append(request);
+    m_requests.enqueue(request);
     m_isThinking = true;
     processNextQueuedRequest();
 }
@@ -675,31 +609,12 @@ void AIAssistant::reportUiActionResult(const QString &requestId, bool success, c
     request.payload["request_id"] = requestId;
     request.payload["success"] = success;
     request.payload["result"] = QJsonObject::fromVariantMap(result);
-    m_queuedRequests.append(request);
+    m_requests.enqueue(request);
     m_isThinking = true;
     processNextQueuedRequest();
 }
 
 // ── Process callbacks ─────────────────────────────────────────────────────────
-
-void AIAssistant::onProcessReadyRead() {
-    QString out = QString::fromUtf8(aiServerProcess->readAllStandardOutput());
-    if(!out.isEmpty())
-        qDebug().noquote() << QString("[AIAssistant Server]\n%1").arg(out.trimmed());
-    
-    QStringList lines = out.split('\n');
-    for (const QString &line : lines) {
-        if (line.contains("[STATUS]")) {
-            int idx = line.indexOf("[STATUS]");
-            QString statusText = line.mid(idx + 8).trimmed();
-            emit serverStatusChanged(statusText);
-        }
-    }
-
-    if (!m_serverReadyEmitted && (out.contains("[SUCCESS] AI Server") || out.contains("Uvicorn running on") || out.contains("Application startup complete"))) {
-        markServerReady();
-    }
-}
 
 void AIAssistant::markServerReady() {
     if (m_serverReadyEmitted) return;
@@ -710,32 +625,12 @@ void AIAssistant::markServerReady() {
     emit historyChanged();
 }
 
-void AIAssistant::onProcessError() {
-    QString err = QString::fromUtf8(aiServerProcess->readAllStandardError());
-    if(!err.isEmpty())
-        qDebug().noquote() << QString("[AIAssistant Server]\n%1").arg(err.trimmed());
-    
-    QStringList lines = err.split('\n');
-    for (const QString &line : lines) {
-        if (line.contains("[STATUS]")) {
-            int idx = line.indexOf("[STATUS]");
-            QString statusText = line.mid(idx + 8).trimmed();
-            emit serverStatusChanged(statusText);
-        }
-    }
-
-    if (!m_serverReadyEmitted && (err.contains("[SUCCESS] AI Server") || err.contains("Uvicorn running on") || err.contains("Application startup complete"))) {
-        markServerReady();
-    }
-}
-
-void AIAssistant::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatus) {
+void AIAssistant::onServerFinished(int exitCode, bool crashed) {
     m_serverReadyEmitted = false;
 
     if (hasPendingWork()) {
-        const auto activeReplies = m_pendingRequests.keys();
-        QList<QueuedCompletionRequest> activeRequests = m_pendingRequests.values();
-        m_pendingRequests.clear();
+        const auto activeReplies = m_requests.pendingReplies();
+        QList<QueuedCompletionRequest> activeRequests = m_requests.takeAllPending();
 
         for (QNetworkReply *reply : activeReplies) {
             if (reply) {
@@ -748,20 +643,19 @@ void AIAssistant::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
             QueuedCompletionRequest request = activeRequests[i];
             if (request.retryCount < 1) {
                 request.retryCount++;
-                m_queuedRequests.prepend(request);
+                m_requests.prepend(request);
             } else {
                 appendAssistantMessage(request.sessionId, m_lang->translate("ai.connection_error"));
             }
         }
 
         m_isThinking = hasPendingWork();
-        if (!m_queuedRequests.isEmpty()) {
+        if (m_requests.hasQueued()) {
             if (m_serverRecoveryAttempts < 1) {
                 m_serverRecoveryAttempts++;
-                startServerProcess(m_currentModelIndex);
+                m_server.start(m_currentModelIndex);
             } else {
-                const auto queuedRequests = m_queuedRequests;
-                m_queuedRequests.clear();
+                const auto queuedRequests = m_requests.takeAllQueued();
                 for (const QueuedCompletionRequest &request : queuedRequests) {
                     appendAssistantMessage(request.sessionId, m_lang->translate("ai.connection_error"));
                 }
@@ -772,7 +666,7 @@ void AIAssistant::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
         return;
     }
 
-    if (exitStatus == QProcess::CrashExit) {
+    if (crashed) {
         emit errorOccurred(m_lang->translate("ai.server_crashed"));
     } else if (exitCode != 0) {
         emit errorOccurred(m_lang->translate("ai.server_error").arg(exitCode));
@@ -781,12 +675,12 @@ void AIAssistant::onProcessFinished(int exitCode, QProcess::ExitStatus exitStatu
 
 void AIAssistant::onReplyFinished(QNetworkReply* reply) {
     // Get the session ID for this specific reply
-    if (!m_pendingRequests.contains(reply)) {
+    if (!m_requests.hasReply(reply)) {
         reply->deleteLater();
         return;
     }
     
-    QueuedCompletionRequest request = m_pendingRequests.take(reply);
+    QueuedCompletionRequest request = m_requests.takeReply(reply);
     QString sessionId = request.sessionId;  // Remove from pending and get sessionId
     
     if (reply->error() == QNetworkReply::NoError) {
@@ -871,11 +765,11 @@ void AIAssistant::onReplyFinished(QNetworkReply* reply) {
 
         if (isRecoverableConnectionError(reply->error()) && request.retryCount < 1) {
             request.retryCount++;
-            m_queuedRequests.prepend(request);
+            m_requests.prepend(request);
             m_serverReadyEmitted = false;
 
-            if (aiServerProcess->state() == QProcess::NotRunning) {
-                startServerProcess(m_currentModelIndex);
+            if (!m_server.isRunning()) {
+                m_server.start(m_currentModelIndex);
             }
 
             m_isThinking = true;

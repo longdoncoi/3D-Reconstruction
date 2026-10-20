@@ -20,11 +20,13 @@ class ViewerService;
 class SettingsService;
 class ReconstructionService;
 class AIService;
+class AIModelLoadService;
 class AIAssistant;
 class MailService;
 class SmtpOutbox;
 class ShellService;
 class LanguageManager;
+class IProgressDialog;
 
 /**
  * @brief Composition root — only file allowed to include concrete service
@@ -79,7 +81,7 @@ public:
 
     // ─── Setters dùng bởi MainWindow sau khi UI build xong (wiring, not API) ─
     void setMenuBar(QMenuBar* bar);
-    void setProgressDialog(CustomProgressDialog* dlg);
+    void setProgressDialog(IProgressDialog* dlg);
 
 private:
     // Injected from MainWindow (shell wiring only — IAppContext no longer
@@ -95,6 +97,9 @@ private:
     std::unique_ptr<SettingsService>            m_settingsService;
     std::unique_ptr<ReconstructionService>      m_reconService;
     std::unique_ptr<AIService>                  m_aiService;
+    /// Must be declared after AIService so it is destroyed before it: the
+    /// model-load worker keeps a pointer to IAIService.
+    std::unique_ptr<AIModelLoadService>         m_aiModelLoadService;
     std::unique_ptr<AIAssistant>                m_aiAssistant;
     std::unique_ptr<MailService>                m_mailService;
     std::unique_ptr<SmtpOutbox>                 m_outbox; ///< IOutgoingMail seam for UserManager

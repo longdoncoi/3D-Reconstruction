@@ -17,7 +17,7 @@ from typing import Any
 from ..domain.errors import NotFoundError, UnprocessableRequestError
 from ..orchestration.state import Step
 from ..orchestration.supervisor import audit as audit_agent
-from ..orchestration.supervisor import delegate, verify_result
+from ..orchestration.supervisor import verify_result
 from ..tools.action_manifest import validate_action_params
 from .context import RESUME_ACTION_ID, ContextService, append_tool_result_turn
 from .ids import generate_action_id
@@ -57,7 +57,7 @@ class UIActionService(ContextService):
         # Same routing inputs as the original run (``graph_wiring`` passes
         # ``prefer_code`` too): verification must not classify the call under
         # a different specialist just because it happens on the resume path.
-        delegation = delegate(
+        delegation = self._ctx.delegate_fn(
             action["task"], action["session_id"], "application_action", params,
             prefer_code=self._ctx.is_coding_task_fn(action["task"]),
         )

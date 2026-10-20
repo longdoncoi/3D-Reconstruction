@@ -62,6 +62,7 @@ orchestrates, and ``cli`` alone is the composition root.
 HEAVY_DEPENDENCIES: dict[str, frozenset[str]] = {
     "ultralytics": frozenset({"backend"}),
     "tensorboard": frozenset({"backend"}),
+    "torch": frozenset({"backend"}),
     "yaml": frozenset({"dataset"}),
     "onnx": frozenset({"onnx_contract"}),
     "onnxruntime": frozenset({"onnx_contract"}),
@@ -71,8 +72,9 @@ HEAVY_DEPENDENCIES: dict[str, frozenset[str]] = {
 
 The ML stack (and even PyYAML) is deliberately unreachable from the rest of
 the package so that ``--help``, ``--check``, ``--dry-run`` and the whole unit
-suite run without it installed. ``ultralytics`` belongs to the one adapter;
-``yaml`` belongs to the one module that parses ``data.yaml``; ``tensorboard``
+suite run without it installed. ``ultralytics`` and ``torch`` belong to the one
+adapter (the latter behind its lazy device probe); ``yaml`` belongs to the one
+module that parses ``data.yaml``; ``tensorboard``
 is the optional sink behind ``--tensorboard``, probed by the same adapter so
 that feature fails fast rather than logging a success it did not have. The
 ONNX stack (``onnx``/``onnxruntime``/``numpy``) belongs to the post-export
@@ -85,23 +87,47 @@ def _tree(path: Path) -> ast.Module:
 
 
 def _internal_imports(tree: ast.Module) -> set[str]:
-    """Names of ``cvtrain`` modules this file imports (``from .x import ...``)."""
+    """Names of ``cvtrain`` modules this file imports, relative or absolute.
 
+    ``from .gate import ...`` and ``from cvtrain.gate import ...`` are the same
+    edge. Only the relative spelling used to be recognised, so an absolute
+    import was a documented way around the dependency map; both are now read
+    through the same package name.
+    """
+
+    package = PACKAGE_DIR.name
     found: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level == 1:
-            if node.module in MODULES:
-                found.add(node.module)
-            for alias in node.names:
-                # ``from . import __version__, trainer`` mixes a package
-                # attribute with a submodule: only the submodule is an edge.
-                if alias.name in MODULES:
-                    found.add(alias.name)
+        if isinstance(node, ast.ImportFrom):
+            if node.level == 1:
+                if node.module in MODULES:
+                    found.add(node.module)
+                for alias in node.names:
+                    # ``from . import __version__, trainer`` mixes a package
+                    # attribute with a submodule: only the submodule is an edge.
+                    if alias.name in MODULES:
+                        found.add(alias.name)
+            elif node.level == 0 and node.module:
+                if node.module == package:
+                    # ``from cvtrain import gate, __version__``
+                    found.update(alias.name for alias in node.names if alias.name in MODULES)
+                elif node.module.startswith(f"{package}."):
+                    # ``from cvtrain.gate import ...`` names the submodule in
+                    # the module path, not in the imported aliases.
+                    submodule = node.module.split(".", 1)[1].partition(".")[0]
+                    if submodule in MODULES:
+                        found.add(submodule)
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                top_level = alias.name.partition(".")[0]
-                if top_level in MODULES:
-                    found.add(top_level)
+                parts = alias.name.split(".")
+                if parts[0] == package and len(parts) > 1:
+                    if parts[1] in MODULES:
+                        found.add(parts[1])
+                elif parts[0] in MODULES:
+                    # Handles ``import backend`` (relative imports are the
+                    # valid spelling, but the guard treats a bare module name
+                    # as the same edge rather than letting it through).
+                    found.add(parts[0])
     return found
 
 
@@ -189,6 +215,34 @@ class ImportGraphTests(unittest.TestCase):
                     node.id for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == "UltralyticsBackend"
                 }
                 self.assertFalse(mentions, f"{name}.py names the concrete backend; only cli.py may")
+
+
+class ImportNormalisationTests(unittest.TestCase):
+    """An absolute ``cvtrain`` import is the same edge as a relative one."""
+
+    def test_absolute_package_imports_are_recognised(self) -> None:
+        source = """
+import cvtrain.gate
+import cvtrain.unknown
+import cvtrain
+import backend
+from cvtrain import gate, __version__, trainer
+from cvtrain.unknown import thing
+from cvtrain.trainer import run
+from other import gate
+from . import config
+"""
+        self.assertEqual(
+            _internal_imports(ast.parse(source)),
+            {"gate", "trainer", "backend", "config"},
+        )
+
+    def test_a_package_only_import_is_not_an_edge(self) -> None:
+        self.assertEqual(_internal_imports(ast.parse("import cvtrain\n")), set())
+        self.assertEqual(_internal_imports(ast.parse("from cvtrain import __version__\n")), set())
+
+    def test_unrelated_imports_are_not_edges(self) -> None:
+        self.assertEqual(_internal_imports(ast.parse("import other.gate\nfrom other import trainer\n")), set())
 
 
 class LazyDependencyTests(unittest.TestCase):
