@@ -323,7 +323,8 @@ class OptionalProtocolTests(unittest.TestCase):
         mcp = MagicMock()
         mcp.available = mcp_available
         platform = SimpleNamespace(
-            settings=SimpleNamespace(enable_a2a=enable_a2a, enable_mcp=enable_mcp),
+            settings=SimpleNamespace(enable_a2a=enable_a2a, enable_mcp=enable_mcp,
+                                    a2a_card_url="https://ai.internal:8443"),
             tasks=object(),
             plugins=object(),
         )
@@ -343,6 +344,7 @@ class OptionalProtocolTests(unittest.TestCase):
             "3D-Reconstruction AI Assistant",
             "3.0.0",
             policy=ANY,
+            card_base_url="https://ai.internal:8443",
         )
         self.assertIsInstance(run.mock_build.call_args.kwargs["policy"], TransportPolicy)
         run.app.include_router.assert_called_once_with("router")

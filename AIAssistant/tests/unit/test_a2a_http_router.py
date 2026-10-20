@@ -11,6 +11,7 @@ every closure body is reached end to end.
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import unittest
 from dataclasses import replace
@@ -118,7 +119,8 @@ class _FakeService:
         return self.store[task_id]
 
 
-def _client(service: _FakeService, policy=None, max_subscribers=None) -> TestClient:
+def _client(service: _FakeService, policy=None, max_subscribers=None,
+            card_base_url: str | None = None) -> TestClient:
     """Build the app and call it as a loopback peer.
 
     The A2A surface is loopback-only until remote access is opted into with a
@@ -127,9 +129,10 @@ def _client(service: _FakeService, policy=None, max_subscribers=None) -> TestCli
     route handler would run.
     """
     app = FastAPI()
-    app.include_router(build_a2a_router(
-        service, "assistant", "3.0", policy=policy, max_subscribers=max_subscribers,
-    ))
+    kwargs = {"policy": policy, "max_subscribers": max_subscribers}
+    if card_base_url is not None:
+        kwargs["card_base_url"] = card_base_url
+    app.include_router(build_a2a_router(service, "assistant", "3.0", **kwargs))
     return TestClient(app, client=("127.0.0.1", 50000), raise_server_exceptions=False)
 
 
@@ -155,11 +158,32 @@ class AgentCardAndSendRoutesTests(unittest.TestCase):
     def test_agent_card_advertises_the_endpoint_and_capabilities(self):
         with _client(_FakeService()) as client:
             card = client.get("/.well-known/agent.json").json()
-        self.assertEqual(card["url"], "http://testserver/a2a")
+        self.assertEqual(card["url"], "http://127.0.0.1:8080/a2a")
         self.assertEqual(card["name"], "assistant")
         self.assertEqual(card["version"], "3.0")
         self.assertEqual(card["protocolVersion"], "0.3")
         self.assertEqual(sorted(s["id"] for s in card["skills"]), ["code", "supervisor"])
+
+    def test_the_advertised_url_is_the_configured_one(self):
+        """ADR 0032: the card publishes the *configured* base URL."""
+        with _client(_FakeService(), card_base_url="https://ai.internal:8443/") as client:
+            card = client.get("/.well-known/agent.json").json()
+        self.assertEqual(card["url"], "https://ai.internal:8443/a2a")
+        self.assertEqual(
+            card["supportedInterfaces"][0]["url"], "https://ai.internal:8443"
+        )
+
+    def test_a_spoofed_host_header_cannot_rewrite_the_advertised_url(self):
+        """ADR 0032: the card used to be built from ``request.base_url``, which
+        is derived from the Host header. A peer sending ``Host: evil.example``
+        made this server publish a card pointing at the attacker — and a peer
+        that trusts the card dispatches its tasks there."""
+        with _client(_FakeService(), card_base_url="https://ai.internal:8443") as client:
+            card = client.get(
+                "/.well-known/agent.json", headers={"Host": "evil.example"}
+            ).json()
+        self.assertEqual(card["url"], "https://ai.internal:8443/a2a")
+        self.assertNotIn("evil.example", json.dumps(card))
 
     def test_message_send_submits_and_returns_the_task(self):
         service = _FakeService()

@@ -108,6 +108,111 @@ class BuildCheckpointerTests(unittest.TestCase):
         from langgraph.checkpoint.memory import MemorySaver
         self.assertIsInstance(saver, MemorySaver)
 
+    def test_the_sqlite_checkpoint_store_is_sealed_with_the_platform_key(self) -> None:
+        """ADR 0032: the checkpoint holds the system prompt, the user's
+        messages and the tool results — the same material the task store
+        seals. Leaving it in the clear made ``Cache/`` the one plaintext
+        copy the at-rest story had not closed."""
+        from ai_assistant.adapters.persistence.storage_crypto import AesGcmFieldCipher
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Path(tmpdir) / "checkpoints.sqlite"
+            settings = _settings(checkpoint_backend="sqlite", checkpoint_path=str(db))
+            with self._patch_settings(settings):
+                saver = cp_module.build_checkpointer(AesGcmFieldCipher(b"k" * 32))
+            try:
+                saver.put(
+                    {"configurable": {"thread_id": "t1", "checkpoint_ns": ""}, "type": "chat"},
+                    {"v": 1, "id": "chk-1", "ts": "2026-01-01T00:00:00+00:00",
+                     "channel_values": {"messages": [{"role": "user", "content": "the secret prompt"}]}},
+                    {"source": "input", "step": 0},
+                    {},
+                )
+            finally:
+                conn = getattr(saver, "conn", None)
+                if conn is not None:
+                    conn.close()
+            raw = db.read_bytes()
+            self.assertNotIn(b"the secret prompt", raw)
+            self.assertIn(b"enc:v1:", raw)
+
+    def test_a_checkpoint_sealed_with_another_key_cannot_be_read(self) -> None:
+        """Fail closed: a checkpoint the platform key cannot open is not a
+        checkpoint the platform can resume from."""
+        from ai_assistant.adapters.persistence.storage_crypto import (
+            AesGcmFieldCipher,
+            StorageDecryptionError,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Path(tmpdir) / "checkpoints.sqlite"
+            settings = _settings(checkpoint_backend="sqlite", checkpoint_path=str(db))
+            with self._patch_settings(settings):
+                saver = cp_module.build_checkpointer(AesGcmFieldCipher(b"k" * 32))
+            try:
+                saver.put(
+                    {"configurable": {"thread_id": "t1", "checkpoint_ns": ""}, "type": "chat"},
+                    {"v": 1, "id": "chk-1", "ts": "2026-01-01T00:00:00+00:00",
+                     "channel_values": {"messages": [{"role": "user", "content": "the secret prompt"}]}},
+                    {"source": "input", "step": 0},
+                    {},
+                )
+            finally:
+                conn = getattr(saver, "conn", None)
+                if conn is not None:
+                    conn.close()
+
+            with self._patch_settings(settings):
+                other = cp_module.build_checkpointer(AesGcmFieldCipher(b"j" * 32))
+            try:
+                with self.assertRaises(StorageDecryptionError):
+                    other.get_tuple(
+                        {"configurable": {"thread_id": "t1", "checkpoint_ns": ""}, "type": "chat"}
+                    )
+            finally:
+                conn = getattr(other, "conn", None)
+                if conn is not None:
+                    conn.close()
+
+    def test_without_a_key_the_checkpoint_stays_in_the_clear(self) -> None:
+        """No key configured means no sealing — the behaviour is explicit
+        rather than silently degrading to a broken envelope."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = Path(tmpdir) / "checkpoints.sqlite"
+            settings = _settings(checkpoint_backend="sqlite", checkpoint_path=str(db))
+            with self._patch_settings(settings):
+                saver = cp_module.build_checkpointer()
+            try:
+                saver.put(
+                    {"configurable": {"thread_id": "t1", "checkpoint_ns": ""}, "type": "chat"},
+                    {"v": 1, "id": "chk-1", "ts": "2026-01-01T00:00:00+00:00",
+                     "channel_values": {"messages": [{"role": "user", "content": "plain prompt"}]}},
+                    {"source": "input", "step": 0},
+                    {},
+                )
+            finally:
+                conn = getattr(saver, "conn", None)
+                if conn is not None:
+                    conn.close()
+            self.assertIn(b"plain prompt", db.read_bytes())
+
+    def test_a_checkpoint_sealed_with_an_unknown_cipher_is_refused(self) -> None:
+        """The adapter names the cipher it sealed with. A blob that claims a
+        different one is not opened — it is refused."""
+        from ai_assistant.adapters.persistence.storage_crypto import AesGcmFieldCipher
+
+        adapter = cp_module._FieldCipherAdapter(AesGcmFieldCipher(b"k" * 32))
+        with self.assertRaises(ValueError):
+            adapter.decrypt("rot13", b"not really ciphertext")
+
+    def test_the_cipher_adapter_round_trips_the_bytes(self) -> None:
+        from ai_assistant.adapters.persistence.storage_crypto import AesGcmFieldCipher
+
+        adapter = cp_module._FieldCipherAdapter(AesGcmFieldCipher(b"k" * 32))
+        name, sealed = adapter.encrypt(b"payload")
+        self.assertEqual(name, cp_module._CHECKPOINT_CIPHER_NAME)
+        self.assertEqual(adapter.decrypt(name, sealed), b"payload")
+
     def test_backend_failure_falls_back_to_memory(self):
         def boom():
             msg = "connection refused"

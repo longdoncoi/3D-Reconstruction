@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -303,7 +304,7 @@ def _split_files(value: object, base: Path) -> list[tuple[Path, str]]:
     return files
 
 
-def dataset_content_fingerprint(path: Path) -> str | None:
+def dataset_content_fingerprint(path: Path, on_file: Callable[[int, int], None] | None = None) -> str | None:
     """Compute a content fingerprint of the files a dataset YAML references.
 
     Returns ``None`` when the YAML file is absent or unreadable. Combines the
@@ -312,6 +313,11 @@ def dataset_content_fingerprint(path: Path) -> str | None:
     globs, single files, ``.txt`` listings and list-valued splits alike.
     Hashing the bytes — not just ``(name, size)`` — is what detects an image
     replaced by different pixels under the same name and the same file size.
+
+    ``on_file`` is called as ``on_file(done, total)`` after each file, so a
+    caller can report progress: the fingerprint reads the whole dataset, and
+    on a large one that is minutes during which the operator would otherwise
+    see nothing at all.
 
     The cost is O(dataset bytes) per check. That is deliberate: the fingerprint
     exists so ``--skip-unchanged`` can prove the data, and an inventory that a
@@ -349,8 +355,12 @@ def dataset_content_fingerprint(path: Path) -> str | None:
     for key in ("train", "val"):
         for target, name in _split_files(parsed.get(key), base):
             files.setdefault((key, name), target)
-    for (key, name), target in sorted(files.items()):
+    ordered = sorted(files.items())
+    total = len(ordered)
+    for index, ((key, name), target) in enumerate(ordered, start=1):
         _digest_file(digest, key, target, relative_name=name)
+        if on_file is not None:
+            on_file(index, total)
 
     return digest.hexdigest()
 

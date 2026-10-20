@@ -26,9 +26,37 @@ from ai_assistant.domain.errors import ModelNotLoadedError, NotFoundError
 from ai_assistant.tools.factory import create_tool_registry, platform_executors
 
 
+class _Gate:
+    """A context manager that records whether it was entered and left."""
+
+    def __init__(self) -> None:
+        self.entered = False
+        self.exited = False
+
+    def __enter__(self):
+        self.entered = True
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        self.exited = True
+        return False
+
+
+class _LeasedRuntime:
+    """A runtime that honours the ``LLMRuntime`` port (ADR 0032)."""
+
+    def __init__(self) -> None:
+        self.llm = object()
+        self.llm_lock = threading.RLock()
+        self.gate = _Gate()
+
+    def model_lease(self):
+        return self.gate
+
+
 def _service(**overrides) -> AgentService:
     kwargs = {
-        "llm_runtime": SimpleNamespace(llm=object()),
+        "llm_runtime": _LeasedRuntime(),
         "pending_actions": MagicMock(),
         "pending_lock": threading.Lock(),
         "task_coordinator": MagicMock(),
@@ -180,30 +208,7 @@ class AgentServiceFacadeTests(unittest.TestCase):
         with self.assertRaises(ModelNotLoadedError):
             service.execute(AgentExecuteRequest(task="do something"))
 
-    def test_model_lease_uses_and_falls_back_from_the_runtime_gate(self) -> None:
-        class _Gate:
-            def __init__(self) -> None:
-                self.entered = False
-                self.exited = False
-
-            def __enter__(self):
-                self.entered = True
-                return self
-
-            def __exit__(self, *exc) -> bool:
-                self.exited = True
-                return False
-
-        class _LeasedRuntime:
-            llm = object()
-            llm_lock = threading.RLock()
-
-            def __init__(self) -> None:
-                self.gate = _Gate()
-
-            def model_lease(self):
-                return self.gate
-
+    def test_model_lease_uses_the_runtime_gate(self) -> None:
         leased = _LeasedRuntime()
         service = AgentService(llm_runtime=leased)
         with service._model_lease():
@@ -211,11 +216,29 @@ class AgentServiceFacadeTests(unittest.TestCase):
         self.assertTrue(leased.gate.entered)
         self.assertTrue(leased.gate.exited)
 
+    def test_a_runtime_without_the_lease_is_a_contract_violation(self) -> None:
+        """ADR 0032: the drain contract is part of the ``LLMRuntime`` port.
+
+        It used to be duck-typed with a ``getattr`` probe, so a runtime that
+        forgot the method silently lost the guarantee — the admin reload
+        could swap the model in the middle of a run, with no type error and
+        no log. The probe is gone: a runtime that does not honour the port
+        fails loudly.
+        """
         legacy = AgentService(llm_runtime=SimpleNamespace(
             llm=object(), llm_lock=threading.RLock(),
         ))
-        with legacy._model_lease():
-            pass
+        with self.assertRaises(AttributeError):
+            with legacy._model_lease():
+                pass
+
+    def test_a_missing_runtime_is_refused_before_the_lease(self) -> None:
+        """``execute`` refuses a run without a model; the lease must not
+        reach for one either."""
+        service = AgentService(llm_runtime=None)
+        with self.assertRaises(ModelNotLoadedError):
+            with service._model_lease():
+                pass
 
     def test_execute_delegates_to_agent_runner(self) -> None:
         mock_llm = MagicMock()

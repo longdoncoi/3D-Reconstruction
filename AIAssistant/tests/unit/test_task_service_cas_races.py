@@ -26,6 +26,9 @@ class _CasStore:
     ``cas_ok=False`` loses every race; ``fail_after=N`` lets the first N writes
     land (the run starts) and loses everything after them, which is how a cancel
     arriving *while the executor runs* looks from the store's side.
+
+    ADR 0032: the store implements the port's single ``commit`` unit of work
+    — the state write and the events that announce it land together.
     """
 
     def __init__(self, task: AgentTask, *, cas_ok: bool = True, fail_after: int | None = None) -> None:
@@ -36,17 +39,12 @@ class _CasStore:
         self.saved: list[AgentTask] = []
         self.events: list[tuple[str, Any]] = []
 
-    def create(self, task: AgentTask) -> None:
-        self._task = task
-
-    def get(self, task_id: str) -> AgentTask | None:
-        return self._task
-
-    def save(self, task: AgentTask) -> None:
-        self.saved.append(task)
-        self._task = task
-
-    def save_if_status(self, task: AgentTask, expected: TaskStatus) -> bool:
+    def commit(self, task: AgentTask, *, expected: TaskStatus | None = None,
+               events: tuple[tuple[str, dict[str, Any]], ...] = ()) -> bool:
+        if expected is None:
+            self._task = task
+            self.events.extend(events)
+            return True
         self.cas_calls += 1
         lost = not self.cas_ok or (self.fail_after is not None and self.cas_calls >= self.fail_after)
         if lost:
@@ -54,28 +52,42 @@ class _CasStore:
         if self._task is None or self._task.status != expected:
             return False
         self._task = task
+        self.saved.append(task)
+        self.events.extend(events)
         return True
 
-    def append_event(self, task_id: str, kind: str, data: dict) -> None:
-        self.events.append((kind, data))
+    def get(self, task_id: str) -> AgentTask | None:
+        return self._task
 
     def events_for(self, task_id: str) -> list[tuple[str, Any]]:
         return list(self.events)
 
 
 class _PlainStore:
-    """Store without ``save_if_status``: the service falls back to get/compare/save."""
+    """Store whose compare-and-set always refuses.
+
+    ADR 0032 removed the silent read-then-write fallback the service used to
+    fall back to: that fallback was the very TOCTOU race the compare-and-set
+    exists to close, and it made a store without CAS look like one with it.
+    The port now *requires* the guard.
+    """
 
     def __init__(self, task: AgentTask) -> None:
         self._task = task
         self.saves = 0
+        self.events: list[tuple[str, Any]] = []
+
+    def commit(self, task: AgentTask, *, expected: TaskStatus | None = None,
+               events: tuple[tuple[str, dict[str, Any]], ...] = ()) -> bool:
+        if expected is None:
+            self._task = task
+            self.events.extend(events)
+            return True
+        self.saves += 1
+        return False
 
     def get(self, task_id: str) -> AgentTask | None:
         return self._task
-
-    def save(self, task: AgentTask) -> None:
-        self.saves += 1
-        self._task = task
 
 
 def _submitted(message: str = "hi") -> AgentTask:
@@ -173,29 +185,37 @@ class LostRaceTests(unittest.TestCase):
 
 
 class FallbackCasTests(unittest.TestCase):
-    """Stores that do not implement ``save_if_status`` get get/compare/save."""
+    """ADR 0032: the silent read-then-write fallback is gone.
+
+    The service used to fall back to ``get`` → compare → ``save`` when a store
+    did not implement the compare-and-set. That fallback *is* the TOCTOU race
+    the guard exists to close, and it made a store without the guard look
+    like one with it. The port now requires the guard, so a store that
+    refuses the write refuses it — the service never overwrites.
+    """
 
     def test_a_status_mismatch_refuses_the_write(self) -> None:
         store = _PlainStore(_working())
         service = TaskService(store, lambda task: {}, frozenset({"chat"}))
 
-        self.assertFalse(service._save_if_status(_working(), TaskStatus.SUBMITTED))
-        self.assertEqual(store.saves, 0)
+        self.assertIsNone(service.cancel("task-1"))
+        self.assertEqual(store.get("task-1").status, TaskStatus.WORKING)
 
-    def test_a_matching_status_persists(self) -> None:
+    def test_a_refused_write_never_announces_an_event(self) -> None:
+        """The event log must not announce a transition that did not happen."""
         store = _PlainStore(_working())
         service = TaskService(store, lambda task: {}, frozenset({"chat"}))
-        finished = _working().transition(TaskStatus.COMPLETED)
 
-        self.assertTrue(service._save_if_status(finished, TaskStatus.WORKING))
-        self.assertEqual(store.saves, 1)
-        self.assertEqual(store.get("task-1").status, TaskStatus.COMPLETED)
+        service.cancel("task-1")
+
+        self.assertEqual(store.events, [])
 
     def test_a_vanished_task_refuses_the_write(self) -> None:
         store = _PlainStore(None)
         service = TaskService(store, lambda task: {}, frozenset({"chat"}))
 
-        self.assertFalse(service._save_if_status(_working(), TaskStatus.SUBMITTED))
+        self.assertIsNone(service.cancel("task-1"))
+        # The task is gone: the service never even attempts the write.
         self.assertEqual(store.saves, 0)
 
 

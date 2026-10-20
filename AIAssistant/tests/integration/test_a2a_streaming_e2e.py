@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from ai_assistant.adapters.a2a import build_a2a_router
 from ai_assistant.application.tasks import TaskService
-from ai_assistant.domain.tasks import AgentTask
+from ai_assistant.domain.tasks import AgentTask, TaskStatus
 
 # ``build_a2a_router`` owns its own paths and the composition root mounts it at
 # the application root, so the 0.3 endpoints are ``/message:send`` and
@@ -36,18 +36,27 @@ class _MockTaskStore:
         # cursor instead of re-reading and re-slicing the whole log each poll.
         self.event_reads: list[tuple[str, int]] = []
 
-    def create(self, task: AgentTask) -> None:
+    def commit(self, task: AgentTask, *, expected: TaskStatus | None = None,
+               events: tuple[tuple[str, dict[str, Any]], ...] = ()) -> bool:
+        """ADR 0032: the port's single unit of work — state and events land
+        together, and a refused compare-and-set writes neither."""
         with self._lock:
+            if expected is not None:
+                current = self._tasks.get(task.id)
+                if current is None or current.status != expected:
+                    return False
             self._tasks[task.id] = task
-            self._events[task.id] = []
+            recorded = self._events.setdefault(task.id, [])
+            for kind, data in events:
+                # Round-trip through JSON like the SQLite store does, so domain
+                # enums arrive in the SSE stream as their string form.
+                payload = json.loads(json.dumps(data, default=str))
+                recorded.append({"seq": len(recorded) + 1, "kind": kind, "data": payload})
+            return True
 
     def get(self, task_id: str) -> AgentTask | None:
         with self._lock:
             return self._tasks.get(task_id)
-
-    def save(self, task: AgentTask) -> None:
-        with self._lock:
-            self._tasks[task.id] = task
 
     def append_event(self, task_id: str, kind: str, data: dict) -> None:
         with self._lock:

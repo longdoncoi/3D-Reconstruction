@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,13 @@ def _run_preflight(cfg: TrainConfig, reporter: ProgressReporter, backend: Traini
     device_ok, device_msg = backend.check_device(cfg)
     if not device_ok:
         report.add(preflight.Check("runtime.device", False, device_msg, fatal=True))
+    # "Installed" is not "usable": the dependency check above proves the
+    # packages are on disk, this one proves the stack can actually be loaded.
+    # A broken install must be reported here, in the preflight report, rather
+    # than surfacing later as an unexplained failure.
+    importable, import_msg = backend.check_importable(cfg)
+    if not importable:
+        report.add(preflight.Check("runtime.import", False, import_msg, fatal=True))
 
     for line in report.lines():
         LOG.info("%s", line)
@@ -116,7 +124,7 @@ def _start_manifest(cfg: TrainConfig, backend_version: str) -> manifest_mod.Mani
     manifest["generator"] = generator_name()
     # Key name is historical: it records whichever backend produced the run.
     manifest["ultralytics"] = backend_version
-    manifest["last_run"] = manifest_mod.LastRun(
+    last_run = manifest_mod.LastRun(
         started_at=started_at,
         dataset=str(cfg.data_yaml),
         models=list(cfg.models),
@@ -127,10 +135,12 @@ def _start_manifest(cfg: TrainConfig, backend_version: str) -> manifest_mod.Mani
         batch=cfg.batch,
         workers=cfg.workers,
         device=cfg.device_class,
+        device_resolved=cfg.device_resolved,
         python=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         git_commit=manifest_mod.resolve_git_commit(PROJECT_ROOT),
         min_metrics=[[name, minimum] for name, minimum in cfg.min_metrics],
     )
+    manifest["last_run"] = last_run
     # ``updated_at`` is deliberately *not* stamped here: it marks provenance
     # writes, and this header is not one. Nothing saves the document until
     # ``_record_entry`` does, and that refreshes the stamp itself — setting it
@@ -219,6 +229,7 @@ def _record_entry(
         # ``--device``" and "``--device auto``" are the same experiment, and
         # ``"0, 1"`` and ``"0,1"`` are the same too (see ``device_class``).
         device=cfg.device_class,
+        device_resolved=cfg.device_resolved,
         trained_at=trained_at,
         dataset=str(cfg.data_yaml),
         run_dir=str(model.run_dir),
@@ -264,8 +275,10 @@ def _train_all(
     # One content fingerprint for the whole invocation (see
     # ``gate.snapshot_dataset``): both the skip verdict and the provenance
     # recorder compare against the same observation, and a three-model run does
-    # not hash the dataset three times.
-    dataset_snapshot = gate.snapshot_dataset(cfg)
+    # not hash the dataset three times. The reporter is told about it: reading
+    # the whole dataset is minutes of work on a large one, and a bar that
+    # stands still for minutes looks like a hang.
+    dataset_snapshot = gate.snapshot_dataset(cfg, on_file=reporter.dataset)
     for index, key in enumerate(cfg.models):
         spec = MODEL_REGISTRY[key]
         if cfg.skip_unchanged and gate.already_current(
@@ -300,6 +313,14 @@ def _execute(cfg: TrainConfig, reporter: ProgressReporter, backend: TrainingBack
     failed = _run_preflight(cfg, reporter, backend)
     if failed is not None:
         return failed
+
+    # "Let the framework choose" is a request, not an answer: it resolves
+    # differently on a machine with a GPU and on one without. Resolving it
+    # *here* — before any weight is touched — gives the run a device that can
+    # be compared with the next one, tells the framework which device to use
+    # instead of letting it decide, and puts the answer in the provenance.
+    cfg = replace(cfg, device_resolved=backend.resolve_device(cfg))
+    LOG.info("Device: %s (requested %s)", cfg.device_resolved, cfg.device_class)
 
     if cfg.check_only:
         LOG.info("Environment is ready for training.")

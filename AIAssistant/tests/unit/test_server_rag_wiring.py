@@ -53,7 +53,7 @@ class WireIndexTests(unittest.TestCase):
         for patcher in self._patches:
             patcher.start()
         self.rag = RagModule(cipher=AesGcmFieldCipher(b"w" * 32))
-        self.addCleanup(self.rag._reset_index_state)
+        self.addCleanup(self.rag.reset_index_state)
 
     def tearDown(self) -> None:
         for patcher in self._patches:
@@ -105,6 +105,41 @@ class WireIndexTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {"AI_ENABLE_RAG": "0"}):
             self.assertEqual(self.rag.initialize_rag(force_rebuild=False), 0)
         self.assertEqual(self.rag.knowledge_chunks, [])
+
+    def test_the_reset_drops_every_retrieval_handle_together(self) -> None:
+        """ADR 0032: the reset used to exist twice with two different field
+        sets — one cleared the pipeline but not the encoder/reranker
+        references, the other cleared those but not the pipeline. A reader
+        could therefore observe ``/health`` reporting zero chunks while
+        retrieval still served the previous corpus out of the stale
+        pipeline."""
+        self.rag.initialize_rag(enable_reranker=False, force_rebuild=True)
+        self.assertIsNotNone(self.rag._pipeline)
+        self.assertIsNotNone(self.rag.embed_model_ref)
+
+        self.rag.reset_index_state()
+
+        self.assertIsNone(self.rag.knowledge_index)
+        self.assertEqual(self.rag.knowledge_chunks, [])
+        self.assertIsNone(self.rag.bm25_index)
+        self.assertIsNone(self.rag._pipeline)
+        self.assertIsNone(self.rag.embed_model_ref)
+        self.assertIsNone(self.rag._reranker)
+        # And nothing is served any more.
+        self.assertEqual(self.rag.get_context("DevManager"), ("", "", []))
+
+    def test_a_failed_rebuild_leaves_no_stale_corpus_behind(self) -> None:
+        """The failure path resets through the same single owner, so the
+        previous corpus cannot survive a failed rebuild."""
+        self.rag.initialize_rag(enable_reranker=False, force_rebuild=True)
+        with mock.patch(
+            "ai_assistant.rag.index.load_or_build_index",
+            side_effect=RuntimeError("index boom"),
+        ):
+            self.assertEqual(self.rag.initialize_rag(force_rebuild=True), 0)
+        self.assertIsNone(self.rag._pipeline)
+        self.assertEqual(self.rag.knowledge_chunks, [])
+        self.assertEqual(self.rag.get_context("DevManager"), ("", "", []))
 
 
 if __name__ == "__main__":

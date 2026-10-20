@@ -17,6 +17,22 @@ DEFAULT_PORT = 8080
 DEFAULT_BASE_URL = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
 
 
+def _env_flag(name: str, default: bool = False, env: Mapping[str, str] | None = None) -> bool:
+    """Read a boolean switch from the environment.
+
+    ``1``/``true``/``yes``/``on`` (case-insensitive) are true; everything else
+    — including an unset variable — is false. An explicitly set variable always
+    wins, including ``0``: that is how an operator turns a surface off for one
+    session even though the deployment file enables it. An *unset* variable
+    falls back to ``default``.
+    """
+    values = os.environ if env is None else env
+    raw = values.get(name, "").strip()
+    if not raw:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True, slots=True)
 class ArchitectureSettings:
     """Validated, explicit runtime configuration for the new platform.
@@ -38,6 +54,15 @@ class ArchitectureSettings:
     allowed_origins: tuple[str, ...]
     a2a_card_name: str = "3D-Reconstruction AI Assistant"
     a2a_card_url: str = DEFAULT_BASE_URL
+    #: ADR 0032: the interactive OpenAPI surface (``/docs``, ``/redoc``,
+    #: ``/openapi.json``) is an *app-level* FastAPI route, so the transport
+    #: guard on the routers never reaches it. It is therefore off unless a
+    #: deployment opts in — a network-reachable bind must not publish its own
+    #: route schema by default.
+    expose_api_docs: bool = False
+    #: Host header allow-list for the trusted-host middleware. Empty means the
+    #: middleware is not installed (the operator has not declared a policy).
+    allowed_hosts: tuple[str, ...] = ()
 
     @classmethod
     def load(cls, base_dir: Path, config_dir: Path | None = None) -> "ArchitectureSettings":
@@ -89,6 +114,19 @@ class ArchitectureSettings:
             # A2A transport configuration (ADR 0001: centralized in settings, not import-time env reads)
             a2a_card_name=str(runtime.get("a2a_card_name", "3D-Reconstruction AI Assistant")),
             a2a_card_url=str(runtime.get("a2a_card_url", DEFAULT_BASE_URL)),
+            # ADR 0032: the docs surface and the host allow-list are policy,
+            # so they are resolved once here instead of per request. The env
+            # variable wins over the TOML file so an operator can expose the
+            # docs for one debugging session without editing the deployment.
+            expose_api_docs=_env_flag("AGENT_EXPOSE_API_DOCS", bool(api.get("expose_docs", False))),
+            allowed_hosts=tuple(
+                part.strip()
+                for part in (
+                    os.environ.get("AGENT_ALLOWED_HOSTS", "")
+                    or ",".join(str(item) for item in api.get("allowed_hosts", []))
+                ).split(",")
+                if part.strip()
+            ),
         )
 
 

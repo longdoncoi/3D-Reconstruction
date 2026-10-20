@@ -21,6 +21,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from ai_assistant.domain.approvals import invocation_fingerprint
 from ai_assistant.orchestration.nodes.reason import (
     ReasonContext,
     _failed_call_fingerprints,
@@ -147,7 +148,13 @@ class FailedFingerprintTests(unittest.TestCase):
         steps = [call, {"type": "reflection", "result": {"passed": False}}]
         fingerprints = _failed_call_fingerprints(steps)
         self.assertEqual(len(fingerprints), 1)
-        self.assertIn("read_file", next(iter(fingerprints)))
+        # ADR 0032: the fingerprint is the domain's digest of the invocation,
+        # so the recorded call and the compared call are computed with one
+        # rule. The digest is opaque by design — it is compared, never read.
+        self.assertEqual(
+            next(iter(fingerprints)),
+            invocation_fingerprint("read_file", {"path": "a"}, ignore_volatile=True),
+        )
 
     def test_non_call_steps_before_a_rejection_are_skipped(self) -> None:
         steps = [
@@ -274,6 +281,24 @@ class DuplicateFailedCallGuardTests(unittest.TestCase):
             _ctx(parse=("rag_search", {"query": "a different query"})),
         )
         self.assertEqual(out["steps"][-1]["type"], "tool_call")
+
+    def test_a_retry_that_only_changed_its_request_id_is_still_a_duplicate(self) -> None:
+        """ADR 0032: the fingerprint the guard compares against and the one
+        it builds from the recorded call used two different rules — one
+        filtered the volatile per-retry keys and the other did not — so a
+        retry that only changed its ``request_id`` slipped past the guard."""
+        steps = [
+            {"type": "tool_call", "tool": "rag_search",
+             "params": {"query": "q", "request_id": "r-1"}},
+            {"type": "reflection", "tool": "rag_search", "result": {"passed": False}},
+        ]
+        out = reason_node(
+            _state(steps=steps),
+            _ctx(parse=("rag_search", {"query": "q", "request_id": "r-2"})),
+        )
+        last = out["steps"][-1]
+        self.assertEqual(last["type"], "validation_error")
+        self.assertIn("already failed review", last["error"])
 
 
 class ThinkingStepTests(unittest.TestCase):

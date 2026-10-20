@@ -38,6 +38,84 @@ class SqliteTaskStoreTests(unittest.TestCase):
     def _store(self, directory: str) -> SqliteTaskStore:
         return SqliteTaskStore(Path(directory) / "tasks.sqlite")
 
+    def test_commit_inserts_the_task_and_its_events_together(self) -> None:
+        """ADR 0032: the insert and the event are one transaction."""
+        from ai_assistant.domain.tasks import TaskStatus
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory)
+            try:
+                task = _task()
+                self.assertTrue(store.commit(task, events=(
+                    ("status", {"status": task.status}),
+                )))
+                self.assertEqual(store.get(task.id).status, TaskStatus.SUBMITTED)
+                events = list(store.events(task.id))
+                self.assertEqual(len(events), 1)
+                self.assertEqual(events[0]["kind"], "status")
+            finally:
+                store.close()
+
+    def test_commit_without_events_still_writes_the_state(self) -> None:
+        from ai_assistant.domain.tasks import TaskStatus
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory)
+            try:
+                task = _task()
+                store.commit(task)
+                self.assertEqual(store.get(task.id).status, TaskStatus.SUBMITTED)
+                self.assertEqual(list(store.events(task.id)), [])
+            finally:
+                store.close()
+
+    def test_a_lost_compare_and_set_writes_neither_state_nor_event(self) -> None:
+        """ADR 0032: the event log must not announce a transition that did not
+        happen — a subscriber would act on a state that was never reached."""
+        from ai_assistant.domain.tasks import TaskStatus
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory)
+            try:
+                task = _task()
+                store.commit(task)
+                cancelled = task.transition(TaskStatus.CANCELED)
+                # The stored status is SUBMITTED, not WORKING: the guard refuses.
+                self.assertFalse(store.commit(
+                    cancelled, expected=TaskStatus.WORKING,
+                    events=(("status", {"status": TaskStatus.CANCELED}),),
+                ))
+                self.assertEqual(store.get(task.id).status, TaskStatus.SUBMITTED)
+                self.assertEqual(list(store.events(task.id)), [])
+            finally:
+                store.close()
+
+    def test_a_won_compare_and_set_writes_state_and_events_together(self) -> None:
+        from ai_assistant.domain.tasks import TaskStatus
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = self._store(directory)
+            try:
+                task = _task()
+                store.commit(task)
+                completed = task.transition(TaskStatus.COMPLETED, result={"content": "ok"})
+                self.assertTrue(store.commit(
+                    completed, expected=TaskStatus.SUBMITTED,
+                    events=(
+                        ("artifact", {"result": {"content": "ok"}}),
+                        ("status", {"status": TaskStatus.COMPLETED}),
+                    ),
+                ))
+                reloaded = store.get(task.id)
+                self.assertEqual(reloaded.status, TaskStatus.COMPLETED)
+                self.assertEqual(reloaded.result, {"content": "ok"})
+                self.assertEqual(
+                    [event["kind"] for event in store.events(task.id)],
+                    ["artifact", "status"],
+                )
+            finally:
+                store.close()
+
     def test_get_returns_none_for_an_unknown_task(self):
         with tempfile.TemporaryDirectory() as directory:
             store = self._store(directory)

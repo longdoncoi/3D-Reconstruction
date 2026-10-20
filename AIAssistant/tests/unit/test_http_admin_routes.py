@@ -80,6 +80,16 @@ class _FakeRAGModule:
         self.bm25_index = None
         self.embed_model_ref = None
         self._reranker = None
+        self.reset_calls = 0
+
+    def reset_index_state(self) -> None:
+        """ADR 0032: the module owns the "the RAG state is empty" transition."""
+        self.reset_calls += 1
+        self.knowledge_index = None
+        self.knowledge_chunks = []
+        self.bm25_index = None
+        self.embed_model_ref = None
+        self._reranker = None
 
     def _release_ml_memory(self) -> None:
         self.released_memory = True
@@ -208,6 +218,17 @@ class AdminRoutesTest(unittest.TestCase):
         self.assertEqual(response.json()["chunks"], 42)
         self.assertTrue(rag.released_memory)
         self.assertEqual(state["rebuild_calls"], 1)
+
+    def test_reload_rag_resets_the_state_through_its_single_owner(self) -> None:
+        """ADR 0032: the route used to clear five fields itself and leave the
+        stale pipeline behind. The module owns the transition now, so the
+        route asks for it instead of reaching into the handles."""
+        rag = _FakeRAGModule()
+        client, _ = _build_client(rag=rag)
+        with mock.patch("ai_assistant.config.rag_config.RAGSettings") as mock_rag:
+            mock_rag.from_env_and_dict.return_value = SimpleNamespace(enabled=True)
+            client.post("/admin/reload-rag")
+        self.assertEqual(rag.reset_calls, 1)
 
     def test_reload_rag_releases_embeddings_for_vision(self) -> None:
         llm = _FakeLLMModule(is_vision=True)

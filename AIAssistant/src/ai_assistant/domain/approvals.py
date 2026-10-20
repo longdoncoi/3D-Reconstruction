@@ -60,6 +60,42 @@ def issue_grant_pair(
             f"grant-{secrets.token_urlsafe(32)}")
 
 
+#: Parameters that carry a per-retry identity rather than a per-invocation
+#: one. Two calls that differ *only* in these are the same call.
+VOLATILE_PARAM_KEYS = frozenset({"request_id", "workflow_id"})
+
+
+def invocation_fingerprint(
+    tool_name: str, parameters: Mapping[str, Any] | None = None, *,
+    ignore_volatile: bool = False,
+) -> str:
+    """Canonical digest of ``(tool, params)`` — the identity of an invocation.
+
+    One owner, two rules (ADR 0032):
+
+    * the default is the **binding** identity: every parameter counts. This
+      is what an approval grant is bound to, so a change in any parameter is a
+      change of the thing the user approved.
+    * ``ignore_volatile=True`` is the **retry** identity: two calls that
+      differ only in a per-retry id are the same call.
+
+    The orchestration layer used to own a second canonicalisation of the same
+    concept with a different rule, so the two could drift without anything
+    noticing.
+    """
+    params = dict(parameters or {})
+    if ignore_volatile:
+        params = {key: value for key, value in params.items()
+                  if key not in VOLATILE_PARAM_KEYS}
+    canonical = json.dumps(
+        {"tool": tool_name, "params": params},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def approval_fingerprint(tool_name: str, parameters: Mapping[str, Any] | None = None) -> str:
     """Stable digest of ``(tool, params)`` for grant binding.
 
@@ -67,13 +103,7 @@ def approval_fingerprint(tool_name: str, parameters: Mapping[str, Any] | None = 
     engine always maps to the same fingerprint as the one shown in the
     approval preview.
     """
-    canonical = json.dumps(
-        {"tool": tool_name, "params": dict(parameters or {})},
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return invocation_fingerprint(tool_name, parameters)
 
 
 def approval_covers_invocation(

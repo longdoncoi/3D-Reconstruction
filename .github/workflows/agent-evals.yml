@@ -11,13 +11,20 @@ on:
     - cron: "0 2 * * 1"
   workflow_dispatch:
 
+concurrency:
+  group: agent-evals-${{ github.ref }}
+  # The eval jobs download a model and grade it. Cancelling one halfway
+  # through leaves a half-written report, and the sweep is cheap enough to
+  # finish — so a running evaluation is kept (ADR 0032).
+  cancel-in-progress: false
+
 jobs:
   eval:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with: {python-version: "3.11"}
       # run_agentic_eval.py imports ai_assistant.orchestration.supervisor,
       # whose package __init__ eagerly imports the LangGraph LocalAgentGraph
@@ -45,15 +52,15 @@ jobs:
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
           python -c "import json;d=json.load(open('AIAssistant/evals/agentic_eval_report.json'));print(json.dumps({k:v for k,v in d.items() if k!='scenarios'},indent=2));print('scenarios:');print(json.dumps({k:{'passed':v['passed'],'failed':v['failed']} for k,v in d['scenarios'].items()},indent=2))" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: agent-tool-call-trend
           path: AIAssistant/evals/latest_tool_call_report.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: agentic-policy-trend
           path: AIAssistant/evals/agentic_eval_report.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: aiassistant-sbom
           path: AIAssistant/evals/sbom.json
@@ -68,11 +75,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with: {python-version: "3.11"}
       - name: Cache llama-cpp-python wheel
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.cache/pip
           key: pip-llamacpp-python-0.3.36-${{ runner.os }}-py311
@@ -85,7 +92,7 @@ jobs:
           "llama-cpp-python==0.3.36"
       - name: Cache the eval model
         id: model-cache
-        uses: actions/cache@v4
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ~/.cache/ai-eval-models
           # Keyed to the pinned registry revision (ADR 0023): a cache hit can
@@ -129,7 +136,7 @@ jobs:
               || echo '{"skipped": "no report — the run died before grading"}'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: model-in-loop-trend

@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import math
 import numbers
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from . import manifest as manifest_mod
@@ -133,7 +134,7 @@ def dataset_digest(cfg: TrainConfig) -> str | None:
     return sha256_file(path) if path.exists() else None
 
 
-def dataset_content_digest(cfg: TrainConfig) -> str | None:
+def dataset_content_digest(cfg: TrainConfig, on_file: Callable[[int, int], None] | None = None) -> str | None:
     """Digest of the dataset contents (paths and file bytes), if data.yaml exists.
 
     Complements :func:`dataset_digest` by hashing the actual files under
@@ -141,12 +142,15 @@ def dataset_content_digest(cfg: TrainConfig) -> str | None:
     sizes — an image replaced with different pixels under the same name and
     size is still a different dataset, which is exactly what
     ``--skip-unchanged`` must not miss.
+
+    ``on_file`` is forwarded to the fingerprint so a caller can report
+    progress while the dataset is read.
     """
 
-    return dataset_content_fingerprint(cfg.data_yaml)
+    return dataset_content_fingerprint(cfg.data_yaml, on_file=on_file)
 
 
-def snapshot_dataset(cfg: TrainConfig) -> DatasetSnapshot:
+def snapshot_dataset(cfg: TrainConfig, on_file: Callable[[int, int], None] | None = None) -> DatasetSnapshot:
     """Capture the dataset's definition and content digests once per run.
 
     Computing the content fingerprint once (instead of once per model and again
@@ -157,7 +161,7 @@ def snapshot_dataset(cfg: TrainConfig) -> DatasetSnapshot:
 
     return DatasetSnapshot(
         definition_sha256=dataset_digest(cfg),
-        content_sha256=dataset_content_digest(cfg),
+        content_sha256=dataset_content_digest(cfg, on_file=on_file),
     )
 
 
@@ -198,12 +202,20 @@ def already_current(
 
     * the artifact exists at the path the Qt app loads;
     * every recorded hyper-parameter matches this invocation — ``epochs``,
-      ``imgsz``, ``seed``, ``opset``, ``batch`` and ``workers``, plus the
-      dataset. Omitting ``batch``/``workers`` would let a differently-trained
-      run hide behind an identical file name;
+      ``imgsz``, ``seed``, ``opset``, ``batch`` and ``workers``. Omitting
+      ``batch``/``workers`` would let a differently-trained run hide behind an
+      identical file name;
     * the dataset *definition* still hashes the same (``dataset_sha256``) and
       the ``device`` class matches — a re-pointed dataset or a CPU-vs-GPU run
-      is a different artifact behind the same parameters;
+      is a different artifact behind the same parameters. The dataset is
+      compared by its **digests, not by its path**: the path is recorded as
+      provenance, but a copy of the same dataset at another absolute path is
+      the same experiment, and a verdict that depended on where the data
+      happens to live would not survive a checkout on another machine;
+    * the **resolved** device matches too (``device_resolved``). The requested
+      device says what was asked for; the resolved one says what ran. Without
+      the second, a GPU-trained artifact would pass for a CPU run whenever
+      both were requested as ``auto``;
     * the dataset *content* still hashes the same
       (``dataset_content_sha256``). An entry without that digest is not
       comparable at all: "we did not record it" means "not vouchable", so the
@@ -244,7 +256,6 @@ def already_current(
         entry.get("opset"),
         entry.get("batch"),
         entry.get("workers"),
-        entry.get("dataset"),
         entry.get("backend_version"),
         entry.get("device"),
     )
@@ -255,12 +266,26 @@ def already_current(
         cfg.opset,
         cfg.batch,
         cfg.workers,
-        str(cfg.data_yaml),
         backend_version,
         cfg.device_class,
     )
     if recorded != requested:
         return False
+    # The requested device is a *request* ("auto" means "let the framework
+    # choose"); the resolved one is the fact. An artifact trained on ``cuda:0``
+    # is not what a CPU run would build, and the request alone cannot tell the
+    # two apart — so the resolved device is compared too. An entry that never
+    # recorded one is unprovable about its device and is retrained.
+    if cfg.device_resolved is not None and entry.get("device_resolved") != cfg.device_resolved:
+        return False
+    # The dataset *path* is recorded as provenance but deliberately **not**
+    # compared: a path is not a fact about the data, it is a fact about one
+    # machine. What proves "the same dataset" is the digest of ``data.yaml``
+    # plus the fingerprint of every file it reaches — checked below. Comparing
+    # the path as well would make the verdict machine-bound: the very same
+    # dataset, copied to another directory (or checked out at another absolute
+    # path), would be retrained for a difference that cannot change the
+    # artifact.
     recorded_dataset = dataset.definition_sha256 if dataset is not None else dataset_digest(cfg)
     if recorded_dataset is None or entry.get("dataset_sha256") != recorded_dataset:
         return False

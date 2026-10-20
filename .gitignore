@@ -96,6 +96,10 @@ CMakeLists.txt.user*
 !/AIAssistant/Docs/adr/
 !/AIAssistant/Docs/archive/
 !/AIAssistant/Docs/RUNBOOK.md
+# The measured scorecard is evidence, not scratch: ADR 0015 says a claim must
+# be pinned or removed. A scorecard nobody else can read pins nothing, so it
+# is tracked (ADR 0032).
+!/AIAssistant/Docs/SCORECARD.md
 /AIAssistant/logs/
 # Legacy location the composition root used before it resolved the package root.
 /AIAssistant/src/logs/

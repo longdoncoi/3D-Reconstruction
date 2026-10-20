@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from typing import Any
@@ -90,6 +91,22 @@ class FakeBackend:
         if cfg.device == "invalid_hardware":
             return False, "device invalid_hardware not found"
         return True, "device ok"
+
+    def check_importable(self, cfg: TrainConfig) -> tuple[bool, str]:
+        # The fake stack is always loadable; a broken one is modelled by
+        # ``fail_on`` below, so the preflight report can be exercised without
+        # the ML stack.
+        if self.fail_on == "import":
+            return False, "ultralytics is not importable (broken install)"
+        return True, "framework importable"
+
+    def resolve_device(self, cfg: TrainConfig) -> str:
+        # The fake machine applies no policy: it hands the request back, so
+        # these tests keep comparing the *request*. The real adapter's policy
+        # ("auto" -> the first CUDA device, else CPU) is tested in
+        # test_backend, and the orchestrator's use of the answer is tested
+        # with a backend that resolves to something concrete.
+        return cfg.device_class
 
     def prepare(self, cfg: TrainConfig) -> None:
         self.prepared = cfg
@@ -175,7 +192,16 @@ class HappyPathTests(_SandboxedTestCase):
 
     def test_backend_is_prepared_exactly_once_before_any_training(self) -> None:
         run(self.cfg, backend=self.backend)
-        self.assertIs(self.backend.prepared, self.cfg)
+        prepared = self.backend.prepared
+        self.assertIsNotNone(prepared)
+        assert prepared is not None
+        # The orchestrator hands the backend the caller's configuration,
+        # *enriched* with the resolved device (the request alone says nothing
+        # about the machine); everything else is the caller's own values.
+        self.assertEqual(prepared.models, self.cfg.models)
+        self.assertEqual(prepared.data_yaml, self.cfg.data_yaml)
+        self.assertEqual(prepared.epochs, self.cfg.epochs)
+        self.assertEqual(prepared.device_resolved, self.cfg.device_class)
         self.assertEqual(
             self.backend.calls,
             ["prepare", "train:det", "export:det", "train:seg", "export:seg"],
@@ -325,7 +351,17 @@ class FailurePathTests(_SandboxedTestCase):
         # on the dependency line cannot be satisfied by some other check.
         cfg = _config(self.root, tensorboard=True)
         real = module_available
+        # The real adapter is used on purpose — it owns the conditional
+        # dependency list — but the *framework* is stubbed: preflight proves
+        # the stack is importable, and importing the real one would make this
+        # test depend on the machine having it installed (and cost seconds).
+        stub = types.ModuleType("ultralytics")
+        setattr(stub, "__path__", [])
+        setattr(stub, "__version__", "8.4.41-stub")
+        utils = types.ModuleType("ultralytics.utils")
+        setattr(utils, "SETTINGS", {})
         with (
+            mock.patch.dict(sys.modules, {"ultralytics": stub, "ultralytics.utils": utils}),
             mock.patch(
                 "cvtrain.preflight.module_available",
                 side_effect=lambda name: False if name == "tensorboard" else real(name),
@@ -348,6 +384,18 @@ class FailurePathTests(_SandboxedTestCase):
             code = run(cfg, backend=FakeBackend())
         self.assertEqual(code, ExitCode.PREFLIGHT)
         failures = [line for line in captured.output if "runtime.device" in line]
+        self.assertEqual(len(failures), 2)  # report summary + explicit failure
+
+    def test_a_stack_that_cannot_be_imported_fails_in_preflight(self) -> None:
+        # "Installed" is not "usable": a distribution whose own dependency is
+        # missing is installed and broken. The preflight report must say so
+        # before the run starts — the report is where an operator reads what
+        # is wrong with their environment.
+        cfg = _config(self.root)
+        with self.assertLogs("cvtrain.trainer", level="INFO") as captured:
+            code = run(cfg, backend=FakeBackend(fail_on="import"))
+        self.assertEqual(code, ExitCode.PREFLIGHT)
+        failures = [line for line in captured.output if "runtime.import" in line]
         self.assertEqual(len(failures), 2)  # report summary + explicit failure
 
 
@@ -468,6 +516,60 @@ class ProvenanceRecordingTests(_SandboxedTestCase):
         entry = manifest["entries"][MODEL_REGISTRY["det"].output]
         self.assertEqual(entry.get("dataset_content_sha256"), expected_content)
         self.assertEqual(len(entry.get("dataset_content_sha256") or ""), 64)
+
+
+class _ResolvingBackend(FakeBackend):
+    """A backend that resolves the device request to a concrete device."""
+
+    def __init__(self, resolved: str) -> None:
+        super().__init__()
+        self.resolved = resolved
+
+    def resolve_device(self, cfg: TrainConfig) -> str:
+        return self.resolved
+
+
+class DeviceResolutionTests(_SandboxedTestCase):
+    """``auto`` is a request; the resolution is the fact (ADR 0009)."""
+
+    def test_the_manifest_records_the_resolved_device_next_to_the_request(self) -> None:
+        cfg = _config(self.root, models=("det",))
+        run(cfg, backend=_ResolvingBackend("cuda:0"))
+        manifest = manifest_mod.load_manifest(cfg.models_dir)
+        entry = manifest["entries"][MODEL_REGISTRY["det"].output]
+        self.assertEqual(entry["device"], "auto")
+        self.assertEqual(entry["device_resolved"], "cuda:0")
+
+    def test_the_same_resolution_is_not_retrained(self) -> None:
+        cfg = _config(self.root, models=("det",), skip_unchanged=True)
+        run(cfg, backend=_ResolvingBackend("cuda:0"))
+        backend = _ResolvingBackend("cuda:0")
+        run(cfg, backend=backend)
+        self.assertNotIn("train:det", backend.calls)
+
+    def test_a_run_that_would_resolve_to_another_device_is_trained(self) -> None:
+        # The request was the same both times ("auto"); the *resolution*
+        # differs, so the published artifact is not what this run would build.
+        # Without the comparison, a CPU run would pass for a GPU run.
+        cfg = _config(self.root, models=("det",), skip_unchanged=True)
+        run(cfg, backend=_ResolvingBackend("cuda:0"))
+        backend = _ResolvingBackend("cpu")
+        run(cfg, backend=backend)
+        self.assertIn("train:det", backend.calls)
+
+    def test_an_entry_without_a_resolved_device_is_trained(self) -> None:
+        # A document written before the resolution existed says nothing about
+        # the machine the artifact came from: unprovable, so retrained.
+        cfg = _config(self.root, models=("det",), skip_unchanged=True)
+        run(cfg, backend=_ResolvingBackend("cuda:0"))
+        manifest = manifest_mod.load_manifest(cfg.models_dir)
+        entry = manifest["entries"][MODEL_REGISTRY["det"].output]
+        del entry["device_resolved"]
+        manifest_mod.save_manifest(cfg.models_dir, manifest)
+
+        backend = _ResolvingBackend("cuda:0")
+        run(cfg, backend=backend)
+        self.assertIn("train:det", backend.calls)
 
 
 class ConfirmRetrainTests(_SandboxedTestCase):
@@ -639,6 +741,25 @@ class SkipUnchangedTests(_SandboxedTestCase):
         # the same experiment and the second run is skipped.
         self._run(models=("det",), skip_unchanged=True, device="0,1")
         _, backend = self._run(models=("det",), skip_unchanged=True, device="0, 1")
+        self.assertNotIn("train:det", backend.calls)
+
+    def test_the_same_dataset_behind_another_path_is_not_retrained(self) -> None:
+        # A path is not a fact about the data — it is a fact about one machine.
+        # The same dataset, copied to another directory, is the same
+        # experiment: the digests prove it. A verdict that depended on where
+        # the data happens to live would not survive a checkout on another
+        # machine, and would retrain hours of work for a difference that
+        # cannot change the artifact.
+        self._run(models=("det",), skip_unchanged=True)
+        moved = self.root / "moved"
+        moved.mkdir(parents=True, exist_ok=True)
+        (moved / "data.yaml").write_text(VALID_DATASET, encoding="utf-8")
+        for name in ("images/train", "images/val"):
+            (moved / name).mkdir(parents=True, exist_ok=True)
+
+        cfg = _config(self.root, models=("det",), skip_unchanged=True, data_yaml=moved / "data.yaml")
+        backend = FakeBackend()
+        run(cfg, backend=backend)
         self.assertNotIn("train:det", backend.calls)
 
     def test_a_changed_dataset_definition_is_trained(self) -> None:

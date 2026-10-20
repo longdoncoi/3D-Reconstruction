@@ -10,7 +10,7 @@ from cvtrain.progress import PHASES, PROGRESS_PREFIX, Phase, ProgressReporter, c
 
 class ComputePercentTests(unittest.TestCase):
     def test_bounds(self) -> None:
-        for phase in ("preflight", "train", "export", "manifest"):
+        for phase in ("preflight", "dataset", "train", "export", "manifest"):
             for fraction in (0.0, 0.5, 1.0, 2.0, -1.0):
                 value = compute_percent(0, 3, phase, fraction)
                 self.assertGreaterEqual(value, 0)
@@ -21,6 +21,16 @@ class ComputePercentTests(unittest.TestCase):
         self.assertEqual(compute_percent(0, 1, "preflight", 1.0), 2)
         self.assertEqual(compute_percent(0, 1, "manifest", 0.0), 97)
         self.assertEqual(compute_percent(0, 1, "manifest", 1.0), 100)
+
+    def test_the_dataset_band_sits_between_preflight_and_the_models(self) -> None:
+        # The fingerprint reads the whole dataset before training starts; its
+        # band is small but it is its own, so the bar can move during a phase
+        # that used to look like a hang.
+        self.assertEqual(compute_percent(0, 1, "dataset", 0.0), 2)
+        self.assertEqual(compute_percent(0, 1, "dataset", 1.0), 8)
+        self.assertEqual(compute_percent(0, 1, "dataset", 0.5), 5)
+        # The models start where the dataset band ends.
+        self.assertEqual(compute_percent(0, 1, "train", 0.0), 8)
 
     def test_stages_do_not_overlap(self) -> None:
         count = 3
@@ -125,6 +135,42 @@ class ProgressReporterTests(unittest.TestCase):
             reporter.train_epoch(0, 5, 5, "det")
         self.assertIn("epoch=5/5", captured.output[-1])
         self.assertEqual(reporter.last_percent, compute_percent(0, 1, "train", 1.0))
+
+    def test_the_dataset_band_reports_how_far_the_fingerprint_got(self) -> None:
+        # Reading the whole dataset is minutes of work on a large one; the
+        # operator must see the bar move during it.
+        reporter = ProgressReporter(("det",))
+        with self.assertLogs("cvtrain.progress", level="INFO") as captured:
+            reporter.preflight(1.0)
+            reporter.dataset(1, 4)
+            reporter.dataset(4, 4)
+        dataset_lines = [line for line in captured.output if "stage=dataset" in line]
+        self.assertEqual(len(dataset_lines), 2)
+        self.assertIn("pct=4", dataset_lines[0])
+        self.assertIn("pct=8", dataset_lines[-1])
+        self.assertEqual(reporter.last_percent, compute_percent(0, 1, "dataset", 1.0))
+
+    def test_the_dataset_band_does_not_flood_the_log(self) -> None:
+        # The callback fires once per file; a dataset with a hundred thousand
+        # files must not write a hundred thousand identical lines into the log
+        # the Qt dock reads line by line. Only a change is published.
+        reporter = ProgressReporter(("det",))
+        with self.assertLogs("cvtrain.progress", level="INFO") as captured:
+            reporter.preflight(1.0)
+            for done in range(1, 1001):
+                reporter.dataset(done, 1000)
+        dataset_lines = [line for line in captured.output if "stage=dataset" in line]
+        self.assertLessEqual(len(dataset_lines), 8)
+        self.assertTrue(dataset_lines)
+        self.assertIn("pct=8", dataset_lines[-1])
+
+    def test_an_empty_dataset_is_a_finished_band_not_a_stuck_one(self) -> None:
+        reporter = ProgressReporter(("det",))
+        with self.assertLogs("cvtrain.progress", level="INFO") as captured:
+            reporter.preflight(1.0)
+            reporter.dataset(0, 0)
+        self.assertIn("stage=dataset", captured.output[-1])
+        self.assertEqual(reporter.last_percent, compute_percent(0, 1, "dataset", 1.0))
 
 
 if __name__ == "__main__":

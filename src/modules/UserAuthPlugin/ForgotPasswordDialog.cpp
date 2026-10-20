@@ -1,3 +1,5 @@
+#include "BlockingCall.h"
+#include "IMailService.h"
 #include "ForgotPasswordDialog.h"
 #include "IUserManager.h"
 #include "UserAuthPlugin.h"
@@ -141,7 +143,7 @@ void ForgotPasswordDialog::onSendOtp() {
             setError(result.second);
         }
     });
-    watcher->setFuture(QtConcurrent::run([email]() {
+    watcher->setFuture(blocking::run([email]() {
         QString error;
         const bool ok = UserAuthPlugin::users()->sendPasswordResetOtp(email, error);
         return qMakePair(ok, error);

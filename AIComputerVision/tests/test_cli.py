@@ -85,6 +85,12 @@ class ParserTests(unittest.TestCase):
         self.assertFalse(config_from_args(build_parser().parse_args(["--yes"])).skip_unchanged)
         self.assertTrue(config_from_args(build_parser().parse_args(["--skip-unchanged"])).skip_unchanged)
 
+    def test_resume_is_opt_in(self) -> None:
+        # Resuming continues an interrupted run; a fresh run is the
+        # reproducible one, so the flag stays off unless it is asked for.
+        self.assertFalse(config_from_args(build_parser().parse_args(["--yes"])).resume)
+        self.assertTrue(config_from_args(build_parser().parse_args(["--resume"])).resume)
+
     def test_quality_gate_thresholds_are_mapped_and_repeatable(self) -> None:
         args = build_parser().parse_args(["--min-metric", "metrics/mAP50(B)=0.5", "--min-metric", "mAP=0.4"])
         self.assertEqual(config_from_args(args).min_metrics, (("metrics/mAP50(B)", 0.5), ("mAP", 0.4)))

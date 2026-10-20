@@ -115,10 +115,58 @@ class TrackedFileSyncTests(unittest.TestCase):
         )
         self.assertEqual(messages, [])
 
+    def test_docker_requirements_are_satisfied_by_the_docker_lock(self) -> None:
+        """The container installs its own lock (ADR 0032). It has to satisfy
+        its own requirement file, exactly like the other two pairs."""
+        messages = _violations(
+            _ROOT / "requirements-docker.txt",
+            _ROOT / "requirements-docker.lock",
+            self.script.parse_lock,
+        )
+        self.assertEqual(messages, [])
+
+    def test_the_docker_requirements_mirror_the_runtime_ones(self) -> None:
+        """The container's dependency set is the runtime's, minus the GPU
+        branch. A package that appears in only one of the two lists is drift:
+        the container would ship a dependency the desktop app does not have,
+        or miss one it does."""
+        runtime = {
+            canonicalize_name(requirement.name)
+            for requirement in _direct_requirements(_ROOT / "requirements.txt")
+        }
+        docker = {
+            canonicalize_name(requirement.name)
+            for requirement in _direct_requirements(_ROOT / "requirements-docker.txt")
+        }
+        self.assertEqual(
+            docker - runtime,
+            set(),
+            "the container requires a package the runtime does not",
+        )
+        # The runtime file declares faiss twice, once per platform marker;
+        # the container declares the CPU one. Every other runtime package has
+        # to be in the container as well.
+        self.assertEqual(
+            runtime - docker - {"faiss-gpu", "faiss-cpu"},
+            set(),
+            "the container is missing a runtime dependency",
+        )
+        self.assertIn("faiss-cpu", docker)
+
+    def test_the_docker_lock_does_not_pull_a_cuda_wheel(self) -> None:
+        """The slim CPU image must not download faiss-gpu and its CUDA
+        runtime — hundreds of megabytes the container can never use."""
+        components = self.script.parse_lock(_ROOT / "requirements-docker.lock")
+        names = {canonicalize_name(component["name"]) for component in components}
+        self.assertNotIn("faiss-gpu", names)
+        self.assertNotIn("nvidia-cublas-cu12", names)
+        self.assertIn("faiss-cpu", names)
+
     def test_both_files_still_declare_direct_requirements(self) -> None:
         # A parser regression that reads nothing would make the two cases
         # above vacuous, so the input files are pinned to be non-trivial too.
-        for name in ("requirements.txt", "requirements-test.txt"):
+        for name in ("requirements.txt", "requirements-test.txt",
+                     "requirements-docker.txt"):
             with self.subTest(file=name):
                 self.assertGreater(len(_direct_requirements(_ROOT / name)), 10)
 

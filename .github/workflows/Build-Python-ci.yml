@@ -1,6 +1,14 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Python CI — Lint & Validate AIAssistant
-# Lightweight (~30s), only triggers on Python changes.
+#
+# ADR 0032: every action is pinned to a commit SHA and every tool the gates
+# depend on comes from the hash-pinned lock, so a build is reproducible and a
+# retagged upstream release cannot execute with this repository's token.
+#
+# The gates run on ubuntu *and* on windows: the product ships on Windows, and
+# two of the security guards (the sandbox's path-shaped executable and the
+# absolute-path escape) only execute on Windows — a linux-only CI would report
+# green while the platform the users run was never checked.
 # ──────────────────────────────────────────────────────────────────────────────
 name: Python CI
 
@@ -10,6 +18,12 @@ on:
     paths:
       - "AIAssistant/**"
       - "AIComputerVision/**"
+      # The at-rest envelope is a contract between the C++ client and the
+      # Python service. A change on either side must re-run the contract test
+      # that pins the other side's vector (ADR 0032).
+      - "src/core/AtRestCipher.cpp"
+      - "src/core/AtRestCipher.h"
+      - "tests/TestAtRestCipher.cpp"
       # Files read by AIComputerVision/tests/test_contract.py. AppConstants.h
       # only includes AIConstants.h; the contract itself lives in the latter,
       # so both are listed (as are the other C++/CMake files the tests parse).
@@ -24,6 +38,9 @@ on:
     paths:
       - "AIAssistant/**"
       - "AIComputerVision/**"
+      - "src/core/AtRestCipher.cpp"
+      - "src/core/AtRestCipher.h"
+      - "tests/TestAtRestCipher.cpp"
       - "src/core/AppConstants.h"
       - "src/core/AIConstants.h"
       - "src/core/AppManifest.json"
@@ -45,10 +62,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.11"
           cache: pip
@@ -57,7 +74,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ruff
+          # The linter comes from the hash-pinned lock, not from a floating
+          # ``pip install ruff``: an unpinned release could change the lint
+          # semantics of a build without anyone reviewing the change.
+          pip install --require-hashes -r AIAssistant/requirements-test.lock
           # PyYAML so AIComputerVision's preflight dataset tests can actually
           # parse data.yaml; the cvtrain job below pins it too. The ONNX
           # contract tests build synthetic graphs and run an eager inference,
@@ -83,16 +103,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     # Finite budget containing the worst case: the full suite + coverage +
-    # mypy + 44 mutants, where the recompose-guard mutant alone may burn its
+    # mypy + 74 mutants, where the recompose-guard mutant alone may burn its
     # 180s timeout pin (ADR 0022) instead of failing fast.
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.11"
           cache: pip
@@ -144,6 +164,51 @@ jobs:
         # reads src/ (the suite above already finished).
         run: PYTHONPATH=src python scripts/mutation_check.py
 
+  windows:
+    # ADR 0032: the product ships on Windows, and two of the sandbox's
+    # security guards only execute there — the "a path-shaped executable is
+    # refused" check and the "an absolute path cannot escape the project" one.
+    # Both are ``skipUnless(win32)``, so a linux-only CI reported green while
+    # the platform the users run was never checked.
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: AIAssistant/requirements-test.lock
+
+      - name: Install test dependencies (hash-verified lock)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --require-hashes -r AIAssistant/requirements-test.lock
+
+      - name: Windows-only security guards
+        working-directory: AIAssistant
+        # The two guards that only run on Windows, plus the whole sandbox
+        # suite they live in.
+        run: python -m unittest tests.unit.test_sandbox tests.unit.test_path_utils -v
+
+      - name: Run test suite with coverage gate
+        working-directory: AIAssistant
+        run: |
+          python -m coverage run -m unittest discover -s tests -p "test_*.py"
+          python -m coverage report
+
+      - name: Static analysis — import-linter architecture contracts
+        working-directory: AIAssistant
+        run: PYTHONPATH=src lint-imports --no-logo
+
+      - name: Static analysis — mypy full package
+        working-directory: AIAssistant
+        run: mypy src/ai_assistant
+
   cvtrain:
     # Offline lint + type check + unit tests for the AIComputerVision training
     # pipeline. The training stack (ultralytics/torch) is not installed:
@@ -161,10 +226,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.11"
 
@@ -200,4 +265,3 @@ jobs:
         # cvtrain sources in place and restores them byte-for-byte in a
         # finally, guarded by a lock file.
         run: python scripts/mutation_check.py
-

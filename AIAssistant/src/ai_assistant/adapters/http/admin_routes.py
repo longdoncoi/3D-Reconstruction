@@ -36,12 +36,11 @@ def _rebuild_rag_index(
     if not _rag.enabled:
         return {"status": "skipped", "message": "RAG is disabled"}
     try:
-        with rag_module.rag_lock:
-            rag_module.knowledge_index = None
-            rag_module.knowledge_chunks = []
-            rag_module.bm25_index = None
-            rag_module.embed_model_ref = None
-            rag_module._reranker = None
+        # ADR 0032: the module owns the "the RAG state is empty" transition.
+        # This route used to clear five fields itself and leave ``_pipeline``
+        # holding the previous corpus, so ``/health`` could report zero chunks
+        # while retrieval still served the old corpus.
+        rag_module.reset_index_state()
         gc.collect()
         rag_module._release_ml_memory()
         # Delegate to canonical RAG pipeline (ADR 0018); no module reload needed.

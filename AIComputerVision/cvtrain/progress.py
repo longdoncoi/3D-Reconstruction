@@ -27,15 +27,17 @@ __all__ = [
 PROGRESS_PREFIX = "[PROGRESS]"
 """Marker the Qt dock requires at the start of a line before it reads ``pct=``."""
 
-Phase = Literal["preflight", "train", "export", "manifest"]
+Phase = Literal["preflight", "dataset", "train", "export", "manifest"]
 """The stages of a run, in pipeline order. Each owns a slice of 0-100%."""
 
-PHASES: tuple[Phase, ...] = ("preflight", "train", "export", "manifest")
+PHASES: tuple[Phase, ...] = ("preflight", "dataset", "train", "export", "manifest")
 
-# Percentage budget: preflight 0-2, models 2-97, manifest 97-100.
+# Percentage budget: preflight 0-2, dataset fingerprint 2-8, models 8-97,
+# manifest 97-100.
 _PREFLIGHT_END = 2.0
+_DATASET_END = 8.0
 _MODELS_END = 97.0
-_MODELS_SPAN = _MODELS_END - _PREFLIGHT_END
+_MODELS_SPAN = _MODELS_END - _DATASET_END
 _TRAIN_SHARE = 0.8
 _EXPORT_SHARE = 1.0 - _TRAIN_SHARE
 
@@ -62,11 +64,13 @@ def compute_percent(
 
     if phase == "preflight":
         percent = _PREFLIGHT_END * fraction
+    elif phase == "dataset":
+        percent = _PREFLIGHT_END + (_DATASET_END - _PREFLIGHT_END) * fraction
     elif phase == "manifest":
         percent = _MODELS_END + (100.0 - _MODELS_END) * fraction
     elif phase in ("train", "export"):
         span = _MODELS_SPAN / count
-        start = _PREFLIGHT_END + span * index
+        start = _DATASET_END + span * index
         if phase == "train":
             percent = start + span * _TRAIN_SHARE * fraction
         else:
@@ -121,6 +125,26 @@ class ProgressReporter:
 
     def preflight(self, fraction: float = 1.0) -> None:
         self._emit(compute_percent(0, 1, "preflight", fraction), stage="preflight")
+
+    def dataset(self, done: int, total: int) -> None:
+        """Progress of the dataset fingerprint.
+
+        The fingerprint reads every byte of every file the dataset YAML
+        reaches — on a large dataset that is minutes of work, long enough for
+        the dock's bar to look frozen. The band is small (2-8 %) but it moves,
+        and the stage says what is happening. ``total`` of ``0`` means "nothing
+        to fingerprint", which is a completed band, not a stuck one.
+
+        Only a *change* of percentage is published: the callback fires once
+        per file, and a dataset with a hundred thousand files would otherwise
+        write a hundred thousand identical lines into the log the dock reads.
+        """
+
+        fraction = (done / total) if total else 1.0
+        percent = compute_percent(0, 1, "dataset", fraction)
+        if percent == self._last_pct:
+            return
+        self._emit(percent, stage="dataset")
 
     def train_epoch(self, index: int, epoch: int, epochs: int, key: str) -> None:
         total = max(1, epochs)

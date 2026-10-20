@@ -610,6 +610,25 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                     violations.append((path.relative_to(PACKAGE).as_posix(), module, reason))
         self.assertEqual(violations, [], _format(violations))
 
+    def test_the_application_layer_does_not_import_the_plugin_package(self):
+        """ADR 0032: the tool catalogue is the ``ToolCatalog`` *port*.
+
+        The application layer used to depend on the concrete
+        ``plugins.registry.PluginRegistry`` — a peer layer's class. The
+        policy chokepoint was therefore bound to the plugin implementation
+        instead of to a contract, and a future catalogue could not replace it
+        without editing the application layer. The import-linter contract
+        says the same thing; this is the AST twin, so a deferred import
+        cannot slip past it either.
+        """
+        violations: list[tuple[str, str, str]] = []
+        for path in _iter_python("application"):
+            for module in _imports(path):
+                if module.startswith("ai_assistant.plugins"):
+                    reason = "imports the plugin package (the catalogue is a port)"
+                    violations.append((path.relative_to(PACKAGE).as_posix(), module, reason))
+        self.assertEqual(violations, [], _format(violations))
+
     def test_the_orchestration_package_init_stays_framework_free(self):
         """Importing ``ai_assistant.orchestration`` must not pull the graph.
 

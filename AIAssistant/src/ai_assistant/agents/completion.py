@@ -149,7 +149,10 @@ def _record_and_decode_content(response: dict[str, Any],
                               "params": json.loads(call.get("arguments", "{}"))}, ensure_ascii=False)
     else:
         content = message.get("content", "")
-    logger.info("Constrained LLM response%s: %s", f" ({label})" if label else "", content)
+    # ADR 0032: the remote leg scrubs exactly like the local leg — raw model
+    # output can echo secrets/PII from the context into a plaintext log file,
+    # and only the *log call* is scrubbed; the value itself stays intact.
+    logger.info("Constrained LLM response%s: %s", f" ({label})" if label else "", scrub_pii(content))
     return content
 
 

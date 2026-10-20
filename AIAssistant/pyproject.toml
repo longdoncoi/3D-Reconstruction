@@ -121,7 +121,7 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "Application depends inward only (domain, ports, plugins)"
+name = "Application depends inward only (domain and ports)"
 type = "forbidden"
 source_modules = ["ai_assistant.application"]
 forbidden_modules = [
@@ -129,6 +129,12 @@ forbidden_modules = [
     "ai_assistant.config", "ai_assistant.legacy", "ai_assistant.llm",
     "ai_assistant.observability", "ai_assistant.orchestration", "ai_assistant.rag",
     "ai_assistant.tools",
+    # ADR 0032: the tool catalogue is the ``ToolCatalog`` *port*. The
+    # application layer used to depend on the concrete
+    # ``plugins.registry.PluginRegistry`` — a peer layer's class — so the
+    # policy chokepoint was bound to the plugin implementation instead of to
+    # a contract. The port makes the catalogue replaceable.
+    "ai_assistant.plugins",
     "fastapi", "langgraph", "langchain", "pydantic", "mcp", "httpx", "uvicorn",
 ]
 

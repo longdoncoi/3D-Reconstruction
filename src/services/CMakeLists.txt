@@ -76,6 +76,7 @@ target_sources(AppCore PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/mail/MailService.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mail/MailMimeParser.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mail/MailMimeParser.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/mail/MailThreadGuard.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mail/SmtpMailer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/mail/SmtpMailer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mail/SmtpOutbox.h

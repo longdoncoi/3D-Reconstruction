@@ -548,6 +548,16 @@ class MutationCheck:
 
 
 def main() -> int:
+    # The console of a Windows shell is usually cp1252/cp437: printing a
+    # build log that contains a character outside that code page used to kill
+    # the whole run with a UnicodeEncodeError — the gate has to report the
+    # mutant, not crash on the way to the report.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-dir", default=str(BASE / "build"))
     parser.add_argument("--config", default="Release")

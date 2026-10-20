@@ -355,6 +355,142 @@ set_tests_properties(TestPluginHelpers PROPERTIES
 # Subject is a source file → keep it out of the unity TU (see TestCrosshairGeometry).
 set_target_properties(TestPluginHelpers PROPERTIES UNITY_BUILD OFF)
 
+# Test UserAuthDialogs — the authentication dialogs of the user-auth plugin
+# (≈1 000 lines of GUI that had no test).  They read the user through the
+# plugin's statics, so the test initializes the plugin with the stub context
+# first and builds the dialogs afterwards.
+qt_add_executable(TestUserAuthDialogs
+    TestUserAuthDialogs.cpp
+    ../src/modules/UserAuthPlugin/UserAuthPlugin.cpp
+    ../src/modules/UserAuthPlugin/AboutDialog.cpp
+    ../src/modules/UserAuthPlugin/AdminUserManagerDialog.cpp
+    ../src/modules/UserAuthPlugin/AvatarCropperDialog.cpp
+    ../src/modules/UserAuthPlugin/ChangePasswordDialog.cpp
+    ../src/modules/UserAuthPlugin/ForgotPasswordDialog.cpp
+    ../src/modules/UserAuthPlugin/LicenseActivationDialog.cpp
+    ../src/modules/UserAuthPlugin/LoginDialog.cpp
+    ../src/modules/UserAuthPlugin/SettingsDialog.cpp
+    ../src/modules/UserAuthPlugin/ThemeSelectionDialog.cpp
+)
+target_include_directories(TestUserAuthDialogs PRIVATE
+    ../src
+    ../src/core
+    ../src/utils
+    ../src/services/scene
+    ../src/services/viewer
+    ../src/services/settings
+    ../src/services/shell
+    ../src/modules/UserAuthPlugin
+    ../tests/core
+    ${VTK_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(TestUserAuthDialogs PRIVATE
+    Qt6::Test Qt6::Core Qt6::Widgets
+    ${VTK_LIBRARIES}
+    ${OpenCV_LIBS}
+    AppCore
+)
+add_test(NAME TestUserAuthDialogs COMMAND TestUserAuthDialogs)
+# QTEST_MAIN → QApplication; CI không có desktop → offscreen platform plugin.
+set_tests_properties(TestUserAuthDialogs PROPERTIES
+    ENVIRONMENT_MODIFICATION "QT_QPA_PLATFORM=set:offscreen")
+# Subject is a source file → keep it out of the unity TU (see TestCrosshairGeometry).
+set_target_properties(TestUserAuthDialogs PROPERTIES UNITY_BUILD OFF)
+
+# Test PluginUi — the remaining plugin UI: the four ribbon panels, the two
+# mail dialogs and the viewer view model.
+qt_add_executable(TestPluginUi
+    TestPluginUi.cpp
+    ../src/modules/SendMailPlugin/SendMailRibbonUI.cpp
+    ../src/modules/SendMailPlugin/MailFilterDialog.cpp
+    ../src/modules/SendMailPlugin/MailSettingsDialog.cpp
+    ../src/modules/AIAssistantPlugin/AIAssistantRibbonUI.cpp
+    ../src/modules/AIProcessorPlugin/AIProcessorRibbonUI.cpp
+    ../src/modules/ViewerPlugin/ViewerRibbonUI.cpp
+    ../src/modules/ViewerPlugin/ViewerViewModel.cpp
+)
+target_include_directories(TestPluginUi PRIVATE
+    ../src
+    ../src/core
+    ../src/utils
+    ../src/services/scene
+    ../src/services/viewer
+    ../src/services/settings
+    ../src/modules/SendMailPlugin
+    ../src/modules/AIAssistantPlugin
+    ../src/modules/AIProcessorPlugin
+    ../src/modules/ViewerPlugin
+    ../tests/core
+    ${VTK_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(TestPluginUi PRIVATE
+    Qt6::Test Qt6::Core Qt6::Widgets
+    ${VTK_LIBRARIES}
+    ${OpenCV_LIBS}
+    AppCore
+)
+# The ribbon panels are built on AbstractRibbonPanel, whose QPointer<QGroupBox>
+# member needs the complete type — the light PCH provides it (the plugins use
+# the same PCH, so the panel sources compile identically here).
+target_precompile_headers(TestPluginUi REUSE_FROM SharedPCHLight)
+target_link_libraries(TestPluginUi PRIVATE SharedPCHLight)
+add_test(NAME TestPluginUi COMMAND TestPluginUi)
+# QTEST_MAIN → QApplication; CI không có desktop → offscreen platform plugin.
+set_tests_properties(TestPluginUi PROPERTIES
+    ENVIRONMENT_MODIFICATION "QT_QPA_PLATFORM=set:offscreen")
+# Subject is a source file → keep it out of the unity TU (see TestCrosshairGeometry).
+set_target_properties(TestPluginUi PROPERTIES UNITY_BUILD OFF)
+
+# Test SmtpMailer — the SMTP client: input validation and failure reporting.
+# The blocking call runs on a worker thread (the mail stack asserts on the GUI
+# thread in debug builds).
+qt_add_executable(TestSmtpMailer TestSmtpMailer.cpp)
+target_include_directories(TestSmtpMailer PRIVATE ../src/services/mail ../src/core)
+target_link_libraries(TestSmtpMailer PRIVATE
+    Qt6::Test Qt6::Core Qt6::Concurrent
+    AppCore
+)
+add_test(NAME TestSmtpMailer COMMAND TestSmtpMailer)
+
+# Test GuardBranches — the remaining decision branches of the guard layer:
+# the plugin host's loader failures, the dependency resolver's wiring
+# diagnostics and the per-user settings fallback.
+qt_add_executable(TestGuardBranches TestGuardBranches.cpp)
+target_link_libraries(TestGuardBranches PRIVATE Qt6::Test Qt6::Core AppCore)
+add_test(NAME TestGuardBranches COMMAND TestGuardBranches)
+
+# Test PluginWidgets — the last two plugin translation units without a test:
+# the sealed-attachment viewer and the video tracking thread.
+qt_add_executable(TestPluginWidgets
+    TestPluginWidgets.cpp
+    ../src/modules/AIAssistantPlugin/ChatImageViewer.cpp
+    ../src/modules/AIProcessorPlugin/VideoTrackerThread.cpp
+)
+target_include_directories(TestPluginWidgets PRIVATE
+    ../src
+    ../src/core
+    ../src/utils
+    ../src/modules/AIAssistantPlugin
+    ../src/modules/AIProcessorPlugin
+    ../tests/core
+    ${VTK_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(TestPluginWidgets PRIVATE
+    Qt6::Test Qt6::Core Qt6::Widgets
+    ${VTK_LIBRARIES}
+    ${OpenCV_LIBS}
+    AppCore
+)
+add_test(NAME TestPluginWidgets COMMAND TestPluginWidgets)
+# QTEST_MAIN → QApplication; CI không có desktop → offscreen platform plugin.
+set_tests_properties(TestPluginWidgets PROPERTIES
+    ENVIRONMENT_MODIFICATION "QT_QPA_PLATFORM=set:offscreen")
+# Subject is a source file → keep it out of the unity TU (see TestCrosshairGeometry).
+set_target_properties(TestPluginWidgets PROPERTIES UNITY_BUILD OFF)
+
 # Test UtilsLayer — the shared utility layer (src/utils/**) that every plugin
 # links against: file/thumbnail handling, markdown rendering, icon factory,
 # theming, logging, dialogs and the ribbon scaffolding.  These helpers were

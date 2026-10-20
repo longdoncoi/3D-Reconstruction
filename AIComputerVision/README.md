@@ -32,7 +32,7 @@ AIComputerVision/
 │  └─ logging_setup.py    # Định dạng log ra stdout
 ├─ Models/                # *.onnx xuất bản (Git LFS) + manifest.json + advisory lock
 ├─ runs/                  # Log huấn luyện của Ultralytics (git-ignored)
-├─ Docs/adr/              # 7 Architecture Decision Record cho các quyết định dưới đây
+├─ Docs/adr/              # 9 Architecture Decision Record cho các quyết định dưới đây
 ├─ Docs/SCORECARD.md      # Số đo các gate + bảng nợ đang mở (nguồn sự thật của "10/10")
 ├─ scripts/               # Công cụ kiểm chứng (mutation check) — ngoài package
 ├─ requirements.txt       # Dependency runtime đã pin phiên bản
@@ -72,7 +72,7 @@ AIComputerVision/
 | `TrainModel.py` | Entry point mà `AITrainDockWidget` của Qt gọi (`python TrainModel.py …`). Chỉ khoảng vài dòng: bật logging rồi ủy quyền cho `cvtrain.cli.main()`. |
 | `Models/` | Sản phẩm: `yolo11n.onnx`, `yolo11n-seg.onnx`, `yolo11x-tracking.onnx` (Git LFS), `manifest.json` (provenance), `Models/.cvtrain.lock` (advisory lock, git-ignored) và `Models/*.onnx.bak` (một thế hệ khôi phục, git-ignored). |
 | `runs/` | Log huấn luyện mà Ultralytics ghi ra (git-ignored). `--runs-dir` di chuyển nó. |
-| `Docs/adr/` | 7 ADR: 0001 đồ thị phụ thuộc một chiều + composition root; 0002 protocol `TrainingBackend`; 0003 manifest provenance + `--skip-unchanged` fail-closed; 0004 advisory lock, publish nguyên tử, quality gate; 0005 lỗi lưu trữ có kiểu, sở hữu lock, tiến trình đơn điệu; 0006 dependency có điều kiện, input fail-closed, heartbeat lock; 0007 mọi claim phải được *pin* bằng test/mutant hoặc bị xóa. |
+| `Docs/adr/` | 9 ADR: 0001 đồ thị phụ thuộc một chiều + composition root; 0002 protocol `TrainingBackend`; 0003 manifest provenance + `--skip-unchanged` fail-closed; 0004 advisory lock, publish nguyên tử, quality gate; 0005 lỗi lưu trữ có kiểu, sở hữu lock, tiến trình đơn điệu; 0006 dependency có điều kiện, input fail-closed, heartbeat lock; 0007 mọi claim phải được *pin* bằng test/mutant hoặc bị xóa; 0008 đóng nợ đo được: provenance theo digest, `--resume`, fingerprint có tiến độ, preflight chứng minh import được; 0009 device được phân giải *trước* khi train (`auto` là yêu cầu, `device_resolved` là sự thật). |
 | `Docs/SCORECARD.md` | Số đo của từng gate kèm ngày đo, bảng nợ đang mở, và quy tắc "claim nào đã được ghim". Một nơi duy nhất để trả lời "package này đã ổn chưa". |
 | `scripts/mutation_check.py` | Đảo chiều từng quyết định trọng yếu một lần và bắt suite phải đỏ (ADR 0007). Danh sách mutant *là* hợp đồng: một guard không có mutant là một guard chưa ai ghim. |
 | `requirements.txt` | Dependency runtime đã pin: `ultralytics==8.4.41`, `PyYAML==6.0.2`, `onnx==1.21.0`, `onnxslim==0.1.91`, `onnxruntime>=1.20.1` (khớp `ONNXRUNTIME_VERSION` trong `CMakeLists.txt`), `tensorboard==2.15.2` (chỉ cần khi `--tensorboard`). `torch` dùng khoảng `>=2.7,<3`: bản CPU/CUDA chia sẻ cùng số version và được chọn bằng index cài đặt. |
@@ -123,7 +123,14 @@ publish nguyên tử và quality gate,
 [0005](Docs/adr/0005-typed-storage-lock-ownership-monotonic-progress.md) lỗi
 lưu trữ có kiểu, sở hữu lock và tiến trình đơn điệu,
 [0006](Docs/adr/0006-conditional-dependencies-fail-closed-inputs-lock-heartbeat.md)
-dependency có điều kiện, input fail-closed và heartbeat lock.
+dependency có điều kiện, input fail-closed và heartbeat lock,
+[0007](Docs/adr/0007-every-claim-is-pinned-or-removed.md) mọi claim phải được
+*pin* bằng test/mutant hoặc bị xóa,
+[0008](Docs/adr/0008-closing-the-measured-debt.md) đóng nợ đo được: provenance
+theo digest nội dung, `--resume`, fingerprint có tiến độ và preflight chứng minh
+stack import được,
+[0009](Docs/adr/0009-resolve-the-device-before-training.md) device được phân giải
+trước khi train — `auto` là yêu cầu, `device_resolved` là sự thật.
 
 Sơ đồ trên là một **hợp đồng**, không phải gợi ý: `tests/test_architecture.py`
 parse `cvtrain/*.py` bằng `ast` và làm đỏ build khi có import nằm ngoài bản đồ
@@ -209,6 +216,9 @@ python AIComputerVision/TrainModel.py --dry-run
 # Chạy lại idempotent: chỉ huấn luyện các model ONNX không còn khớp
 python AIComputerVision/TrainModel.py --skip-unchanged --yes
 
+# Tiếp tục run bị gián đoạn (lấy weights/last.pt mới nhất của model)
+python AIComputerVision/TrainModel.py --resume --yes
+
 # Ghi đè siêu tham số
 python AIComputerVision/TrainModel.py --det --epochs 50 --batch 8 --imgsz 640 --seed 42
 
@@ -232,6 +242,13 @@ khi bắt đầu, rồi sau đó mới quyết định model đó có thực s�
 không — nên model không còn khớp vẫn phải được xác nhận trước khi bị thay (ứng
 dụng desktop truyền `--yes` và không bao giờ hỏi). Xem mục Manifest để biết
 chính xác model phải thỏa điều kiện gì thì mới bị bỏ qua.
+
+`--resume` nói về *cách huấn luyện*: thay vì tạo run mới, nó lấy
+`weights/last.pt` mới nhất của model trong `runs/<model>/` rồi tiếp tục từ đó —
+kèm cả bộ siêu tham số của run bị gián đoạn (framework đọc lại từ checkpoint),
+nên một lần chạy bị ngắt ở epoch 4/5 không phải làm lại từ đầu. Nếu chưa
+có run nào để tiếp tục, pipeline ghi cảnh báo và bắt đầu run mới. Mặc định là
+`--resume` **tắt**: một run sạch mới là run tái lập được.
 
 `--check`, `--dry-run`, `--write-manifest` và `--verify-manifest` là bốn *mode*
 và loại trừ lẫn nhau (lỗi dùng sai, exit `2`, nếu truyền hai cái): trước đây
@@ -308,6 +325,8 @@ tự tracking.
 bar:
 
 ```text
+[PROGRESS] pct=2 stage=preflight
+[PROGRESS] pct=5 stage=dataset
 [PROGRESS] pct=42 stage=train key=seg epoch=3/5
 [PROGRESS] pct=96 stage=export key=seg
 [PROGRESS] pct=96 stage=skip key=track
@@ -325,6 +344,12 @@ mà một lần export hoàn tất sẽ chiếm, nên một lần chạy mà m�
 vẫn leo đơn điệu tới dải manifest. Phía Qt
 (`AITrainDockWidget::onTrainProcessOutput`) chỉ parse `pct=`; các trường còn
 lại mang tính thông tin.
+
+Dải phần trăm: preflight 0–2 %, **dataset 2–8 %**, các model 8–97 %, manifest
+97–100 %. Dải `dataset` là dải riêng vì `--skip-unchanged` chứng minh dữ liệu
+bằng cách đọc *mọi byte* của nó: trên dataset lớn đó là vài phút, và nếu
+thanh đứng yên ở 2 % thì người vận hành không phân biệt được "đang băm" với
+"treo". Nay mỗi file đã băm sẽ công bố một mốc trong dải đó.
 
 ## Manifest & provenance
 
@@ -366,6 +391,23 @@ tiếp không thể lặng lẽ xoá mất kỷ lục duy nhất về những g�
 `--verify-manifest` đọc ở chế độ strict và báo tài liệu không đọc được dưới dạng
 exit `2`, nêu rõ lý do — mà không đổi tên nó, vì lệnh này được mô tả là *đọc*
 `Models/`.
+
+**Đường dẫn dataset được ghi, nhưng không được so sánh.** Quy tắc
+`--skip-unchanged` so sánh *digest của `data.yaml`* và *fingerprint nội dung của
+mọi file mà `train`/`val` chạm tới* — đó mới là bằng chứng "cùng một dataset".
+Chuỗi đường dẫn chỉ là một sự thật về *một máy*: cùng một dataset, copy sang
+thư mục khác (hoặc checkout ở một đường dẫn tuyệt đối khác), vẫn là cùng một
+thí nghiệm, và một phán quyết phụ thuộc vào *nơi* dữ liệu nằm sẽ không sống sót
+qua một lần checkout trên máy khác (ADR 0008).
+
+**Device được ghi thành hai: yêu cầu và sự thật.** `device` là thứ *được yêu
+cầu* (`auto` = "để framework chọn"), `device_resolved` là thứ *đã chạy*
+(`cuda:0`, `cpu`…). Pipeline tự phân giải `auto` **trước khi train** (ADR 0009):
+nếu không, một lần chạy trên GPU và một lần chạy trên CPU sẽ ghi cùng một
+giá trị, dù artifact khác nhau — và quy tắc skip không thể phân biệt. Việc
+phân giải nằm trong adapter (module duy nhất được import `torch`), framework
+được *báo* dùng device nào thay vì tự chọn, và không có fallback âm thầm: một
+run trên GPU lỗi thì lỗi, không tự lặng lẽ chạy CPU và ghi sai provenance.
 
 Tài liệu mang theo `schema_version`. Khi đọc, tài liệu cũ hơn (schema `0`: được
 ghi trước khi trường tồn tại) được migrate tới bằng `cvtrain/manifest.py::
@@ -450,7 +492,7 @@ nên code mới phải đi kèm test của nó.
 
 Coverage chỉ chứng minh quyết định được *chạy*, không chứng minh nó đúng chiều.
 `scripts/mutation_check.py` đảo từng quyết định trọng yếu **một lần** rồi bắt
-suite phải đỏ. Danh sách 57 mutant trong script **là hợp đồng** (ADR 0007): nó
+suite phải đỏ. Danh sách 67 mutant trong script **là hợp đồng** (ADR 0007): nó
 phủ fail-closed provenance, quality gate, hợp đồng ONNX dùng chung với runtime
 Qt, thứ tự publish, advisory lock, giao thức progress và taxonomy mã thoát — một
 guard không có mutant là một guard chưa ai ghim. Mutant sống sót, mutant treo

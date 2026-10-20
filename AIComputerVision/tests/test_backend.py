@@ -60,6 +60,12 @@ class ProtocolTests(unittest.TestCase):
             def check_device(self, cfg: TrainConfig) -> tuple[bool, str]:  # pragma: no cover
                 raise NotImplementedError
 
+            def check_importable(self, cfg: TrainConfig) -> tuple[bool, str]:  # pragma: no cover
+                raise NotImplementedError
+
+            def resolve_device(self, cfg: TrainConfig) -> str:  # pragma: no cover
+                raise NotImplementedError
+
             def export(self, model: TrainedModel[Any], cfg: TrainConfig) -> Path:  # pragma: no cover
                 raise NotImplementedError
 
@@ -341,7 +347,125 @@ class PrepareTests(_SandboxedTestCase):
         self.assertTrue(any("TensorBoard logging stays off" in line for line in captured.output))
 
 
+class DeviceResolutionTests(_SandboxedTestCase):
+    """``auto`` is resolved by the pipeline, before any weight is touched."""
+
+    def _torch(self, *, cuda: bool) -> types.ModuleType:
+        module = types.ModuleType("torch")
+        setattr(module, "cuda", SimpleNamespace(is_available=lambda: cuda))
+        return module
+
+    def test_auto_resolves_to_the_first_cuda_device(self) -> None:
+        with mock.patch.dict(sys.modules, {"torch": self._torch(cuda=True)}):
+            self.assertEqual(UltralyticsBackend().resolve_device(TrainConfig()), "cuda:0")
+
+    def test_auto_resolves_to_cpu_without_a_gpu(self) -> None:
+        with mock.patch.dict(sys.modules, {"torch": self._torch(cuda=False)}):
+            self.assertEqual(UltralyticsBackend().resolve_device(TrainConfig()), "cpu")
+
+    def test_auto_resolves_to_cpu_without_torch(self) -> None:
+        # A machine without the ML stack cannot have a GPU either.
+        with mock.patch.dict(sys.modules, {"torch": None}):
+            self.assertEqual(UltralyticsBackend().resolve_device(TrainConfig()), "cpu")
+
+    def test_an_explicit_device_is_its_own_answer(self) -> None:
+        # No probing, no policy: the operator named the device.
+        backend = UltralyticsBackend()
+        self.assertEqual(backend.resolve_device(TrainConfig(device="0, 1")), "0,1")
+        self.assertEqual(backend.resolve_device(TrainConfig(device="cpu")), "cpu")
+        self.assertEqual(backend.resolve_device(TrainConfig(device="cuda:0")), "cuda:0")
+
+    def test_the_resolved_device_is_what_the_framework_is_told_to_use(self) -> None:
+        cfg = TrainConfig(models=("det",), device_resolved="cuda:0")
+        self.assertEqual(train_kwargs(cfg)["device"], "cuda:0")
+        # Without a resolution, an explicit request is still forwarded.
+        self.assertEqual(train_kwargs(TrainConfig(device="cpu"))["device"], "cpu")
+        self.assertNotIn("device", train_kwargs(TrainConfig()))
+
+
+class ImportabilityTests(_SandboxedTestCase):
+    """Preflight must prove the stack can be *loaded*, not only installed."""
+
+    def test_a_working_stack_is_reported_importable(self) -> None:
+        with _stub_ultralytics():
+            ok, detail = UltralyticsBackend().check_importable(self.cfg)
+        self.assertTrue(ok)
+        self.assertIn("importable", detail)
+
+    def test_a_broken_install_is_reported_not_raised(self) -> None:
+        # "Installed" is not "usable": the distribution is on disk, but its own
+        # dependency is missing. The preflight report must say so — and it
+        # must be a verdict, not an exception, because the report is where an
+        # operator reads what is wrong with their environment.
+        with _stub_ultralytics(broken=True):
+            ok, detail = UltralyticsBackend().check_importable(self.cfg)
+        self.assertFalse(ok)
+        self.assertIn("not importable", detail)
+
+
 class TrainTests(_SandboxedTestCase):
+    def _write_checkpoint(self, run_name: str, age: float = 0.0) -> Path:
+        """A ``last.pt`` in the layout the framework writes."""
+
+        weights = self.cfg.runs_dir / "detect" / run_name / "weights"
+        weights.mkdir(parents=True, exist_ok=True)
+        checkpoint = weights / "last.pt"
+        checkpoint.write_bytes(b"checkpoint")
+        if age:
+            stamp = checkpoint.stat().st_mtime - age
+            os.utime(checkpoint, (stamp, stamp))
+        return checkpoint
+
+    def test_resume_continues_from_the_newest_checkpoint(self) -> None:
+        # A training run is hours of work: an interrupted one continues from
+        # the framework's own checkpoint, not from the base weights.
+        older = self._write_checkpoint("train-old", age=600.0)
+        newest = self._write_checkpoint("train-new", age=1.0)
+        cfg = TrainConfig(
+            models=("det",),
+            data_yaml=self.cfg.data_yaml,
+            models_dir=self.cfg.models_dir,
+            runs_dir=self.cfg.runs_dir,
+            epochs=3,
+            resume=True,
+        )
+        with _stub_ultralytics():
+            backend = UltralyticsBackend()
+            backend.train(MODEL_REGISTRY["det"], cfg, lambda epoch, total: None)
+        assert _FakeYOLO.last is not None
+        self.assertEqual(_FakeYOLO.last.weights, str(newest))
+        self.assertNotEqual(_FakeYOLO.last.weights, str(older))
+        # ``resume=True`` restores the interrupted run's own arguments from the
+        # checkpoint, so the hyper-parameters of this invocation are not
+        # silently applied to it.
+        self.assertEqual(_FakeYOLO.last.train_kwargs, {"resume": True})
+
+    def test_without_resume_the_base_checkpoint_is_used(self) -> None:
+        self._write_checkpoint("train-old")
+        with _stub_ultralytics():
+            backend = UltralyticsBackend()
+            backend.train(MODEL_REGISTRY["det"], self.cfg, lambda epoch, total: None)
+        assert _FakeYOLO.last is not None
+        self.assertEqual(_FakeYOLO.last.weights, str(self.cfg.weights_path(MODEL_REGISTRY["det"])))
+
+    def test_resume_without_a_previous_run_starts_fresh_and_says_so(self) -> None:
+        # Nothing to resume from is not an error: the run starts over, and the
+        # log says so instead of pretending a resume happened.
+        cfg = TrainConfig(
+            models=("det",),
+            data_yaml=self.cfg.data_yaml,
+            models_dir=self.cfg.models_dir,
+            runs_dir=self.cfg.runs_dir,
+            epochs=3,
+            resume=True,
+        )
+        with _stub_ultralytics(), self.assertLogs("cvtrain.backend", level="WARNING") as captured:
+            backend = UltralyticsBackend()
+            backend.train(MODEL_REGISTRY["det"], cfg, lambda epoch, total: None)
+        assert _FakeYOLO.last is not None
+        self.assertEqual(_FakeYOLO.last.weights, str(cfg.weights_path(MODEL_REGISTRY["det"])))
+        self.assertTrue(any("to resume" in line for line in captured.output), captured.output)
+
     def test_loads_the_checkpoint_declared_by_the_model_spec(self) -> None:
         spec = MODEL_REGISTRY["det"]
         with _stub_ultralytics(export_path=str(self.exported_onnx)):

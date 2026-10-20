@@ -244,6 +244,7 @@ def _register_optional_protocols(
         app.include_router(build_a2a_router(
             platform.tasks, "3D-Reconstruction AI Assistant", "3.0.0",
             policy=transport_policy,
+            card_base_url=platform.settings.a2a_card_url,
         ))
     if platform.settings.enable_mcp and mcp_server.available:
         if mcp_exposed_without_token(agent_bind_host(), transport_policy):
@@ -485,7 +486,7 @@ def _compose_once() -> None:
             tool_gateway=platform.gateway,
             llm_runtime=runtime_modules.llm,
             tool_registry=_tool_registry,
-            checkpointer=build_checkpointer(),
+            checkpointer=build_checkpointer(platform.storage_cipher),
             a2a_router=A2ARouter(registry=a2a_registry),
             task_coordinator=platform.coordinator,
             pending_actions=PendingActionStore(

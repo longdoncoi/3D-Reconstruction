@@ -26,8 +26,8 @@ Chi tiết cách chạy, biến môi trường và bảng số đo: `tests/READM
 |---|----------|--------------------|-----------|
 | **C1** | 4 gate xanh | Cả 4 lệnh trong §1 exit 0 | ✅ |
 | **C2** | **Không TU nào thoát khỏi phép đo** | Mọi `.cpp` trong `src/` (trừ 5 mục miễn trừ có lý do) xuất hiện trong báo cáo coverage | ✅ 95/95 TU |
-| **C3** | Floor không bao giờ giảm | Mỗi file đo được có floor = giá trị đo; file mới phải được đưa vào danh sách | ✅ 77 file |
-| **C4** | Nợ coverage được ghi nhận tường minh | File 0 % nằm trong bảng nợ (README) + in ra mỗi lần chạy | ✅ 18 TU / 1.693 dòng |
+| **C3** | Floor không bao giờ giảm | Mỗi file đo được có floor = giá trị đo; file mới phải được đưa vào danh sách | ✅ 95 file |
+| **C4** | Nợ coverage được ghi nhận tường minh | File 0 % nằm trong bảng nợ (README) + in ra mỗi lần chạy | ✅ **0 TU** — mọi TU đã có dòng được thực thi |
 | **C5** | Tài liệu khớp code | `AGENTS.md` + `tests/README.md` mô tả đúng trạng thái đo được | ✅ |
 
 Điểm khác biệt so với trước đây: **C2** biến "tôi không biết chỗ nào chưa được đo" thành
@@ -40,7 +40,7 @@ không xuất hiện trong báo cáo — gate vẫn xanh.
 |-----|-----------|----------------|--------|
 | `src/core` (kernel + guard) | 13 | 1 043 / 1 063 | 98,1 % |
 | `src/app` (composition root) | 1 | 63 / 63 | 100 % |
-| `src/services` | 37 | 1 831 / 3 901 | 46,9 % |
+| `src/services` | 37 | 1 859 / 3 906 | 47,6 % |
 | `src/utils` (tiện ích dùng chung) | 9 | 374 / 447 | 83,7 % |
 | `src/modules` (lớp plugin) | 35 | 796 / 4 277 | 18,6 % |
 
@@ -54,6 +54,14 @@ Trước đợt này: `src/utils` chỉ 10,8 %, `src/services` ~10 %, `src/modul
 * ba TU service cuối cùng chưa có test (`crosshairmanager`, `image2dloader`,
   `model3dloader`) đã có test → `src/services` 41,5 % → 46,9 %.
 
+### Guard layer: không còn dòng thực thi nào chưa cover
+
+Các dòng còn lại trong `src/core` rơi vào hai lớp đã được tài liệu hoá:
+dòng **không có mã** (dấu `}` mà MSVC gán thành dòng, câu lệnh `continue`,
+hàm bị optimizer inline) và nhánh **chỉ xảy ra khi môi trường hỏng**
+(DPAPI hỏng, bản cài đặt thiếu file dịch, thư mục cấu hình không ghi được).
+Không còn nhánh quyết định nào của guard layer chưa được kiểm chứng.
+
 ### Phát hiện được nhờ đo
 
 Bộ gate không chỉ "giữ nguyên trạng" — nó đã bắt được hai lỗi nghiêm trọng
@@ -63,6 +71,12 @@ trong lớp plugin (xem `tests/README.md`):
   **hỏng heap**, app chết khi thoát.
 * `ViewerPlugin::cleanup()` rỗng → widget của plugin sống sót sau khi DLL
   được unload → **crash khi thoát app**.
+* `MailMessageFormatter::decodeQuotedPrintable()` đưa cả thân mail qua byte
+  Latin-1 rồi giải mã lại theo UTF-8 → **mọi ký tự tiếng Việt trong mail
+  thuần bị thay bằng U+FFFD** (mail hiển thị rác).
+* `SmtpMailer::sendMail()` kiểm tra `to.isEmpty()` trên *danh sách* người
+  nhận, nhưng overload một-người-nhận bọc đối số rỗng vào list ⇒ **người
+  nhận rỗng lọt qua và mail được gửi mà không có RCPT TO nào**.
 
 
 
@@ -87,7 +101,28 @@ Cách sửa đã áp dụng:
 `AppCore` và plugin vẫn dùng unity: tất cả TU của chúng đều xuất hiện trong
 báo cáo, và C2 sẽ bắt khi một TU mới bị "nuốt".
 
-## 4. Nợ còn lại (có đo, chưa xử lý)
+## 4. Rủi ro threading của mail stack (đã giảm, còn ghi nhận)
+
+`IMailService` là API blocking; guard `mail::enforceBackgroundThread()` cảnh
+báo/assert khi lời gọi chạy trên GUI thread. Trong lúc viết test SMTP, guard
+bắt được một điều không thấy trước đó: **cả global pool lẫn pool riêng đều
+có thể thực thi task *inline* trên thread gọi** (task đầu tiên được worker,
+các task sau chạy trên GUI thread dù pool rảnh và `maxThreadCount=2`).
+
+Đã đóng:
+
+* `blocking::run()` (`src/utils/BlockingCall.h`) — helper dùng **thread riêng
+  luôn**, trả về `QFuture` để watcher nhận kết quả trên thread của caller.
+  5 call site của mail stack chuyển sang dùng nó ⇒ cam kết "không bao giờ
+  chạy trên GUI thread" là chắc chắn, không còn phụ thuộc hành vi của pool.
+* `TestSmtpMailer` ghim lại hợp đồng đó: lời gọi blocking phải chạy ngoài
+  GUI thread (assert trên thread id) và không được phát cảnh báo của guard.
+
+Pool riêng (`mail::workerPool()`) đã bị gỡ: thử nghiệm cho thấy kể cả pool
+riêng rảnh cũng có thể chạy task inline, nên nó không thay thế được
+`QThread` tường minh.
+
+## 5. Nợ còn lại (có đo, chưa xử lý)
 
 Xem bảng "coverage debt" trong `tests/README.md` — mỗi dòng là một file chưa
 được test, kèm lý do (GUI-only, VTK-only, network-only) và hướng xử lý.
@@ -113,7 +148,7 @@ seal khi ghi, và bỏ bước unseal khi đọc. Cả hai đều phải làm đ
 Nợ "ảnh đính kèm" được ghi ở đây để không biến mất: nó cần một thay đổi ở
 tầng hiển thị, không phải một bước bọc file.
 
-## 5. Cách đo lại
+## 6. Cách đo lại
 
 ```powershell
 $env:PATH = "C:/Qt/6.9.3/msvc2022_64/bin;F:/PROJECTS/QT/vcpkg/installed/x64-windows/bin;$env:PATH"

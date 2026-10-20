@@ -1,0 +1,51 @@
+# ─── 3D-Reconstruction AI Server — Container dependencies ─────────────────────
+# The container's own dependency set (ADR 0032).
+#
+# It mirrors AIAssistant/requirements.txt with exactly one difference: the
+# runtime lock resolves ``faiss-gpu`` for every non-Windows platform, so the
+# slim CPU image would pull a CUDA wheel it can never use. The container is a
+# CPU-only runtime, so it pins ``faiss-cpu``.
+#
+# ``tests/unit/test_lockfile_sync.py`` pins the relationship: every package
+# here must also be a direct requirement of the runtime file, so the two
+# lists cannot drift apart.
+#
+# Hash-pinned for production:
+#   uv pip compile requirements-docker.txt --python-version 3.11 --universal \
+#       --generate-hashes -o requirements-docker.lock
+#   pip install --require-hashes -r requirements-docker.lock
+
+# ── LLM ────────────────────────────────────────────────────────────────────────
+# llama-cpp-python is installed by the deployment (GPU or CPU wheels live on
+# the project's own index), so it is not part of this set.
+huggingface_hub>=0.23.0
+
+# ── Embedding & RAG ────────────────────────────────────────────────────────────
+sentence-transformers>=2.7.0
+faiss-cpu>=1.8.0
+rank_bm25>=0.2.2
+numpy>=1.26.0
+llama-index-core>=0.11.0
+llama-index-vector-stores-faiss>=0.3.0
+llama-index-embeddings-huggingface>=0.3.0
+llama-index-retrievers-bm25>=0.3.0
+
+# ── Document loaders ───────────────────────────────────────────────────────────
+python-docx>=1.1.0
+pdfplumber>=0.11.0
+pdfminer.six>=20231228
+
+# ── Storage hardening ─────────────────────────────────────────────────────────
+# AES-256-GCM field encryption for task/pending state at rest (ADR 0027).
+cryptography>=42.0.0
+
+# ── API server ─────────────────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.7.0
+mcp>=1.0.0
+langgraph>=1.0.0
+prometheus-client>=0.20.0
+opentelemetry-api>=1.27.0
+opentelemetry-sdk>=1.27.0
+langgraph-checkpoint-sqlite>=2.0.0

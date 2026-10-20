@@ -5,19 +5,11 @@ from typing import Any
 from uuid import uuid4
 
 from ..domain.approvals import approval_fingerprint
-from ..domain.security import DataClassification, Principal
+from ..domain.security import Principal, classification_at_least
 from ..domain.tools import ToolRequest, ToolResult
-from ..plugins.registry import PluginRegistry, RegisteredTool
-from ..ports import ToolEventSink
+from ..ports import ToolCatalog, ToolCatalogEntry, ToolEventSink
 from .approvals import InMemoryApprovalGrantStore
 from .validation import validate_input
-
-_CLASSIFICATION_ORDER = {
-    DataClassification.PUBLIC: 0,
-    DataClassification.INTERNAL: 1,
-    DataClassification.RESTRICTED: 2,
-    DataClassification.REGULATED: 3,
-}
 
 
 class ToolExecutionService:
@@ -26,9 +18,14 @@ class ToolExecutionService:
     Approval-gated tools are unlocked exclusively by a single-use grant
     :meth:`issue_approval_grant` created for the exact ``(tool, params)``
     pair a user approved — never by a boolean the caller can assert.
+
+    The catalogue is the :class:`~ai_assistant.ports.ToolCatalog` *port*
+    (ADR 0032), not the concrete plugin registry: the policy chokepoint
+    depends on the contract, so the catalogue implementation stays
+    replaceable.
     """
 
-    def __init__(self, registry: PluginRegistry, event_sink: ToolEventSink | None = None,
+    def __init__(self, registry: ToolCatalog, event_sink: ToolEventSink | None = None,
                  grants: InMemoryApprovalGrantStore | None = None) -> None:
         self._registry = registry
         self._event_sink = event_sink
@@ -65,7 +62,7 @@ class ToolExecutionService:
         return self._finish(request, ToolResult(True, {"tool": tool_name, "preflight": True}))
 
     def _admit(self, request: ToolRequest, principal: Principal,
-               approval_token: str) -> RegisteredTool | ToolResult:
+               approval_token: str) -> ToolCatalogEntry | ToolResult:
         """Validate and authorise one request: the refusal, or the tool to run."""
         item = self._registry.tool(request.tool_name)
         if item is None:
@@ -76,7 +73,7 @@ class ToolExecutionService:
             return ToolResult(False, error_code="invalid_input", message=validation_error)
         if not principal.permits(spec.required_scope):
             return ToolResult(False, error_code="forbidden", message="Required tool scope is missing")
-        if _CLASSIFICATION_ORDER[principal.classification] > _CLASSIFICATION_ORDER[spec.maximum_classification]:
+        if not classification_at_least(spec.maximum_classification, principal.classification):
             return ToolResult(False, error_code="data_policy_denied", message="Data classification is not permitted")
         if spec.requires_approval and not self._grants.covers(
                 approval_token, approval_fingerprint(spec.name, request.parameters)):

@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from ...domain.context_budget import completion_token_budget, context_exhausted
+from ...domain.governance import scrub_pii
 from ...domain.specialists import Specialist
 from .security import TransportPolicy, chat_guards
 
@@ -124,10 +125,13 @@ def build_chat_router(
         query_image_b64 = _scan_attachments_for_image(attachments, rag_module, logger, unseal)
 
         client_host = http_req.client.host if http_req.client else "unknown"
+        # ADR 0032: the user's own words are scrubbed before they reach a
+        # plaintext log file, exactly like the model output on the other side
+        # of the same request.
         logger.info(
             "[MODE: CHAT] Query from %s: %s…",
             client_host,
-            user_query[:60].replace("\n", " "),
+            scrub_pii(user_query)[:60].replace("\n", " "),
         )
         logger.info("[SUPERVISOR] routed chat request to %s", Specialist.CHATBOT.value)
 

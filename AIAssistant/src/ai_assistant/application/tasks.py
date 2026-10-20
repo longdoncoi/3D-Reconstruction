@@ -8,7 +8,7 @@ from typing import Any
 
 from ..domain.governance import redact_value
 from ..domain.security import DataClassification
-from ..domain.tasks import AgentTask, TaskStatus
+from ..domain.tasks import AgentTask, TaskStatus, is_terminal
 from ..ports import AgentTaskExecutor, TaskStore
 from .coordination import TaskCoordinator
 
@@ -42,11 +42,15 @@ class TaskService:
                              classification=classification, owner=owner)
         if capability not in self._capabilities:
             task = task.transition(TaskStatus.REJECTED, error=f"Unsupported capability: {capability}")
-            self._store.create(task)
-            self._store.append_event(task.id, "status", {"status": task.status, "error": task.error})
+            # ADR 0032: the insert and the event are one unit of work, so a
+            # rejected task can never exist without the event that says why.
+            self._store.commit(task, events=(
+                ("status", {"status": task.status, "error": task.error}),
+            ))
             return task
-        self._store.create(task)
-        self._store.append_event(task.id, "status", {"status": task.status})
+        self._store.commit(task, events=(
+            ("status", {"status": task.status}),
+        ))
         self._start(task.id)
         return task
 
@@ -116,35 +120,23 @@ class TaskService:
         task = self._store.get(task_id)
         if task is None or task.owner != owner:
             return None
-        if task.status in {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELED, TaskStatus.REJECTED}:
+        if is_terminal(task.status):
             return None
         cancelled = task.transition(TaskStatus.CANCELED)
-        if not self._save_if_status(cancelled, task.status):
+        # ADR 0032: the state write and the event that announces it are one
+        # unit of work — a subscriber must never see a cancellation it was
+        # not told about, nor a task that is cancelled without an event.
+        if not self._store.commit(cancelled, expected=task.status, events=(
+            ("status", {"status": cancelled.status}),
+        )):
             # Lost the race: the worker moved the task first (CAS guard).
             return None
-        self._store.append_event(task_id, "status", {"status": cancelled.status})
         if self._coordinator is not None:
             # Session id for an A2A run is the task id (LangGraph orchestrator),
             # so this flips the flag the runner's cancel_checker polls: the
             # LangGraph loop — including already-approved tool execution — stops.
             self._coordinator.cancel(task_id, create_if_missing=True)
         return cancelled
-
-    def _save_if_status(self, task: AgentTask, expected: TaskStatus) -> bool:
-        """Persist ``task`` only if its stored status is still ``expected``.
-
-        ``SqliteTaskStore`` answers with a single guarded UPDATE; duck-typed
-        test stores without the method fall back to read-then-write. Detection
-        is class-level so mock doubles keep their historical ``save`` recording
-        behaviour instead of being mistaken for a real CAS implementation.
-        """
-        if callable(getattr(type(self._store), "save_if_status", None)):
-            return bool(self._store.save_if_status(task, expected))
-        current = self._store.get(task.id)
-        if current is None or current.status != expected:
-            return False
-        self._store.save(task)
-        return True
 
     def resume(self, task_id: str, input_data: Mapping[str, Any], *, owner: str = "default") -> AgentTask | None:
         """Resume an explicitly paused task with a durable user or desktop response."""
@@ -160,10 +152,11 @@ class TaskService:
         metadata["agent_run.continuation"] = continuation
         metadata["agent_run.resume"] = dict(input_data)
         resumed = task.with_metadata(metadata).transition(TaskStatus.WORKING)
-        if not self._save_if_status(resumed, TaskStatus.INPUT_REQUIRED):
+        if not self._store.commit(resumed, expected=TaskStatus.INPUT_REQUIRED, events=(
+            ("status", {"status": resumed.status, "resumed": True}),
+        )):
             # The task left input_required while we prepared the resume.
             return None
-        self._store.append_event(task_id, "status", {"status": resumed.status, "resumed": True})
         self._start(task_id, already_working=True)
         return resumed
 
@@ -210,11 +203,12 @@ class TaskService:
             working = task
         else:
             working = task.transition(TaskStatus.WORKING)
-            if not self._save_if_status(working, task.status):
+            if not self._store.commit(working, expected=task.status, events=(
+                ("status", {"status": working.status}),
+            )):
                 # A cancel (or another writer) won the race before the run
                 # started: do not execute, do not overwrite the new status.
                 return
-            self._store.append_event(task_id, "status", {"status": working.status})
         try:
             result = self._executor(working)
             latest = self._store.get(task_id)
@@ -229,28 +223,32 @@ class TaskService:
                     latest = latest.with_metadata(metadata)
                 public_result = {key: value for key, value in result.items() if key != "continuation"}
                 waiting = latest.transition(TaskStatus.INPUT_REQUIRED, result=public_result)
-                if not self._save_if_status(waiting, latest.status):
-                    return
                 # Events are a transport surface (SSE): they get the same
                 # redaction as ``task_payload`` so the HITL continuation — which
                 # carries the action id and the approved tool params — can never
                 # be read back by a caller that only holds the task id.
-                self._store.append_event(
-                    task_id, "status",
-                    {"status": waiting.status, "result": redact_value(result)},
-                )
+                if not self._store.commit(waiting, expected=latest.status, events=(
+                    ("status", {"status": waiting.status, "result": redact_value(result)}),
+                )):
+                    return
                 return
             completed = latest.transition(TaskStatus.COMPLETED, result=result)
-            if not self._save_if_status(completed, latest.status):
+            # ADR 0032: the terminal state and the events that announce it
+            # are one unit of work. A crash between them used to leave a task
+            # that was ``completed`` with no terminal event, so an SSE
+            # subscriber waited forever for a transition that had already
+            # happened.
+            if not self._store.commit(completed, expected=latest.status, events=(
+                ("artifact", {"result": redact_value(result)}),
+                ("status", {"status": completed.status}),
+            )):
                 # Cancelled while the executor ran: the CAS keeps CANCELED
                 # instead of an unconditional UPDATE writing COMPLETED over it.
                 return
-            self._store.append_event(task_id, "artifact", {"result": redact_value(result)})
-            self._store.append_event(task_id, "status", {"status": completed.status})
         except Exception as error:  # The task becomes observable failure, not a hidden fallback.
             latest = self._store.get(task_id)
             if latest is not None and latest.status != TaskStatus.CANCELED:
                 failed = latest.transition(TaskStatus.FAILED, error=str(error))
-                if not self._save_if_status(failed, latest.status):
-                    return
-                self._store.append_event(task_id, "status", {"status": failed.status, "error": failed.error})
+                self._store.commit(failed, expected=latest.status, events=(
+                    ("status", {"status": failed.status, "error": failed.error}),
+                ))

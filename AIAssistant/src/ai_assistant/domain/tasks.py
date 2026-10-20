@@ -22,6 +22,17 @@ class TaskStatus(StrEnum):
 _TERMINAL = {TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELED, TaskStatus.REJECTED}
 
 
+def is_terminal(status: TaskStatus) -> bool:
+    """Whether ``status`` is a state a task can never leave.
+
+    ADR 0032: the terminal set used to be private to this module, so the
+    application layer re-spelled it literally — and a second, *different*
+    vocabulary of terminal strings lived in the coordinator. The set is now
+    public, so there is one answer to "can this task still move?".
+    """
+    return status in _TERMINAL
+
+
 @dataclass(frozen=True, slots=True)
 class AgentTask:
     id: str

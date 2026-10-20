@@ -378,6 +378,44 @@ class DatasetContentFingerprintTests(unittest.TestCase):
             fp2 = dataset_content_fingerprint(non_mapping)
             self.assertIsNotNone(fp2)
 
+    def test_the_fingerprint_reports_progress_for_every_file(self) -> None:
+        # Reading the whole dataset is minutes of work on a large one: the
+        # caller has to be able to show that, or the operator watches a bar
+        # that stands still and assumes the run is stuck.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            train_dir = root / "images" / "train"
+            val_dir = root / "images" / "val"
+            train_dir.mkdir(parents=True)
+            val_dir.mkdir(parents=True)
+            _write(train_dir / "img1.jpg", "content1")
+            _write(train_dir / "img2.jpg", "content2")
+            _write(val_dir / "img3.jpg", "content3")
+            yaml_path = _write(root / "data.yaml", "train: images/train\nval: images/val\nnames:\n  0: part\n")
+
+            seen: list[tuple[int, int]] = []
+            fingerprint = dataset_content_fingerprint(
+                yaml_path, on_file=lambda done, total: seen.append((done, total))
+            )
+
+        self.assertIsNotNone(fingerprint)
+        self.assertEqual([done for done, _ in seen], [1, 2, 3])
+        self.assertEqual({total for _, total in seen}, {3})
+        self.assertEqual(seen[-1], (3, 3))
+
+    def test_an_empty_dataset_reports_nothing_to_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "images" / "train").mkdir(parents=True)
+            (root / "images" / "val").mkdir(parents=True)
+            yaml_path = _write(root / "data.yaml", "train: images/train\nval: images/val\nnames:\n  0: part\n")
+            seen: list[tuple[int, int]] = []
+            fingerprint = dataset_content_fingerprint(
+                yaml_path, on_file=lambda done, total: seen.append((done, total))
+            )
+        self.assertIsNotNone(fingerprint)
+        self.assertEqual(seen, [])
+
     def test_directory_content_changes_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

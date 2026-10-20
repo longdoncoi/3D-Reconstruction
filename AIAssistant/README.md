@@ -578,16 +578,34 @@ PYTHONPATH=src python scripts/mutation_check.py
 Các cổng là **cấu hình**, không phải cờ dòng lệnh: `pyproject.toml` sở hữu breadth
 lint (`E/W/F/I/BLE/S/RUF/C90/N/TRY`, complexity ≤ 15), thiết lập mypy strict và
 sàn coverage theo branch (`fail_under = 100`), nên lần chạy cục bộ và CI đo cùng
-một thứ. Theo lần đo ngày 2026-10-20 (các con số đo được được ghi lại trong
-`Docs/SCORECARD.md` — bản local, không theo git): **100.00%** statement *và*
-branch toàn package (9 021 statement / 2 360 branch, 1 975 test), và **67/67**
-kill trong mutation check.
+một thứ. Theo lần đo ngày 2026-10-21 (các con số đo được được ghi lại trong
+`Docs/SCORECARD.md` — **đã theo git** từ ADR 0032): **100.00%** statement *và*
+branch toàn package (9 095 statement / 2 388 branch, 2 034 test), và **74/74**
+kill trong mutation check. Số mutant tối thiểu cũng là một cổng
+(`MIN_MUTANTS`): xoá một mutant là một quyết định, và cổng biến nó thành
+quyết định *nhìn thấy được*.
+
+CI chạy cổng trên **cả Linux lẫn Windows** (`Build-Python-ci.yml`): sản phẩm
+ship trên Windows, và hai guard bảo mật của sandbox chỉ chạy ở đó
+(`skipUnless(win32)`) — một CI chỉ có Linux sẽ báo xanh trong khi nền tảng
+người dùng thật chưa từng được kiểm tra (ADR 0032).
 
 * `tests/unit/` — hành vi từng module, gồm cả các ca biên về concurrency, phê
   duyệt và streaming.
 * `tests/integration/` — composition root, orchestration, A2A streaming end-to-end
   và các guard ranh giới layer bằng AST.
+* `tests/integration/test_real_http_surface.py` — **bề mặt HTTP thật**: compose
+  đồ thị đối tượng thật trong một interpreter mới, chỉ thay backend mô hình
+  rồi bắn một request HTTP thật qua router thật. Mọi test router khác dùng
+  double, nên *binding* giữa composition root và router chưa từng được
+  chạy — đúng loại lỗi mà `/v1/chat/completions` chết trong production đã bắt
+  (ADR 0029). Test này **đỏ** khi binding bị hỏng (ADR 0032).
 * `tests/contract/` — hợp đồng Qt ↔ server và wiring multi-agent.
+* `tests/unit/test_at_rest_cipher_contract.py` — hợp đồng chéo ngôn ngữ cho
+  envelope at-rest: hằng số format đọc từ `src/core/AtRestCipher.cpp` và
+  vector tham chiếu đọc từ `tests/TestAtRestCipher.cpp` phải khớp bên Python.
+  Nhờ vậy một vector chỉ được ghim lại ở một bên sẽ làm CI Python đỏ — không
+  cần trigger chéo ngôn ngữ (ADR 0032).
 * `scripts/mutation_check.py` — đảo từng quyết định trọng yếu (allowlist sandbox,
   phê duyệt HITL, `/health`, niêm phong cache, mã hoá at-rest, các cuộc đua cancel…) và **bắt
   buộc** test sở hữu phải fail; CI chạy lại con số này mỗi lần push (mutant recompose

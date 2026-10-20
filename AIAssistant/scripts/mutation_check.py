@@ -50,6 +50,20 @@ class Mutant:
     kill_on_timeout: bool = False
 
 
+#: The number of guards this gate is contractually required to cover.
+#:
+#: Without a floor, *deleting* a mutant is indistinguishable from *passing*
+#: it: the suite stays green, the coverage floor stays at 100 %, and the
+#: guard silently stops being guarded. ADR 0032 makes the count a gate — a
+#: new load-bearing decision adds a mutant in the same commit, and a removed
+#: one lowers this number in the same commit, so the diff always shows it.
+#:
+#: Measured 2026-10-20: 67 mutants, 67 killed, 0 survived, 0 stale.
+#: ADR 0032 adds seven more (the policy-tree write deny and its prefix match,
+#: the OpenAPI surface, the log redaction, the compare-and-set, the
+#: checkpoint seal, the adapter's CAS guard and the volatile-key rule).
+MIN_MUTANTS = 74
+
 MUTANTS: tuple[Mutant, ...] = (
     # ── Sandbox allow-list (ADR 0011) ────────────────────────────────────────
     Mutant(
@@ -121,6 +135,67 @@ MUTANTS: tuple[Mutant, ...] = (
         "if False:",
         ("tests.unit.test_sandbox",),
         "write-deny on .env/policy files removed",
+    ),
+    Mutant(
+        "src/ai_assistant/tools/sandbox.py",
+        "    if _denied_tree_hit(relative):",
+        "    if False:",
+        ("tests.unit.test_sandbox",),
+        "write-deny on the policy trees removed (the agent may rewrite the "
+        "transport policy, the A2A scope map and the approval logic)",
+    ),
+    Mutant(
+        "src/ai_assistant/tools/sandbox.py",
+        "        if parts[:len(denied_parts)] == denied_parts:",
+        "        if False:",
+        ("tests.unit.test_sandbox",),
+        "the policy-tree match compares the wrong prefix (every policy file "
+        "becomes writable again)",
+    ),
+    Mutant(
+        "src/ai_assistant/domain/approvals.py",
+        "    if ignore_volatile:",
+        "    if False:",
+        ("tests.unit.test_reason_node_guards", "tests.unit.test_approval_grants"),
+        "the volatile per-retry keys are no longer filtered out of the retry "
+        "fingerprint (a retry that only changed its request_id slips past the "
+        "duplicate-call guard)",
+    ),
+    Mutant(
+        "src/ai_assistant/bootstrap/app_factory.py",
+        '        docs_url="/docs" if docs else None,\n'
+        '        redoc_url="/redoc" if docs else None,\n'
+        '        openapi_url="/openapi.json" if docs else None,',
+        '        docs_url="/docs",\n'
+        '        redoc_url="/redoc",\n'
+        '        openapi_url="/openapi.json",',
+        ("tests.unit.test_final_edges_b", "tests.integration.test_real_http_surface"),
+        "the OpenAPI surface is published even when the deployment did not "
+        "opt in (it is an app-level route, so the transport guard never "
+        "reaches it)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/tool.py",
+        '        summary = describe_tool_result(result)',
+        "        summary = str(result)",
+        ("tests.unit.test_tool_node_guards", "tests.unit.test_tool_result_logging"),
+        "the tool payload is written to the plaintext log again",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/sqlite_store.py",
+        "                if cursor.rowcount != 1:",
+        "                if False:",
+        ("tests.unit.test_final_edges_a", "tests.unit.test_task_service_cas_races"),
+        "a lost compare-and-set still writes the event (the log announces a "
+        "transition that did not happen)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/checkpointing.py",
+        "    if cipher is None:\n        return None",
+        "    if True:\n        return None",
+        ("tests.unit.test_checkpointing",),
+        "the LangGraph checkpoint store is written in the clear (the "
+        "conversation is a plaintext copy of what the task store seals)",
     ),
     Mutant(
         "src/ai_assistant/tools/sandbox.py",
@@ -682,6 +757,23 @@ def run_mutant(mutant: Mutant) -> str:
     return "KILLED" if outcome.returncode != 0 else "SURVIVED"
 
 
+def floor_violation(mutant_count: int) -> str | None:
+    """The reason the declared mutant count is below the floor, if it is.
+
+    Without a floor, *deleting* a mutant is indistinguishable from *passing*
+    it: the suite stays green, the coverage floor stays at 100 %, and the
+    guard silently stops being guarded. ADR 0032 makes the count a gate — a
+    new load-bearing decision adds a mutant in the same commit, and a removed
+    one lowers this number in the same commit, so the diff always shows it.
+    """
+    if mutant_count < MIN_MUTANTS:
+        return (
+            f"{mutant_count} mutants declared, {MIN_MUTANTS} required — "
+            "a guard was removed without a decision"
+        )
+    return None
+
+
 def main() -> int:
     survivors: list[str] = []
     stale: list[str] = []
@@ -709,6 +801,11 @@ def main() -> int:
         print(f"  SURVIVED -> {entry}")
     for entry in stale:
         print(f"  STALE    -> {entry} (anchor no longer matches the source)")
+    if len(MUTANTS) < MIN_MUTANTS:
+        # ADR 0032: the count itself is a gate. A mutant that disappeared
+        # without a decision is exactly the drift this gate exists to catch.
+        print(f"  FLOOR    -> {floor_violation(len(MUTANTS))}")
+        return 1
     return 1 if survivors or stale else 0
 
 

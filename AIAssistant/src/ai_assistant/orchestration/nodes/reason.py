@@ -22,9 +22,11 @@ from typing import Any, Callable
 
 from ai_assistant.config.logging import get_agent_logger
 from ai_assistant.domain.approvals import (
+    VOLATILE_PARAM_KEYS,
     approval_covers_invocation,
     build_approval_preview,
     derive_approval_scope,
+    invocation_fingerprint,
 )
 from ai_assistant.domain.governance import redact_value
 from ai_assistant.llm.inference import strip_think_tags
@@ -56,7 +58,9 @@ logger = get_agent_logger("reasoning")
 
 #: Parameters that change on every retry but must not affect the duplicate
 #: failed-call fingerprint (ADR 0013 — lifted to module scope, was a nested def).
-VOLATILE_PARAM_KEYS = frozenset({"request_id", "workflow_id"})
+#: ADR 0032 moved the set next to the fingerprint rule that uses it, so the
+#: "retry identity" and the "binding identity" cannot drift apart.
+VOLATILE_PARAM_KEYS = VOLATILE_PARAM_KEYS
 
 
 @dataclass
@@ -364,21 +368,32 @@ def _guard_step_action_mismatch(turn: _Turn) -> dict[str, Any] | None:
 
 
 def stable_fingerprint(tool: str, params: dict[str, Any] | None) -> str:
-    """Canonical tool+params identity that ignores volatile per-retry ids."""
-    stable = {k: v for k, v in (params or {}).items() if k not in VOLATILE_PARAM_KEYS}
-    return json.dumps({"tool": tool, "params": stable}, ensure_ascii=False, sort_keys=True)
+    """Canonical tool+params identity that ignores volatile per-retry ids.
+
+    ADR 0032: the rule lives in ``domain.approvals`` next to the *binding*
+    identity an approval grant is bound to. Two canonicalisations of one
+    concept could drift; one owner with two named rules cannot.
+    """
+    return invocation_fingerprint(tool, params, ignore_volatile=True)
 
 
 def _failed_call_fingerprints(steps: list[Step]) -> set[str]:
-    """Fingerprints of every tool call that a later reflection rejected."""
+    """Fingerprints of every tool call that a later reflection rejected.
+
+    ADR 0032: the fingerprint is computed with the *same* rule the guard
+    compares against. The two used to be built separately — one filtered the
+    volatile per-retry keys and the other did not — so a retry that only
+    changed its ``request_id`` slipped past the duplicate-call guard.
+    """
     failed: set[str] = set()
     for index, step in enumerate(steps):
         if not has_step_type(step, "reflection") or (step.get("result") or {}).get("passed") is not False:
             continue
         for prior in reversed(steps[:index]):
             if has_step_type(prior, "tool_call"):
-                failed.add(json.dumps({"tool": prior.get("tool"), "params": prior.get("params", {})},
-                                      ensure_ascii=False, sort_keys=True))
+                failed.add(stable_fingerprint(
+                    str(prior.get("tool")), prior.get("params", {}),
+                ))
                 break
     return failed
 

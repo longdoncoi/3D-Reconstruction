@@ -138,6 +138,36 @@ class TrainingBackend(Protocol[H]):
     def check_device(self, cfg: TrainConfig) -> tuple[bool, str]:
         """Validate device availability against the ML runtime environment."""
 
+    def resolve_device(self, cfg: TrainConfig) -> str:
+        """The concrete device this run will train on.
+
+        ``auto`` is a request, not a fact: the answer depends on the machine
+        and on the moment, so an artifact whose provenance says only "auto"
+        says nothing a later run can compare against. The pipeline resolves it
+        itself — before any weight is touched — and records the answer next to
+        the request.
+
+        The policy is deliberately simple and explicit: the first CUDA device
+        when the runtime has one, CPU otherwise. There is no silent fallback
+        ("the GPU looked busy, so CPU it is"), because a fallback the
+        provenance does not mention is a lie.
+        """
+
+    def check_importable(self, cfg: TrainConfig) -> tuple[bool, str]:
+        """Whether the framework and its dependencies can actually be imported.
+
+        The preflight's dependency check proves the packages are *installed*;
+        this one proves they can be *imported*. A distribution whose own
+        dependency is missing is installed and broken, and the difference
+        matters: the report must not say "environment ready" for a stack that
+        cannot be loaded.
+
+        The framework is imported here — inside the adapter, the one module
+        that owns the heavy imports (ADR 0001) — so the rest of the package
+        stays import-light. The import is also what fills in
+        :attr:`version`, the exporter identity the manifest records.
+        """
+
     def export(self, model: TrainedModel[H], cfg: TrainConfig) -> Path:
         """Export ``model`` to ONNX and return the path of the generated file."""
 
@@ -193,7 +223,12 @@ def train_kwargs(cfg: TrainConfig) -> dict[str, object]:
     }
     # ``auto`` is provenance spelling ("let the framework choose"), not a
     # device the framework accepts: only a concrete device is forwarded.
-    if cfg.device and cfg.device_class != "auto":
+    # The *resolved* device wins when the pipeline has already resolved it —
+    # that is the value the framework is told to use, and the one the
+    # provenance records.
+    if cfg.device_resolved:
+        kwargs["device"] = cfg.device_resolved
+    elif cfg.device and cfg.device_class != "auto":
         kwargs["device"] = cfg.device_class
     return kwargs
 
@@ -252,9 +287,43 @@ class UltralyticsBackend:
         self._settings.update({"tensorboard": True})
         LOG.info("TensorBoard logging enabled. Inspect with: tensorboard --logdir %s", cfg.runs_dir)
 
+    def _resume_checkpoint(self, spec: ModelSpec, cfg: TrainConfig) -> Path | None:
+        """The ``last.pt`` of the most recent run of ``spec``, if there is one.
+
+        Ultralytics resumes a run from the checkpoint the framework wrote, not
+        from the base weights: ``weights/last.pt`` carries the optimizer state
+        and the epoch counter, so a run interrupted at epoch 4 continues at
+        epoch 4 instead of starting over. The newest checkpoint wins, because
+        the newest run is the one that was interrupted.
+
+        ``None`` means "nothing to resume from" — the caller starts a fresh
+        run and says so. A missing checkpoint is not an error: resuming is an
+        optimisation, and a first run has nothing to resume.
+        """
+
+        project = cfg.runs_dir / spec.runs_subdir
+        if not project.is_dir():
+            return None
+        candidates = sorted(
+            (path for path in project.glob("train-*/weights/last.pt") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        return candidates[0] if candidates else None
+
     def train(self, spec: ModelSpec, cfg: TrainConfig, on_epoch: EpochCallback) -> TrainedModel[Any]:
         self._ensure_loaded()
-        model = self._yolo(str(cfg.weights_path(spec)))
+        project = cfg.runs_dir / spec.runs_subdir
+        resume_from = self._resume_checkpoint(spec, cfg) if cfg.resume else None
+        if resume_from is not None:
+            LOG.info("Resuming %s from %s", spec.output, resume_from)
+            model = self._yolo(str(resume_from))
+        else:
+            if cfg.resume:
+                # Nothing to resume from: say so instead of silently starting
+                # over, and start over.
+                LOG.warning("No previous run of %s to resume; starting a fresh one", spec.key)
+            model = self._yolo(str(cfg.weights_path(spec)))
 
         def _on_epoch_end(trainer: Any) -> None:
             on_epoch(
@@ -264,9 +333,15 @@ class UltralyticsBackend:
 
         model.add_callback("on_train_epoch_end", _on_epoch_end)
 
-        project = cfg.runs_dir / spec.runs_subdir
         name = f"train-{_run_timestamp()}"
-        results = model.train(project=str(project), name=name, **train_kwargs(cfg))
+        if resume_from is not None:
+            # ``resume=True`` restores the run's own arguments from the
+            # checkpoint, so the hyper-parameters of the interrupted run are
+            # the ones that continue — not the ones this invocation happens
+            # to pass.
+            results = model.train(resume=True)
+        else:
+            results = model.train(project=str(project), name=name, **train_kwargs(cfg))
         run_dir = Path(getattr(model.trainer, "save_dir", project / name))
         return TrainedModel(metrics=metrics_from(results), run_dir=run_dir, handle=model)
 
@@ -283,6 +358,26 @@ class UltralyticsBackend:
             except ImportError:
                 pass
         return True, "device ok"
+
+    def resolve_device(self, cfg: TrainConfig) -> str:
+        requested = cfg.device_class
+        if requested != "auto":
+            # An explicit request is already the answer.
+            return requested
+        try:
+            import torch
+        except ImportError:
+            return "cpu"
+        if torch.cuda.is_available():
+            return "cuda:0"
+        return "cpu"
+
+    def check_importable(self, cfg: TrainConfig) -> tuple[bool, str]:
+        try:
+            self._ensure_loaded()
+        except BackendUnavailableError as exc:
+            return False, str(exc)
+        return True, "framework importable"
 
     def export(self, model: TrainedModel[Any], cfg: TrainConfig) -> Path:
         return Path(model.handle.export(format="onnx", opset=cfg.opset))

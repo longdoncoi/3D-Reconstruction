@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
+from contextlib import AbstractContextManager
 from typing import Any, Protocol
 
 from .domain.security import Principal
 from .domain.tasks import AgentTask, TaskStatus
-from .domain.tools import ToolRequest, ToolResult
+from .domain.tools import ToolRequest, ToolResult, ToolSpec
 
 
 class LockLike(Protocol):
@@ -132,21 +133,33 @@ class AgentOrchestrator(Protocol):
 
 
 class TaskStore(Protocol):
-    def create(self, task: AgentTask) -> None: ...
-    def get(self, task_id: str) -> AgentTask | None: ...
-    def save(self, task: AgentTask) -> None: ...
+    def commit(
+        self, task: AgentTask, *,
+        expected: TaskStatus | None = None,
+        events: Sequence[tuple[str, dict[str, Any]]] = (),
+    ) -> bool:
+        """Persist ``task`` and its events as **one unit of work**.
 
-    def save_if_status(self, task: AgentTask, expected: TaskStatus) -> bool:
-        """Compare-and-set write: persist ``task`` only when the stored status
-        still equals ``expected``; return whether the write happened.
+        ``expected`` selects the mode:
 
-        This is the TOCTOU guard for the A2A worker: without it a cancel that
-        lands while the executor runs is overwritten by an unconditional
-        ``UPDATE ... SET status='completed'``.
+        * ``None`` — insert the task; it must not exist yet.
+        * a status — compare-and-set: the write happens only while the stored
+          status still equals it, and the return value says whether it did.
+          This is the TOCTOU guard for the A2A worker: without it a cancel
+          that lands while the executor runs is overwritten by an
+          unconditional ``UPDATE ... SET status='completed'``.
+
+        The state write and the event append are the same fact observed
+        twice. A subscriber that tails the event log must see a transition
+        exactly once, and must never see a task whose state changed without
+        its event. Two separate transactions break both halves of that
+        promise: a crash between them leaves a task that is ``completed``
+        with no terminal event, and a subscriber waits forever for an event
+        that will never arrive (ADR 0032).
         """
         ...
 
-    def append_event(self, task_id: str, kind: str, data: dict[str, Any]) -> None: ...
+    def get(self, task_id: str) -> AgentTask | None: ...
 
     def events(self, task_id: str, *, since: int = 0) -> Iterable[dict[str, Any]]:
         """Yield events with an ordering key strictly greater than ``since``.
@@ -164,6 +177,36 @@ class TaskStore(Protocol):
         ...
 
 
+class ToolCatalogEntry(Protocol):
+    """One registered tool: its policy record and the executor behind it."""
+
+    @property
+    def spec(self) -> ToolSpec: ...
+
+    @property
+    def executor(self) -> ToolExecutor: ...
+
+
+class ToolCatalog(Protocol):
+    """The catalogue of tools the platform is allowed to execute.
+
+    ADR 0032: the application layer used to depend on the *concrete*
+    ``plugins.registry.PluginRegistry`` — a peer layer's class, reached
+    through an import-linter exception. The catalogue is a port, so the
+    policy chokepoint depends on the *contract* and the plugin layer stays
+    replaceable (and the HTTP adapter's own duck-typed duplicate of it
+    becomes redundant).
+    """
+
+    def tool(self, name: str) -> ToolCatalogEntry | None:
+        """The registered tool, or ``None`` when the name is unknown."""
+        ...
+
+    def specs(self) -> tuple[ToolSpec, ...]:
+        """Every registered policy record — the catalogue's own listing."""
+        ...
+
+
 class LLMRuntime(Protocol):
     """Infrastructure LLM handle injected into the agent decision loop.
 
@@ -174,10 +217,20 @@ class LLMRuntime(Protocol):
 
     The lock is typed structurally (:class:`LockLike`) so both
     ``threading.Lock`` and ``threading.RLock`` satisfy it.
+
+    ``model_lease`` is the drain contract (ADR 0032): a run pins one backend
+    for its whole length, so an admin reload cannot swap the model in the
+    middle of it. It used to be duck-typed with a ``getattr`` probe, which
+    meant a runtime that forgot the method silently lost the guarantee — no
+    type error, no log. The port now states it.
     """
 
     llm: LLMBackend | None
     llm_lock: LockLike
+
+    def model_lease(self) -> AbstractContextManager[None]:
+        """Pin the current backend for the duration of the block."""
+        ...
 
 
 class RagContextPort(Protocol):

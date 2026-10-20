@@ -99,9 +99,22 @@ class ManifestEntry(TypedDict, total=False):
     device: str
     """Compute device class the artifact was trained on (``auto`` when unset).
 
-    CPU and CUDA runs of the same hyper-parameters are different artifacts
-    behind the same file name, so this is one of the factors the skip rule
-    compares rather than an interesting fact nobody checks."""
+    The *request*: "auto" means "let the framework choose" and says nothing
+    about the machine the artifact came from. See :attr:`device_resolved` for
+    the answer."""
+
+    device_resolved: str | None
+    """The concrete device the run actually trained on (``cuda:0``, ``cpu``…).
+
+    Resolved by the pipeline before training, so it is a fact rather than a
+    request. It is what makes a CPU run distinguishable from a GPU run in the
+    provenance — without it, both record ``auto`` and a later run cannot tell
+    whether the published artifact is what it would build.
+
+    ``None`` in a document written by a build that did not resolve it; the key
+    is *absent* in documents written before the field existed. Either way the
+    entry is unprovable about its device and is retrained rather than
+    trusted."""
 
     dataset_sha256: str
     """Digest of ``data.yaml`` captured *before* the artifact was trained.
@@ -161,6 +174,14 @@ class LastRun(TypedDict, total=False):
     batch: int
     workers: int
     device: str
+    device_resolved: str | None
+    """The concrete device the run trained on, next to the request.
+
+    Informational for the header (the entry carries the comparable copy), but
+    recorded here too: the header describes the *invocation*, and "auto" on a
+    machine with a GPU is a different invocation from "auto" on one without.
+    """
+
     python: str
     """Interpreter that drove the run (``major.minor.micro``), for audit.
 

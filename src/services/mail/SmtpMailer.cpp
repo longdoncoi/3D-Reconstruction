@@ -110,7 +110,19 @@ bool SmtpMailer::sendMail(const QString &from,
 {
     mail::enforceBackgroundThread("SmtpMailer::sendMail");
 
-    if (from.trimmed().isEmpty() || to.isEmpty()) {
+    // The recipient list must contain at least one *usable* address.  The
+    // single-recipient overload wraps its argument into a list, so checking
+    // the list size was not enough: an empty recipient slipped through and
+    // the message was handed to the server without any RCPT TO.
+    bool hasRecipient = false;
+    for (const QString &recipient : to + cc + bcc) {
+        if (!sanitizeHeader(recipient).isEmpty()) {
+            hasRecipient = true;
+            break;
+        }
+    }
+
+    if (from.trimmed().isEmpty() || !hasRecipient) {
         errorMsg = "Missing sender or recipient.";
         return false;
     }

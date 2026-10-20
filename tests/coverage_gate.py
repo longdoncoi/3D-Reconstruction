@@ -116,6 +116,19 @@ TESTS: tuple[tuple[str, str, dict[str, str]], ...] = (
     # Plugin helpers that carry real logic (mail preview, inbox row, attachment
     # preview, prediction logger).
     ("TestPluginHelpers", "TestPluginHelpers.exe", {"QT_QPA_PLATFORM": "offscreen"}),
+    # The authentication dialogs of the user-auth plugin (≈1 000 GUI lines).
+    ("TestUserAuthDialogs", "TestUserAuthDialogs.exe", {"QT_QPA_PLATFORM": "offscreen"}),
+    # The remaining plugin UI: the ribbon panels, the mail dialogs and the
+    # viewer view model.
+    ("TestPluginUi", "TestPluginUi.exe", {"QT_QPA_PLATFORM": "offscreen"}),
+    # The SMTP client: input validation and failure reporting.
+    ("TestSmtpMailer", "TestSmtpMailer.exe", {}),
+    # The remaining guard-layer decision branches (loader failures, resolver
+    # diagnostics, settings fallback).
+    ("TestGuardBranches", "TestGuardBranches.exe", {}),
+    # The last two plugin translation units without a test: the sealed
+    # attachment viewer and the video tracking thread.
+    ("TestPluginWidgets", "TestPluginWidgets.exe", {"QT_QPA_PLATFORM": "offscreen"}),
     # Shared utility layer (src/utils/**) — the plugin-facing helpers.
     ("TestUtilsLayer", "TestUtilsLayer.exe", {"QT_QPA_PLATFORM": "offscreen"}),
 )
@@ -128,7 +141,7 @@ TESTS: tuple[tuple[str, str, dict[str, str]], ...] = (
 # reaches the next integer — never lower one to make a change pass.
 FLOORS: dict[str, float] = {
     # ── Kernel + guard layer: the files every plugin transitively depends on.
-    "src/core/pluginhost.cpp": 92,               # measured 92.0
+    "src/core/pluginhost.cpp": 95,               # measured 95.0
     "src/core/plugindependencyresolver.cpp": 93,  # measured 93.3
     "src/core/secretvault.cpp": 92,               # measured 92.9
     "src/core/cryptoutils.cpp": 100,              # measured 100
@@ -156,6 +169,7 @@ FLOORS: dict[str, float] = {
     "src/services/mail/mailmimeparser.cpp": 66,     # measured 67.0
     "src/services/mail/mailservice.cpp": 21,       # measured 22.0
     "src/services/mail/smtpoutbox.cpp": 87,        # measured 87.5
+    "src/services/mail/smtpmailer.cpp": 19,        # measured 19.7 (28/142)
     "src/services/reconstruction/cameraparamsparser.cpp": 97,  # measured 97.6
     "src/services/reconstruction/featureextractor.cpp": 100,   # measured 100
     "src/services/reconstruction/featurematcher.cpp": 97,      # measured 97.7
@@ -195,7 +209,16 @@ FLOORS: dict[str, float] = {
     "src/modules/aiassistantplugin/chatbotdockwidget.cpp": 96,      # measured 96.4
     "src/modules/viewerplugin/viewernavigatorui.cpp": 94,           # measured 94.7
     "src/modules/reconstructionplugin/reconstructionribbonui.cpp": 57,  # measured 57.1
-    "src/modules/userauthplugin/userauthplugin.cpp": 46,            # measured 46.2
+    "src/modules/userauthplugin/userauthplugin.cpp": 48,            # measured 48.5
+    "src/modules/userauthplugin/settingsdialog.cpp": 86,             # measured 86.1
+    "src/modules/userauthplugin/aboutdialog.cpp": 75,               # measured 75.9
+    "src/modules/userauthplugin/logindialog.cpp": 68,               # measured 68.6
+    "src/modules/userauthplugin/licenseactivationdialog.cpp": 68,   # measured 68.5
+    "src/modules/userauthplugin/themeselectiondialog.cpp": 66,      # measured 66.3
+    "src/modules/userauthplugin/forgotpassworddialog.cpp": 57,      # measured 57.9
+    "src/modules/userauthplugin/changepassworddialog.cpp": 54,       # measured 54.9
+    "src/modules/userauthplugin/avatarcropperdialog.cpp": 42,        # measured 42.8
+    "src/modules/userauthplugin/adminusermanagerdialog.cpp": 40,     # measured 40.8
     "src/modules/sendmailplugin/maildockwidget.cpp": 45,            # measured 45.9
     "src/modules/viewerplugin/viewerplugin.cpp": 41,                # measured 41.5
     "src/modules/sendmailplugin/sendmailplugin.cpp": 36,            # measured 36.4
@@ -205,11 +228,19 @@ FLOORS: dict[str, float] = {
     "src/modules/aiassistantplugin/aiassistantplugin.cpp": 16,       # measured 16.9
     "src/modules/viewerplugin/viewerlistui.cpp": 7,                 # measured 7.0
     "src/modules/aiassistantplugin/chatmessagerenderer.cpp": 5,      # measured 5.7
-    "src/modules/userauthplugin/themeselectiondialog.cpp": 3,        # measured 3.0
     "src/modules/aiassistantplugin/aiattachmentpreviewfactory.cpp": 100,  # measured 100
     "src/modules/aiprocessorplugin/aipredictionlogger.cpp": 100,           # measured 100
     "src/modules/sendmailplugin/mailinboxitemfactory.cpp": 100,            # measured 100
     "src/modules/sendmailplugin/mailmessageformatter.cpp": 84,              # measured 84.7
+    "src/modules/aiassistantplugin/aiassistantribbonui.cpp": 100,      # measured 100
+    "src/modules/aiprocessorplugin/aiprocessorribbonui.cpp": 100,      # measured 100
+    "src/modules/sendmailplugin/sendmailribbonui.cpp": 100,            # measured 100
+    "src/modules/viewerplugin/viewerribbonui.cpp": 100,                # measured 100
+    "src/modules/sendmailplugin/mailfilterdialog.cpp": 81,             # measured 81.8
+    "src/modules/sendmailplugin/mailsettingsdialog.cpp": 63,           # measured 63.9
+    "src/modules/viewerplugin/viewerviewmodel.cpp": 8,                 # measured 8.9 (6/67)
+    "src/modules/aiassistantplugin/chatimageviewer.cpp": 100,       # measured 100
+    "src/modules/aiprocessorplugin/videotrackerthread.cpp": 50,     # measured 50.8
 }
 
 _TOOL_CANDIDATES = (

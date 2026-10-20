@@ -44,3 +44,8 @@ cryptography>=42.0.0
 coverage>=7.0
 mypy>=1.10.0
 import-linter>=2.0.0
+# The linter is a gate, so it belongs in the hash-pinned lock like every other
+# tool the gates depend on: an unpinned ruff release could change the lint
+# semantics of a build without anyone reviewing the change (ADR 0032).
+# The pin is exact because the recorded lint result was measured with it.
+ruff==0.16.0

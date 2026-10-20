@@ -275,6 +275,21 @@ class TrainConfig:
     workers: int = DEFAULT_WORKERS
     seed: int = DEFAULT_SEED
     device: str | None = None
+    device_resolved: str | None = None
+    """The concrete device this run trains on, resolved *before* training.
+
+    ``device`` is what the operator asked for; ``auto`` is a request, not a
+    fact — "let the framework choose" answers differently on a machine with a
+    GPU and on one without, and differently again if the GPU is busy. The
+    pipeline therefore resolves it itself, before any weight is touched, and
+    records the answer next to the request.
+
+    Two consequences, both wanted: the provenance names a device that can be
+    *compared* with the next run's (a CPU run can no longer pass for a GPU
+    run), and the framework is told which device to use instead of choosing
+    for itself. Left ``None`` when the caller did not resolve it (a
+    programmatic call that never reached the orchestrator).
+    """
     opset: int = DEFAULT_OPSET
 
     auto_confirm: bool = False
@@ -287,6 +302,16 @@ class TrainConfig:
 
     Makes a run idempotent: re-running the same command trains nothing. See
     :func:`cvtrain.gate.already_current` for what "satisfies" means."""
+
+    resume: bool = False
+    """Continue the most recent run of each model instead of starting a new one.
+
+    A training run is hours of work; an interrupted one should not have to
+    start over. The framework writes ``weights/last.pt`` after every epoch, so
+    ``--resume`` picks the newest checkpoint of the model and continues from
+    it — with the hyper-parameters that run was started with, not with the
+    ones this invocation happens to pass. Off by default: a fresh run is the
+    reproducible one."""
 
     min_metrics: tuple[tuple[str, float], ...] = ()
     """Quality gate: ``(metric_name, minimum)`` pairs that a model must meet.
@@ -317,14 +342,17 @@ class TrainConfig:
 
     @property
     def device_class(self) -> str:
-        """The canonical spelling of ``device`` used as provenance.
+        """The canonical spelling of the *requested* device, used as provenance.
 
         ``None``/blank means "let the framework choose" and is normalised to
         ``auto``; anything else is lower-cased and whitespace-stripped around
         commas, so ``"0, 1"`` and ``"0,1"`` describe the same experiment. Both
         the recording half (``trainer``) and the comparing half
         (``gate.already_current``) read this one property, so a re-run can never
-        disagree with itself about which device trained an artifact.
+        disagree with itself about which device was asked for.
+
+        The *answer* lives in :attr:`device_resolved`: ``auto`` says nothing
+        about the machine, the resolution says exactly what ran.
         """
 
         raw = (self.device or "").strip()

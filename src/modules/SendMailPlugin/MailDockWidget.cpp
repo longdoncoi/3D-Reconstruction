@@ -1,3 +1,5 @@
+#include "BlockingCall.h"
+#include "IMailService.h"
 #include "MailDockWidget.h"
 
 #include "MailFilterDialog.h"
@@ -288,7 +290,7 @@ void MailDockWidget::sendCurrentMail()
             ModernMessageBox::warning(m_dock, m_ctx->translate("common.error"), result.second);
         }
     });
-    watcher->setFuture(QtConcurrent::run([mail = m_mail, msg]() {
+    watcher->setFuture(blocking::run([mail = m_mail, msg]() {
         QString error;
         const bool ok = mail->sendMail(msg, error);
         return qMakePair(ok, error);
@@ -358,7 +360,7 @@ void MailDockWidget::refreshInbox()
         }
     });
     IMailService *mail = m_mail;
-    watcher->setFuture(QtConcurrent::run([mail]() {
+    watcher->setFuture(blocking::run([mail]() {
         QString error;
         const QList<MailMessage> list = mail ? mail->fetchInbox(30, error) : QList<MailMessage>{};
         return qMakePair(list, error);

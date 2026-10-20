@@ -425,7 +425,20 @@ class SaveLoadCacheTests(unittest.TestCase):
             self.faiss.index_d = 3
             # The envelope stays structurally valid — only the authentication
             # tag moved.
-            paths.cache_chunks.write_bytes(paths.cache_chunks.read_bytes()[:-1] + b"x")
+            #
+            # The tamper lands in the *middle* of the base64 text on purpose.
+            # The last character of a base64 quantum contributes as few as two
+            # bits, so replacing it can decode to the very same bytes — the
+            # seal would then still verify and this test would pass without
+            # having tampered anything (one run in four, depending on the
+            # random nonce). A middle character is part of a full quantum, so
+            # the decoded ciphertext always changes.
+            raw = paths.cache_chunks.read_bytes()
+            middle = len(raw) // 2
+            replacement = b"Y" if raw[middle:middle + 1] != b"Y" else b"Z"
+            paths.cache_chunks.write_bytes(
+                raw[:middle] + replacement + raw[middle + 1:]
+            )
 
             index, loaded, bm25 = load_cache(paths, _settings(), cipher=self.cipher)
         self.assertIsNone(index)

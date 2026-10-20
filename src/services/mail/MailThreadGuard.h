@@ -13,8 +13,9 @@ namespace mail {
  * Every network entry point of the mail stack blocks for seconds (explicit
  * socket timeouts). Callers must invoke them from a background thread —
  * MailDockWidget / MailSettingsDialog / ForgotPasswordDialog use
- * QtConcurrent::run. A violation warns in every build and asserts in debug
- * builds (same fail-fast stance as ServiceRegistry).
+ * blocking::run() (src/utils/BlockingCall.h), which always uses a dedicated
+ * thread. A violation warns in every build and asserts in debug builds (same
+ * fail-fast stance as ServiceRegistry).
  */
 inline void enforceBackgroundThread(const char *who)
 {

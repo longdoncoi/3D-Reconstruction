@@ -69,6 +69,54 @@ class ArchitectureSettingsTests(unittest.TestCase):
             self.assertEqual(settings.allowed_plugins, frozenset({"builtin.legacy-tools"}))
             self.assertEqual(settings.allowed_origins, ())
             self.assertEqual(settings.capability_scopes, {})
+            # ADR 0032: the docs surface is opt-in, never on by default.
+            self.assertFalse(settings.expose_api_docs)
+            self.assertEqual(settings.allowed_hosts, ())
+
+    def test_the_docs_surface_is_opt_in(self):
+        """ADR 0032: ``/docs`` is an app-level route, so the transport guard
+        never reaches it. It therefore ships disabled and a deployment has to
+        say so explicitly."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "AIAssistant"
+            base.mkdir()
+            self._write(base, "base.toml", '[api]\nexpose_docs = true\n')
+            with mock.patch.dict("os.environ", {}, clear=True):
+                settings = ArchitectureSettings.load(base, config_dir=base / "config")
+            self.assertTrue(settings.expose_api_docs)
+
+    def test_the_environment_overrides_the_config_file_for_the_docs_surface(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "AIAssistant"
+            base.mkdir()
+            self._write(base, "base.toml", '[api]\nexpose_docs = true\n')
+            # An explicitly set variable always wins — including "0", which is
+            # how an operator turns the surface off for one session.
+            with mock.patch.dict("os.environ", {"AGENT_EXPOSE_API_DOCS": "0"}, clear=True):
+                settings = ArchitectureSettings.load(base, config_dir=base / "config")
+            self.assertFalse(settings.expose_api_docs)
+            with mock.patch.dict("os.environ", {"AGENT_EXPOSE_API_DOCS": "1"}, clear=True):
+                settings = ArchitectureSettings.load(base, config_dir=base / "config")
+            self.assertTrue(settings.expose_api_docs)
+
+    def test_the_host_allow_list_is_read_from_the_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "AIAssistant"
+            base.mkdir()
+            with mock.patch.dict(
+                "os.environ", {"AGENT_ALLOWED_HOSTS": "localhost, 127.0.0.1 ,"}, clear=True
+            ):
+                settings = ArchitectureSettings.load(base, config_dir=base / "config")
+            self.assertEqual(settings.allowed_hosts, ("localhost", "127.0.0.1"))
+
+    def test_the_host_allow_list_falls_back_to_the_config_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "AIAssistant"
+            base.mkdir()
+            self._write(base, "base.toml", '[api]\nallowed_hosts = ["ai.internal"]\n')
+            with mock.patch.dict("os.environ", {}, clear=True):
+                settings = ArchitectureSettings.load(base, config_dir=base / "config")
+            self.assertEqual(settings.allowed_hosts, ("ai.internal",))
 
     def test_tracked_config_is_read_for_any_base_dir(self):
         """ADR 0015: ``AIAssistant/config/*.toml`` must be live, not decorative.

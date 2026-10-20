@@ -156,6 +156,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip models whose ONNX already matches this invocation (idempotent re-run)",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="continue the most recent run of each model instead of starting a new one",
+    )
     quality = parser.add_argument_group(
         "quality gate",
         "publish only models whose metrics meet a minimum; repeatable, and applied to a "
@@ -193,6 +198,7 @@ def config_from_args(args: argparse.Namespace) -> TrainConfig:
         check_only=args.check_only,
         verbose=args.verbose,
         skip_unchanged=args.skip_unchanged,
+        resume=args.resume,
         min_metrics=tuple(args.min_metric or ()),
     )
 

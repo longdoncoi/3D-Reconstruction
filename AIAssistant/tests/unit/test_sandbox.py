@@ -480,6 +480,48 @@ class SandboxWriteFileTests(unittest.TestCase):
                 result = write_file(str(target), "x", str(self.root))
                 self.assertIn("denied by sandbox policy", result["error"])
 
+    def test_the_policy_trees_are_denied(self) -> None:
+        """ADR 0032: the basename deny-list named two policy files and left
+        the rest of the platform's own policy writable — an approved write
+        could rewrite the origin allow-list, the A2A scope map, the tool
+        catalogue or the approval logic the agent is judged by."""
+        for rel in (
+            "AIAssistant/config/base.toml",
+            "AIAssistant/src/ai_assistant/domain/approvals.py",
+            "AIAssistant/src/ai_assistant/application/tools.py",
+            "AIAssistant/src/ai_assistant/adapters/http/security.py",
+            "AIAssistant/src/ai_assistant/ports.py",
+            "Config/agent_tools.json",
+            "src/core/AppConstants.h",
+        ):
+            with self.subTest(rel=rel):
+                target = self.root / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                result = write_file(str(target), "x", str(self.root))
+                self.assertIn("denied by sandbox policy", result["error"])
+                self.assertFalse(target.exists() and target.read_text(encoding="utf-8") == "x")
+
+    def test_a_path_that_only_looks_like_a_policy_tree_is_allowed(self) -> None:
+        """The tree match is on resolved parts, so a sibling directory with a
+        similar name is not caught by accident."""
+        target = self.root / "src" / "ai_assistant" / "domain_notes" / "a.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        result = write_file(str(target), "x", str(self.root))
+        self.assertTrue(result["success"])
+
+    def test_a_symlink_into_a_policy_tree_is_denied(self) -> None:
+        """The match is on the *resolved* path, so a symlink cannot walk
+        around the deny-list."""
+        denied = self.root / "AIAssistant" / "config" / "base.toml"
+        denied.parent.mkdir(parents=True, exist_ok=True)
+        link = self.root / "src" / "innocent.toml"
+        try:
+            link.symlink_to(denied)
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are not available on this filesystem")
+        result = write_file(str(link), "x", str(self.root))
+        self.assertIn("denied by sandbox policy", result["error"])
+
     def test_success_writes_file(self) -> None:
         result = write_file(str(self.root / "src" / "out.txt"), "hello", str(self.root))
         self.assertTrue(result["success"])

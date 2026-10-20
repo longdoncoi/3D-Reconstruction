@@ -390,6 +390,7 @@ public:
     void setLanguage(const QString &) override {}
 
     UserManager &users() { return m_users; }
+    AppPaths &paths() { return m_paths; }
     ShellService &shellService() { return m_shell; }
 
 private:

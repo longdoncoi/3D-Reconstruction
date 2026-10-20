@@ -1,3 +1,4 @@
+#include "BlockingCall.h"
 #include "SettingsDialog.h"
 #include "AdminUserManagerDialog.h"
 #include "IAIService.h"
@@ -468,7 +469,7 @@ void SettingsDialog::setupUi() {
                                       "\n" + result.second);
                             }
                           });
-                  watcher->setFuture(QtConcurrent::run([mailSvc]() {
+                  watcher->setFuture(blocking::run([mailSvc]() {
                     QString errMsg;
                     const bool ok = mailSvc->testConnection(errMsg);
                     return qMakePair(ok, errMsg);

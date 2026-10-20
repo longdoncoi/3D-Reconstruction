@@ -178,12 +178,27 @@ class RagModule:
             return (None, None)
         return build_retrievers(index, bm25, chunks, encoder, settings)
 
-    def _reset_index_state(self) -> None:
-        """Drop every retrieval handle so an empty state is observable everywhere."""
-        self.knowledge_index = None
-        self.knowledge_chunks = []
-        self.bm25_index = None
-        self._pipeline = None
+    def reset_index_state(self) -> None:
+        """Drop every retrieval handle so an empty state is observable everywhere.
+
+        ADR 0032: this is the *only* owner of the "the RAG state is empty"
+        transition. It used to exist twice with two different field sets — the
+        module reset cleared ``_pipeline`` but not the encoder/reranker
+        references, while the HTTP admin route cleared the encoder/reranker but
+        not ``_pipeline``. The two owners disagreed, so ``/health`` could
+        report ``rag_chunks == 0`` while retrieval was still serving the
+        previous corpus out of the stale pipeline.
+
+        Every field is cleared together, under the lock, so no reader can
+        observe a half-reset state.
+        """
+        with self.rag_lock:
+            self.knowledge_index = None
+            self.knowledge_chunks = []
+            self.bm25_index = None
+            self._pipeline = None
+            self.embed_model_ref = None
+            self._reranker = None
 
     def initialize_rag(self, enable_reranker: bool = True, force_rebuild: bool = False) -> int:
         """Load (or rebuild) the RAG index and wire the retrieval pipeline.
@@ -199,7 +214,7 @@ class RagModule:
             # Fail safe *and* visible: the traceback is logged, the state is
             # cleared and /health degrades instead of pretending success.
             logger.exception("RAG initialization failed; retrieval stays disabled")
-            self._reset_index_state()
+            self.reset_index_state()
             return 0
         return count
 
@@ -220,7 +235,7 @@ class RagModule:
         settings = RAGSettings.from_env_and_dict({})
         if not settings.enabled:
             logger.info("RAG disabled by AI_ENABLE_RAG")
-            self._reset_index_state()
+            self.reset_index_state()
             return 0
         paths = get_paths()
         encoder = lazy_embedding_encoder(settings)
@@ -236,7 +251,7 @@ class RagModule:
             if not scanned:
                 logger.warning("RAG: no documents found under %s — index not built",
                                paths.project_root)
-                self._reset_index_state()
+                self.reset_index_state()
                 return 0
             # Cache is missing/stale: force the build path so the fs hash is
             # computed once (scan already happened above).
@@ -246,7 +261,7 @@ class RagModule:
 
         if index is None or not chunks:
             logger.warning("RAG: index unavailable after load/build")
-            self._reset_index_state()
+            self.reset_index_state()
             return 0
 
         from typing import cast

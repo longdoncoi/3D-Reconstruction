@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from ai_assistant.config.logging import get_agent_logger
 from ai_assistant.domain.governance import redact_value
+from ai_assistant.domain.tools import describe_tool_result
 
 from ..state import (
     COMPLETION_TOOLS,
@@ -196,15 +197,19 @@ def _dispatch(state: AgentState, ctx: ToolContext) -> _ToolDispatch | dict[str, 
         return {"steps": steps, "done": True}
 
     logger.info("[NODE: tool] Thực thi: %s, params: %s", tool_name, str(redact_value(params))[:200])
-    logger.debug(f"\n--- [LOG: TOOL NODE] Thuc thi: {tool_name} ---")
+    logger.debug("\n--- [LOG: TOOL NODE] Thuc thi: %s ---", tool_name)
     try:
         result = ctx.execute(tool_name, params)
-        logger.info("[NODE: tool] Kết quả: %s", str(result)[:500])
-        logger.debug(f"[LOG: TOOL NODE] Ket qua: {result}")
+        # ADR 0032: the log states *what* the tool returned, never the payload
+        # it returned — a tool that read a private document must not copy that
+        # document into a plaintext log file.
+        summary = describe_tool_result(result)
+        logger.info("[NODE: tool] Kết quả: %s", summary)
+        logger.debug("[LOG: TOOL NODE] Ket qua: %s", summary)
     except Exception as error:
         result = {"error": f"Tool exception: {error}"}
         logger.exception("[NODE: tool] Exception khi thực thi '%s'", tool_name)
-        logger.debug(f"[LOG: TOOL NODE] Loi: {result}")
+        logger.debug("[LOG: TOOL NODE] Loi: %s", describe_tool_result(result))
 
     error_count = state.get("error_count", 0)
     if "error" in result:

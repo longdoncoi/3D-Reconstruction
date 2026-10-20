@@ -1,3 +1,4 @@
+#include "BlockingCall.h"
 #include "MailSettingsDialog.h"
 
 #include "IAppContext.h"
@@ -88,7 +89,7 @@ void show(QWidget *parent, IAppContext *context, IMailService *mailService)
                 ModernMessageBox::warning(&dlg, context->translate("common.error"), result.second);
             }
         });
-        watcher->setFuture(QtConcurrent::run([mailService]() {
+        watcher->setFuture(blocking::run([mailService]() {
             QString error;
             const bool ok = mailService->testConnection(error);
             return qMakePair(ok, error);

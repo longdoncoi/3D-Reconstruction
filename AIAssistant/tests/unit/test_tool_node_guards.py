@@ -68,6 +68,28 @@ class ToolNodeLogRedactionTests(unittest.TestCase):
         self.assertNotIn("hunter2-secret", joined)
         self.assertIn("[redacted]", joined)
 
+    def test_the_tool_payload_never_reaches_the_execution_log(self) -> None:
+        """ADR 0032: the result is logged too, and it may hold the file the
+        tool just read. The log states the *shape* of the result, never its
+        payload — otherwise the plaintext log becomes a second copy of
+        everything the at-rest cipher protects."""
+        result = {"success": True, "content": "the private document body"}
+        with self.assertLogs("agent.tool", level="DEBUG") as captured:
+            tool_node(_state([_call()]), _ctx(result))
+        joined = "\n".join(captured.output)
+        self.assertNotIn("the private document body", joined)
+        self.assertIn("content=<25 chars>", joined)
+
+    def test_the_payload_still_reaches_the_caller(self) -> None:
+        """The log is redacted; the *result* is not. The agent must see what
+        the tool actually returned."""
+        result = {"success": True, "content": "the private document body"}
+        with self.assertLogs("agent.tool", level="DEBUG"):
+            update = tool_node(_state([_call()]), _ctx(result))
+        recorded = [step for step in update["steps"] if step.get("type") == "tool_result"]
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0]["result"], result)
+
 
 class ToolNodeGuardTests(unittest.TestCase):
     def test_cooperative_cancellation_short_circuits(self):

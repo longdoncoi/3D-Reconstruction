@@ -7,6 +7,7 @@ from typing import Any, cast
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ..adapters.http.rate_limit import PeerRateLimiter, RateLimitMiddleware
 from ..domain.errors import (
@@ -129,7 +130,19 @@ def _register_domain_error_handlers(app: FastAPI) -> None:
 
 
 def create_app(settings: ArchitectureSettings, lifespan: Callable[..., Any]) -> FastAPI:
-    app = FastAPI(title="3D-Reconstruction AI Server", version="3.0.0", lifespan=lifespan)
+    # ADR 0032: ``/docs``, ``/redoc`` and ``/openapi.json`` are *app-level*
+    # FastAPI routes, not router routes, so the transport guard that protects
+    # every other surface never reaches them. They therefore ship disabled and
+    # a deployment opts in explicitly.
+    docs = settings.expose_api_docs
+    app = FastAPI(
+        title="3D-Reconstruction AI Server",
+        version="3.0.0",
+        lifespan=lifespan,
+        docs_url="/docs" if docs else None,
+        redoc_url="/redoc" if docs else None,
+        openapi_url="/openapi.json" if docs else None,
+    )
     _register_domain_error_handlers(app)
     app.add_middleware(
         CORSMiddleware,
@@ -147,6 +160,12 @@ def create_app(settings: ArchitectureSettings, lifespan: Callable[..., Any]) -> 
     limiter = PeerRateLimiter(rate_limit_per_minute())
     if limiter.enabled:
         app.add_middleware(RateLimitMiddleware, limiter=limiter)
+    # Host header allow-list (ADR 0032). Installed only when a deployment
+    # declares one: an empty list means "no policy declared", not "deny
+    # everything" — the desktop deployment answers on loopback under whatever
+    # name the Qt client used.
+    if settings.allowed_hosts:
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.allowed_hosts))
     # Outermost: the inbound traceparent must wrap every other middleware and
     # route so their spans join the caller's trace (ADR 0001).
     app.add_middleware(TraceContextMiddleware)

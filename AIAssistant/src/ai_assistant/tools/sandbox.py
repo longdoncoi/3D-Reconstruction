@@ -51,6 +51,28 @@ _DENIED_WRITE_PATHS = {
     "sandbox.py", "security.py", ".env", ".env.example", "pyproject.toml",
     "tasks.sqlite", "pending_agent_actions.json", "agent_audit.jsonl",
 }
+
+# ADR 0032: directories that hold the platform's *own policy*. The basename
+# set above named two policy files and left the rest writable, so an approved
+# write could rewrite the transport policy (``config/base.toml`` holds the
+# origin allow-list), the A2A capability→scope map (``config/agents.toml``),
+# the tool catalogue (``Config/agent_tools.json``) or the approval and
+# execution policy of the assistant itself (``domain/approvals.py``,
+# ``application/tools.py``).
+#
+# These are relative to the project root and matched on the resolved path, so
+# a symlink cannot walk around them. They are *not* a substitute for the
+# human approval the write already requires — they are the defence in depth
+# that keeps a prompt-injected agent from editing the rules it is judged by.
+_DENIED_WRITE_TREES = (
+    "AIAssistant/config",
+    "AIAssistant/src/ai_assistant/domain",
+    "AIAssistant/src/ai_assistant/application",
+    "AIAssistant/src/ai_assistant/adapters/http",
+    "AIAssistant/src/ai_assistant/ports.py",
+    "Config",
+    "src/core",
+)
 # Preserve block for metacharacters but avoid false substring matches using token-level checks.
 # "${" covers ${VAR}/$(( ))/${...} expansion forms that "$(" alone misses (ADR 0011).
 _FORBIDDEN_METACHAR = {"&&", "||", ";", "|", ">", "<", "`", "$(", "${"}
@@ -363,6 +385,22 @@ def _force_remove_container(container_name: str) -> None:
         pass
 
 
+def _denied_tree_hit(relative: Path) -> bool:
+    """Whether the project-relative path lies inside a denied policy tree.
+
+    The path must already be *resolved*: ``write_file`` computes it from
+    ``Path(path).resolve()``, so a symlink that points into a policy tree is
+    caught too, and a relative path that only *looks* like it leaves the tree
+    (via ``..``) is not.
+    """
+    parts = relative.parts
+    for denied in _DENIED_WRITE_TREES:
+        denied_parts = Path(denied).parts
+        if parts[:len(denied_parts)] == denied_parts:
+            return True
+    return False
+
+
 def write_file(path: str, content: str, project_root: str) -> dict[str, Any]:
     """Atomically write only allow-listed project subtrees and bounded payloads."""
     runtime_settings = load_agent_runtime_settings()
@@ -374,9 +412,10 @@ def write_file(path: str, content: str, project_root: str) -> dict[str, Any]:
         relative = Path(path).resolve().relative_to(Path(project_root).resolve())
     except ValueError:
         return {"error": "Write target escapes the project root."}
-    if not relative.parts or relative.parts[0] not in agent_write_roots():
-        return {"error": "Write target is not in AGENT_WRITE_ALLOWLIST."}
-    # ADR 0015 / ADR 0011: deny writing to policy / sandbox / secrets paths.
+    # ADR 0015 / ADR 0011 / ADR 0032: deny writing to policy / sandbox /
+    # secrets paths. The deny-list is checked *before* the allow-list: it is
+    # the stricter policy, and a policy file must be refused whether or not
+    # its subtree happens to be writable.
     # The basename set covers "pyproject.toml anywhere"; the substring list
     # covers ".git/config", "tasks.sqlite", durable pending/audit state and
     # any case variant of the policy files.
@@ -388,6 +427,10 @@ def write_file(path: str, content: str, project_root: str) -> dict[str, Any]:
                   "pending_agent_actions.json", "agent_audit.jsonl"]
     ):
         return {"error": "Write target is denied by sandbox policy (policy file)."}
+    if _denied_tree_hit(relative):
+        return {"error": "Write target is denied by sandbox policy (policy tree)."}
+    if not relative.parts or relative.parts[0] not in agent_write_roots():
+        return {"error": "Write target is not in AGENT_WRITE_ALLOWLIST."}
     target = Path(path)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)

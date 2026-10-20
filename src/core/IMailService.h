@@ -5,6 +5,9 @@
 #include <QStringList>
 #include <QDateTime>
 #include <QList>
+#include "Global.h"
+
+
 
 /**
  * @brief Data structure representing a single email message.

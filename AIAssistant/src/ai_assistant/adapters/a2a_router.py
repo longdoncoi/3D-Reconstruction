@@ -23,7 +23,7 @@ from fastapi.responses import StreamingResponse
 from ..application.tasks import TaskService
 from ..config.logging import get_agent_logger
 from ..domain.tasks import AgentTask
-from ..settings import a2a_max_subscribers
+from ..settings import DEFAULT_BASE_URL, a2a_max_subscribers
 from .a2a_models import A2AMessage, ResumeTaskParams, SendMessageParams, SendTaskParams
 from .a2a_payloads import APPROVAL_RESUME_EXTENSION, build_agent_card, task_payload
 from .http.security import TransportPolicy, a2a_guards, resolve_a2a_tenant
@@ -227,13 +227,19 @@ def _dispatch_json_rpc(service: TaskService, method: str, params: dict[str, Any]
 
 
 def _add_agent_card_route(router: APIRouter, service: TaskService,
-                          agent_name: str, agent_version: str) -> None:
+                          agent_name: str, agent_version: str,
+                          card_base_url: str) -> None:
     @router.get("/.well-known/agent.json")
-    def agent_card(request: Request) -> dict[str, Any]:
+    def agent_card() -> dict[str, Any]:
+        # ADR 0032: the advertised URL is the *configured* base URL, never
+        # ``request.base_url`` — that one is derived from the Host header, so a
+        # peer sending ``Host: evil.example`` would make this server publish a
+        # card pointing at the attacker, and a peer that trusts the card would
+        # dispatch its tasks there.
         return build_agent_card(
             agent_name=agent_name,
             agent_version=agent_version,
-            base_url=str(request.base_url).rstrip("/"),
+            base_url=card_base_url.rstrip("/"),
             capabilities=list(service.capabilities),
         )
 
@@ -382,8 +388,14 @@ def _a2a_tenant_dependency(policy: TransportPolicy) -> Any:
 
 def build_a2a_router(service: TaskService, agent_name: str, agent_version: str,
                      policy: TransportPolicy | None = None,
-                     max_subscribers: int | None = None) -> APIRouter:
-    """Build the A2A 0.3 HTTP router with all standard and legacy endpoints."""
+                     max_subscribers: int | None = None,
+                     card_base_url: str = DEFAULT_BASE_URL) -> APIRouter:
+    """Build the A2A 0.3 HTTP router with all standard and legacy endpoints.
+
+    ``card_base_url`` is the address this server advertises in its Agent Card.
+    It is injected by the composition root so the published card never depends
+    on the request's Host header (ADR 0032).
+    """
     resolved = policy or TransportPolicy()
     limiter = _SubscriberLimiter(
         a2a_max_subscribers() if max_subscribers is None else max_subscribers,
@@ -395,7 +407,7 @@ def build_a2a_router(service: TaskService, agent_name: str, agent_version: str,
     # Exposed for health introspection and white-box admission tests; the
     # routes close over the same object, so there is exactly one counter.
     setattr(router, "_subscriber_limiter", limiter)
-    _add_agent_card_route(router, service, agent_name, agent_version)
+    _add_agent_card_route(router, service, agent_name, agent_version, card_base_url)
     _add_send_routes(router, service)
     _add_standard_task_routes(router, service, limiter)
     _add_legacy_task_routes(router, service, limiter)

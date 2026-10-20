@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -129,6 +129,66 @@ class SqliteTaskStore:
             )
 
     # ── TaskStore protocol ─────────────────────────────────────────────────────
+
+    def commit(
+        self, task: AgentTask, *,
+        expected: TaskStatus | None = None,
+        events: Sequence[tuple[str, dict[str, Any]]] = (),
+    ) -> bool:
+        """Persist the task and its events in one transaction (ADR 0032).
+
+        The state write and the event append are the same fact observed
+        twice. Two separate transactions break both halves of that promise: a
+        crash between them leaves a task that is ``completed`` with no
+        terminal event, and a subscriber waits forever for an event that will
+        never arrive. The adapter already knew the pattern — ``fail_orphaned``
+        below does it in one transaction — so the port now *asks* for it
+        instead of letting the application layer write two statements and
+        hope.
+
+        ``expected is None`` inserts; a status makes the write a
+        compare-and-set and the return value says whether it landed.
+        """
+        now = _now()
+        result_json, error, metadata_json = _content_columns(task, self._cipher)
+        sealed_events = [
+            (
+                task.id,
+                kind,
+                _seal_text(self._cipher, json.dumps(data, default=str), "event.data"),
+                now,
+            )
+            for kind, data in events
+        ]
+        with self._lock, self._conn:
+            if expected is None:
+                self._conn.execute(
+                    "INSERT INTO tasks (id, capability, message, status, result, error, metadata, context_id, "
+                    "classification, origin, owner, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (task.id, task.capability,
+                     _seal_text(self._cipher, task.message, "task.message"), str(task.status),
+                     result_json, error, metadata_json,
+                     task.context_id,
+                     task.classification.value, task.origin.value, task.owner, now, now),
+                )
+            else:
+                cursor = self._conn.execute(
+                    "UPDATE tasks SET status=?, result=?, error=?, metadata=?, updated_at=? "
+                    "WHERE id=? AND status=?",
+                    (str(task.status), result_json, error, metadata_json, now, task.id, str(expected)),
+                )
+                if cursor.rowcount != 1:
+                    # Lost the race: nothing was written, and no event may be
+                    # written either — the event log must not announce a
+                    # transition that did not happen.
+                    return False
+            if sealed_events:
+                self._conn.executemany(
+                    "INSERT INTO task_events (task_id, kind, data, created_at) VALUES (?, ?, ?, ?)",
+                    sealed_events,
+                )
+        return True
 
     def create(self, task: AgentTask) -> None:
         now = _now()

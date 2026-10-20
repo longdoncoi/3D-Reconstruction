@@ -142,10 +142,17 @@ concrete singletons or exe classes. Conventions:
 ## Blocking I/O contracts
 
 - `IMailService` (and the mail stack under it) is synchronous and blocking:
-  callers must run it off the GUI thread via `QtConcurrent` (pattern:
-  MailDockWidget, MailSettingsDialog, ForgotPasswordDialog).
-  `mail::enforceBackgroundThread()` warns in every build and asserts in debug
-  builds when a blocking entry point is invoked on the GUI thread.
+  callers must run it off the GUI thread via
+  `blocking::run(...)` (pattern: MailDockWidget, MailSettingsDialog,
+  ForgotPasswordDialog, SettingsDialog).  `blocking::run` lives in
+  `src/utils/BlockingCall.h` and always uses a dedicated `QThread`, so the
+  "never on the GUI thread" part of the contract is guaranteed.  Do **not**
+  use `QtConcurrent::run` for blocking work: a pool may execute the task
+  *inline* on the calling thread (QThreadPool::doStart), which freezes the
+  GUI for the whole socket timeout.  `mail::enforceBackgroundThread()` warns
+  in every build and asserts in debug builds when a blocking entry point is
+  invoked on the GUI thread — it is the last line of defence, not the
+  mechanism.
 - Teardown paths bound every process wait with an explicit timeout
   (`waitForFinished(<ms>)`; the argument-less call waits Qt's 30 s default and
   freezes shutdown). The architecture guard rejects new un-timed calls.
@@ -220,14 +227,26 @@ concrete singletons or exe classes. Conventions:
   `deleteDockWidget(QDockWidget*)`; `ViewerPlugin::cleanup()` was empty) — a
   plugin must delete every widget it installs into the shell **before** the
   DLL is unloaded.
-- Python changes: from `AIAssistant/`, run `ruff check .` and
-  `python -m compileall -q evals src` (`StartChatbotServer.py` was removed with
-  the V6 refactor; the check referenced a file that no longer exists).
+- Python changes: from `AIAssistant/`, run the whole gate — `ruff check .`,
+  `python -m compileall -q evals src`, `python -m mypy src/ai_assistant`,
+  `PYTHONPATH=src lint-imports --no-logo`, then
+  `PYTHONPATH=src python -m coverage run -m unittest discover -s tests -p "test_*.py"`
+  and `python -m coverage report` (the coverage gate is 100% statements **and**
+  branches), then `PYTHONPATH=src python scripts/mutation_check.py`.
+  `StartChatbotServer.py` was removed with the V6 refactor; the syntax check
+  referenced a file that no longer exists. The mutation gate pins the package's
+  load-bearing decisions (74 mutants, ADR 0032) and declares a **floor**
+  (`MIN_MUTANTS`): deleting a mutant is a decision, and the gate turns it into
+  a failing one instead of a silent one. A new guard means a new mutant in the
+  same commit. Measured gates, the debt table and the claim-to-test map live in
+  `AIAssistant/Docs/SCORECARD.md` — the same "claim must be pinned or removed"
+  rule as ADR 0015. The scorecard is **tracked**: a number nobody else can read
+  pins nothing.
 - AIComputerVision changes: from `AIComputerVision/`, run `ruff check .`,
   `python -m mypy`, then `coverage run -m unittest discover -s tests` and
   `coverage report` (the coverage gate is 100% statements + branches), then
   `python scripts/mutation_check.py`. The mutation gate pins the package's
-  load-bearing decisions (57 mutants, ADR 0007); it runs in a sandbox copy of
+  load-bearing decisions (67 mutants, ADR 0007/0008/0009); it runs in a sandbox copy of
   the tree, so it never touches `Models/`, `runs/` or the local dataset. A new
   guard means a new mutant in the same commit. Measured gates, the debt table
   and the claim-to-test map live in `AIComputerVision/Docs/SCORECARD.md` — the

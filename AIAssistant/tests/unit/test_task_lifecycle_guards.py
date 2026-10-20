@@ -58,7 +58,9 @@ class CloseTests(unittest.TestCase):
         blocker = threading.Event()
         created: dict = {}
         store = _store()
-        store.create.side_effect = lambda task: created.setdefault(task.id, task)
+        store.commit.side_effect = lambda task, **kwargs: (
+            created.setdefault(task.id, task) or True
+        )
         store.get.side_effect = lambda task_id: created.get(task_id)
         service = TaskService(store, lambda task: blocker.wait(10), frozenset({"chat"}))
         service.submit("chat", "hi")
@@ -77,8 +79,7 @@ class CloseTests(unittest.TestCase):
     def test_close_tolerates_a_store_without_close(self):
         """Duck-typed stores are not required to implement ``close``."""
         store = SimpleNamespace(
-            create=lambda task: None, get=lambda task_id: None,
-            save=lambda task: None, append_event=lambda *a: None,
+            commit=lambda task, **kwargs: True, get=lambda task_id: None,
             list=lambda **k: (), events=lambda task_id: (),
         )
         service = TaskService(store, lambda task: {}, frozenset({"chat"}))
@@ -108,17 +109,18 @@ class RunTests(unittest.TestCase):
         executor = MagicMock()
         TaskService(store, executor, frozenset({"chat"}))._run("task-1")
         executor.assert_not_called()
-        store.save.assert_not_called()
+        store.commit.assert_not_called()
 
     def test_a_vanished_task_after_an_executor_crash_stays_silent(self):
         """The executor raised *and* the task is gone: nothing left to fail."""
         store = _store()
-        # read #1: the worker's entry snapshot, read #2: the compare-and-set
-        # probe for the WORKING write, read #3: the crash handler's reload.
-        store.get.side_effect = [_working_task(), _working_task(), None]
+        # read #1: the worker's entry snapshot, read #2: the crash handler's
+        # reload. ADR 0032 removed the separate read the compare-and-set probe
+        # used to need — the guard is one statement now.
+        store.get.side_effect = [_working_task(), None]
         executor = MagicMock(side_effect=RuntimeError("boom"))
         TaskService(store, executor, frozenset({"chat"}))._run("task-1")
-        store.save.assert_called_once()  # the WORKING transition only
+        store.commit.assert_called_once()  # the WORKING transition only
 
     def test_an_executor_crash_marks_the_task_failed(self):
         store = _store()
@@ -126,16 +128,21 @@ class RunTests(unittest.TestCase):
         store.get.return_value = task
         executor = MagicMock(side_effect=RuntimeError("boom"))
         TaskService(store, executor, frozenset({"chat"}))._run("task-1")
-        saved = store.save.call_args_list[-1].args[0]
-        self.assertEqual(saved.status, TaskStatus.FAILED)
-        self.assertIn("boom", saved.error)
+        committed = store.commit.call_args_list[-1].args[0]
+        self.assertEqual(committed.status, TaskStatus.FAILED)
+        self.assertIn("boom", committed.error)
 
 
 
 # ── Durable worker lifecycle (moved from test_coverage_boost3) ──────────
 
 class _MemStore:
-    """In-memory TaskStore double supporting the TaskService lifecycle."""
+    """In-memory TaskStore double supporting the TaskService lifecycle.
+
+    ADR 0032: the store implements the port's single ``commit`` unit of work —
+    the state write and the events that announce it land together, and a
+    refused compare-and-set writes neither.
+    """
 
     def __init__(self) -> None:
         self._tasks: dict[str, AgentTask] = {}
@@ -144,22 +151,21 @@ class _MemStore:
         self.closed = False
         self.pruned: list[int] = []
 
-    def create(self, task: AgentTask) -> None:
+    def commit(self, task: AgentTask, *, expected: TaskStatus | None = None,
+               events: tuple[tuple[str, dict[str, Any]], ...] = ()) -> bool:
         with self._lock:
+            if expected is not None:
+                current = self._tasks.get(task.id)
+                if current is None or current.status != expected:
+                    return False
             self._tasks[task.id] = task
-            self._events.setdefault(task.id, [])
+            for kind, data in events:
+                self._events.setdefault(task.id, []).append({"kind": kind, "data": data})
+            return True
 
     def get(self, task_id: str) -> AgentTask | None:
         with self._lock:
             return self._tasks.get(task_id)
-
-    def save(self, task: AgentTask) -> None:
-        with self._lock:
-            self._tasks[task.id] = task
-
-    def append_event(self, task_id: str, kind: str, data: dict) -> None:
-        with self._lock:
-            self._events.setdefault(task_id, []).append({"kind": kind, "data": data})
 
     def events(self, task_id: str) -> list[dict[str, Any]]:
         with self._lock:

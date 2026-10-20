@@ -141,6 +141,19 @@ MUTANTS: tuple[Mutant, ...] = (
         "if False:",
         "the registry accepts a non-ModelSpec",
     ),
+    # ── Resuming an interrupted run ─────────────────────────────────────────
+    Mutant(
+        "cvtrain/backend.py",
+        "resume_from = self._resume_checkpoint(spec, cfg) if cfg.resume else None",
+        "resume_from = None",
+        "--resume is ignored (an interrupted run starts over)",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "results = model.train(resume=True)",
+        "results = model.train()",
+        "the resumed run is not actually resumed (the checkpoint is ignored)",
+    ),
     # ── Preflight: fail before the expensive work starts ────────────────────
     Mutant(
         "cvtrain/preflight.py",
@@ -196,6 +209,12 @@ MUTANTS: tuple[Mutant, ...] = (
         'missing = [key for key in ("train", "val", "names") if key not in parsed]',
         "missing = []",
         "the required data.yaml keys (train/val/names) are not enforced",
+    ),
+    Mutant(
+        "cvtrain/dataset.py",
+        "        if on_file is not None:\n            on_file(index, total)",
+        "        if False:\n            on_file(index, total)",
+        "the fingerprint reports no progress (a long hash looks like a hang)",
     ),
     # ── ONNX contract: the contract the Qt loader depends on ───────────────
     Mutant(
@@ -332,6 +351,19 @@ MUTANTS: tuple[Mutant, ...] = (
         "pass",
         "the success path never emits the 'done' marker (the Qt dock waits forever)",
     ),
+    Mutant(
+        "cvtrain/trainer.py",
+        "    importable, import_msg = backend.check_importable(cfg)",
+        "    importable, import_msg = True, \"framework importable\"",
+        "a stack that cannot be imported passes the preflight",
+    ),
+    # ── The dataset band of the progress protocol ──────────────────────────
+    Mutant(
+        "cvtrain/progress.py",
+        "fraction = (done / total) if total else 1.0",
+        "fraction = 1.0",
+        "the dataset band never moves (the bar stands still while hashing)",
+    ),
     # ── Progress protocol: the wire contract with the Qt dock ──────────────
     Mutant(
         "cvtrain/progress.py",
@@ -400,6 +432,37 @@ MUTANTS: tuple[Mutant, ...] = (
         "if isinstance(value, numbers.Real):",
         "if True:",
         "metrics_from keeps non-numeric values (the manifest becomes unreadable)",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "        except BackendUnavailableError as exc:\n            return False, str(exc)",
+        "        except BackendUnavailableError as exc:\n            return True, str(exc)",
+        "a broken install is reported as importable",
+    ),
+    # ── Device resolution: "auto" is a request, the resolution is the fact ──
+    Mutant(
+        "cvtrain/backend.py",
+        "        requested = cfg.device_class\n        if requested != \"auto\":",
+        "        requested = cfg.device_class\n        if False:",
+        "'auto' is treated like an explicit device (never resolved)",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "        if torch.cuda.is_available():\n            return \"cuda:0\"",
+        "        if False:\n            return \"cuda:0\"",
+        "'auto' never resolves to a GPU",
+    ),
+    Mutant(
+        "cvtrain/trainer.py",
+        "cfg = replace(cfg, device_resolved=backend.resolve_device(cfg))",
+        "cfg = cfg  # never resolved",
+        "the run's device is never resolved (the provenance keeps a request)",
+    ),
+    Mutant(
+        "cvtrain/gate.py",
+        "if cfg.device_resolved is not None and entry.get(\"device_resolved\") != cfg.device_resolved:",
+        "if False:",
+        "the resolved device is not compared (a CPU run passes for a GPU run)",
     ),
     # ── CLI and exit codes: the contract with the desktop app ──────────────
     Mutant(

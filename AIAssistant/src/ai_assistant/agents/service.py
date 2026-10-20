@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from ..application.coordination import TaskCoordinator
-from ..domain.errors import NotFoundError, ServiceUnavailableError
+from ..domain.errors import ModelNotLoadedError, NotFoundError, ServiceUnavailableError
 from ..orchestration.specialists.code import (
     CodingTaskContext,
     is_coding_task,
@@ -145,16 +145,21 @@ class AgentService:
 
     @contextmanager
     def _model_lease(self) -> Iterator[None]:
-        """Pin one model backend for the whole run when the runtime supports it.
+        """Pin one model backend for the whole run.
 
-        Duck-typed runtimes (test doubles and older adapters) may predate the
-        drain contract; they keep the previous behaviour instead of failing.
+        ADR 0032: the drain contract is part of the ``LLMRuntime`` port, so
+        it is called directly. It used to be duck-typed with a ``getattr``
+        probe: a runtime that forgot the method silently lost the guarantee
+        — no type error, no log — and the admin reload could swap the model
+        in the middle of a run.
         """
-        lease = getattr(self.llm_runtime, "model_lease", None)
-        if callable(lease):
-            with lease():
-                yield
-        else:
+        runtime = self.llm_runtime
+        if runtime is None:
+            # ``_require_llm`` refuses the run before this point; the guard
+            # is here so the port's contract is not violated on the way out.
+            msg = "The LLM runtime is not configured"
+            raise ModelNotLoadedError(msg)
+        with runtime.model_lease():
             yield
 
     def execute(self, request: AgentExecuteRequest, *,
