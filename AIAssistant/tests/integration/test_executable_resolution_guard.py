@@ -65,6 +65,12 @@ class ExecutableResolutionGuardTests(unittest.TestCase):
             tree = ast.parse(module.read_text(encoding="utf-8"), filename=str(module))
             for call in _calls_to(tree, "shutil.which"):
                 offenders.append(f"{module.relative_to(PACKAGE)}:{call.lineno}")
+            # The other spelling of the same call: ``from shutil import which``.
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == "shutil":
+                    for alias in node.names:
+                        if alias.name == "which":
+                            offenders.append(f"{module.relative_to(PACKAGE)}:{node.lineno}")
         self.assertEqual(
             offenders, [],
             "shutil.which resolves the current directory first on Windows — "

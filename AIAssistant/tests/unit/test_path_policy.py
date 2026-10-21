@@ -124,9 +124,49 @@ class ResolveWithinTests(unittest.TestCase):
         from unittest import mock
 
         with mock.patch(
-            "ai_assistant.path_policy.Path.relative_to",
+            "ai_assistant.path_policy.os.path.commonpath",
             side_effect=ValueError("mix of drives"),
         ):
+            self.assertIsNone(resolve_within(str(self.root), "src/main.py"))
+
+    def test_the_spelling_half_of_the_check_is_not_redundant(self) -> None:
+        """A path whose *spelling* points elsewhere is refused.
+
+        The two halves of the check are not the same rule: the resolved one
+        asks where the file really is, the spelling one asks where the path
+        says it is. A candidate spelled with a *different* spelling of the
+        root — which is exactly what Windows' 8.3 short form produces — is
+        outside the root by spelling even though its real target is inside.
+        The check is deliberately the stricter of the two, so this case has
+        to be refused.
+        """
+        from unittest import mock
+
+        with mock.patch(
+            "ai_assistant.path_policy.os.path.commonpath",
+            return_value=os.path.dirname(str(self.root)),
+        ):
+            self.assertIsNone(resolve_within(str(self.root), "src/main.py"))
+
+    def test_the_resolved_half_of_the_check_is_not_redundant(self) -> None:
+        """A path whose *real target* is elsewhere is refused.
+
+        This is the junction case: the spelling is inside the root, the file
+        is not. The link is created for real where the platform allows it,
+        but the branch has to be measured **everywhere** — a test that skips
+        on the shipping platform measures nothing there, and the mutation
+        gate then reports a surviving mutant for a guard nobody can exercise.
+        So the resolved target is forced here as well.
+        """
+        from unittest import mock
+
+        outside = Path(os.path.dirname(str(self.root))) / "elsewhere"
+
+        def _fake_canonical(path: Path) -> Path:
+            # The root keeps its own spelling; the *target* resolves outside.
+            return Path(path) if Path(path).is_dir() else outside / Path(path).name
+
+        with mock.patch("ai_assistant.path_policy.canonical_path", side_effect=_fake_canonical):
             self.assertIsNone(resolve_within(str(self.root), "src/main.py"))
 
 

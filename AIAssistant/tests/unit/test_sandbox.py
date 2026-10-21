@@ -481,6 +481,8 @@ class ExecutableResolutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tools:
             binary = Path(tools) / ("git.exe" if os.name == "nt" else "git")
             binary.write_text("", encoding="utf-8")
+            # Executable on POSIX; on Windows every existing file is one.
+            os.chmod(binary, 0o700)
             resolved = resolve_executable("git", tools)
         self.assertIsNotNone(resolved)
         self.assertTrue(os.path.isabs(str(resolved)), "the resolved hit must be absolute")
@@ -525,6 +527,8 @@ class ExecutableResolutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tools_dir:
             binary = Path(tools_dir) / ("git.exe" if os.name == "nt" else "git")
             binary.write_text("", encoding="utf-8")
+            # Executable on POSIX; on Windows every existing file is one.
+            os.chmod(binary, 0o700)
             self.assertEqual(
                 sandbox._resolve_executable("git", tools_dir),
                 resolve_executable("git", tools_dir),

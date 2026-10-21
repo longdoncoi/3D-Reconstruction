@@ -70,7 +70,7 @@ class Mutant:
 #: ADR 0035 adds six more (the path-shaped program name, the case-insensitive
 #: blocked-directory rule, the path confinement itself, the LSP server
 #: resolution, the fail-closed git resolution and the attachment gate).
-MIN_MUTANTS = 87
+MIN_MUTANTS = 88
 
 MUTANTS: tuple[Mutant, ...] = (
     # ── Sandbox allow-list (ADR 0011) ────────────────────────────────────────
@@ -178,11 +178,18 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "src/ai_assistant/path_policy.py",
-        "        resolved.relative_to(root_path)",
+        "        canonical_path(target).relative_to(canonical_path(root_path))",
         "        pass",
         ("tests.unit.test_path_policy",),
         "the path confinement check removed (a junction out of the root is "
         "read as if it were inside it)",
+    ),    Mutant(
+        "src/ai_assistant/path_policy.py",
+        "        if os.path.commonpath([lexical, lexical_root]) != lexical_root:",
+        "        if False:",
+        ("tests.unit.test_path_policy",),
+        "the spelling half of the confinement check removed (a path that "
+        "only looks like it leaves the root is accepted)",
     ),
     Mutant(
         "src/ai_assistant/tools/lsp_client.py",
@@ -491,7 +498,7 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "src/ai_assistant/tools/builtin/path_utils.py",
-        "if is_secret_name(os.path.basename(rel_path)) or is_secret_name(os.path.basename(abs_path)):",
+        "if is_secret_name(os.path.basename(rel_path)) or is_secret_name(real_basename):",
         "if False:",
         ("tests.unit.test_file_tools",),
         "the secret-file read guard removed (the agent reads .env — the "

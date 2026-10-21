@@ -103,7 +103,7 @@ class SafePathTests(unittest.TestCase):
         # (path_policy.resolve_within) and refuses when the two paths share
         # no root — a comparison that cannot be made is a rejection, never
         # a crash.
-        with patch("ai_assistant.path_policy.Path.relative_to", side_effect=ValueError("different drives")):
+        with patch("ai_assistant.path_policy.os.path.commonpath", side_effect=ValueError("different drives")):
             self.assertIsNone(agent_safe_path("a.py"))
 
 

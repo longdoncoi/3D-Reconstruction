@@ -68,18 +68,33 @@ class AgentSafePathTests(unittest.TestCase):
         # rejection branch is exercised on every platform. The comparison
         # itself now lives in the kernel (path_policy.resolve_within).
         with mock.patch(
-            "ai_assistant.path_policy.Path.relative_to",
+            "ai_assistant.path_policy.os.path.commonpath",
             side_effect=ValueError("Paths don't have the same drive"),
         ):
             self.assertIsNone(agent_safe_path("src/app/main.py"))
 
-    def test_a_path_outside_the_sandbox_is_rejected(self) -> None:
-        # A real path outside the root — not a mock of the comparison. The
-        # decision belongs to the kernel; this pins that the agent gate uses
-        # it and that an absolute input cannot re-root itself inside.
+    def test_a_path_outside_the_sandbox_never_reaches_the_outside_file(self) -> None:
+        """A real path outside the root — not a mock of the comparison.
+
+        The two platforms differ, and the difference is deliberate:
+
+        * on Windows an absolute input keeps its drive letter, so it stays
+          outside and is **refused**;
+        * on POSIX the leading slash is stripped, so the path is **re-rooted**
+          under the sandbox — the outside file is not reached either way.
+
+        The invariant the gate owes is "the agent never opens the file
+        outside", not "the gate refuses", and both platforms honour it.
+        """
         outside = tempfile.mkdtemp()
         self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
-        self.assertIsNone(agent_safe_path(os.path.join(outside, "secret.txt")))
+        secret = os.path.join(outside, "secret.txt")
+        resolved = agent_safe_path(secret)
+        if resolved is None:
+            return  # refused (Windows)
+        # Re-rooted under the sandbox (POSIX): it must not be the outside file.
+        self.assertNotEqual(os.path.realpath(resolved), os.path.realpath(secret))
+        self.assertTrue(resolved.startswith(str(self.root)))
 
     def test_a_symlink_that_leaves_the_sandbox_is_rejected(self) -> None:
         outside = tempfile.TemporaryDirectory()
@@ -119,12 +134,13 @@ class AgentSafePathTests(unittest.TestCase):
         try:
             link.symlink_to(blocked / "config")
         except (OSError, NotImplementedError):
-            def _fake_canonical(path: Path) -> Path:
-                if Path(path).is_dir():
-                    return Path(path)
-                return blocked / "config"
+            def _fake_realpath(path, *_args, **_kwargs):
+                return str(path) if os.path.isdir(path) else str(blocked / "config")
 
-            with mock.patch("ai_assistant.path_policy.canonical_path", side_effect=_fake_canonical):
+            with mock.patch(
+                "ai_assistant.tools.builtin.path_utils.os.path.realpath",
+                side_effect=_fake_realpath,
+            ):
                 self.assertIsNone(agent_safe_path("notes.txt"))
             return
         self.assertIsNone(agent_safe_path("notes.txt"))

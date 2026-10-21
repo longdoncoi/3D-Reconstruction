@@ -9,12 +9,10 @@ secret file names and the read budget.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 from ai_assistant.config.paths import get_paths
 from ai_assistant.path_policy import (
     BLOCKED_DIR_NAMES,
-    canonical_path,
     is_blocked_dir,
     is_secret_name,
     resolve_within,
@@ -58,19 +56,21 @@ def agent_safe_path(rel_path: str) -> str | None:
     rel_path = rel_path.replace("\\", "/").strip("/")
     if ".." in rel_path.split("/"):
         return None
-    # The real target is what gets checked, not the spelling: a junction or
-    # symlink inside the project that points elsewhere is an escape, and the
-    # resolved path is the one the caller must open.
+    # The kernel owns the containment decision (both the spelling and the
+    # real target) and hands back the caller's own spelling, made absolute —
+    # so the path the tool opens is the path it was given.
     abs_path = resolve_within(project_root, rel_path)
     if abs_path is None:
         return None
     # The blocked-directory rule is applied to *both* the path the caller
-    # asked for and the resolved one — a link named ``notes.txt`` that points
+    # asked for and the real one — a link named ``notes.txt`` that points
     # at ``.git/config`` must not be a way in.
     if _blocked_dir_in(rel_path):
         return None
     try:
-        real_relative = os.path.relpath(abs_path, str(canonical_path(Path(project_root))))
+        real_relative = os.path.relpath(
+            os.path.realpath(abs_path), os.path.realpath(project_root),
+        )
     except ValueError:
         return None
     if _blocked_dir_in(real_relative):
@@ -79,6 +79,7 @@ def agent_safe_path(rel_path: str) -> str | None:
     # resolves its path through, so it cannot be forgotten by a tool that
     # was written later. Both spellings are checked: the lexical one the
     # caller asked for, and the real one a symlink points at.
-    if is_secret_name(os.path.basename(rel_path)) or is_secret_name(os.path.basename(abs_path)):
+    real_basename = os.path.basename(os.path.realpath(abs_path))
+    if is_secret_name(os.path.basename(rel_path)) or is_secret_name(real_basename):
         return None
     return abs_path

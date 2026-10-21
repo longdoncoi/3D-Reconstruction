@@ -19,6 +19,7 @@ gate and the HTTP attachment gate without any of them growing a variant.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 #: Directories the tools never descend into: version-control metadata (which
@@ -90,32 +91,43 @@ def resolve_within(root: str, candidate: str) -> str | None:
     """Resolve ``candidate`` inside ``root``; return it only if it stays.
 
     ``candidate`` may be absolute or relative to ``root``. The returned path
-    is the **resolved** one — the real target, symlinks followed — so the
-    caller opens exactly the file that was checked.
+    is the **caller's own spelling**, made absolute — not the canonical one.
+    That matters: Windows hands out two spellings for one directory (the
+    canonical long form and the 8.3 short form), and a caller that asked for
+    a path under its own root must get *that* path back, not a re-spelled
+    one that no longer starts with the root it was given.
 
-    The check is fail-closed on the real target, not on the spelling: a
-    junction inside the root that points outside it is an escape, and a
-    lexical comparison cannot see it. Windows has two spellings for one
-    directory (the canonical long form and the 8.3 short form), so both sides
-    are canonicalised before they are compared; otherwise a path that never
-    left the root reads as an escape (ADR 0033).
+    Two independent checks, and **both** must hold:
 
-    Returns ``None`` when the candidate is outside the root, when the two
-    sides cannot be compared at all (a different drive on Windows raises
-    ``ValueError``), or when the candidate is not a path at all.
+    * the **spelling** is inside the root — a path that only looks like it
+      leaves the root is refused (``commonpath``, not a string prefix test,
+      so ``C:\\project2`` does not pass as ``C:\\project``; a different
+      Windows drive is refused too);
+    * the **real target** is inside the root — a junction or symlink inside
+      the root that points outside it is an escape, and no spelling check
+      can see it.
+
+    Returns ``None`` when either check fails, when the two paths cannot be
+    compared at all, or when the candidate is not a path at all.
     """
     if not candidate:
         return None
     try:
-        root_path = canonical_path(Path(root))
+        root_path = Path(root)
         target = Path(candidate)
         if not target.is_absolute():
-            target = Path(root) / target
-        resolved = canonical_path(target)
-        resolved.relative_to(root_path)
+            target = root_path / target
+        lexical = os.path.normpath(str(target))
+        lexical_root = os.path.normpath(str(root_path))
+        if os.path.commonpath([lexical, lexical_root]) != lexical_root:
+            return None
+        # Both sides are canonicalised before they are compared, so the 8.3
+        # short form and the canonical long form of one directory are not
+        # mistaken for two (ADR 0033).
+        canonical_path(target).relative_to(canonical_path(root_path))
     except (OSError, ValueError):
         return None
-    return str(resolved)
+    return lexical
 
 
 __all__ = [

@@ -189,7 +189,8 @@ class LspClientHelperTests(unittest.TestCase):
         the first time a definition lookup happened.
         """
         with tempfile.TemporaryDirectory() as workspace:
-            Path(workspace, "clangd.bat").write_text("@echo PWNED\r\n", encoding="utf-8")
+            planted = Path(workspace) / ("clangd.bat" if os.name == "nt" else "clangd")
+            planted.write_text("@echo PWNED\r\n", encoding="utf-8")
             original = os.getcwd()
             os.chdir(workspace)
             try:
@@ -197,7 +198,13 @@ class LspClientHelperTests(unittest.TestCase):
                 resolved = resolve_tool_binary("clangd")
             finally:
                 os.chdir(original)
-        self.assertIsNone(resolved, "a binary in the current directory must not be resolved")
+        # The CI image may or may not ship a real clangd, so the assertion is
+        # about the *planted* file: it must never be the one that is picked.
+        self.assertFalse(
+            resolved is not None
+            and os.path.abspath(str(resolved)) == os.path.abspath(str(planted)),
+            "a binary in the current directory must not be resolved",
+        )
 
     def test_lsp_call_file_missing(self) -> None:
         with mock.patch("ai_assistant.tools.lsp_client.resolve_tool_binary", return_value="clangd"):
@@ -422,7 +429,7 @@ class LspToolsTests(unittest.TestCase):
         crash. The comparison itself lives in the kernel
         (``path_policy.resolve_within``)."""
         with mock.patch(
-            "ai_assistant.path_policy.Path.relative_to",
+            "ai_assistant.path_policy.os.path.commonpath",
             side_effect=ValueError("mix of drives"),
         ):
             self.assertIsNone(lsp_client._confine_to_project("src/main.cpp", str(self.root)))
