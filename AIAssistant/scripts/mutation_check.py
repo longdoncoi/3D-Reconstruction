@@ -70,7 +70,7 @@ class Mutant:
 #: ADR 0035 adds six more (the path-shaped program name, the case-insensitive
 #: blocked-directory rule, the path confinement itself, the LSP server
 #: resolution, the fail-closed git resolution and the attachment gate).
-MIN_MUTANTS = 86
+MIN_MUTANTS = 87
 
 MUTANTS: tuple[Mutant, ...] = (
     # ── Sandbox allow-list (ADR 0011) ────────────────────────────────────────
@@ -206,6 +206,13 @@ MUTANTS: tuple[Mutant, ...] = (
         "        if False:",
         ("tests.unit.test_http_chat_routes",),
         "a client-named attachment is opened from anywhere on the host",
+    ),    Mutant(
+        "src/ai_assistant/orchestration/supervisor.py",
+        '    "go_to_definition", "find_references",',
+        "",
+        ("tests.unit.test_advertised_tool_policy",),
+        "the registered-but-not-enabled tools are no longer declared (the "
+        "drift guard cannot tell an advertised tool from a missing policy)",
     ),
     Mutant(
         "src/ai_assistant/tools/sandbox.py",

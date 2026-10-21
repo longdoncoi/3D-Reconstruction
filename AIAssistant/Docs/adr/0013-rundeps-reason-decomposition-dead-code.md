@@ -103,6 +103,35 @@ same three-key dict inline.
 `Config/agent_tools.json` (24 tools). Their policy contract is `read_only`
 with a 30-second timeout (a cold `clangd`/`pylsp` start needs headroom).
 
+> **Đính chính 2026-10-21 (ADR 0035).** Mục này viết *"activated"*, và đó là
+> **không đúng** với trạng thái thực tế. Hai công cụ này **được đăng ký và
+> được quảng bá cho mô hình**, nhưng chúng **không có mặt trong bảng
+> `ALLOWED_TOOLS`** của supervisor (`orchestration/supervisor.py`), nên
+> `authorise()` **từ chối mọi lời gọi** — với mọi specialist. Đo được:
+>
+> ```
+> go_to_definition  -> refused (not in RESEARCH/VERIFICATION/CODE/WORKFLOW rows)
+> find_references   -> refused (not in any row)
+> ```
+>
+> Hệ quả: hai công cụ được mô hình nhìn thấy nhưng không bao giờ chạy, và
+> **sự từ chối đó chính là thứ che lỗi `shutil.which` của `lsp_client`** — lỗi
+> cho phép một binary do agent cài trong thư mục làm việc được *thực thi*.
+> ADR 0035 đã sửa lỗi đó (`lsp_client` nay dùng resolver chung,
+> `ai_assistant.exec_policy`), nên đường đã an toàn — nhưng **việc bật hai
+> công cụ này là một quyết định riêng**, chưa được đưa ra ở đây.
+>
+> Trạng thái đó nay được **khai báo** trong mã
+> (`supervisor.REGISTERED_NOT_ENABLED_TOOLS`) và có một guard chống trôi: mỗi
+> công cụ mà mô hình nhìn thấy phải **hoặc** có một hàng trong
+> `ALLOWED_TOOLS`, **hoặc** nằm trong danh sách khai báo ấy. Bật một công cụ
+> mà không cập nhật khai báo sẽ làm CI đỏ — nên lần đọc ADR này sau này không
+> thể tin nhầm nữa.
+>
+> Bản sửa đúng của mục này là: chúng đã được **đăng ký**, chưa được **kích
+> hoạt**. Khi bật, bảng `ALLOWED_TOOLS` phải có hàng cho chúng (và chúng đi
+> qua cùng một policy gateway như mọi tool khác).
+
 ## Consequences
 
 - Adding one injected dependency to an agent run now means adding one field
@@ -113,7 +142,9 @@ with a 30-second timeout (a cold `clangd`/`pylsp` start needs headroom).
   have exactly one definition.
 - `adapters/a2a_protocol.py` no longer carries a second, broken payload
   builder; the A2A 0.3 surface serialises through `a2a_payloads` only.
-- The code agent can jump to definitions and find references through the
-  same policy gateway as every other tool.
+- The code agent **can** jump to definitions and find references through the
+  same policy gateway as every other tool — **khi** chúng được thêm vào bảng
+  `ALLOWED_TOOLS` (xem đính chính ở trên: hiện chưa, và mọi lời gọi bị từ
+  chối).
 - Verified: `ruff check .` clean, `mypy src/ai_assistant` clean (124 files),
   889 unit/integration/contract tests pass.

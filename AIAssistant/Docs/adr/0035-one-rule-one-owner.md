@@ -110,9 +110,10 @@ Các thư mục upload được suy ra **đúng như phía C++** (`AppConfig::up
 
 ### 7. Mỗi guard mới có một mutant
 
-`MIN_MUTANTS` 80 → **86**. Sáu mutant mới: tên chương trình mang đường dẫn,
+`MIN_MUTANTS` 80 → **87**. Bảy mutant mới: tên chương trình mang đường dẫn,
 quy tắc thư mục bị chặn, phép kiểm confinement, việc giải chương trình của
-LSP, việc giải git fail-closed, và cổng attachment.
+LSP, việc giải git fail-closed, cổng attachment, và khai báo *đã đăng ký
+nhưng chưa kích hoạt*.
 
 ## Hậu quả
 

@@ -90,6 +90,22 @@ ALLOWED_TOOLS: dict[Specialist, frozenset[str]] = {
     },
 }
 
+#: Tools that are **registered and advertised to the model** but have no row
+#: in :data:`ALLOWED_TOOLS`, so every call to them is refused by
+#: :func:`authorise`.
+#:
+#: ADR 0013 §6 (as corrected by ADR 0035) registers the two LSP tools and
+#: advertises them in ``Config/agent_tools.json``, while the supervisor has no
+#: policy for them — so they are refused for every specialist. The state is
+#: legitimate, but it has to be **declared**, or the next reader believes the
+#: tool works. Declaring it here also makes enabling a tool a visible
+#: decision: the drift guard requires every advertised tool to have either a
+#: policy row or an entry in this set, so adding a row without removing the
+#: entry fails the build.
+REGISTERED_NOT_ENABLED_TOOLS = frozenset({
+    "go_to_definition", "find_references",
+})
+
 
 @dataclass(frozen=True)
 class ToolRoute:
