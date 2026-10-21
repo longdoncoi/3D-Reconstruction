@@ -81,7 +81,16 @@ class PendingActionStore:
                         message = "encrypted pending actions cannot be read without the at-rest key"
                         raise StorageKeyError(message)
                 else:
+                    # A file written before encryption was enabled is migrated
+                    # *here*: it is re-sealed and written back, so the plaintext
+                    # copy stops existing on disk at the first read instead of
+                    # lingering until the next save. The window is one load —
+                    # the same trade the SQLite store makes with its one-time
+                    # schema migration (``PRAGMA user_version = 3``).
+                    legacy = not is_sealed(raw)
                     raw = self._cipher.open(raw, context="pending.actions")
+                    if legacy:
+                        self._write(self._cipher.seal(raw, context="pending.actions"))
                 payload = json.loads(raw)
                 if isinstance(payload, dict):
                     for key, value in payload.items():

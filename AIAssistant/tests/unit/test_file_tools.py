@@ -58,6 +58,39 @@ class ToolReadFileTests(FileToolsBase):
         result = tool_read_file({"path": "a.bin"})
         self.assertIn("binary", result["error"])
 
+    def test_a_dotfile_secret_is_not_readable(self) -> None:
+        """``.env`` holds the at-rest key and every bearer token.
+
+        The block-list used to be an *extension* list, and a dotfile has no
+        extension — ``splitext(".env")`` is ``(".env", "")`` — so the guard
+        never fired for exactly the files it was written for, and
+        ``read_file`` returned the secrets in clear, without approval.
+        """
+        self._write("AIAssistant/.env", "AI_STORAGE_KEY=base64:key\nAI_ADMIN_TOKEN=t\n")
+        result = tool_read_file({"path": "AIAssistant/.env"})
+        self.assertIn("error", result)
+        self.assertNotIn("AI_STORAGE_KEY", str(result))
+
+    def test_a_dotfile_secret_family_is_not_readable(self) -> None:
+        for name in (".env", ".env.local", ".env.production", ".envrc", "secrets.json"):
+            with self.subTest(name=name):
+                self._write(f"AIAssistant/{name}", "AI_STORAGE_KEY=base64:key\n")
+                result = tool_read_file({"path": f"AIAssistant/{name}"})
+                self.assertIn("error", result)
+                self.assertNotIn("AI_STORAGE_KEY", str(result))
+
+    def test_a_symlink_to_a_secret_is_not_readable(self) -> None:
+        """The real path is checked too, so a link is not a way in."""
+        self._write("AIAssistant/.env", "AI_STORAGE_KEY=base64:key\n")
+        link = self.root / "AIAssistant" / "notes.txt"
+        try:
+            link.symlink_to(self.root / "AIAssistant" / ".env")
+        except (OSError, NotImplementedError):
+            self.skipTest("symlinks are not available on this filesystem")
+        result = tool_read_file({"path": "AIAssistant/notes.txt"})
+        self.assertIn("error", result)
+        self.assertNotIn("AI_STORAGE_KEY", str(result))
+
     def test_read_python_symbol_range(self) -> None:
         content = (
             "@staticmethod\n"

@@ -12,7 +12,13 @@ from typing import Any
 from ai_assistant.domain.security import DataClassification, ExecutionOrigin
 from ai_assistant.domain.tasks import AgentTask, TaskStatus
 
-from .storage_crypto import FieldCipher, StorageKeyError, is_sealed, reseal_text
+from .storage_crypto import (
+    FieldCipher,
+    StorageDecryptionError,
+    StorageKeyError,
+    is_sealed,
+    reseal_text,
+)
 
 
 class SqliteTaskStore:
@@ -32,6 +38,7 @@ class SqliteTaskStore:
         self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        self._sealed_state = False
         self._migrate()
 
     # ── Schema ─────────────────────────────────────────────────────────────────
@@ -94,6 +101,18 @@ class SqliteTaskStore:
             if cipher is not None and version < 3:
                 self._seal_legacy_rows(cipher)
                 self._conn.execute("PRAGMA user_version = 3")
+            # From here on the store is in the *sealed regime*: every content
+            # column was written through the cipher, so a value that is not a
+            # sealed envelope is not authentic — it is either a file that
+            # predates encryption (only possible before the migration above)
+            # or a column someone replaced with plaintext after the fact.
+            # The second case is an AEAD downgrade: the GCM tag never gets a
+            # chance to reject it, and the application would serve the
+            # attacker's payload as if the platform had written it. The
+            # binary artifacts already refuse an unsealed file for exactly
+            # this reason (``open_bytes``); the text columns now behave the
+            # same way. The legacy escape hatch is bounded to the migration.
+            self._sealed_state = cipher is not None
 
     def _seal_legacy_rows(self, cipher: FieldCipher) -> None:
         """Seal rows written before encryption was enabled (idempotent)."""
@@ -215,7 +234,7 @@ class SqliteTaskStore:
             row = cursor.fetchone()
         if row is None:
             return None
-        return _row_to_task(row, self._cipher)
+        return _row_to_task(row, self._cipher, require_sealed=self._sealed_state)
 
     def save(self, task: AgentTask) -> None:
         now = _now()
@@ -293,7 +312,9 @@ class SqliteTaskStore:
             yield {
                 "seq": rowid,
                 "kind": kind,
-                "data": json.loads(_open_text(self._cipher, data_json, "event.data")),
+                "data": json.loads(
+                    _open_text(self._cipher, data_json, "event.data", require_sealed=self._sealed_state)
+                ),
                 "created_at": created_at,
             }
 
@@ -330,7 +351,7 @@ class SqliteTaskStore:
                 )
             rows = cursor.fetchall()
         for row in rows:
-            yield _row_to_task(row, self._cipher)
+            yield _row_to_task(row, self._cipher, require_sealed=self._sealed_state)
 
     def prune(self, retention_days: int) -> int:
         """Delete terminal tasks older than the window, events included."""
@@ -455,28 +476,44 @@ def _reseal_optional(
     return reseal_text(old, new, value, context=context)
 
 
-def _open_text(cipher: FieldCipher | None, value: str, context: str) -> str:
+def _open_text(cipher: FieldCipher | None, value: str, context: str, *,
+               require_sealed: bool = False) -> str:
+    """Decrypt one content column.
+
+    ``require_sealed`` is the store's *sealed regime* flag: once the store
+    has migrated its rows, a value that is not a sealed envelope is not
+    authentic. Serving it would be an AEAD downgrade — the GCM tag would
+    never get the chance to reject the substituted payload, and the caller
+    would receive it as if the platform had written it.
+    """
     if cipher is None:
         if is_sealed(value):
             message = "encrypted state cannot be read without AI_STORAGE_KEY or its key file"
             raise StorageKeyError(message)
         return value
+    if require_sealed and not cipher.is_sealed(value):
+        message = f"{context} is not a sealed envelope"
+        raise StorageDecryptionError(message)
     return cipher.open(value, context=context)
 
 
-def _open_optional(cipher: FieldCipher | None, value: str | None, context: str) -> str | None:
-    return None if value is None else _open_text(cipher, value, context)
+def _open_optional(cipher: FieldCipher | None, value: str | None, context: str, *,
+                   require_sealed: bool = False) -> str | None:
+    return None if value is None else _open_text(cipher, value, context, require_sealed=require_sealed)
 
 
-def _row_to_task(row: tuple[str, ...], cipher: FieldCipher | None) -> AgentTask:
+def _row_to_task(row: tuple[str, ...], cipher: FieldCipher | None, *,
+                 require_sealed: bool = False) -> AgentTask:
     (tid, capability, message, status_str, result_json, error, metadata_json, context_id,
      classification, origin, owner, created_at, updated_at) = row
     return AgentTask(
         id=tid,
         capability=capability,
-        message=_open_text(cipher, message, "task.message"),
+        message=_open_text(cipher, message, "task.message", require_sealed=require_sealed),
         context_id=context_id,
-        metadata=json.loads(_open_text(cipher, metadata_json, "task.metadata")) if metadata_json else {},
+        metadata=json.loads(
+            _open_text(cipher, metadata_json, "task.metadata", require_sealed=require_sealed)
+        ) if metadata_json else {},
         # Parsed, not defaulted: the classification decides whether this task may
         # leave the trust boundary, and an unparseable value must fail loudly
         # rather than come back promoted to the permissive default.
@@ -486,6 +523,8 @@ def _row_to_task(row: tuple[str, ...], cipher: FieldCipher | None) -> AgentTask:
         owner=owner,
         created_at=_epoch(created_at),
         updated_at=_epoch(updated_at),
-        result=json.loads(_open_text(cipher, result_json, "task.result")) if result_json else None,
-        error=_open_optional(cipher, error, "task.error"),
+        result=json.loads(
+            _open_text(cipher, result_json, "task.result", require_sealed=require_sealed)
+        ) if result_json else None,
+        error=_open_optional(cipher, error, "task.error", require_sealed=require_sealed),
     )

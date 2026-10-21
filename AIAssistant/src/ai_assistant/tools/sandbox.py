@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import shlex
-import shutil
 import subprocess
 import tempfile
 import uuid
@@ -51,6 +50,12 @@ _DENIED_WRITE_PATHS = {
     "sandbox.py", "security.py", ".env", ".env.example", "pyproject.toml",
     "tasks.sqlite", "pending_agent_actions.json", "agent_audit.jsonl",
 }
+#: The same set, folded to lower case. Windows filesystems are
+#: case-insensitive, so ``PYPROJECT.TOML`` *is* ``pyproject.toml``: a
+#: case-sensitive comparison let the variant through, and the write replaced
+#: the real file. The substring list cannot cover this on its own —
+#: ``pyproject.toml`` is the one entry that is not a path fragment.
+_DENIED_WRITE_NAMES = frozenset(name.lower() for name in _DENIED_WRITE_PATHS)
 
 # ADR 0032: directories that hold the platform's *own policy*. The basename
 # set above named two policy files and left the rest writable, so an approved
@@ -70,6 +75,20 @@ _DENIED_WRITE_TREES = (
     "AIAssistant/src/ai_assistant/application",
     "AIAssistant/src/ai_assistant/adapters/http",
     "AIAssistant/src/ai_assistant/ports.py",
+    # The composition root and the layers it wires together. ADR 0032 named
+    # the *policy files*; the layer that assembles the platform is the
+    # policy. ``bootstrap/app_factory.py`` decides whether the OpenAPI
+    # surface is served, ``bootstrap/server.py`` decides which dotenv file
+    # the secrets are loaded from, and ``bootstrap/modules.py`` decides
+    # which key the at-rest cipher is built from — an agent that can rewrite
+    # those can turn the gates off without touching a single policy file.
+    "AIAssistant/src/ai_assistant/bootstrap",
+    "AIAssistant/src/ai_assistant/llm",
+    "AIAssistant/src/ai_assistant/orchestration",
+    "AIAssistant/src/ai_assistant/plugins",
+    "AIAssistant/src/ai_assistant/rag",
+    "AIAssistant/src/ai_assistant/observability",
+    "AIAssistant/src/ai_assistant/tools",
     "Config",
     "src/core",
 )
@@ -109,6 +128,13 @@ _GIT_BISECT_VERBS = frozenset({
 # ``-P`` runs a script and ``-S``/``-B``/``--build``/``--install`` operate on
 # a tree whose build system executes commands of its own choosing.
 _CMAKE_PATH_FLAGS = frozenset({"-P", "-S", "-B", "--build", "--install"})
+
+#: Whether this platform resolves a program through ``PATHEXT``. It is a
+#: module constant rather than an inline ``os.name`` check so the branch can
+#: be exercised on either platform by the tests: the coverage gate runs on
+#: both Linux and Windows, and a branch only one of them can reach would sit
+#: at 99 % forever on the other.
+_IS_WINDOWS = os.name == "nt"
 
 
 def _inline_code_requested(argv: list[str]) -> bool:
@@ -166,19 +192,43 @@ def _executable_rejection(executable: str) -> str | None:
     return None
 
 
+def _canonical_path(path: Path) -> Path:
+    """One canonical spelling of ``path``, with symlinks followed.
+
+    ``Path.resolve()`` asks the OS for the final path of an existing path,
+    which expands an 8.3 short name (``C:\\Users\\RUNNER~1``) into its long
+    form (``C:\\Users\\runneradmin``). A symlink whose *target does not
+    exist* cannot be opened, so it is resolved by reading the link — and the
+    link keeps the spelling it was created with. Two spellings of one
+    directory make ``relative_to`` fail, so a target that never left the
+    project root was reported as an escape, and the policy deny-list was
+    matched against a spelling it never sees. Canonicalising the parent (the
+    deepest part the OS can resolve) and re-appending the leaf gives the
+    root and the target one spelling, so the two are compared on the same
+    terms.
+    """
+    resolved = path.resolve()
+    parent = resolved.parent
+    if parent.exists():
+        return parent.resolve() / resolved.name
+    return resolved
+
+
 def _path_escapes_workspace(value: str, cwd: str) -> bool:
     """True when ``value`` resolves outside the directory the command runs in.
 
     Relative targets are resolved against the run's ``cwd`` — the directory
-    the subprocess actually gets — and ``resolve()`` follows symlinks /
+    the subprocess actually gets — and the resolution follows symlinks /
     junctions and expands ``..`` before the comparison, so a link planted
     inside the workspace can not smuggle an outside target past the gate.
+    Both sides are spelled the same way (``_canonical_path``), otherwise a
+    path that never left the workspace reads as an escape.
     """
     target = Path(value)
     if not target.is_absolute():
         target = Path(cwd) / target
     try:
-        target.resolve().relative_to(Path(cwd).resolve())
+        _canonical_path(target).relative_to(_canonical_path(Path(cwd)))
     except ValueError:
         return True
     return False
@@ -304,16 +354,53 @@ def _docker_argv(argv: list[str], cwd: str, image: str) -> tuple[list[str], str]
     return wrapped, container_name
 
 
+def _executable_candidates(candidate: str) -> list[str]:
+    """The spellings a bare program name may have on this platform.
+
+    Windows resolves a program through ``PATHEXT`` (``.COM;.EXE;.BAT;…``);
+    POSIX has exactly one spelling. The extension is part of the *program*
+    the allow-list names, so it is resolved here rather than left to the
+    operating system.
+    """
+    if not _IS_WINDOWS:
+        return [candidate]
+    declared = os.environ.get("PATHEXT", "")
+    extensions = [
+        item if item.startswith(".") else f".{item}"
+        for item in declared.split(os.pathsep) if item
+    ]
+    if not extensions:
+        extensions = [".com", ".exe", ".bat", ".cmd"]
+    return [candidate] + [candidate + extension.lower() for extension in extensions]
+
+
 def _resolve_executable(name: str, path: str) -> str | None:
     """Resolve an allow-listed bare name to exactly one absolute PATH hit.
 
-    Windows ``CreateProcess`` searches the *current directory* before PATH,
-    so a bare ``git`` would run a ``git.exe`` planted in the workspace the
-    command runs in. Executing the resolved absolute path removes that
-    ordering from the sandbox's hands; a name absent from PATH is refused
-    rather than left to the OS search (which is where the hijack lives).
+    ``shutil.which`` cannot be used for this, and the reason is the whole
+    point of the gate. On Windows it **prepends the current directory** to
+    the search path, so a binary planted next to the process wins over
+    ``PATH`` — and the value it returns is then *relative* (``.\\git.BAT``),
+    not the absolute hit this gate promised. Two consequences followed: the
+    allow-list was not enforced at all (the hit never had to be on
+    ``PATH``), and the refusal for "a name PATH does not carry" never fired,
+    because ``which`` had already found the planted file.
+
+    The scan below therefore walks the ``PATH`` entries itself, in order, and
+    never looks at the current directory. The result is absolute, so the
+    operating system cannot re-order the search when the child starts: the
+    program that runs is the one this function validated.
     """
-    return shutil.which(name, path=path or None)
+    if not name or os.path.isabs(name) or os.path.dirname(name):
+        return None
+    for entry in (path or "").split(os.pathsep):
+        if not entry:
+            continue
+        directory = entry.strip('"')
+        for candidate in _executable_candidates(os.path.join(directory, name)):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return os.path.abspath(candidate)
+    return None
 
 
 def run(command: str, cwd: str, timeout: int) -> dict[str, Any]:
@@ -408,8 +495,14 @@ def write_file(path: str, content: str, project_root: str) -> dict[str, Any]:
         return {"error": "Agent write sandbox is disabled by policy."}
     if len(content.encode("utf-8")) > runtime_settings.max_write_bytes:
         return {"error": "Write exceeds AGENT_MAX_WRITE_BYTES."}
+    # The gate compares the *canonical* spelling of the target and of the
+    # project root: the target is resolved (a symlink is followed, so a link
+    # into a policy tree is caught) and both sides are spelled the same way,
+    # so a path that never left the project root cannot read as an escape
+    # just because Windows handed us two spellings of one directory.
+    resolved = _canonical_path(Path(path))
     try:
-        relative = Path(path).resolve().relative_to(Path(project_root).resolve())
+        relative = resolved.relative_to(_canonical_path(Path(project_root)))
     except ValueError:
         return {"error": "Write target escapes the project root."}
     # ADR 0015 / ADR 0011 / ADR 0032: deny writing to policy / sandbox /
@@ -418,10 +511,17 @@ def write_file(path: str, content: str, project_root: str) -> dict[str, Any]:
     # its subtree happens to be writable.
     # The basename set covers "pyproject.toml anywhere"; the substring list
     # covers ".git/config", "tasks.sqlite", durable pending/audit state and
-    # any case variant of the policy files.
-    target_name = Path(path).name
-    resolved_lower = str(Path(path).resolve()).lower()
-    if target_name in _DENIED_WRITE_PATHS or any(
+    # any case variant of the policy files. Both are matched on the resolved
+    # target, so the name of the file a link points at is the one that counts.
+    #
+    # The basename set is compared **case-insensitively**: Windows filesystems
+    # are case-insensitive, so ``PYPROJECT.TOML`` *is* ``pyproject.toml`` —
+    # a case-sensitive comparison let the variant through and the write
+    # replaced the real file. The substring list cannot cover this on its
+    # own: ``pyproject.toml`` is the one entry that is not a path fragment.
+    target_name = resolved.name
+    resolved_lower = str(resolved).lower()
+    if target_name.lower() in _DENIED_WRITE_NAMES or any(
         p in resolved_lower
         for p in ["sandbox.py", ".env", "security.py", ".git", "tasks.sqlite",
                   "pending_agent_actions.json", "agent_audit.jsonl"]

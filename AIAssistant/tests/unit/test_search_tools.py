@@ -124,6 +124,17 @@ class SearchToolsTests(unittest.TestCase):
         result = tool_search_text({"query": "binary"})
         self.assertEqual(result["count"], 0)
 
+    def test_a_secret_named_file_is_skipped_by_the_walk(self) -> None:
+        """The walk reaches ``secrets.json`` — a ``.json`` file — long
+        before any dotfile, and the extension filter would let it through.
+        The *name* rule is the one that covers both."""
+        (self.root / "src" / "secrets.json").write_text('{"api_key": "secret-value"}\n', encoding="utf-8")
+        (self.root / "src" / ".env").write_text("AI_STORAGE_KEY=base64:key\n", encoding="utf-8")
+        result = tool_search_text({"query": "secret-value"})
+        self.assertEqual(result["count"], 0)
+        result = tool_search_text({"query": "AI_STORAGE_KEY"})
+        self.assertEqual(result["count"], 0)
+
 
     # ---- guard paths the happy-path listings never reach
 

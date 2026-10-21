@@ -155,6 +155,62 @@ class EncryptedSqliteTaskStoreTests(unittest.TestCase):
             finally:
                 reopened.close()
 
+    def test_a_substituted_plaintext_column_is_refused(self):
+        """An unsealed column in a migrated store is not authentic.
+
+        The AEAD exists to reject a value the platform did not write.
+        Accepting an unsealed value let anyone with write access to the file
+        replace a sealed column with plaintext JSON and have it served as if
+        the platform had written it — the GCM tag never got the chance to
+        reject it. The binary artifacts already refuse an unsealed file for
+        exactly this reason; the text columns now behave the same way.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tasks.sqlite"
+            store = SqliteTaskStore(path, cipher=_cipher())
+            try:
+                task = _task()
+                store.create(task)
+                store.append_event(task.id, "status", {"secret": "event-secret"})
+            finally:
+                store.close()
+
+            # Substitute the sealed columns, as a process with write access
+            # to the state file would.
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute("UPDATE tasks SET message = ? WHERE id = ?", ("substituted", task.id))
+                connection.execute(
+                    "UPDATE task_events SET data = ? WHERE task_id = ?",
+                    ('{"secret": "substituted"}', task.id),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            reopened = SqliteTaskStore(path, cipher=_cipher())
+            try:
+                with self.assertRaises(StorageDecryptionError):
+                    reopened.get(task.id)
+                with self.assertRaises(StorageDecryptionError):
+                    list(reopened.events(task.id))
+            finally:
+                reopened.close()
+
+    def test_a_store_without_a_cipher_still_serves_plaintext(self):
+        """The sealed regime is a property of the *deployment*, not of the
+        file: a store opened without a key is a plaintext store by design,
+        and refusing its rows would break the opt-in path."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tasks.sqlite"
+            store = SqliteTaskStore(path)
+            try:
+                task = _task()
+                store.create(task)
+                self.assertEqual(store.get(task.id).message, "sensitive prompt")
+            finally:
+                store.close()
+
     def test_fail_orphaned_seals_its_error_and_status_event(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "tasks.sqlite"
