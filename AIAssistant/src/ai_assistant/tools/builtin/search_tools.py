@@ -8,7 +8,7 @@ from typing import Any
 
 from ai_assistant.config.paths import get_paths
 
-from .path_utils import _AGENT_BLOCKED_DIRS, agent_safe_path
+from .path_utils import _AGENT_BLOCKED_DIRS, agent_safe_path, is_secret_name
 
 _agent_safe_path = agent_safe_path
 
@@ -159,6 +159,12 @@ def tool_search_text(params: dict[str, Any]) -> dict[str, Any]:
             for filename in sorted(files):
                 ext = os.path.splitext(filename)[1].lower()
                 if ext not in text_exts:
+                    continue
+                # A secret file is skipped by *name*, not by extension: the
+                # walk reaches ``secrets.json`` (a ``.json`` file) long
+                # before any dotfile, and the extension filter would let it
+                # through. The name rule is the one that covers both.
+                if is_secret_name(filename):
                     continue
                 relative_to_search = os.path.relpath(os.path.join(root, filename), search_root)
                 relative_to_project = os.path.relpath(os.path.join(root, filename), project_root)

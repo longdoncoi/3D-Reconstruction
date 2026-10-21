@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ai_assistant.config.logging import get_agent_logger
-from ai_assistant.domain.governance import has_sensitive_keys
+from ai_assistant.domain.governance import has_sensitive_content
 from ai_assistant.domain.security import DataClassification
 from ai_assistant.domain.specialists import Specialist
 from ai_assistant.settings import (
@@ -31,9 +31,22 @@ from ai_assistant.settings import (
 )
 
 from .a2a_client import TrustedA2AClient
+from .a2a_client import urlopen as _no_redirect_urlopen
 from .a2a_payloads import build_agent_card as _build_agent_card_payload
 
 logger = get_agent_logger("a2a")
+
+#: The discovery transport seam.
+#:
+#: It is the *same* no-redirect opener the dispatch path uses
+#: (:mod:`ai_assistant.adapters.a2a_client`), and it has to be: the dispatch
+#: path refuses a 30x on purpose — "following it would turn one compromised
+#: peer into SSRF against anything on the host's network" — while discovery
+#: used the *default* urllib opener and therefore followed redirects. The
+#: two legs of one transport disagreed about the same attack, and discovery
+#: is the leg that runs at startup against a peer that has not been vetted
+#: yet.
+urlopen = _no_redirect_urlopen
 
 # ── A2A configuration (ADR 0001) ─────────────────────────────────────────────
 #
@@ -112,8 +125,12 @@ class RemoteAgentRegistry:
         endpoint against the deployment allowlist by exact equality, so a
         subpath or lookalike host in the card would otherwise either bypass the
         check or make dispatch fail.
+
+        The fetch goes through the same no-redirect opener the dispatch path
+        uses (see the module seam above): a peer that answers 30x during
+        discovery must not be able to steer the fetch at an internal address.
         """
-        from urllib.request import Request, urlopen
+        from urllib.request import Request
 
         targets = urls if urls is not None else sorted(a2a_trusted_endpoints())
         if not targets:
@@ -297,7 +314,7 @@ class A2ARouter:
         # a credential is classified RESTRICTED here so that check can fire.
         # It is the second, independent refusal behind the orchestrator's own
         # egress rule — this one sits at the transport boundary (ADR 0008/0010).
-        classification = (DataClassification.RESTRICTED if has_sensitive_keys(params)
+        classification = (DataClassification.RESTRICTED if has_sensitive_content(params)
                           else DataClassification.INTERNAL)
         outcome = client.submit(agent.url, specialist_id, task, metadata=params,
                                 classification=classification)

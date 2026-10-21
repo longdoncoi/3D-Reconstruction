@@ -100,6 +100,10 @@ def has_sensitive_keys(value: Any, key: str = "") -> bool:
     Correlation identifiers (``session_id``/``request_id``/``idempotency_key``)
     are redacted in logs and task events but are **not** egress secrets; they
     travel with a delegation so the peer can route and deduplicate it.
+
+    This is the *key* rule. :func:`has_sensitive_content` is the wider one and
+    is what the egress boundary uses; both live here so the domain owns both
+    rules (ADR 0032: one owner, two named rules).
     """
     if key.casefold() in EGRESS_SECRET_KEYS:
         return True
@@ -110,12 +114,83 @@ def has_sensitive_keys(value: Any, key: str = "") -> bool:
     return False
 
 
+#: A value that carries a credential *in its own shape*, wherever it appears.
+#:
+#: These patterns are deliberately unambiguous. A prose pattern ("the password
+#: is stored in the vault") cannot be told apart from a real secret, and an
+#: egress boundary that refused on prose would refuse ordinary requests — so
+#: the value rule only fires on an assignment with a long enough value, or on
+#: a token format that carries its own marker.
+_EGRESS_ASSIGNMENT = re.compile(
+    r"(?i)\b(?:api[_-]?keys?|apikeys?|secrets?|passwords?|passwd|pwd|"
+    r"passphrases?|access[_-]?tokens?|refresh[_-]?tokens?|tokens?|"
+    r"credentials?|authorization)\b"
+    r"\s*[:=]\s*[\"']?([A-Za-z0-9_\-\.\+/=]{8,})"
+)
+
+_EGRESS_TOKEN_SHAPE = re.compile(
+    r"(?i)(?:"
+    r"\bsk-[A-Za-z0-9_\-]{16,}"
+    r"|\bgh[pousr]_[A-Za-z0-9]{16,}"
+    r"|\bxox[baprs]-[A-Za-z0-9\-]{10,}"
+    r"|\bAKIA[0-9A-Z]{16}\b"
+    r"|\bAIza[0-9A-Za-z_\-]{35}\b"
+    r"|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r"|\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"
+    r")"
+)
+
+
+def carries_credential_shape(value: str) -> bool:
+    """True when a free-text value carries a credential in its own shape."""
+    return bool(_EGRESS_ASSIGNMENT.search(value) or _EGRESS_TOKEN_SHAPE.search(value))
+
+
+def scrub_credentials(text: str) -> str:
+    """Mask credential-shaped material in free text.
+
+    The *message* of an A2A delegation is the user's own prompt, and it
+    crosses the trust boundary in a place no key name describes. Redaction is
+    the right tool for free text (the peer never needed the user's password),
+    so the shape-based patterns are applied here — and only here, where the
+    input is prose that may legitimately mention the word "password".
+    """
+    if not isinstance(text, str):
+        return text
+    scrubbed = _EGRESS_TOKEN_SHAPE.sub("[REDACTED_SECRET]", text)
+    return _EGRESS_ASSIGNMENT.sub("[REDACTED_SECRET]", scrubbed)
+
+
+def has_sensitive_content(value: Any, key: str = "") -> bool:
+    """True when this payload carries material that must not leave the process.
+
+    Wider than :func:`has_sensitive_keys`, which asks only about the *key*.
+    A secret pasted into a free-text value (``{"note": "api_key=sk-…"}``)
+    carries no sensitive key at all, so the key-only rule classified it
+    ``internal`` and shipped it to the peer in clear — the user's own prompt
+    travels as the A2A message, and a credential typed into it took the same
+    path. This asks both questions: the key name, and the shape of the value.
+    """
+    if has_sensitive_keys(value, key):
+        return True
+    if isinstance(value, str):
+        return carries_credential_shape(value)
+    if isinstance(value, dict):
+        return any(has_sensitive_content(item_value, str(item_key)) for item_key, item_value in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(has_sensitive_content(item) for item in value)
+    return False
+
+
 __all__ = [
     "EGRESS_SECRET_KEYS",
     "REDACTION_KEYS",
     "SENSITIVE_KEYS",
+    "carries_credential_shape",
+    "has_sensitive_content",
     "has_sensitive_keys",
     "redact_value",
+    "scrub_credentials",
     "scrub_messages",
     "scrub_pii",
 ]

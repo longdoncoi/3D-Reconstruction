@@ -580,10 +580,23 @@ lint (`E/W/F/I/BLE/S/RUF/C90/N/TRY`, complexity ≤ 15), thiết lập mypy stri
 sàn coverage theo branch (`fail_under = 100`), nên lần chạy cục bộ và CI đo cùng
 một thứ. Theo lần đo ngày 2026-10-21 (các con số đo được được ghi lại trong
 `Docs/SCORECARD.md` — **đã theo git** từ ADR 0032): **100.00%** statement *và*
-branch toàn package (9 095 statement / 2 388 branch, 2 034 test), và **74/74**
+branch toàn package (9 162 statement / 2 426 branch, 2 058 test), và **80/80**
 kill trong mutation check. Số mutant tối thiểu cũng là một cổng
 (`MIN_MUTANTS`): xoá một mutant là một quyết định, và cổng biến nó thành
 quyết định *nhìn thấy được*.
+
+Nhưng một bảng cổng xanh **không phải** là một hệ thống an toàn. Vòng review
+2026-10-21 thứ ba (ADR 0034) tìm ra tám lỗi mà **mọi cổng đều không thấy** —
+vì từng lỗi nằm đúng ở chỗ mà test chỉ chứng minh được *qua mock*: control
+có thật, test có thật, nhưng test **không tái hiện được tấn công**. Đáng chú ý:
+`.env` (khoá at-rest + mọi bearer token) đọc được **không cần approval** vì
+block-list là *extension* mà dotfile không có extension; `shutil.which` trên
+Windows tìm CWD trước PATH nên binary agent cài được chạy thay binary thật;
+deny-list so khớp phân biệt hoa thường nên `PYPROJECT.TOML` ghi đè file thật;
+`open()` trả plaintext chưa seal nên cột bị thay thế vẫn được phục vụ như
+thật. Cả tám đã đóng và ghim bằng test hồi quy *chạy thật* — và SCORECARD giờ
+có mục riêng ghi lại control nào **chỉ** được kiểm bằng mock, để lần review sau
+không phải đoán.
 
 CI chạy cổng trên **cả Linux lẫn Windows** (`Build-Python-ci.yml`): sản phẩm
 ship trên Windows, và hai guard bảo mật của sandbox chỉ chạy ở đó
@@ -675,7 +688,10 @@ Các quyết định trọng yếu, theo thứ tự:
 [0028](Docs/adr/0028-sealed-rag-cache.md) cache RAG cũng được niêm phong,
 [0029](Docs/adr/0029-prompt-builder-as-a-port.md) prompt builder là một port riêng,
 [0030](Docs/adr/0030-at-rest-key-rotation.md) xoay khoá at-rest,
-[0031](Docs/adr/0031-sealed-chat-attachments.md) file đính kèm chat cũng được niêm phong.
+[0031](Docs/adr/0031-sealed-chat-attachments.md) file đính kèm chat cũng được niêm phong,
+[0032](Docs/adr/0032-closing-the-last-mile.md) đóng nốt mile cuối của hợp đồng 10/10,
+[0033](Docs/adr/0033-one-spelling-of-a-path.md) cổng ghi so trên *một* cách viết của đường dẫn,
+[0034](Docs/adr/0034-the-controls-the-gates-cannot-see.md) đóng những control mà cổng kiểm không nhìn thấy.
 
 Cài đặt trong lúc phát triển: `pip install -e AIAssistant`. Cấu hình triển khai
 nằm trong `config/*.toml`; các ADR ràng buộc nằm trong `Docs/adr/`.

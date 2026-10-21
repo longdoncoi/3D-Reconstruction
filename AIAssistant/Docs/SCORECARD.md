@@ -18,10 +18,10 @@
 | Types | `python -m mypy src/ai_assistant` | 0 issues, 138 files, `strict = true` (3 SDK-boundary modules relax 2 flags, ADR 0022) |
 | Layer contracts | `PYTHONPATH=src lint-imports --no-logo` | 9/9 contracts kept (ADR 0032: the application layer may no longer import the plugin package — the catalogue is a port) |
 | Byte-compile | `python -m compileall -q evals src` | clean |
-| Tests | `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"` | 2 034 tests, 0 failures, 3 skipped |
-| Coverage | `PYTHONPATH=src python -m coverage run … && python -m coverage report` | **100.00%** — 9 095 statements, 2 388 branches, 0 missed, 0 partial |
-| Mutation | `PYTHONPATH=src python scripts/mutation_check.py` | **74/74 killed** (ADR 0032 added 7: the policy-tree write deny and its prefix match, the OpenAPI surface, the log redaction, the compare-and-set, the checkpoint seal, the adapter's CAS guard and the volatile-key rule), 0 survived, 0 stale |
-| Mutation floor | `scripts/mutation_check.py` | `MIN_MUTANTS = 74` — deleting a mutant now fails the gate (ADR 0032) |
+| Tests | `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"` | 2 058 tests, 0 failures, 4 skipped |
+| Coverage | `PYTHONPATH=src python -m coverage run … && python -m coverage report` | **100.00%** — 9 162 statements, 2 426 branches, 0 missed, 0 partial |
+| Mutation | `PYTHONPATH=src python scripts/mutation_check.py` | **80/80 killed** (ADR 0032 added 7: the policy-tree write deny and its prefix match, the OpenAPI surface, the log redaction, the compare-and-set, the checkpoint seal, the adapter's CAS guard and the volatile-key rule; ADR 0033 added one: the write target is resolved, so a symlink into a policy tree is matched on the file it points at; ADR 0034 added five: the secret-file read guard, the PATH scan that never consults the current directory, the case-insensitive write deny, the sealed-regime read refusal and the value-shaped egress check), 0 survived, 0 stale |
+| Mutation floor | `scripts/mutation_check.py` | `MIN_MUTANTS = 80` — deleting a mutant now fails the gate (ADR 0032) |
 | Policy evals | `python evals/run_tool_eval.py`, `python evals/run_agentic_eval.py` | exit 0; tool: 16/16 (adversarial included); agentic: 114 cases / 25 scenarios, 0 failed, **0 skipped** (ADR 0025) |
 | Model pins | `python scripts/verify_models.py` | 5 artifact local khớp pin, 1 chưa tải, **0 mismatched** (ADR 0023) |
 | Supply chain | `python scripts/generate_sbom.py` | CycloneDX 1.5: 171 distribution (kèm **3 941 SHA-256**) + 6 artifact GGUF kèm commit/SHA-256 (ADR 0023) |
@@ -112,6 +112,122 @@ The last character of a base64 quantum contributes as few as two bits, so
 the tamper could decode to the very same bytes — the seal still verified
 and the test passed without having tampered anything, one run in four. The
 tamper now lands in the middle of the envelope.
+
+## Follow-up on the 2026-10-21 review (ADR 0034)
+
+A third architectural review ran against the source, not this page, and
+re-ran every gate before reading the code. **Every gate was green** — lint
+clean, mypy strict 0 issues, 9/9 import contracts, 2 034 tests, coverage
+**100.00 %** (9 095 statements / 2 388 branches), mutation 74/74 killed — and
+the core architecture held up. The review found **eight defects**, and they
+share one property: *the gates were green because they could not see them.*
+
+| Defect | Why the gate was green |
+|---|---|
+| `read_file` returned `AIAssistant/.env` — the at-rest key and **every** bearer token — **with no approval** | The block-list was an *extension* list, and a dotfile has no extension (`splitext(".env") == (".env", "")`), so the guard never fired |
+| A binary planted in the working directory ran instead of the operator's own tool | The test that "pinned" the control **mocked `shutil.which` to return `None`** — a precondition that never holds on Windows |
+| `PYPROJECT.TOML` overwrote the real `pyproject.toml` | The deny-list compared basenames **case-sensitively**; no test tried the variant |
+| `AesGcmFieldCipher.open()` served unsealed plaintext — an **AEAD downgrade** | `open_bytes` (same class) refused it; the text branch did not, and no test reached it |
+| A2A discovery **followed redirects** while dispatch refused them | Two legs of one transport used two different openers; the tests only covered the dispatch leg |
+| A credential pasted into the user's own prompt left the trust boundary in clear | `has_sensitive_keys` did exactly what its name says — and the name was the bug |
+| The composition root was **writable**: the OpenAPI gate, the dotenv path and the cipher's key | The deny-list covered the policy *files*, not the layer that assembles the platform |
+| The symlink guard could not be measured on Windows — the mutation gate went **red on the shipping platform** | The test `skip`ped when the OS refused to create a symlink |
+
+This is the same class ADR 0029 already fixed once for
+`/v1/chat/completions`: *"every case mocked the collaborator — and a mock
+answers any attribute"*. It came back in the sandbox layer: the control was
+real, the test was real, and **the test could not reproduce the attack**.
+
+All eight are closed and pinned by regression tests:
+
+- **Secret files are blocked by name, at one chokepoint.** `is_secret_name`
+  (an explicit set plus the whole `.env*` family) is checked inside
+  `agent_safe_path` — the function every read tool resolves through — against
+  both the lexical spelling and the real one a symlink points at.
+  `search_text` walks the tree itself, so it uses the same rule: the walk
+  reaches `secrets.json` (a `.json` file) long before any dotfile.
+- **The PATH scan never consults the current directory.** `shutil.which` is
+  gone: on Windows it prepends the CWD to the search path, so it returned a
+  *relative* hit for a binary that was never on `PATH` — the allow-list was
+  not enforced and the refusal never fired. `_resolve_executable` walks the
+  `PATH` entries itself and returns an absolute path, so the OS cannot
+  re-order the search when the child starts.
+- **The write deny-list ignores the case of the file.** Windows filesystems
+  are case-insensitive, so `PYPROJECT.TOML` **is** `pyproject.toml`; the
+  substring fallback cannot cover it (`pyproject.toml` is the one entry that
+  is not a path fragment).
+- **A sealed column must be sealed.** `SqliteTaskStore` tracks a *sealed
+  regime*: once the one-time migration has run, an unsealed value is refused
+  with `StorageDecryptionError` instead of being served as authentic. The
+  binary artifacts already refused an unsealed file for the same reason; the
+  text columns now behave the same way. A legacy pending-action file is
+  re-sealed and written back at the first read.
+- **Discovery and dispatch share one opener.** The discovery leg used the
+  *default* urllib opener while the dispatch leg deliberately refused 30x —
+  the weaker leg was the one that runs at startup against an unvetted peer.
+- **Egress asks about the value, not only the key.**
+  `has_sensitive_content` joins `has_sensitive_keys` under one owner
+  (ADR 0032: one owner, two named rules). The value shapes are deliberately
+  unambiguous — a credential assignment with a long value, or a token format
+  that carries its own marker — because a boundary that refused on prose
+  would refuse ordinary requests. Parameters (a payload to be *executed*) are
+  refused; the message (the user's own prompt) is masked.
+- **The composition root is not writable.** `_DENIED_WRITE_TREES` now covers
+  `bootstrap`, `llm`, `orchestration`, `plugins`, `rag`, `observability` and
+  `tools` inside the `ai_assistant` package: the layer that assembles the
+  platform *is* the policy.
+- **The symlink guard is measurable on Windows.** ADR 0033's
+  `_canonical_path` compares one spelling on both sides, so a case-variant
+  write into a policy tree hits the policy branch — without needing the
+  privilege to create a symlink. The gate is no longer red on the platform
+  the product ships on.
+
+### Controls that are only verified through a mock
+
+Recorded so the next review does not have to guess which security controls
+are proven by a test that cannot reproduce the attack:
+
+| Control | The test proves | The test cannot prove |
+|---|---|---|
+| `_resolve_executable` (PATH scan) | that a planted binary outside `PATH` is not resolved | — (exercised for real, against real files) |
+| `agent_safe_path` (secret names) | that `.env` and its family are refused | — (exercised for real, against real files) |
+| the write deny-list (case) | that `PYPROJECT.TOML` is refused | — (exercised for real) |
+| the sealed-regime read | that a substituted plaintext column is refused | — (exercised for real, against a real SQLite file) |
+
+### Remaining tracked gaps (ADR 0034)
+
+- **A whole-file pending-action envelope has no external anchor.** It cannot
+  tell "plaintext written by an older version" from "plaintext substituted by
+  an attacker" without something outside that file. The window is narrowed to
+  one read; the rest is the operator's (ACLs, volume encryption), as before.
+- **A short secret in prose has no shape to recognise.** The value rule needs
+  a long enough value; a four-character password in a sentence is invisible
+  to any pattern matcher. Written down rather than hidden.
+
+## Follow-up on the 2026-10-21 review (ADR 0033)
+
+One claim from the review above was **not true on the platform the product
+ships on**. ADR 0032 closed the write deny-list over the policy *trees* and
+matched them on the *resolved* path, so a symlink cannot walk around it — but
+the comparison was between two *spellings* of one directory. Windows has two:
+the canonical long form (`C:\Users\runneradmin`) and the 8.3 short form
+(`C:\Users\RUNNER~1`), and the CI runner hands the sandbox the short one
+(`TEMP=C:\Users\RUNNER~1\AppData\Local\Temp`). A symlink whose target does not
+exist is resolved by *reading the link*, which keeps the short spelling, while
+the project root is resolved by the OS into the long one — so `relative_to()`
+failed and the write was reported as an **escape** instead of the policy denial
+it is. The deny-list was never reached.
+
+The write gate now compares one canonical spelling of the path on both sides
+(`tools/sandbox._canonical_path`), so the ADR 0032 claim holds on Windows as
+well. It is pinned twice: a Windows-only case builds the short-spelled link on
+purpose (`GetShortPathNameW`) and goes red without the fix, and a new mutant
+(the target is not resolved) is killed by the suite.
+
+- **The write deny-list compared two spellings, not two paths.** Fixed, and
+  pinned by
+  `tests/unit/test_sandbox.py::test_a_link_spelled_with_the_short_path_is_denied`
+  plus the new mutant (`scripts/mutation_check.py`, 75 mutants now).
 
 ## Independent review follow-up (2026-10-20)
 

@@ -18,7 +18,7 @@ from ..domain.context_budget import (
     completion_token_budget,
     context_exhausted,
 )
-from ..domain.governance import has_sensitive_keys
+from ..domain.governance import has_sensitive_content
 from ..orchestration.state import CONTEXT_EXHAUSTED_MESSAGE
 from ..ports import LLMRuntime
 from ..tools.action_manifest import validate_action_params
@@ -54,7 +54,7 @@ def _remote_dispatch(
     same validation, scope, classification and single-use approval grant the
     local path clears, spending that grant, before it leaves (ADR 0002/0010).
     """
-    if has_sensitive_keys(params):
+    if has_sensitive_content(params):
         return {
             "success": False,
             "error_code": "data_policy_denied",

@@ -47,6 +47,28 @@ class EncryptedPendingActionStoreTests(unittest.TestCase):
             store.load()
             self.assertEqual(store["act-1"]["tool"], "legacy")
 
+    def test_a_legacy_plaintext_file_is_resealed_on_load(self):
+        """The plaintext copy must stop existing on disk at the first read.
+
+        A file written before encryption was enabled was left in the clear
+        until the next save — which may be days away, or may never come, if
+        the pending queue simply drains. The load re-seals it and writes it
+        back, so the window is one read.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "pending.json"
+            path.write_text(json.dumps({"act-1": {"tool": "legacy"}}), encoding="utf-8")
+            store = PendingActionStore(path, cipher=_cipher())
+            store.load()
+
+            raw = path.read_text(encoding="utf-8")
+            self.assertTrue(raw.startswith("enc:v1:"), "the legacy file must be re-sealed")
+            self.assertNotIn("legacy", raw)
+
+            reloaded = PendingActionStore(path, cipher=_cipher())
+            reloaded.load()
+            self.assertEqual(reloaded["act-1"]["tool"], "legacy")
+
     def test_sealed_payload_without_a_key_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "pending.json"

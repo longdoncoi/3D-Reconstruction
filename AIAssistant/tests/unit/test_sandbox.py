@@ -2,13 +2,20 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from ai_assistant.tools.sandbox import create_directory, run, write_file
+from ai_assistant.tools.sandbox import (
+    _executable_candidates,
+    _resolve_executable,
+    create_directory,
+    run,
+    write_file,
+)
 
 
 def _settings(**overrides) -> SimpleNamespace:
@@ -31,8 +38,11 @@ class SandboxRunTests(unittest.TestCase):
         # Hermetic PATH resolution: the suite must not depend on which of the
         # allow-listed tools happen to be installed on the machine, and every
         # local run now executes the resolved absolute hit, not the bare name.
+        # The seam is the *resolver* itself, not the platform's lookup: the
+        # resolver is the gate, and it is exercised for real by
+        # ``ExecutableResolutionTests`` below.
         self._which = mock.patch(
-            "ai_assistant.tools.sandbox.shutil.which",
+            "ai_assistant.tools.sandbox._resolve_executable",
             side_effect=lambda name, path=None: f"C:/tools/{name}.exe",
         )
         self._which.start()
@@ -321,7 +331,7 @@ class SandboxRunTests(unittest.TestCase):
     def test_a_name_missing_from_path_is_refused_outright(self) -> None:
         """Letting the OS hunt for the binary is what hands the workspace
         priority, so a name PATH does not carry is refused, not delegated."""
-        with mock.patch("ai_assistant.tools.sandbox.shutil.which", return_value=None):
+        with mock.patch("ai_assistant.tools.sandbox._resolve_executable", return_value=None):
             with mock.patch("ai_assistant.tools.sandbox.subprocess.run") as sub:
                 result = run("git status", "C:/workspace", 30)
         self.assertIn("not found on PATH", result["error"])
@@ -428,6 +438,83 @@ class SandboxRunTests(unittest.TestCase):
         sub.assert_called_once()
 
 
+class ExecutableResolutionTests(unittest.TestCase):
+    """The PATH resolution the sandbox gate depends on, exercised for real.
+
+    The gate used to be pinned by a mock: ``shutil.which`` was patched to
+    return ``None``, so the test proved the refusal fires *when the platform
+    lookup fails* — a precondition that never holds on Windows, where the
+    lookup finds a binary planted in the current directory and answers with a
+    CWD-relative path (``.\\git.BAT``). A mock of the platform's lookup
+    cannot reproduce the attack, so the resolver itself is tested here,
+    against real files on a real filesystem: this is the test that was
+    missing when the control did not work.
+    """
+
+    def test_a_binary_in_the_current_directory_is_not_resolved(self) -> None:
+        """The current directory is never consulted.
+
+        Windows ``CreateProcess`` searches it *before* PATH, so a binary
+        planted next to the process wins over the operator's own tool — and
+        the server's working directory is a directory the agent may write
+        to. The resolver walks PATH itself and never looks here.
+        """
+        with tempfile.TemporaryDirectory() as workspace:
+            Path(workspace, "git.bat").write_text("@echo PWNED\r\n", encoding="utf-8")
+            elsewhere = tempfile.mkdtemp(prefix="empty_path_")
+            original = os.getcwd()
+            os.chdir(workspace)
+            try:
+                resolved = _resolve_executable("git", elsewhere)
+            finally:
+                os.chdir(original)
+                shutil.rmtree(elsewhere, ignore_errors=True)
+        self.assertIsNone(
+            resolved,
+            "a binary that is not on PATH must not be resolved, even from the current directory",
+        )
+
+    def test_a_path_hit_is_resolved_to_an_absolute_path(self) -> None:
+        """The hit is absolute, so the OS cannot re-order the search."""
+        with tempfile.TemporaryDirectory() as tools:
+            binary = Path(tools) / ("git.exe" if os.name == "nt" else "git")
+            binary.write_text("", encoding="utf-8")
+            resolved = _resolve_executable("git", tools)
+        self.assertIsNotNone(resolved)
+        self.assertTrue(os.path.isabs(str(resolved)), "the resolved hit must be absolute")
+        self.assertEqual(Path(str(resolved)).name, binary.name)
+
+    def test_a_name_that_carries_a_path_is_refused(self) -> None:
+        """Only a bare name may be resolved; the allow-list needs a name."""
+        self.assertIsNone(_resolve_executable(os.path.join("x", "git"), os.environ.get("PATH", "")))
+        self.assertIsNone(_resolve_executable(os.path.abspath("git"), os.environ.get("PATH", "")))
+        self.assertIsNone(_resolve_executable("", os.environ.get("PATH", "")))
+
+    def test_an_empty_path_resolves_nothing(self) -> None:
+        self.assertIsNone(_resolve_executable("git", ""))
+
+    def test_the_platform_decides_the_program_spellings(self) -> None:
+        """Windows resolves through ``PATHEXT``; POSIX has one spelling.
+
+        The branch is a module constant so both sides can be exercised on
+        either platform — the coverage gate runs on Linux *and* Windows, and
+        a branch only one of them can reach would sit at 99 % forever on the
+        other.
+        """
+        with mock.patch("ai_assistant.tools.sandbox._IS_WINDOWS", False):
+            self.assertEqual(_executable_candidates("git"), ["git"])
+        with mock.patch("ai_assistant.tools.sandbox._IS_WINDOWS", True):
+            candidates = _executable_candidates("git")
+        self.assertIn("git.exe", candidates)
+
+    def test_a_missing_pathext_falls_back_to_the_standard_extensions(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch("ai_assistant.tools.sandbox._IS_WINDOWS", True):
+                candidates = _executable_candidates("git")
+        self.assertIn("git.exe", candidates)
+        self.assertIn("git.bat", candidates)
+
+
 class SandboxWriteFileTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
@@ -469,6 +556,44 @@ class SandboxWriteFileTests(unittest.TestCase):
                      "tasks.sqlite", "pending_agent_actions.json", "agent_audit.jsonl"):
             with self.subTest(name=name):
                 result = write_file(str(self.root / "src" / name), "x", str(self.root))
+                self.assertIn("denied by sandbox policy", result["error"])
+
+    def test_the_policy_deny_list_ignores_the_case_of_the_file(self) -> None:
+        """Windows filesystems are case-insensitive.
+
+        ``PYPROJECT.TOML`` *is* ``pyproject.toml``, so a case-sensitive
+        comparison let the variant through and the write replaced the real
+        file — the dependency and build policy the agent is judged by. The
+        substring fallback cannot cover this on its own: ``pyproject.toml`` is
+        the one entry that is not a path fragment.
+        """
+        for name in ("PYPROJECT.TOML", "PyProject.Toml", "PyProject.toml"):
+            with self.subTest(name=name):
+                result = write_file(str(self.root / "src" / name), "x", str(self.root))
+                self.assertIn("denied by sandbox policy", result["error"])
+
+    def test_the_composition_root_is_not_writable(self) -> None:
+        """The layer that assembles the platform *is* the policy.
+
+        ADR 0032 named the policy files; the composition root decides
+        whether the OpenAPI surface is served, which dotenv file the
+        secrets are loaded from and which key the at-rest cipher is built
+        from. An agent that can rewrite those can turn the gates off
+        without touching a single policy file.
+        """
+        for rel in (
+            "AIAssistant/src/ai_assistant/bootstrap/app_factory.py",
+            "AIAssistant/src/ai_assistant/bootstrap/server.py",
+            "AIAssistant/src/ai_assistant/bootstrap/modules.py",
+            "AIAssistant/src/ai_assistant/llm/model_loader.py",
+            "AIAssistant/src/ai_assistant/orchestration/graph.py",
+            "AIAssistant/src/ai_assistant/plugins/registry.py",
+            "AIAssistant/src/ai_assistant/rag/index.py",
+            "AIAssistant/src/ai_assistant/observability/metrics.py",
+            "AIAssistant/src/ai_assistant/tools/sandbox.py",
+        ):
+            with self.subTest(rel=rel):
+                result = write_file(str(self.root / rel), "x", str(self.root))
                 self.assertIn("denied by sandbox policy", result["error"])
 
     def test_vcs_and_task_state_paths_are_denied_by_substring(self) -> None:

@@ -13,6 +13,7 @@ from urllib.error import URLError
 from urllib.parse import urljoin
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from ..domain.governance import has_sensitive_content, scrub_credentials
 from ..domain.security import DataClassification
 from ..observability.tracing import current_traceparent
 
@@ -83,6 +84,14 @@ class TrustedA2AClient:
             return {"routing": "rejected_policy", "error": "A2A endpoint is not trusted"}
         if classification in {DataClassification.RESTRICTED, DataClassification.REGULATED}:
             return {"routing": "rejected_policy", "error": "Sensitive data cannot leave the local trust boundary"}
+        # Defence in depth at the last hop before the wire: the caller is
+        # expected to have classified the payload, but *this* is the boundary
+        # that owns the rule, so it re-asks the question rather than trusting
+        # the caller to have asked it. A payload to be *executed* is refused,
+        # never rewritten — masking it would hand the peer a falsified
+        # instruction to run.
+        if has_sensitive_content(metadata):
+            return {"routing": "rejected_policy", "error": "Sensitive data cannot leave the local trust boundary"}
         card = self._read_card(endpoint)
         if capability not in card.skills:
             return {"routing": "rejected_no_eligible_agent", "error": f"Remote agent lacks {capability}"}
@@ -91,7 +100,10 @@ class TrustedA2AClient:
             "context_id": context_id,
             "metadata": metadata or {},
             "classification": classification.value,
-            "message": {"role": "user", "parts": [{"kind": "text", "text": message}]},
+            # The message is the user's own prompt: free text that no key
+            # name describes, so a credential typed into it is masked rather
+            # than refused — the peer never needed it.
+            "message": {"role": "user", "parts": [{"kind": "text", "text": scrub_credentials(message)}]},
         }
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         # Propagate the active trace so a remote agent's spans can join this

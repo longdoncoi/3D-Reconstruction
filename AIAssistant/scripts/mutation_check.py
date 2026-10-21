@@ -62,7 +62,12 @@ class Mutant:
 #: ADR 0032 adds seven more (the policy-tree write deny and its prefix match,
 #: the OpenAPI surface, the log redaction, the compare-and-set, the
 #: checkpoint seal, the adapter's CAS guard and the volatile-key rule).
-MIN_MUTANTS = 74
+#: ADR 0033 adds one more (the write target is resolved, so a symlink into a
+#: policy tree is matched on the file it points at).
+#: ADR 0034 adds five more (the secret-file read guard, the PATH scan that
+#: never consults the current directory, the case-insensitive write deny,
+#: the sealed-regime read refusal and the value-shaped egress check).
+MIN_MUTANTS = 80
 
 MUTANTS: tuple[Mutant, ...] = (
     # ── Sandbox allow-list (ADR 0011) ────────────────────────────────────────
@@ -131,10 +136,26 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "src/ai_assistant/tools/sandbox.py",
-        "if target_name in _DENIED_WRITE_PATHS or any(",
+        "if target_name.lower() in _DENIED_WRITE_NAMES or any(",
         "if False:",
         ("tests.unit.test_sandbox",),
         "write-deny on .env/policy files removed",
+    ),
+    Mutant(
+        "src/ai_assistant/tools/sandbox.py",
+        "if target_name.lower() in _DENIED_WRITE_NAMES or any(",
+        "if target_name in _DENIED_WRITE_NAMES or any(",
+        ("tests.unit.test_sandbox",),
+        "the write deny-list compared case-sensitively (PYPROJECT.TOML "
+        "replaces pyproject.toml on a case-insensitive filesystem)",
+    ),
+    Mutant(
+        "src/ai_assistant/tools/sandbox.py",
+        'for entry in (path or "").split(os.pathsep):',
+        'for entry in (path or "").split(os.pathsep) + [os.curdir]:',
+        ("tests.unit.test_sandbox",),
+        "the PATH scan consults the current directory (a planted binary wins "
+        "over the operator's own tool)",
     ),
     Mutant(
         "src/ai_assistant/tools/sandbox.py",
@@ -331,7 +352,7 @@ MUTANTS: tuple[Mutant, ...] = (
     # ── Remote egress refuses sensitive params (ADR 0002/0010) ───────────────
     Mutant(
         "src/ai_assistant/agents/graph_wiring.py",
-        "if has_sensitive_keys(params):",
+        "if has_sensitive_content(params):",
         "if False:",
         ("tests.unit.test_runner",),
         "credential-bearing params dispatched to a remote specialist",
@@ -386,8 +407,9 @@ MUTANTS: tuple[Mutant, ...] = (
         "src/ai_assistant/adapters/a2a_client.py",
         "def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:\n        # The parameters are the handler contract; none of them are read here.\n        return None",
         "def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:\n        return super().redirect_request(req, fp, code, msg, headers, newurl)",
-        ("tests.unit.test_a2a_client",),
-        "A2A redirects followed (SSRF behind the endpoint allowlist)",
+        ("tests.unit.test_a2a_client", "tests.unit.test_a2a_protocol_guards"),
+        "A2A redirects followed (SSRF behind the endpoint allowlist) — on the "
+        "dispatch leg and on the discovery leg, which share one opener",
     ),
     Mutant(
         "src/ai_assistant/adapters/a2a_protocol.py",
@@ -409,6 +431,38 @@ MUTANTS: tuple[Mutant, ...] = (
         '                        url=str(card_data.get("url") or base_url), card=card_data, skills=skills,',
         ("tests.unit.test_a2a_protocol_guards",),
         "Agent Card controls the dispatch endpoint (allowlist bypass)",
+    ),
+    Mutant(
+        "src/ai_assistant/tools/builtin/path_utils.py",
+        "if is_secret_name(os.path.basename(abs_path)) or is_secret_name(os.path.basename(real_path)):",
+        "if False:",
+        ("tests.unit.test_file_tools",),
+        "the secret-file read guard removed (the agent reads .env — the "
+        "at-rest key and every bearer token — without approval)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/sqlite_store.py",
+        "if require_sealed and not cipher.is_sealed(value):",
+        "if False:",
+        ("tests.unit.test_sqlite_store_crypto",),
+        "an unsealed column served as authentic (AEAD downgrade: a "
+        "substituted plaintext column is accepted instead of rejected)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/pending_store.py",
+        "if legacy:",
+        "if False:",
+        ("tests.unit.test_pending_store_crypto",),
+        "the legacy pending-action file is not re-sealed on load (the "
+        "plaintext copy stays on disk)",
+    ),
+    Mutant(
+        "src/ai_assistant/domain/governance.py",
+        "    if isinstance(value, str):\n        return carries_credential_shape(value)",
+        "    if False:\n        return carries_credential_shape(value)",
+        ("tests.unit.test_governance_egress",),
+        "a credential pasted into a free-text value is not detected (the "
+        "user's own prompt leaves the trust boundary in clear)",
     ),
     Mutant(
         "src/ai_assistant/tools/builtin/vcs_tools.py",
