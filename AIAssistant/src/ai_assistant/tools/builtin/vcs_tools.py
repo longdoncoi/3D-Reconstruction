@@ -12,13 +12,13 @@ import subprocess
 from typing import Any
 
 from ai_assistant.config.paths import get_paths
+from ai_assistant.exec_policy import resolve_executable
 from ai_assistant.tools.sandbox import (
     _executable_rejection,
-    _resolve_executable,
     _subcommand_rejection,
 )
 
-from .path_utils import _AGENT_BLOCKED_DIRS, agent_safe_path
+from .path_utils import agent_safe_path, is_blocked_dir
 
 
 def _run_git(args: list[str], cwd: str, timeout: int) -> subprocess.CompletedProcess[str]:
@@ -27,6 +27,14 @@ def _run_git(args: list[str], cwd: str, timeout: int) -> subprocess.CompletedPro
     Raises ``RuntimeError`` when the invocation violates the allow-list or the
     binary cannot be resolved via ``PATH``; callers translate ``OSError`` /
     ``subprocess.SubprocessError`` to their observable fallback as before.
+
+    The binary is **fail-closed**: when ``git`` is not on ``PATH`` the call
+    is refused, not continued with a bare name. A bare name hands the search
+    back to the operating system, and on Windows the operating system
+    searches the *current directory* first — so the fallback re-opened
+    exactly the hijack the resolver exists to close, and it did so silently
+    (the shipped container image has no ``git`` at all, so there the
+    fallback was the *default* path).
     """
     executable_rejection = _executable_rejection("git")
     if executable_rejection:
@@ -37,8 +45,10 @@ def _run_git(args: list[str], cwd: str, timeout: int) -> subprocess.CompletedPro
     if sub_rejection:
         msg = sub_rejection
         raise RuntimeError(msg)
-    resolved = _resolve_executable("git", os.environ.get("PATH", ""))
-    binary = resolved or "git"
+    binary = resolve_executable("git", os.environ.get("PATH", ""))
+    if binary is None:
+        msg = "Executable 'git' was not found on PATH."
+        raise RuntimeError(msg)
     return subprocess.run([binary, *args], cwd=cwd,
                           capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=timeout, check=False)
@@ -49,7 +59,7 @@ def tool_get_project_status(params: dict[str, Any]) -> dict[str, Any]:
     project_root = str(get_paths().project_root)
     source_counts: dict[str, int] = {}
     for _root, dirs, files in os.walk(project_root):
-        dirs[:] = [d for d in dirs if d not in _AGENT_BLOCKED_DIRS]
+        dirs[:] = [d for d in dirs if not is_blocked_dir(d)]
         for filename in files:
             ext = os.path.splitext(filename)[1].lower()
             if ext in {".cpp", ".h", ".py", ".json", ".cmake"}:

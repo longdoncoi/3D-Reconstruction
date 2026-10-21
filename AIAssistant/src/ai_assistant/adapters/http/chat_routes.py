@@ -11,9 +11,12 @@ from typing import TYPE_CHECKING, Any, Callable
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
+from ...config.paths import attachment_roots
 from ...domain.context_budget import completion_token_budget, context_exhausted
 from ...domain.governance import scrub_pii
 from ...domain.specialists import Specialist
+from ...path_policy import resolve_within
+from ...ports import SEALED_BINARY_PREFIX
 from .security import TransportPolicy, chat_guards
 
 if TYPE_CHECKING:
@@ -80,12 +83,42 @@ def _scan_attachments_for_image(
         data_uri_fn = getattr(rag_module, "_image_to_data_uri", fallback_to_data_uri)
 
     for attachment in attachments:
-        if image_check(attachment):
-            try:
-                return data_uri_fn(attachment)
-            except Exception as error:
-                logger.warning("Failed to read attachment for retrieval: %s", error)
+        if not image_check(attachment):
+            continue
+        if not _attachment_may_be_opened(attachment):
+            logger.warning("Refusing to open a chat attachment outside the platform's upload roots: %r", attachment)
+            continue
+        try:
+            return data_uri_fn(attachment)
+        except Exception as error:
+            logger.warning("Failed to read attachment for retrieval: %s", error)
     return None
+
+
+def _attachment_may_be_opened(path: str) -> bool:
+    """Whether the route may open a *client-named* file.
+
+    The request body is untrusted and the route holds the at-rest key, so a
+    path that arrives from a client is not a path the server may open. Two
+    independent gates, either of which is enough:
+
+    * the path resolves inside a directory the desktop client stores
+      attachments in (the platform's upload roots) — the only place a
+      legitimate attachment ever lives;
+    * or the file is a **sealed** envelope: only the platform holds the key
+      that produces one, so a sealed file proves the platform wrote it.
+
+    Anything else is refused before the file is opened, so a caller cannot
+    name a file elsewhere on the host and have its bytes reach the model.
+    """
+    for root in attachment_roots():
+        if resolve_within(root, path) is not None:
+            return True
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(len(SEALED_BINARY_PREFIX)) == SEALED_BINARY_PREFIX
+    except OSError:
+        return False
 
 
 def build_chat_router(

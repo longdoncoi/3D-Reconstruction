@@ -9,9 +9,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from ai_assistant.exec_policy import (
+    executable_candidates,
+    resolve_executable,
+)
 from ai_assistant.tools.sandbox import (
-    _executable_candidates,
-    _resolve_executable,
     create_directory,
     run,
     write_file,
@@ -465,7 +467,7 @@ class ExecutableResolutionTests(unittest.TestCase):
             original = os.getcwd()
             os.chdir(workspace)
             try:
-                resolved = _resolve_executable("git", elsewhere)
+                resolved = resolve_executable("git", elsewhere)
             finally:
                 os.chdir(original)
                 shutil.rmtree(elsewhere, ignore_errors=True)
@@ -479,19 +481,58 @@ class ExecutableResolutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tools:
             binary = Path(tools) / ("git.exe" if os.name == "nt" else "git")
             binary.write_text("", encoding="utf-8")
-            resolved = _resolve_executable("git", tools)
+            resolved = resolve_executable("git", tools)
         self.assertIsNotNone(resolved)
         self.assertTrue(os.path.isabs(str(resolved)), "the resolved hit must be absolute")
         self.assertEqual(Path(str(resolved)).name, binary.name)
 
     def test_a_name_that_carries_a_path_is_refused(self) -> None:
         """Only a bare name may be resolved; the allow-list needs a name."""
-        self.assertIsNone(_resolve_executable(os.path.join("x", "git"), os.environ.get("PATH", "")))
-        self.assertIsNone(_resolve_executable(os.path.abspath("git"), os.environ.get("PATH", "")))
-        self.assertIsNone(_resolve_executable("", os.environ.get("PATH", "")))
+        self.assertIsNone(resolve_executable(os.path.join("x", "git"), os.environ.get("PATH", "")))
+        self.assertIsNone(resolve_executable(os.path.abspath("git"), os.environ.get("PATH", "")))
+        self.assertIsNone(resolve_executable("", os.environ.get("PATH", "")))
+
+    def test_a_path_shaped_name_is_refused_even_when_the_file_exists(self) -> None:
+        """The allow-list constrains the *name*, not the path.
+
+        The refusal has to hold even when the scan would find something: a
+        ``PATH`` entry that happens to contain ``x/git`` must not satisfy
+        the lookup, or the allow-list would stop constraining *which*
+        program runs.
+        """
+        with tempfile.TemporaryDirectory() as tools:
+            nested = Path(tools) / "x"
+            nested.mkdir()
+            binary = nested / "git"
+            binary.write_text("", encoding="utf-8")
+            # Executable on POSIX; on Windows every existing file is one.
+            os.chmod(binary, 0o700)
+            self.assertIsNone(resolve_executable(os.path.join("x", "git"), tools))
+            self.assertIsNone(resolve_executable(str(binary), tools))
 
     def test_an_empty_path_resolves_nothing(self) -> None:
-        self.assertIsNone(_resolve_executable("git", ""))
+        self.assertIsNone(resolve_executable("git", ""))
+
+    def test_the_sandbox_aliases_delegate_to_the_kernel(self) -> None:
+        """The sandbox keeps the historical names; the rule has one owner.
+
+        The suite mocks the resolver to stay hermetic (it must not depend on
+        which tools happen to be installed), so the aliases themselves would
+        otherwise never run.
+        """
+        from ai_assistant.tools import sandbox
+
+        with tempfile.TemporaryDirectory() as tools_dir:
+            binary = Path(tools_dir) / ("git.exe" if os.name == "nt" else "git")
+            binary.write_text("", encoding="utf-8")
+            self.assertEqual(
+                sandbox._resolve_executable("git", tools_dir),
+                resolve_executable("git", tools_dir),
+            )
+            self.assertEqual(
+                sandbox._executable_candidates("git"),
+                executable_candidates("git"),
+            )
 
     def test_the_platform_decides_the_program_spellings(self) -> None:
         """Windows resolves through ``PATHEXT``; POSIX has one spelling.
@@ -501,16 +542,16 @@ class ExecutableResolutionTests(unittest.TestCase):
         a branch only one of them can reach would sit at 99 % forever on the
         other.
         """
-        with mock.patch("ai_assistant.tools.sandbox._IS_WINDOWS", False):
-            self.assertEqual(_executable_candidates("git"), ["git"])
-        with mock.patch("ai_assistant.tools.sandbox._IS_WINDOWS", True):
-            candidates = _executable_candidates("git")
+        with mock.patch("ai_assistant.exec_policy.IS_WINDOWS", False):
+            self.assertEqual(executable_candidates("git"), ["git"])
+        with mock.patch("ai_assistant.exec_policy.IS_WINDOWS", True):
+            candidates = executable_candidates("git")
         self.assertIn("git.exe", candidates)
 
     def test_a_missing_pathext_falls_back_to_the_standard_extensions(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            with mock.patch("ai_assistant.tools.sandbox._IS_WINDOWS", True):
-                candidates = _executable_candidates("git")
+            with mock.patch("ai_assistant.exec_policy.IS_WINDOWS", True):
+                candidates = executable_candidates("git")
         self.assertIn("git.exe", candidates)
         self.assertIn("git.bat", candidates)
 

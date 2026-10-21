@@ -6,7 +6,10 @@ loaded — matching the offline CI constraint.
 """
 from __future__ import annotations
 
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -15,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ai_assistant.adapters.http.chat_routes import build_chat_router
+from ai_assistant.ports import SEALED_BINARY_PREFIX
 
 LLM_CTX = 4096
 
@@ -302,6 +306,106 @@ class ChatRoutesTest(unittest.TestCase):
         self.assertEqual(
             agent.last_kwargs["query_image_b64"], "data:image/png;base64,AAA"
         )
+
+    def test_an_attachment_outside_the_upload_roots_is_refused(self) -> None:
+        """The request body is untrusted and the route holds the at-rest key.
+
+        A client-named path must not become "read any file on this host":
+        the file is only opened when it resolves inside a directory the
+        desktop client stores attachments in, or when it is a sealed
+        envelope the platform itself produced. Before the gate, a caller
+        could name any image-extension file on the machine and have its
+        bytes reach the model.
+        """
+        client, _agent = _build_client()
+        outside = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
+        secret = os.path.join(outside, "credential.png")
+        with open(secret, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n")
+        with (
+            mock.patch("ai_assistant.image_utils.is_image_file", return_value=True),
+            mock.patch(
+                "ai_assistant.image_utils.image_to_data_uri",
+                return_value="data:image/png;base64,AAA",
+            ) as reader,
+        ):
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "what is this?",
+                            "attachments": [secret],
+                        }
+                    ]
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        reader.assert_not_called()
+
+    def test_an_attachment_that_does_not_exist_is_refused(self) -> None:
+        """A name that resolves to nothing is refused, not raised."""
+        client, _agent = _build_client()
+        missing = os.path.join(tempfile.gettempdir(), "no-such-attachment.png")
+        with (
+            mock.patch("ai_assistant.image_utils.is_image_file", return_value=True),
+            mock.patch(
+                "ai_assistant.image_utils.image_to_data_uri",
+                return_value="data:image/png;base64,AAA",
+            ) as reader,
+        ):
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "what is this?",
+                            "attachments": [missing],
+                        }
+                    ]
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        reader.assert_not_called()
+
+    def test_a_sealed_attachment_is_opened_wherever_it_lives(self) -> None:
+        """A sealed envelope proves the platform produced the file.
+
+        Only the platform holds the at-rest key, so the seal is the
+        authenticator — and the desktop client may have stored the file
+        before the upload roots were known to the service.
+        """
+        client, agent = _build_client()
+        outside = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
+        sealed = os.path.join(outside, "attachment.png")
+        with open(sealed, "wb") as handle:
+            handle.write(SEALED_BINARY_PREFIX + b"payload")
+        with (
+            mock.patch("ai_assistant.image_utils.is_image_file", return_value=True),
+            mock.patch(
+                "ai_assistant.image_utils.image_to_data_uri",
+                return_value="data:image/png;base64,AAA",
+            ) as reader,
+        ):
+            response = client.post(
+                "/v1/chat/completions",
+                json={
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "what is this?",
+                            "attachments": [sealed],
+                        }
+                    ]
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        reader.assert_called_once()
+        self.assertEqual(agent.last_kwargs["query_image_b64"], "data:image/png;base64,AAA")
 
     def test_attachment_read_failure_falls_back_and_warns(self) -> None:
         client, agent = _build_client()

@@ -1,41 +1,53 @@
-"""Path safety utilities shared by builtin tools."""
+"""Path safety utilities shared by builtin tools.
+
+The rules themselves live in :mod:`ai_assistant.path_policy` — they are
+kernel policy, and three different layers need them (the agent tools, the
+LSP read gate, the HTTP attachment gate). This module keeps the *agent*
+specific parts: the project-root confinement, the blocked directories, the
+secret file names and the read budget.
+"""
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from ai_assistant.config.paths import get_paths
+from ai_assistant.path_policy import (
+    BLOCKED_DIR_NAMES,
+    canonical_path,
+    is_blocked_dir,
+    is_secret_name,
+    resolve_within,
+)
 
-_AGENT_BLOCKED_DIRS = {".git", "build", "__pycache__", ".vs", "node_modules"}
+#: Kept under their historical names: the tool package re-exports them and
+#: the walkers use them to prune a directory listing.
+_AGENT_BLOCKED_DIRS = BLOCKED_DIR_NAMES
 _AGENT_BLOCKED_EXTS = {".exe", ".dll", ".so", ".bin", ".dat", ".pkl", ".gguf", ".onnx", ".pt", ".secret", ".key"}
 _AGENT_MAX_FILE_READ_CHARS = 24000
 _AGENT_MAX_UNSCOPED_SOURCE_LINES = 240
 
-#: File names that carry secrets and must never be reachable by an agent tool.
-#:
-#: The list is matched on the *name*, not on the extension, and that is the
-#: whole point: ``os.path.splitext(".env")`` is ``(".env", "")`` — a dotfile
-#: has no extension, so an extension-based block-list never fires for exactly
-#: the files it was written for. ``AIAssistant/.env`` is the file the server
-#: loads its own secrets from (the at-rest AES-256-GCM key and every bearer
-#: token), and ``read_file`` returned it in clear, without approval, because
-#: the guard was looking at an extension that does not exist.
-_AGENT_BLOCKED_NAMES = frozenset({
-    ".env", ".envrc", ".npmrc", ".pypirc", ".netrc", ".gitconfig",
-    "secrets.json", "credentials.json", "id_rsa", "id_ed25519", "id_ecdsa",
-})
+__all__ = [
+    "_AGENT_BLOCKED_DIRS",
+    "_AGENT_BLOCKED_EXTS",
+    "_AGENT_MAX_FILE_READ_CHARS",
+    "_AGENT_MAX_UNSCOPED_SOURCE_LINES",
+    "agent_safe_path",
+    "is_blocked_dir",
+    "is_secret_name",
+]
 
 
-def is_secret_name(name: str) -> bool:
-    """Whether a file *name* is one that carries a secret.
+def _blocked_dir_in(relative: str) -> bool:
+    """Whether any segment of a project-relative path is a blocked directory.
 
-    Two rules, both name-based: the explicit set above, and the ``.env``
-    family — ``.env``, ``.env.local``, ``.env.production`` — which is what
-    the dotfile case actually looks like in a deployment.
+    The comparison is case-insensitive (a Windows filesystem is
+    case-insensitive, so ``.GIT`` is the same directory as ``.git``). The
+    case-sensitive form of this rule is why ``read_file(".GIT/config")``
+    returned the repository's git configuration — remote URL and credential
+    helper included — while ``read_file(".git/config")`` was refused.
     """
-    lowered = name.lower()
-    if lowered in _AGENT_BLOCKED_NAMES:
-        return True
-    return lowered == ".env" or lowered.startswith(".env.")
+    return any(is_blocked_dir(part) for part in relative.replace("\\", "/").split("/"))
 
 
 def agent_safe_path(rel_path: str) -> str | None:
@@ -46,29 +58,27 @@ def agent_safe_path(rel_path: str) -> str | None:
     rel_path = rel_path.replace("\\", "/").strip("/")
     if ".." in rel_path.split("/"):
         return None
-    abs_path = os.path.normpath(os.path.join(project_root, rel_path))
-    real_root = os.path.realpath(project_root)
-    # ``normpath`` alone is not containment: a symlink/junction inside the
-    # project can point anywhere. Resolve the real target and check it too;
-    # writes are separately checked by ``write_sandboxed_file``, but reads
-    # must not follow a link out of the sandbox either.
-    real_path = os.path.realpath(abs_path)
+    # The real target is what gets checked, not the spelling: a junction or
+    # symlink inside the project that points elsewhere is an escape, and the
+    # resolved path is the one the caller must open.
+    abs_path = resolve_within(project_root, rel_path)
+    if abs_path is None:
+        return None
+    # The blocked-directory rule is applied to *both* the path the caller
+    # asked for and the resolved one — a link named ``notes.txt`` that points
+    # at ``.git/config`` must not be a way in.
+    if _blocked_dir_in(rel_path):
+        return None
     try:
-        if os.path.commonpath([abs_path, os.path.normpath(project_root)]) != os.path.normpath(project_root):
-            return None
-        if os.path.commonpath([real_path, real_root]) != real_root:
-            return None
+        real_relative = os.path.relpath(abs_path, str(canonical_path(Path(project_root))))
     except ValueError:
+        return None
+    if _blocked_dir_in(real_relative):
         return None
     # The secret check sits here, in the one function every read tool
     # resolves its path through, so it cannot be forgotten by a tool that
     # was written later. Both spellings are checked: the lexical one the
-    # caller asked for, and the real one a symlink points at — a link named
-    # ``notes.txt`` that points at ``.env`` must not be a way in either.
-    if is_secret_name(os.path.basename(abs_path)) or is_secret_name(os.path.basename(real_path)):
+    # caller asked for, and the real one a symlink points at.
+    if is_secret_name(os.path.basename(rel_path)) or is_secret_name(os.path.basename(abs_path)):
         return None
-    parts = rel_path.split("/")
-    for part in parts:
-        if part in _AGENT_BLOCKED_DIRS:
-            return None
     return abs_path

@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
 from ai_assistant.config.paths import get_paths
+from ai_assistant.exec_policy import resolve_tool_binary
+from ai_assistant.path_policy import resolve_within
 from ai_assistant.settings import lsp_binaries
 
 _CPP_EXTS = {".cpp", ".c", ".h", ".hpp", ".cc", ".cxx"}
@@ -146,7 +147,14 @@ def _lsp_call(
     extra_params: dict[str, Any] | None = None,
     timeout: int = 15,
 ) -> dict[str, Any]:
-    resolved_bin = shutil.which(server_bin)
+    # The language server is resolved by the *shared* resolver
+    # (:mod:`ai_assistant.exec_policy`), which walks PATH and never looks at
+    # the current directory. ``shutil.which`` used to do the job here, and on
+    # Windows it prepends the current directory to the search path — so a
+    # ``clangd.bat`` planted next to the process was found *and executed*,
+    # and the "not found on PATH" refusal could never fire because ``which``
+    # had already found the planted file.
+    resolved_bin = resolve_tool_binary(server_bin)
     if not resolved_bin:
         return {
             "error": (
@@ -253,18 +261,19 @@ def _confine_to_project(path: str, project_dir: str) -> str | None:
     An absolute path used to be accepted verbatim, so these tools handed the
     language server any readable file on disk with a matching extension —
     read scope is the project directory the LSP session is scoped to, not the
-    whole drive. ``commonpath`` (not a string prefix test) keeps
-    ``C:\\project2`` from passing as ``C:\\project``; a different Windows
-    drive raises ``ValueError`` and is an escape too.
+    whole drive.
+
+    The check is **fail-closed on the real target**, not on the spelling: a
+    junction inside the project that points outside it is an escape, and a
+    lexical comparison cannot see it. The shared kernel
+    (:func:`ai_assistant.path_policy.resolve_within`) resolves both sides —
+    following links and putting Windows' 8.3 short form and the canonical
+    long form on the same terms — and refuses anything that does not really
+    stay inside the root. ``commonpath`` (not a string prefix test) also
+    keeps ``C:\\project2`` from passing as ``C:\\project``; a different
+    Windows drive is an escape too.
     """
-    abs_path = path if os.path.isabs(path) else os.path.join(project_dir, path)
-    root = os.path.normpath(project_dir)
-    try:
-        if os.path.commonpath([os.path.normpath(abs_path), root]) != root:
-            return None
-    except ValueError:
-        return None
-    return abs_path
+    return resolve_within(project_dir, path)
 
 
 def tool_go_to_definition(params: dict[str, Any]) -> dict[str, Any]:
