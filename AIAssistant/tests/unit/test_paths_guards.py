@@ -15,7 +15,37 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ai_assistant.config.paths import get_paths, resolve_paths, safe_relpath
+from ai_assistant.config.paths import (
+    attachment_roots,
+    get_paths,
+    resolve_paths,
+    safe_relpath,
+)
+
+
+class AttachmentRootTests(unittest.TestCase):
+    """Where the desktop client stores the attachments it seals (ADR 0035).
+
+    The AI service has to open the file the client just stored, so it needs
+    the same directory — and it may not widen that to the whole disk: the
+    HTTP chat route opens a *client-named* path.
+    """
+
+    def test_the_source_checkout_layout_is_covered(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("APP_DATA_DIR", None)
+            roots = attachment_roots()
+        self.assertIn(str(get_paths().project_root / "Upload"), roots)
+
+    def test_the_installed_layout_is_covered(self):
+        """The production install puts the data root under the per-user
+        application data directory, under the product folder."""
+        with tempfile.TemporaryDirectory() as env_root:
+            with patch.dict(os.environ, {"APP_DATA_DIR": env_root}):
+                roots = attachment_roots()
+        self.assertIn(
+            str(Path(env_root).resolve() / "3D-Reconstruction" / "Upload"), roots,
+        )
 
 
 class DataDirSourceTests(unittest.TestCase):

@@ -580,7 +580,7 @@ lint (`E/W/F/I/BLE/S/RUF/C90/N/TRY`, complexity ≤ 15), thiết lập mypy stri
 sàn coverage theo branch (`fail_under = 100`), nên lần chạy cục bộ và CI đo cùng
 một thứ. Theo lần đo ngày 2026-10-21 (các con số đo được được ghi lại trong
 `Docs/SCORECARD.md` — **đã theo git** từ ADR 0032): **100.00%** statement *và*
-branch toàn package (9 162 statement / 2 426 branch, 2 058 test), và **80/80**
+branch toàn package (9 219 statement / 2 436 branch, 2 089 test), và **86/86**
 kill trong mutation check. Số mutant tối thiểu cũng là một cổng
 (`MIN_MUTANTS`): xoá một mutant là một quyết định, và cổng biến nó thành
 quyết định *nhìn thấy được*.
@@ -597,6 +597,25 @@ deny-list so khớp phân biệt hoa thường nên `PYPROJECT.TOML` ghi đè fi
 thật. Cả tám đã đóng và ghim bằng test hồi quy *chạy thật* — và SCORECARD giờ
 có mục riêng ghi lại control nào **chỉ** được kiểm bằng mock, để lần review sau
 không phải đoán.
+
+Vòng audit thứ ba (ADR 0035) chạy lại trên **các lớp vòng trước chưa chạm tới**
+và tìm thêm **năm lỗi cùng lớp** — trong đó một lỗi là *anh em* của một quy
+tắc ADR 0034 vừa sửa: quy tắc *thư mục bị chặn* so phân biệt hoa thường trong
+khi quy tắc *tên file bí mật* ngay cạnh đó thì không, nên `.GIT/config`
+(remote URL + credential helper) đọc được không cần approval; và
+`lsp_client` vẫn dùng `shutil.which` — **chỗ thứ hai** giải chương trình, nơi
+ADR 0034 chỉ sửa chỗ thứ nhất.
+
+Hai mươi lỗi cùng một lớp thì *đếm số lỗi đã sửa* là một con số vô nghĩa:
+lớp lỗi vẫn còn, và thực thể thứ hai mươi mốt chỉ là một dòng code nữa. Vì vậy
+ADR 0035 đóng **lớp**, không đóng từng thực thể: hai module kernel
+(`path_policy`, `exec_policy`) làm chủ sở hữu duy nhất của quy tắc đường dẫn và
+quy tắc giải chương trình; mọi so sánh tên đều không phân biệt hoa thường và
+được kiểm theo **dạng tính chất** (duyệt chính tập quy tắc, nên thêm một tên
+tự đòi hành vi đúng); và một **guard tĩnh** quét AST toàn bộ `src/ai_assistant`
+fail build nếu bất kỳ module nào gọi `shutil.which` — vì lỗi đó **không nhìn
+thấy được lúc chạy**: mock cũ trả về một tên *tương đối*, đúng hình dạng mà
+một CWD-hit thật tạo ra.
 
 CI chạy cổng trên **cả Linux lẫn Windows** (`Build-Python-ci.yml`): sản phẩm
 ship trên Windows, và hai guard bảo mật của sandbox chỉ chạy ở đó
@@ -691,7 +710,8 @@ Các quyết định trọng yếu, theo thứ tự:
 [0031](Docs/adr/0031-sealed-chat-attachments.md) file đính kèm chat cũng được niêm phong,
 [0032](Docs/adr/0032-closing-the-last-mile.md) đóng nốt mile cuối của hợp đồng 10/10,
 [0033](Docs/adr/0033-one-spelling-of-a-path.md) cổng ghi so trên *một* cách viết của đường dẫn,
-[0034](Docs/adr/0034-the-controls-the-gates-cannot-see.md) đóng những control mà cổng kiểm không nhìn thấy.
+[0034](Docs/adr/0034-the-controls-the-gates-cannot-see.md) đóng những control mà cổng kiểm không nhìn thấy,
+[0035](Docs/adr/0035-one-rule-one-owner.md) đóng *lớp* lỗi: một quy tắc, một chủ sở hữu.
 
 Cài đặt trong lúc phát triển: `pip install -e AIAssistant`. Cấu hình triển khai
 nằm trong `config/*.toml`; các ADR ràng buộc nằm trong `Docs/adr/`.

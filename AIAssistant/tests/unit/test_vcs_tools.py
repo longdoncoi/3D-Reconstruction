@@ -43,7 +43,7 @@ class ProjectStatusTests(unittest.TestCase):
 
         with mock.patch.object(vcs_tools, "get_paths", return_value=SimpleNamespace(project_root=self.root)):
             with mock.patch.object(vcs_tools.subprocess, "run", side_effect=fake_run):
-                with mock.patch.object(vcs_tools, "_resolve_executable", return_value="/usr/bin/git"):
+                with mock.patch.object(vcs_tools, "resolve_executable", return_value="/usr/bin/git"):
                     result = vcs_tools.tool_get_project_status({})
         self.assertEqual(result["source_file_counts"], {".py": 1, ".h": 1})
         self.assertNotIn(".txt", result["source_file_counts"])
@@ -57,7 +57,7 @@ class ProjectStatusTests(unittest.TestCase):
 
         with mock.patch.object(vcs_tools, "get_paths", return_value=SimpleNamespace(project_root=self.root)):
             with mock.patch.object(vcs_tools.subprocess, "run", side_effect=fake_run):
-                with mock.patch.object(vcs_tools, "_resolve_executable", return_value="/usr/bin/git"):
+                with mock.patch.object(vcs_tools, "resolve_executable", return_value="/usr/bin/git"):
                     result = vcs_tools.tool_get_project_status({})
         self.assertEqual(result["git_branch"], "")
         self.assertEqual(result["changed_files"], [])
@@ -77,7 +77,7 @@ class GitDiffTests(unittest.TestCase):
             return_value=SimpleNamespace(project_root=self.root),
         )
         run_patcher = mock.patch.object(vcs_tools.subprocess, "run", return_value=completed)
-        resolve_patcher = mock.patch.object(vcs_tools, "_resolve_executable", return_value="/usr/bin/git")
+        resolve_patcher = mock.patch.object(vcs_tools, "resolve_executable", return_value="/usr/bin/git")
         get_paths_patcher.start()
         run = run_patcher.start()
         resolve_patcher.start()
@@ -116,7 +116,7 @@ class GitDiffTests(unittest.TestCase):
     def test_subprocess_error_returns_error(self):
         with mock.patch.object(vcs_tools, "get_paths", return_value=SimpleNamespace(project_root=self.root)):
             with mock.patch.object(vcs_tools.subprocess, "run", side_effect=OSError("no git")):
-                with mock.patch.object(vcs_tools, "_resolve_executable", return_value="/usr/bin/git"):
+                with mock.patch.object(vcs_tools, "resolve_executable", return_value="/usr/bin/git"):
                     result = vcs_tools.tool_git_diff({})
         self.assertIn("Unable to read Git diff", result["error"])
 
@@ -142,12 +142,20 @@ class GitDiffTests(unittest.TestCase):
         self.assertIn("Unable to read Git diff", result["error"])
         sub.assert_not_called()
 
-    def test_unresolved_binary_falls_back_to_bare_git(self):
+    def test_an_unresolved_binary_is_refused_rather_than_degraded(self):
+        """Fail closed: a bare name hands the search back to the OS.
+
+        On Windows the operating system searches the *current directory*
+        first, so a fallback to the bare name "git" re-opened exactly the
+        hijack the resolver exists to close — silently, and with no way for
+        the caller to tell. The shipped container image has no ``git`` at
+        all, so there the fallback was the *default* path.
+        """
         run = self._patch(_fake_completed("diff"))
-        with mock.patch.object(vcs_tools, "_resolve_executable", return_value=None):
+        with mock.patch.object(vcs_tools, "resolve_executable", return_value=None):
             result = vcs_tools.tool_git_diff({})
-        self.assertIn("content", result)
-        self.assertEqual(run.call_args.args[0][0], "git")
+        self.assertIn("Unable to read Git diff", result["error"])
+        run.assert_not_called()
 
     def test_large_diff_is_truncated(self):
         self._patch(_fake_completed("x" * 20000))

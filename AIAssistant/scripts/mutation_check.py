@@ -67,7 +67,10 @@ class Mutant:
 #: ADR 0034 adds five more (the secret-file read guard, the PATH scan that
 #: never consults the current directory, the case-insensitive write deny,
 #: the sealed-regime read refusal and the value-shaped egress check).
-MIN_MUTANTS = 80
+#: ADR 0035 adds six more (the path-shaped program name, the case-insensitive
+#: blocked-directory rule, the path confinement itself, the LSP server
+#: resolution, the fail-closed git resolution and the attachment gate).
+MIN_MUTANTS = 86
 
 MUTANTS: tuple[Mutant, ...] = (
     # ── Sandbox allow-list (ADR 0011) ────────────────────────────────────────
@@ -150,12 +153,59 @@ MUTANTS: tuple[Mutant, ...] = (
         "replaces pyproject.toml on a case-insensitive filesystem)",
     ),
     Mutant(
-        "src/ai_assistant/tools/sandbox.py",
+        "src/ai_assistant/exec_policy.py",
         'for entry in (path or "").split(os.pathsep):',
         'for entry in (path or "").split(os.pathsep) + [os.curdir]:',
         ("tests.unit.test_sandbox",),
         "the PATH scan consults the current directory (a planted binary wins "
         "over the operator's own tool)",
+    ),
+    Mutant(
+        "src/ai_assistant/exec_policy.py",
+        "if not name or os.path.isabs(name) or os.path.dirname(name):",
+        "if False:",
+        ("tests.unit.test_sandbox",),
+        "a path-shaped program name is resolved instead of refused (the "
+        "allow-list constrains the name, not the path)",
+    ),
+    Mutant(
+        "src/ai_assistant/path_policy.py",
+        "    return name.lower() in _BLOCKED_DIR_NAMES",
+        "    return name in _BLOCKED_DIR_NAMES",
+        ("tests.unit.test_path_policy",),
+        "the blocked-directory rule compares case-sensitively (.GIT is "
+        "the same directory as .git on a case-insensitive filesystem)",
+    ),
+    Mutant(
+        "src/ai_assistant/path_policy.py",
+        "        resolved.relative_to(root_path)",
+        "        pass",
+        ("tests.unit.test_path_policy",),
+        "the path confinement check removed (a junction out of the root is "
+        "read as if it were inside it)",
+    ),
+    Mutant(
+        "src/ai_assistant/tools/lsp_client.py",
+        "    resolved_bin = resolve_tool_binary(server_bin)",
+        "    resolved_bin = shutil.which(server_bin)",
+        ("tests.unit.test_lsp_client",),
+        "the LSP server is resolved with the platform lookup again (the "
+        "current directory wins over PATH on Windows)",
+    ),
+    Mutant(
+        "src/ai_assistant/tools/builtin/vcs_tools.py",
+        '    binary = resolve_executable("git", os.environ.get("PATH", ""))',
+        '    binary = "git"',
+        ("tests.unit.test_vcs_tools",),
+        "the git tools fall back to a bare name (the OS searches the "
+        "current directory first on Windows)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/http/chat_routes.py",
+        "        if resolve_within(root, path) is not None:",
+        "        if False:",
+        ("tests.unit.test_http_chat_routes",),
+        "a client-named attachment is opened from anywhere on the host",
     ),
     Mutant(
         "src/ai_assistant/tools/sandbox.py",
@@ -434,7 +484,7 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "src/ai_assistant/tools/builtin/path_utils.py",
-        "if is_secret_name(os.path.basename(abs_path)) or is_secret_name(os.path.basename(real_path)):",
+        "if is_secret_name(os.path.basename(rel_path)) or is_secret_name(os.path.basename(abs_path)):",
         "if False:",
         ("tests.unit.test_file_tools",),
         "the secret-file read guard removed (the agent reads .env — the "

@@ -92,6 +92,37 @@ def resolve_paths(base_dir: Path | str, explicit_data_dir: Path | str | None = N
         docs_dirs=(docs_dir, ai_docs_dir),
     )
 
+#: The directory the desktop client stores the sealed attachments in, relative
+#: to the platform's *data root* (``AppConfig::uploadDir`` on the C++ side).
+#: The name is pinned by ``tests/unit/test_upload_dir_contract.py``, which
+#: reads the C++ implementation — the two sides have to agree or the AI
+#: service refuses the attachment the client just stored.
+UPLOAD_DIR_NAME = "Upload"
+
+#: The production install puts the data root in the per-user application data
+#: directory, under the product folder. It is the same literal the C++ side
+#: uses (``AppConfig.cpp``), and the contract test pins it.
+PRODUCT_DATA_DIR_NAME = "3D-Reconstruction"
+
+
+def attachment_roots() -> tuple[str, ...]:
+    """The directories a client-named chat attachment may live in.
+
+    The desktop client seals the attachment it stores and writes it into the
+    platform's upload directory (``AppConfig::uploadDir``): ``<data root>/
+    Upload``. The data root is the project root for a source checkout and
+    ``<APP_DATA_DIR>/3D-Reconstruction`` for an installed deployment, so
+    both layouts are listed here — the AI service has to open the file the
+    client just stored, and it may not widen the scope to the whole disk.
+    """
+    paths = get_paths()
+    roots = [paths.project_root / UPLOAD_DIR_NAME, paths.data_dir / UPLOAD_DIR_NAME]
+    app_data = app_data_dir()
+    if app_data:
+        roots.append(Path(app_data) / PRODUCT_DATA_DIR_NAME / UPLOAD_DIR_NAME)
+    return tuple(str(root) for root in roots)
+
+
 def safe_relpath(path: str | Path, start: str | Path) -> str:
     """Return a relative path, falling back to absolute if impossible (e.g. different drives)."""
     try:

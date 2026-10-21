@@ -14,6 +14,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from ai_assistant.exec_policy import executable_candidates, resolve_executable
+from ai_assistant.path_policy import canonical_path
 from ai_assistant.settings import agent_write_roots, load_agent_runtime_settings
 
 _ALLOWED = {"cmake", "ctest", "python", "pytest", "ruff", "git"}
@@ -129,12 +131,6 @@ _GIT_BISECT_VERBS = frozenset({
 # a tree whose build system executes commands of its own choosing.
 _CMAKE_PATH_FLAGS = frozenset({"-P", "-S", "-B", "--build", "--install"})
 
-#: Whether this platform resolves a program through ``PATHEXT``. It is a
-#: module constant rather than an inline ``os.name`` check so the branch can
-#: be exercised on either platform by the tests: the coverage gate runs on
-#: both Linux and Windows, and a branch only one of them can reach would sit
-#: at 99 % forever on the other.
-_IS_WINDOWS = os.name == "nt"
 
 
 def _inline_code_requested(argv: list[str]) -> bool:
@@ -195,23 +191,11 @@ def _executable_rejection(executable: str) -> str | None:
 def _canonical_path(path: Path) -> Path:
     """One canonical spelling of ``path``, with symlinks followed.
 
-    ``Path.resolve()`` asks the OS for the final path of an existing path,
-    which expands an 8.3 short name (``C:\\Users\\RUNNER~1``) into its long
-    form (``C:\\Users\\runneradmin``). A symlink whose *target does not
-    exist* cannot be opened, so it is resolved by reading the link — and the
-    link keeps the spelling it was created with. Two spellings of one
-    directory make ``relative_to`` fail, so a target that never left the
-    project root was reported as an escape, and the policy deny-list was
-    matched against a spelling it never sees. Canonicalising the parent (the
-    deepest part the OS can resolve) and re-appending the leaf gives the
-    root and the target one spelling, so the two are compared on the same
-    terms.
+    The implementation moved to :mod:`ai_assistant.path_policy` — it is
+    kernel policy, and the LSP read gate and the HTTP attachment gate need
+    the same spelling rule. This alias keeps the historical name working.
     """
-    resolved = path.resolve()
-    parent = resolved.parent
-    if parent.exists():
-        return parent.resolve() / resolved.name
-    return resolved
+    return canonical_path(path)
 
 
 def _path_escapes_workspace(value: str, cwd: str) -> bool:
@@ -357,50 +341,23 @@ def _docker_argv(argv: list[str], cwd: str, image: str) -> tuple[list[str], str]
 def _executable_candidates(candidate: str) -> list[str]:
     """The spellings a bare program name may have on this platform.
 
-    Windows resolves a program through ``PATHEXT`` (``.COM;.EXE;.BAT;…``);
-    POSIX has exactly one spelling. The extension is part of the *program*
-    the allow-list names, so it is resolved here rather than left to the
-    operating system.
+    The implementation moved to :mod:`ai_assistant.exec_policy` — the
+    resolution of a program is *one* rule, and the LSP client needs the same
+    one. This alias keeps the historical name working.
     """
-    if not _IS_WINDOWS:
-        return [candidate]
-    declared = os.environ.get("PATHEXT", "")
-    extensions = [
-        item if item.startswith(".") else f".{item}"
-        for item in declared.split(os.pathsep) if item
-    ]
-    if not extensions:
-        extensions = [".com", ".exe", ".bat", ".cmd"]
-    return [candidate] + [candidate + extension.lower() for extension in extensions]
+    return executable_candidates(candidate)
 
 
 def _resolve_executable(name: str, path: str) -> str | None:
     """Resolve an allow-listed bare name to exactly one absolute PATH hit.
 
-    ``shutil.which`` cannot be used for this, and the reason is the whole
-    point of the gate. On Windows it **prepends the current directory** to
-    the search path, so a binary planted next to the process wins over
-    ``PATH`` — and the value it returns is then *relative* (``.\\git.BAT``),
-    not the absolute hit this gate promised. Two consequences followed: the
-    allow-list was not enforced at all (the hit never had to be on
-    ``PATH``), and the refusal for "a name PATH does not carry" never fired,
-    because ``which`` had already found the planted file.
-
-    The scan below therefore walks the ``PATH`` entries itself, in order, and
-    never looks at the current directory. The result is absolute, so the
-    operating system cannot re-order the search when the child starts: the
-    program that runs is the one this function validated.
+    The implementation moved to :mod:`ai_assistant.exec_policy` — the
+    resolution of a program is *one* rule, and the LSP client needs the same
+    one (``shutil.which`` there prepended the current directory to the
+    search path, so a planted binary won over the operator's own tool).
+    This alias keeps the historical name working.
     """
-    if not name or os.path.isabs(name) or os.path.dirname(name):
-        return None
-    for entry in (path or "").split(os.pathsep):
-        if not entry:
-            continue
-        directory = entry.strip('"')
-        for candidate in _executable_candidates(os.path.join(directory, name)):
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-                return os.path.abspath(candidate)
-    return None
+    return resolve_executable(name, path)
 
 
 def run(command: str, cwd: str, timeout: int) -> dict[str, Any]:

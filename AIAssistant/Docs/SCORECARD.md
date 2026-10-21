@@ -15,13 +15,13 @@
 | Gate | Command | Measured 2026-10-21 |
 |------|---------|---------------------|
 | Lint | `python -m ruff check .` | 0 issues |
-| Types | `python -m mypy src/ai_assistant` | 0 issues, 138 files, `strict = true` (3 SDK-boundary modules relax 2 flags, ADR 0022) |
+| Types | `python -m mypy src/ai_assistant` | 0 issues, 140 files, `strict = true` (3 SDK-boundary modules relax 2 flags, ADR 0022) |
 | Layer contracts | `PYTHONPATH=src lint-imports --no-logo` | 9/9 contracts kept (ADR 0032: the application layer may no longer import the plugin package — the catalogue is a port) |
 | Byte-compile | `python -m compileall -q evals src` | clean |
-| Tests | `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"` | 2 058 tests, 0 failures, 4 skipped |
-| Coverage | `PYTHONPATH=src python -m coverage run … && python -m coverage report` | **100.00%** — 9 162 statements, 2 426 branches, 0 missed, 0 partial |
-| Mutation | `PYTHONPATH=src python scripts/mutation_check.py` | **80/80 killed** (ADR 0032 added 7: the policy-tree write deny and its prefix match, the OpenAPI surface, the log redaction, the compare-and-set, the checkpoint seal, the adapter's CAS guard and the volatile-key rule; ADR 0033 added one: the write target is resolved, so a symlink into a policy tree is matched on the file it points at; ADR 0034 added five: the secret-file read guard, the PATH scan that never consults the current directory, the case-insensitive write deny, the sealed-regime read refusal and the value-shaped egress check), 0 survived, 0 stale |
-| Mutation floor | `scripts/mutation_check.py` | `MIN_MUTANTS = 80` — deleting a mutant now fails the gate (ADR 0032) |
+| Tests | `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"` | 2 090 tests, 0 failures, 6 skipped |
+| Coverage | `PYTHONPATH=src python -m coverage run … && python -m coverage report` | **100.00%** — 9 219 statements, 2 436 branches, 0 missed, 0 partial |
+| Mutation | `PYTHONPATH=src python scripts/mutation_check.py` | **86/86 killed** (ADR 0032 added 7: the policy-tree write deny and its prefix match, the OpenAPI surface, the log redaction, the compare-and-set, the checkpoint seal, the adapter's CAS guard and the volatile-key rule; ADR 0033 added one: the write target is resolved, so a symlink into a policy tree is matched on the file it points at; ADR 0034 added five: the secret-file read guard, the PATH scan that never consults the current directory, the case-insensitive write deny, the sealed-regime read refusal and the value-shaped egress check; ADR 0035 added six: the path-shaped program name, the case-insensitive blocked-directory rule, the path confinement itself, the LSP server resolution, the fail-closed git resolution and the attachment gate), 0 survived, 0 stale |
+| Mutation floor | `scripts/mutation_check.py` | `MIN_MUTANTS = 86` — deleting a mutant now fails the gate (ADR 0032) |
 | Policy evals | `python evals/run_tool_eval.py`, `python evals/run_agentic_eval.py` | exit 0; tool: 16/16 (adversarial included); agentic: 114 cases / 25 scenarios, 0 failed, **0 skipped** (ADR 0025) |
 | Model pins | `python scripts/verify_models.py` | 5 artifact local khớp pin, 1 chưa tải, **0 mismatched** (ADR 0023) |
 | Supply chain | `python scripts/generate_sbom.py` | CycloneDX 1.5: 171 distribution (kèm **3 941 SHA-256**) + 6 artifact GGUF kèm commit/SHA-256 (ADR 0023) |
@@ -113,6 +113,94 @@ the tamper could decode to the very same bytes — the seal still verified
 and the test passed without having tampered anything, one run in four. The
 tamper now lands in the middle of the envelope.
 
+## Follow-up on the 2026-10-21 review (ADR 0035)
+
+ADR 0034 closed eight defects and concluded that *every gate was green
+because the gates could not see them*. To test that conclusion, the review
+was re-run against the layers ADR 0034 never touched — RAG, the HTTP routes,
+the plugin loader, the orchestration, the remaining tools — with the same
+lens. It found **five more of the same class**, and one of them was a
+*sibling* of a rule ADR 0034 had just fixed, twenty lines away, in the same
+function:
+
+| Defect | Why the gate was green |
+|---|---|
+| `.GIT/config` was readable (no approval) — it carries the remote URL and its credential helper | The *blocked-directory* rule compared case-**sensitively** while the *secret file name* rule right next to it compared case-**insensitively**: a visible asymmetry inside one function |
+| `lsp_client` still resolved its program with `shutil.which` — a binary planted in the working directory ran | The test mocked that lookup and returned a **relative** name — exactly the shape a current-directory hit produces. It was the **second** place a program was resolved; ADR 0034 had fixed only the first |
+| The LSP read gate compared the path *spelling* — a junction inside the project read out of it | Every other read gate resolves first and fails closed; this one did not |
+| The git tools threw the verified absolute hit away with `or "git"` | The test *asserted* the unsafe behaviour was correct, with `subprocess.run` mocked |
+| The chat route opened **any** client-named path, holding the at-rest key | `image_to_data_uri` was mocked; no case ever read a real file |
+
+**The conclusion ADR 0034 drew is now twice measured: a green gate table is a
+measurement of the *gate*, not of the *system*.** And the deeper point: if
+thirteen defects share one class, then *counting the fixes* is a meaningless
+number — the class survives, and the fourteenth instance is one more line of
+code. Closing instances is the wrong move; closing the **class** is the right
+one.
+
+So ADR 0035 closes the class, not the instances:
+
+- **Two kernel leaves own the rules.** `ai_assistant/path_policy.py`
+  (`canonical_path`, `resolve_within`, `is_blocked_dir`, `is_secret_name`)
+  and `ai_assistant/exec_policy.py` (`resolve_executable`,
+  `executable_candidates`). Standard library only, so every layer may depend
+  on them and they depend on none. Three places that each resolved a program
+  their own way now use one rule; four places that each compared a path their
+  own way now use one rule.
+- **Every comparison is case-insensitive.** A Windows filesystem is
+  case-insensitive, so `.GIT` *is* `.git`. The tests are **property-shaped**:
+  they walk the rule sets themselves, so adding a name to a set automatically
+  requires the case-insensitive behaviour — a drift-proof guard rather than a
+  list of examples that can go stale.
+- **The real target decides, not the spelling.** `resolve_within` checks the
+  resolved target (links followed) and canonicalises both sides before
+  comparing, so a junction out of the root is an escape and Windows' 8.3
+  short form never mismatches the canonical long form. Three read gates that
+  used three different methods now share one, and it is **fail-closed**.
+- **`shutil.which` is banned — by a static guard.**
+  `tests/integration/test_executable_resolution_guard.py` walks the AST of
+  every module under `src/ai_assistant/**` and fails the build if any of
+  them calls the platform lookup. The guard has to be static because the
+  defect it prevents is invisible at runtime: the old mock returned a
+  relative name, the very shape a current-directory hit produces, so the
+  suite stayed green while the control did not work.
+- **Fail closed instead of degrading.** The git tools no longer fall back to
+  a bare name when `git` is not on `PATH`; the call is refused. The shipped
+  container image has no `git` at all, so there the fallback was the
+  *default* path.
+- **The attachment gate.** The chat route opens a client-named path and holds
+  the at-rest key, so the path is only opened when it resolves inside a
+  directory the desktop client stores attachments in — derived exactly as
+  `AppConfig::uploadDir` does and pinned by a new cross-language contract
+  test — or when the file is a **sealed** envelope, which only the platform
+  can produce.
+
+`MIN_MUTANTS` 80 → **86**: six new mutants, one per new guard.
+
+### The class is closed at the structural level
+
+| Class | Closed how | A new instance would |
+|---|---|---|
+| resolving a program | one kernel owner + a static AST guard | fail the build |
+| comparing a path to a root | one kernel owner, fail-closed, canonical on both sides | use the owner and be correct |
+| comparing a name to a rule set | one owner, case-insensitive, property-tested over the set | be correct by construction |
+| naming a secret file | one owner, matched by name not extension | be correct by construction |
+| opening a client-named file | one gate (upload roots or a sealed envelope) | be correct |
+
+### Remaining tracked gaps (ADR 0035)
+
+- **The two LSP tools are still refused by the supervisor.** They are
+  advertised to the model and registered in the factory, but the
+  supervisor's `ALLOWED_TOOLS` table has no row for them, so every call is
+  refused. That refusal is what *masked* the `shutil.which` defect while it
+  was live. The invariant is recorded: **do not enable the LSP tools before
+  `lsp_client` uses the shared resolver** — it does now, so the road is safe,
+  but enabling them is a separate decision.
+- **ADR 0013 §6 describes the current state of those two tools incorrectly.**
+- **The attachment gate accepts absolute paths that resolve into an upload
+  root.** A deployment whose client stores attachments elsewhere has to
+  declare another root.
+
 ## Follow-up on the 2026-10-21 review (ADR 0034)
 
 A third architectural review ran against the source, not this page, and
@@ -185,14 +273,34 @@ All eight are closed and pinned by regression tests:
 ### Controls that are only verified through a mock
 
 Recorded so the next review does not have to guess which security controls
-are proven by a test that cannot reproduce the attack:
+are proven by a test that cannot reproduce the attack. ADR 0035 moved most
+of this list into the *structural* column — a control that is verified
+through a mock but whose class is closed by a static guard is no longer a
+silent gap.
 
-| Control | The test proves | The test cannot prove |
-|---|---|---|
-| `_resolve_executable` (PATH scan) | that a planted binary outside `PATH` is not resolved | — (exercised for real, against real files) |
-| `agent_safe_path` (secret names) | that `.env` and its family are refused | — (exercised for real, against real files) |
-| the write deny-list (case) | that `PYPROJECT.TOML` is refused | — (exercised for real) |
-| the sealed-regime read | that a substituted plaintext column is refused | — (exercised for real, against a real SQLite file) |
+| Control | The test proves | The test cannot prove | Closed at the class level? |
+|---|---|---|---|
+| `_resolve_executable` (PATH scan) | that a planted binary outside `PATH` is not resolved | — (exercised for real, against real files) | yes — static AST guard |
+| `agent_safe_path` (secret names) | that `.env` and its family are refused | — (exercised for real, against real files) | yes — one owner, property-tested |
+| the write deny-list (case) | that `PYPROJECT.TOML` is refused | — (exercised for real) | yes — one owner, property-tested |
+| the sealed-regime read | that a substituted plaintext column is refused | — (exercised for real, against a real SQLite file) | partially — see the tracked gap on the schema version |
+| the blocked-directory rule (case) | that `.GIT` is refused | — (exercised for real) | yes — one owner, property-tested |
+| the LSP server resolution | that the shared resolver is used | — (the *planted binary* case is exercised for real) | yes — static AST guard |
+| the git resolution | that an absent `git` is refused | — (exercised for real) | yes — one owner, fail-closed |
+| the attachment gate | that a path outside the upload roots is refused | — (exercised for real, against a real file) | yes — one gate |
+| the path confinement | that a link out of the root is refused | — (exercised for real where the platform allows a link; forced otherwise) | yes — one owner, fail-closed |
+
+### The one control that is still mock-only
+
+The **sealed-regime read** of the task store is exercised for real, but the
+*signal* that says "this store has migrated" is `PRAGMA user_version` — which
+lives **inside the file** an attacker with write access can also edit. A
+forged version makes the store re-run its one-time migration, and the
+migration seals the substituted rows. So the "leave it plaintext" downgrade
+is closed (ADR 0034) while the "forge the version" one is not. Closing it
+needs a trust anchor *outside* the file, which is the same question ADR
+0034 recorded for the whole-file pending envelope. Tracked, not forgotten.
+
 
 ### Remaining tracked gaps (ADR 0034)
 
