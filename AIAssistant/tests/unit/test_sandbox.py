@@ -460,9 +460,18 @@ class ExecutableResolutionTests(unittest.TestCase):
         planted next to the process wins over the operator's own tool — and
         the server's working directory is a directory the agent may write
         to. The resolver walks PATH itself and never looks here.
+
+        The planted file is named **the way the resolver would look for it**:
+        on Windows that is ``git.bat`` (one of the ``PATHEXT`` spellings), on
+        POSIX it is ``git`` — the resolver asks for one spelling there, so a
+        file called ``git.bat`` would never be a candidate. It also needs the
+        execute bit on POSIX, or the scan would skip it for a reason that has
+        nothing to do with the current directory.
         """
         with tempfile.TemporaryDirectory() as workspace:
-            Path(workspace, "git.bat").write_text("@echo PWNED\r\n", encoding="utf-8")
+            planted = Path(workspace) / ("git.bat" if os.name == "nt" else "git")
+            planted.write_text("@echo PWNED\r\n", encoding="utf-8")
+            os.chmod(planted, 0o700)
             elsewhere = tempfile.mkdtemp(prefix="empty_path_")
             original = os.getcwd()
             os.chdir(workspace)

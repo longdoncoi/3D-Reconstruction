@@ -189,8 +189,13 @@ class LspClientHelperTests(unittest.TestCase):
         the first time a definition lookup happened.
         """
         with tempfile.TemporaryDirectory() as workspace:
+            # Named the way the resolver would look for it: on Windows one of
+            # the PATHEXT spellings, on POSIX the bare name. It also needs
+            # the execute bit there, or the scan would skip it for a reason
+            # that has nothing to do with the current directory.
             planted = Path(workspace) / ("clangd.bat" if os.name == "nt" else "clangd")
             planted.write_text("@echo PWNED\r\n", encoding="utf-8")
+            os.chmod(planted, 0o700)
             original = os.getcwd()
             os.chdir(workspace)
             try:
