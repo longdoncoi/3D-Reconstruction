@@ -551,7 +551,12 @@ class ExecutableResolutionTests(unittest.TestCase):
         with mock.patch("ai_assistant.exec_policy.IS_WINDOWS", False):
             self.assertEqual(executable_candidates("git"), ["git"])
         with mock.patch("ai_assistant.exec_policy.IS_WINDOWS", True):
-            with mock.patch.dict(os.environ, {"PATHEXT": ".COM;.EXE;.BAT"}):
+            # ``PATHEXT`` is separated by the platform's own path separator
+            # (``;`` on Windows, ``:`` on POSIX) — the code splits on
+            # ``os.pathsep``, so the simulated value has to use it too.
+            with mock.patch.dict(
+                os.environ, {"PATHEXT": os.pathsep.join([".COM", ".EXE", ".BAT"])},
+            ):
                 candidates = executable_candidates("git")
         self.assertIn("git.exe", candidates)
         self.assertIn("git.bat", candidates)
