@@ -203,7 +203,14 @@ jobs:
 
       - name: Static analysis — import-linter architecture contracts
         working-directory: AIAssistant
-        run: PYTHONPATH=src lint-imports --no-logo
+        # ``PYTHONPATH=src lint-imports`` is a bash assignment: on a
+        # windows-latest runner the default shell is PowerShell, which reads
+        # it as a command name and fails the step. The environment is set
+        # through the step's ``env`` block instead, so the same command works
+        # on both runners.
+        env:
+          PYTHONPATH: src
+        run: lint-imports --no-logo
 
       - name: Static analysis — mypy full package
         working-directory: AIAssistant
@@ -219,10 +226,10 @@ jobs:
     # the Qt application.
     runs-on: ubuntu-latest
     # The mutation step is the expensive one: it runs the whole suite once per
-    # mutant (57 decisions, ADR 0007), so the budget has to cover the suite
-    # multiplied by the mutant count plus the baseline run. Measured locally:
-    # ~14 s per suite run.
-    timeout-minutes: 35
+    # mutant (80 decisions, ADR 0007 + ADR 0011), so the budget has to cover the
+    # suite multiplied by the mutant count plus the baseline run. Measured
+    # locally: ~25 s per suite run, so 80 mutants ≈ 35 min.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -259,9 +266,9 @@ jobs:
         # Inverts one decision at a time (fail-closed provenance, the quality
         # gate, the ONNX export contract, preflight fail-fast, the safe
         # stale-lock steal, manifest integrity, the publication order, the
-        # progress protocol, the exit-code taxonomy) and requires the owning
-        # suite to fail. 57 decisions, one per guard the package's docs claim
-        # to protect (ADR 0007). Runs after coverage because it rewrites
-        # cvtrain sources in place and restores them byte-for-byte in a
-        # finally, guarded by a lock file.
+        # progress protocol, the exit-code taxonomy, the retention rules) and
+        # requires the owning suite to fail. 80 decisions, one per guard the
+        # package's docs claim to protect (ADR 0007, widened by ADR 0011).
+        # Runs after coverage because it rewrites cvtrain sources in place and
+        # restores them byte-for-byte in a finally, guarded by a lock file.
         run: python scripts/mutation_check.py

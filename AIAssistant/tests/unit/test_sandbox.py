@@ -544,13 +544,17 @@ class ExecutableResolutionTests(unittest.TestCase):
         The branch is a module constant so both sides can be exercised on
         either platform — the coverage gate runs on Linux *and* Windows, and
         a branch only one of them can reach would sit at 99 % forever on the
-        other.
+        other. ``PATHEXT`` is set explicitly for the Windows case, because
+        the *other* half of that branch (an unset ``PATHEXT``) is the
+        fallback the next case covers.
         """
         with mock.patch("ai_assistant.exec_policy.IS_WINDOWS", False):
             self.assertEqual(executable_candidates("git"), ["git"])
         with mock.patch("ai_assistant.exec_policy.IS_WINDOWS", True):
-            candidates = executable_candidates("git")
+            with mock.patch.dict(os.environ, {"PATHEXT": ".COM;.EXE;.BAT"}):
+                candidates = executable_candidates("git")
         self.assertIn("git.exe", candidates)
+        self.assertIn("git.bat", candidates)
 
     def test_a_missing_pathext_falls_back_to_the_standard_extensions(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
