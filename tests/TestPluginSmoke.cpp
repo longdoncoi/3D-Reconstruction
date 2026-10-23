@@ -146,6 +146,12 @@ int runPluginInitialization(const QString &pluginName)
             qInfo() << "plugin declined initialization:" << pluginName;
             return 0;
         }
+
+        // A plugin has to keep its installed UI usable after a language
+        // change.  Emit the real application signal before cleanup so every
+        // plugin-owned translation callback is exercised while its widgets
+        // still exist.
+        emit context.signalBus()->languageChanged(QStringLiteral("en"));
         target->cleanup();
 
         // The widget-ownership contract: a plugin must release every object

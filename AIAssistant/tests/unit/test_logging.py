@@ -36,10 +36,10 @@ class ForceUtf8StreamTests(unittest.TestCase):
         self.assertIs(result, stream)
         self.assertTrue(stream.reconfigured)
 
-    def test_wraps_buffer(self) -> None:
+    def test_buffer_only_stream_is_not_wrapped(self) -> None:
         stream = _BufferStream()
         result = force_utf8_stream(stream)
-        self.assertIsInstance(result, io.TextIOWrapper)
+        self.assertIs(result, stream)
 
     def test_unwrappable_returned_unchanged(self) -> None:
         stream = _ReconfigurableStream()

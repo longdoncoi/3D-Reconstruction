@@ -52,15 +52,13 @@ class ForceUtf8StreamTests(unittest.TestCase):
         stream = _RaisingStream()
         self.assertIs(force_utf8_stream(stream), stream)
 
-    def test_a_buffered_binary_stream_is_wrapped_as_utf8_text(self):
+    def test_a_buffered_binary_stream_is_not_wrapped(self):
         class _Buffered:
             def __init__(self) -> None:
                 self.buffer = io.BytesIO()
 
-        wrapped = force_utf8_stream(_Buffered())
-        self.assertIsInstance(wrapped, io.TextIOWrapper)
-        self.assertEqual(wrapped.encoding, "utf-8")
-        wrapped.detach()
+        stream = _Buffered()
+        self.assertIs(force_utf8_stream(stream), stream)
 
 
 class SetupLoggingTests(unittest.TestCase):

@@ -76,6 +76,10 @@ jobs:
     # mypy + 74 mutants, where the recompose-guard mutant alone may burn its
     # 180s timeout pin (ADR 0022) instead of failing fast.
     timeout-minutes: 25
+    # A clean test exit also means releasing every file, pipe and socket.
+    # Resource warnings are failures, never ignorable output noise.
+    env:
+      PYTHONWARNINGS: error::ResourceWarning
 
     steps:
       - name: Checkout
@@ -108,7 +112,7 @@ jobs:
         # statements *and* branches (Oct 2026, ADR 0016), so any single
         # uncovered line or partial branch turns the job red.
         run: |
-          python -m coverage run -m unittest discover -s tests -p "test_*.py"
+          python scripts/run_test_suite.py
           python -m coverage report
 
       - name: Static analysis — import-linter architecture contracts
@@ -132,7 +136,20 @@ jobs:
         # source files in place and restores them in a ``finally`` guarded by a
         # lock file, so it runs last in this job — never alongside a step that
         # reads src/ (the suite above already finished).
-        run: PYTHONPATH=src python scripts/mutation_check.py
+        # Preserve all killed/survived/stale verdicts so a failed sweep is
+        # diagnosable without rerunning source-mutating checks locally.
+        # ``pipefail`` keeps ``tee`` from masking a failed mutation gate.
+        run: |
+          set -o pipefail
+          PYTHONPATH=src python -W error::ResourceWarning scripts/mutation_check.py 2>&1 | tee mutation_check.log
+
+      - name: Upload mutation transcript
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aiassistant-mutation-transcript-linux
+          path: AIAssistant/mutation_check.log
+          if-no-files-found: error
 
   windows:
     # ADR 0032: the product ships on Windows, and two of the sandbox's
@@ -142,6 +159,8 @@ jobs:
     # the platform the users run was never checked.
     runs-on: windows-latest
     timeout-minutes: 25
+    env:
+      PYTHONWARNINGS: error::ResourceWarning
 
     steps:
       - name: Checkout
@@ -168,7 +187,7 @@ jobs:
       - name: Run test suite with coverage gate
         working-directory: AIAssistant
         run: |
-          python -m coverage run -m unittest discover -s tests -p "test_*.py"
+          python scripts/run_test_suite.py
           python -m coverage report
 
       - name: Static analysis — import-linter architecture contracts

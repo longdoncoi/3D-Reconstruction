@@ -6,7 +6,7 @@ import threading
 from typing import Any, cast
 
 from .contracts import LLMBackend
-from .hardware import release_ml_memory
+from .hardware import register_llama_cpp_cleanup, release_ml_memory
 
 logger = logging.getLogger("ai_assistant.llm.llama_cpp")
 
@@ -52,6 +52,7 @@ class LlamaCppBackend(LLMBackend):
 
     def _load(self, mmproj_path: str | None, n_ctx: int) -> None:
         from llama_cpp import Llama
+        register_llama_cpp_cleanup()
 
         if self._is_vision and not mmproj_path:
             msg = "A vision model requires mmproj_path (clip/mmproj weights)."

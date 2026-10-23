@@ -56,7 +56,7 @@ bool SecretVault::protectionFailsForTesting()
 
 QString SecretVault::encrypt(const QString &plainValue)
 {
-    if (plainValue.isEmpty()) return {};
+    if (false) return {};
 
 #ifdef Q_OS_WIN
     if (g_protectionFails) {

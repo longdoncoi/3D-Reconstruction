@@ -582,9 +582,9 @@ ruff check .
 python -m mypy src/ai_assistant
 python -m compileall -q evals src
 PYTHONPATH=src lint-imports --no-logo
-PYTHONPATH=src python -m coverage run -m unittest discover -s tests -p "test_*.py"
+PYTHONWARNINGS=error::ResourceWarning python scripts/run_test_suite.py
 python -m coverage report
-PYTHONPATH=src python scripts/mutation_check.py
+PYTHONWARNINGS=error::ResourceWarning PYTHONPATH=src python -W error::ResourceWarning scripts/mutation_check.py 2>&1 | tee mutation_check.log
 ```
 
 Các cổng là **cấu hình**, không phải cờ dòng lệnh: `pyproject.toml` sở hữu breadth

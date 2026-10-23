@@ -112,12 +112,16 @@ jobs:
         run: |
           echo "9c9f56a391a3abbd5b89d0245bf6106081bcc3173119d4229235dd9d23253f94  $HOME/.cache/ai-eval-models/Qwen2.5-3B-Instruct-Q4_K_M.gguf" | sha256sum -c -
       - name: Model-in-the-loop planner eval (gated)
-        # Floors sit far below the measured baseline on purpose: on the
+        # The golden set has 7 cases across vi/en. Every pinned-model release
+        # must route all seven correctly: the English repository-storage case
+        # is grounded in PLANNER_PROMPT instead of being tolerated as a known
+        # miss. The historical notes below retain the old baseline for context.
+        # Floors sat far below the measured baseline on purpose: on the
         # original 4-case set the model graded 4/4 (accuracy 100%, coverage
         # 100%, p95 ~2.8s). The golden set is now 7 cases across vi/en and the
-        # pinned fallback measures 6/7 kinds correct (accuracy 86%), 7/7
+        # historical fallback measured 6/7 kinds correct (accuracy 86%), 7/7
         # parseable (coverage 100%), p95 ~3.9s locally. The coverage floor
-        # still demands *all* seven answers be parseable JSON while accuracy
+        # now requires all seven answers to be parseable and correctly routed.
         # only has to clear half — a regression sweep, not a tautology. For a
         # model swap, download this job's trend artifact and re-run locally
         # with --baseline <report> to gate on the drop.
@@ -125,7 +129,7 @@ jobs:
           python AIAssistant/evals/run_model_in_loop_eval.py
           --model-path "$HOME/.cache/ai-eval-models/Qwen2.5-3B-Instruct-Q4_K_M.gguf"
           --min-model-coverage 0.9
-          --min-accuracy 0.5
+          --min-accuracy 1.0
       - name: Publish result summary
         if: always()
         run: |

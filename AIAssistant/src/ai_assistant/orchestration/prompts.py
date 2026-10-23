@@ -44,6 +44,20 @@ Với yêu cầu engineering/coding có thay đổi repository, kế hoạch ph�
 đọc/định vị source liên quan, thay đổi được duyệt, xem lại diff và kiểm chứng
 bằng test/lint/compile/build phù hợp. Không coi việc tìm thấy file là đã hoàn thành."""
 
+ENGLISH_ROUTING_GUIDANCE = """
+English routing rule: use ``rag_search`` for facts private to this repository
+or deployment, including its files, source code, paths, stored indexes,
+configuration, people, roles, model artifacts, history and documentation.
+Do not answer those facts from general knowledge. Use ``direct`` only for
+general, project-independent concepts, and ``application_action`` only when
+the user asks the desktop application to do something.
+
+Example: "Where is the RAG index stored?" is a repository-specific storage
+question, so its only step kind is "rag_search".
+"""
+
+PLANNER_PROMPT += ENGLISH_ROUTING_GUIDANCE
+
 CRITIC_PROMPT = """Bạn là Critic (Người phản biện) của hệ thống AI Assistant.
 Nhiệm vụ của bạn là đánh giá xem kết quả thực thi của một tool có thực sự hoàn thành mục tiêu trong yêu cầu ban đầu của người dùng hay không. Nếu tool được gọi hoàn toàn sai mục đích (gọi nhầm tool), hãy đánh giá là thất bại (passed: false).
 Hãy trả về ĐÚNG MỘT JSON object (không kèm text) với format:
