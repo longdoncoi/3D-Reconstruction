@@ -6,10 +6,9 @@
       "dataset": "F:\\PROJECTS\\QT\\3D-Reconstruction\\Dataset\\data.yaml",
       "dataset_content_sha256": "65adb54b64b5a54d38be7f80dc476c3c28f2bbaf3ba8f64c3465d10b8e0decc6",
       "dataset_sha256": "e913869beb152a7488747e79170e62bcdbaeacac618e61258d278b379c8660a7",
-      "device": "0",
+      "device": "auto",
       "device_resolved": "cuda:0",
       "epochs": 5,
-      "epochs_completed": 5,
       "imgsz": 640,
       "metrics": {
         "fitness": 1.92913748684113,
@@ -24,13 +23,13 @@
       },
       "opset": 12,
       "role": "segmentation",
-      "run_dir": "F:\\PROJECTS\\QT\\3D-Reconstruction\\AIComputerVision\\runs\\segment\\train-20261023-230758-104444-2664",
+      "run_dir": "F:\\PROJECTS\\QT\\3D-Reconstruction\\AIComputerVision\\runs\\segment\\train-20261021-023739-231043-6056",
       "seed": 0,
-      "sha256": "e5b9ef1ef6a1231e3af4356d1e6f9a615014d666d079d864a399025113dcb28f",
+      "sha256": "b462c9996f2bcfb5545383e6dd596d14a1a493e348b5a23c31350dc49bb23aac",
       "size_bytes": 11626365,
       "source_weights": "yolo11n-seg.pt",
       "source_weights_sha256": "55ed65c56c91713d23e8402371c6c49a6fd84f257f7dce452e8d70e41dcbe152",
-      "trained_at": "2026-10-23T16:17:10+00:00",
+      "trained_at": "2026-10-20T19:43:25+00:00",
       "workers": 0
     },
     "yolo11n.onnx": {
@@ -39,10 +38,9 @@
       "dataset": "F:\\PROJECTS\\QT\\3D-Reconstruction\\Dataset\\data.yaml",
       "dataset_content_sha256": "65adb54b64b5a54d38be7f80dc476c3c28f2bbaf3ba8f64c3465d10b8e0decc6",
       "dataset_sha256": "e913869beb152a7488747e79170e62bcdbaeacac618e61258d278b379c8660a7",
-      "device": "0",
+      "device": "auto",
       "device_resolved": "cuda:0",
       "epochs": 5,
-      "epochs_completed": 5,
       "imgsz": 640,
       "metrics": {
         "fitness": 0.9613356309650053,
@@ -53,13 +51,13 @@
       },
       "opset": 12,
       "role": "detection",
-      "run_dir": "F:\\PROJECTS\\QT\\3D-Reconstruction\\AIComputerVision\\runs\\detect\\train-20261023-230350-977306-2664",
+      "run_dir": "F:\\PROJECTS\\QT\\3D-Reconstruction\\AIComputerVision\\runs\\detect\\train-20261021-023220-308356-6056",
       "seed": 0,
-      "sha256": "87d0d8014c11d3ec379ecc07029a7eefefcec43fa0b066bea275ec80cd250290",
+      "sha256": "2897ff5a8151f8f5d69d564d89906e73957beb68c005e80c221883dc29448e5d",
       "size_bytes": 10604034,
       "source_weights": "yolo11n.pt",
       "source_weights_sha256": "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1",
-      "trained_at": "2026-10-23T16:07:57+00:00",
+      "trained_at": "2026-10-20T19:37:38+00:00",
       "workers": 0
     },
     "yolo11x-tracking.onnx": {
@@ -71,7 +69,6 @@
       "device": "auto",
       "device_resolved": "cuda:0",
       "epochs": 5,
-      "epochs_completed": 5,
       "imgsz": 640,
       "metrics": {
         "fitness": 0.9203554220299417,
@@ -105,7 +102,7 @@
     "device": "auto",
     "device_resolved": "cuda:0",
     "epochs": 5,
-    "git_commit": "6c0154b59ef16da1247b2e7d31522aba426ff8df",
+    "git_commit": "b8049379680318fb922e9042daac5ce2b1171766",
     "imgsz": 640,
     "min_metrics": [],
     "models": [
@@ -116,10 +113,10 @@
     "opset": 12,
     "python": "3.11.0",
     "seed": 0,
-    "started_at": "2026-10-23T16:03:49+00:00",
+    "started_at": "2026-10-20T19:32:19+00:00",
     "workers": 0
   },
   "schema_version": 1,
   "ultralytics": "cvtrain=1.0.0;ultralytics=8.4.41;torch=2.7.0+cu128;onnx=1.21.0",
-  "updated_at": "2026-10-23T16:17:10+00:00"
+  "updated_at": "2026-10-20T20:40:21+00:00"
 }

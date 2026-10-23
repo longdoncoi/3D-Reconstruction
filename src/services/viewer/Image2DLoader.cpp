@@ -9,8 +9,7 @@
 #include <opencv2/imgproc.hpp>
 
 vtkSmartPointer<vtkActor> Image2DLoader::load(const QString& fileName) {
-    const QFileInfo fileInfo(fileName);
-    if (fileName.isEmpty() || !fileInfo.isFile() || !fileInfo.isReadable()) return nullptr;
+    if (fileName.isEmpty()) return nullptr;
 
     vtkNew<vtkImageReader2Factory> readerFactory;
     vtkSmartPointer<vtkImageReader2> reader = readerFactory->CreateImageReader2(fileName.toStdString().c_str());

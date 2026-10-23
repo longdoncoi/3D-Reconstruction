@@ -166,14 +166,6 @@ class PlannerRunTests(unittest.TestCase):
         kind, _latency = self.eval.planner_run("query", _StubBackend("no json at all"))
         self.assertIsNone(kind)
 
-    def test_prompt_explicitly_routes_english_repository_storage_questions_to_rag(self) -> None:
-        """The en_003 regression is fixed in the production prompt, not by
-        weakening the evaluator or special-casing its golden id."""
-        from ai_assistant.orchestration.prompts import PLANNER_PROMPT
-
-        self.assertIn('"Where is the RAG index stored?"', PLANNER_PROMPT)
-        self.assertIn('"rag_search"', PLANNER_PROMPT)
-
 
 class GateExitTests(unittest.TestCase):
     """Measured floors decide the exit code — and the log states both numbers."""

@@ -268,7 +268,7 @@ class BootstrapServerCoverageGaps(unittest.TestCase):
         finally:
             _release_new_handlers()
             root.setLevel(saved_level)
-            # Release the temporary StringIO dummies before restoring streams.
+            # Prevent ResourceWarning from devnull handles we opened
             if new_stdout is not None and new_stdout is not old_stdout and hasattr(new_stdout, "close"):
                 new_stdout.close()
             if new_stderr is not None and new_stderr is not old_stderr and hasattr(new_stderr, "close"):

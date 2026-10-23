@@ -13,10 +13,14 @@ from ..settings import apply_utf8_environment_default
 
 
 def force_utf8_stream(stream: TextIO) -> TextIO:
-    """Request UTF-8 on a reconfigurable stream without taking ownership of it."""
+    """Wrap a binary stream buffer with UTF-8 TextIOWrapper (Qt Creator compatibility)."""
     try:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
+            return stream
+        if hasattr(stream, "buffer"):
+            import io
+            return io.TextIOWrapper(stream.buffer, encoding="utf-8", errors="replace", line_buffering=True)
     except Exception:
         pass
     return stream

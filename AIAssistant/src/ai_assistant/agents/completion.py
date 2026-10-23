@@ -263,9 +263,6 @@ def structured_completion(messages: list[dict[str, Any]], max_tokens: int, tempe
             )
         else:
             from llama_cpp.llama_grammar import LlamaGrammar
-
-            from ai_assistant.llm.hardware import register_llama_cpp_cleanup
-            register_llama_cpp_cleanup()
             backend = cast(LLMBackend, llm_runtime.llm)
             response = backend.generate(
                 messages=messages, max_tokens=max_tokens, temperature=temperature,
@@ -305,9 +302,6 @@ def _get_precompiled_grammar(grammar_schema: str) -> Any:
             return _PRECOMPILED_GRAMMAR
         try:
             from llama_cpp.llama_grammar import LlamaGrammar
-
-            from ai_assistant.llm.hardware import register_llama_cpp_cleanup
-            register_llama_cpp_cleanup()
             _PRECOMPILED_GRAMMAR = LlamaGrammar.from_json_schema(grammar_schema)
             _GRAMMAR_SCHEMA = grammar_schema
         except ImportError:

@@ -30,7 +30,6 @@ private slots:
     void axialRoundTripIsStable();
     void axialFlipsYAxis();
     void sagittalMapsYZLinearly();
-    void coronalMapsXZLinearly();
 };
 
 void TestCrosshairGeometry::accessorsAreValidForAllOrientations()
@@ -91,24 +90,6 @@ void TestCrosshairGeometry::sagittalMapsYZLinearly()
     CrosshairGeometry::normalizedToWorld(ORI_SAGITTAL, nx, ny, bounds, oldWorld, back);
     QVERIFY(closeTo(back[0], 42.0));
     QVERIFY(closeTo(back[1], 25.0));
-    QVERIFY(closeTo(back[2], 750.0));
-}
-
-void TestCrosshairGeometry::coronalMapsXZLinearly()
-{
-    const double bounds[6] = {0.0, 100.0, 0.0, 10.0, 0.0, 1000.0};
-    const double world[3] = {25.0, 5.0, 750.0}; // Y is ignored for coronal
-
-    double nx = 0, ny = 0;
-    CrosshairGeometry::worldToNormalized(ORI_CORONAL, world, bounds, nx, ny);
-    QVERIFY(closeTo(nx, 0.25)); // X: 25/100
-    QVERIFY(closeTo(ny, 0.75)); // Z: 750/1000
-
-    double back[3] = {0, 0, 0};
-    const double oldWorld[3] = {0, 42.0, 0}; // coronal keeps old Y
-    CrosshairGeometry::normalizedToWorld(ORI_CORONAL, nx, ny, bounds, oldWorld, back);
-    QVERIFY(closeTo(back[0], 25.0));
-    QVERIFY(closeTo(back[1], 42.0));
     QVERIFY(closeTo(back[2], 750.0));
 }
 

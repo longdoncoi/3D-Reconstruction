@@ -14,7 +14,7 @@
 | # | Gate | Lệnh | Chứng minh điều gì |
 |---|------|------|-------------------|
 | 1 | Ranh giới kiến trúc | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | 12 nhóm luật: plugin↔service, service↔app, confinement của singleton, khớp heavy/light PCH, `src/utils` không heavy SDK, `waitForFinished()` phải có timeout, event filter phải gỡ được, không dò cửa sổ shell, blocking I/O không qua thread pool, include path của plugin không chứa `src/core`, **mỗi lời gọi inference phải đi qua exception guard** |
-| 2 | Bộ test | `ctest --test-dir build -C Release --output-on-failure` | Hành vi quan sát được của toàn bộ hợp đồng đã test (44 test executable) |
+| 2 | Bộ test | `ctest --test-dir build -C Release --output-on-failure` | Hành vi quan sát được của toàn bộ hợp đồng đã test (42 test executable) |
 | 3 | Coverage gate | `python tests/coverage_gate.py` | Mọi TU đo được có floor riêng; không TU nào "thoát" khỏi phép đo; **floor không được hạ** |
 | 4 | Mutation check | `python tests/mutation_check.py` | Mọi quyết định bảo vệ (guard) đã được *ghim*: đảo quyết định → test phải đỏ (63 mutant) |
 
@@ -657,7 +657,7 @@ Bốn gate đều chạy offline (không tải ONNX Runtime 323 MB, không cài 
 | bước | lệnh | phải xanh | nếu đỏ thì nghĩa là gì |
 |------|-------|-----------|-----------------------|
 | 1 | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | exit 0 | một luật ranh giới bị vi phạm |
-| 2 | `ctest --test-dir build -C Release --output-on-failure` | 44/44 | một hợp đồng quan sát được bị phá |
+| 2 | `ctest --test-dir build -C Release --output-on-failure` | 42/42 | một hợp đồng quan sát được bị phá |
 | 3 | `python tests/coverage_gate.py` | "98 file(s) at or above their floors" | một file đã **thoát** khỏi phép đo, hoặc coverage **tụt** dưới floor |
 | 4 | `python tests/mutation_check.py` | "63/63 killed, 0 survived, 0 stale, 0 invalid" | một quyết định bảo vệ **không còn được ghim** |
 
