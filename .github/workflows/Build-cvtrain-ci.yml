@@ -55,7 +55,7 @@ jobs:
   gates:
     name: gates (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Finite budget: the suite (499 tests) plus the coverage report, on the
+    # Finite budget: the suite (443 tests) plus the coverage report, on the
     # slowest supported runner.
     timeout-minutes: 30
     strategy:
@@ -101,11 +101,11 @@ jobs:
   mutation:
     name: mutation (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # The mutation sweep runs the whole suite once per mutant (101 decisions,
-    # ADR 0007 + ADR 0011 + ADR 0013), so the budget has to cover the suite multiplied by
+    # The mutation sweep runs the whole suite once per mutant (80 decisions,
+    # ADR 0007 + ADR 0011), so the budget has to cover the suite multiplied by
     # the mutant count plus the baseline run. Measured locally: ~25 s per
-    # suite run, so 101 mutants take about an hour. The Windows job sweeps the
-    # platform-sensitive subset only (19 mutants, ~15 min).
+    # suite run, so 80 mutants ≈ 35 min. The Windows job sweeps the
+    # platform-sensitive subset only (11 mutants, ~5 min).
     timeout-minutes: 90
     strategy:
       fail-fast: false
