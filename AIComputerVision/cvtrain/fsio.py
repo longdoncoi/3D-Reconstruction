@@ -398,7 +398,7 @@ def _windows_process_alive(pid: int) -> bool | None:  # pragma: no cover - Windo
     WAIT_TIMEOUT = 0x00000102
     ERROR_INVALID_PARAMETER = 87
     try:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
         kernel32.OpenProcess.restype = ctypes.c_void_p
         kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
         kernel32.WaitForSingleObject.restype = ctypes.c_uint32
@@ -409,7 +409,7 @@ def _windows_process_alive(pid: int) -> bool | None:  # pragma: no cover - Windo
             # ERROR_INVALID_PARAMETER is "no such process"; access denied means
             # the process exists but belongs to someone else. Anything else is
             # unknown, and unknown falls back to the age rule.
-            return False if ctypes.get_last_error() == ERROR_INVALID_PARAMETER else None
+            return False if ctypes.get_last_error() == ERROR_INVALID_PARAMETER else None  # type: ignore[attr-defined]
         try:
             # ``ctypes`` is untyped, so the status is cast explicitly: the
             # function's contract is ``bool | None``, not ``Any``. Only a

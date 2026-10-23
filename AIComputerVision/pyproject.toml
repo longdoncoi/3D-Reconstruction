@@ -81,6 +81,10 @@ ignore_missing_imports = true
 # imported lazily by ``onnx_contract`` for the post-export smoke inference, so
 # the type-checker runs on machines that only lint without the ML stack.
 [[tool.mypy.overrides]]
+module = ["cvtrain.fsio"]
+warn_unused_ignores = false
+
+[[tool.mypy.overrides]]
 module = ["onnxruntime", "onnxruntime.*"]
 ignore_missing_imports = true
 
