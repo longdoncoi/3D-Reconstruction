@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from ai_assistant.domain.tasks import AgentTask
     from ai_assistant.llm.contracts import PromptBuilder
     from ai_assistant.orchestration.specialists import ChatbotAgent
-    from ai_assistant.ports import FieldCipher
+    from ai_assistant.ports import FieldCipher, LLMBackend
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ class LlmModule:
         self._reloading = False
 
     @contextmanager
-    def model_lease(self) -> Iterator[Any]:
+    def model_lease(self) -> Iterator[LLMBackend | None]:
         """Pin the current backend for one run; reloads wait for the lease."""
         with self._model_condition:
             while self._reloading:
@@ -101,6 +101,20 @@ class LlmModule:
             with self._model_condition:
                 self._reloading = False
                 self._model_condition.notify_all()
+
+    def _require_reload_window(self) -> None:
+        """Refuse a backend swap outside :meth:`model_reload`.
+
+        The drain invariant belongs to the owner, not to the route that
+        happens to call it: ``release()`` used to be public and could free
+        the model while a run held a lease. Every mutation now has to prove
+        it is inside the drain window, so a future caller cannot bypass the
+        guarantee by calling the primitive directly.
+        """
+        with self._model_condition:
+            if not self._reloading:
+                msg = "model load/release must run inside model_reload()"
+                raise RuntimeError(msg)
 
     def _adopt_backend(self, backend: Any) -> bool:
         """Bind a freshly loaded backend to this instance.
@@ -141,6 +155,7 @@ class LlmModule:
         """
         from ai_assistant.llm.hardware import release_ml_memory
 
+        self._require_reload_window()
         with self._load_lock:
             with self.llm_lock:
                 had_backend = self._clear_backend_locked()
@@ -153,6 +168,7 @@ class LlmModule:
         from ai_assistant.llm.defaults import LLM_N_CTX
         from ai_assistant.llm.hardware import release_ml_memory
 
+        self._require_reload_window()
         with self._load_lock:
             # Free the previous weights before the new download/constructor:
             # two models must never be resident at once on a GPU.
@@ -337,8 +353,23 @@ class RagModule:
             return ("", "", [])
         return doc_ctx, code_ctx, image_chunks
 
-    def _release_ml_memory(self) -> None:
-        # Protocol compliance for RAGModuleLike; delegates to vision release
+    @property
+    def reranker_active(self) -> bool:
+        """Whether a cross-encoder is wired into the current pipeline.
+
+        The HTTP health surface needs this fact; exposing the ``_reranker``
+        field itself made the adapter depend on a private implementation
+        detail (ADR 0032 keeps the state transition inside this module).
+        """
+        return self._reranker is not None
+
+    def release_ml_memory(self) -> None:
+        """Ask the runtime to free the resident models (VRAM/RAM).
+
+        Public on purpose: the admin router used to call a private helper,
+        which made a documented adapter-to-runtime call look like an
+        implementation leak.
+        """
         self.release_embedding_for_vision()
 
     def release_embedding_for_vision(self) -> None:
@@ -389,6 +420,14 @@ class RuntimeModules:
         self.rag = rag
         self.chatbot_agent = ChatbotAgentHolder(llm, rag, prompt_builder)
         self.agent_run_service: AgentRunService | None = None
+        # The admin shutdown route signals this event instead of calling
+        # ``os._exit``: the serving process sets ``uvicorn.Server.should_exit``
+        # and lets the normal lifespan cleanup run.
+        self.shutdown_requested = threading.Event()
+
+    def request_shutdown(self) -> None:
+        """Ask the serving process to stop gracefully."""
+        self.shutdown_requested.set()
 
     def execute_a2a_task(self, task: AgentTask) -> dict[str, Any]:
         """Run the shared LangGraph agent engine inside the durable A2A lifecycle."""

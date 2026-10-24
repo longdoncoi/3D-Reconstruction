@@ -245,7 +245,7 @@ class LLMRuntime(Protocol):
     llm: LLMBackend | None
     llm_lock: LockLike
 
-    def model_lease(self) -> AbstractContextManager[None]:
+    def model_lease(self) -> AbstractContextManager[LLMBackend | None]:
         """Pin the current backend for the duration of the block."""
         ...
 

@@ -103,6 +103,17 @@ class ToolSpecBridgeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _required_scope("write_typo")
 
+    def test_an_entry_without_a_policy_is_refused_at_bootstrap(self):
+        """A missing label is a policy gap, not an implicit read-only tool.
+
+        ``ToolDefinition`` declares a default, so this arm only fires for a
+        hand-built dict/namespace whose author never chose a policy. Assuming
+        read-only there would let a mutating tool inherit the weakest scope.
+        """
+        entry = SimpleNamespace(name="mystery", description="", json_schema={})
+        with self.assertRaisesRegex(ValueError, "no execution policy"):
+            tool_spec_from(entry, lambda params: {})
+
     def test_an_alias_is_refused_as_an_execution_spec(self):
         """The friendly spellings must not become separate weak policies."""
         entry = SimpleNamespace(

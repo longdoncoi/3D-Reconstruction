@@ -79,7 +79,7 @@ def build_health_router(
             "uptime_sec": round(time.monotonic() - server_start_time, 1),
             "llm_loaded": loaded,
             "rag_chunks": len(rag_module.knowledge_chunks),
-            "reranker": rag_module._reranker is not None,
+            "reranker": rag_module.reranker_active,
             "embed_model": embed_model_name,
             "chunk_chars": rag_module.CHUNK_CHARS,
             "chars_per_token": chars_per_token,

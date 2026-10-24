@@ -45,10 +45,16 @@ class ProtocolSurfaceTests(unittest.TestCase):
                 self.assertTrue(callable(getattr(_types.LoggerLike, name)))
 
     def test_llm_module_like_requires_runtime_and_model_attributes(self) -> None:
-        annotations = _types.LLMModuleLike.__annotations__
+        from ai_assistant.ports import LLMRuntime
+
+        # ADR 0041: the lease contract has one owner. ``LLMModuleLike`` adds
+        # the admin/chat surface and inherits the runtime members instead of
+        # re-declaring them, so the two views cannot drift apart.
+        self.assertIn(LLMRuntime, _types.LLMModuleLike.__mro__)
+        inherited = get_type_hints(_types.LLMModuleLike)
         for name in ("llm", "llm_lock", "active_model_desc", "is_vision_model"):
             with self.subTest(attribute=name):
-                self.assertIn(name, annotations)
+                self.assertIn(name, inherited)
         for name in ("estimate_tokens", "load_model"):
             with self.subTest(method=name):
                 self.assertTrue(callable(getattr(_types.LLMModuleLike, name)))
@@ -56,10 +62,15 @@ class ProtocolSurfaceTests(unittest.TestCase):
     def test_rag_module_like_requires_index_state_and_memory_release(self) -> None:
         annotations = _types.RAGModuleLike.__annotations__
         for name in ("knowledge_chunks", "knowledge_index", "bm25_index",
-                     "embed_model_ref", "_reranker", "rag_lock"):
+                     "embed_model_ref", "rag_lock"):
             with self.subTest(attribute=name):
                 self.assertIn(name, annotations)
-        for name in ("_release_ml_memory", "release_embedding_for_vision", "initialize_rag"):
+        # The adapter contract is public: the reranker is a read-only fact and
+        # memory release is a named operation, never a private helper.
+        self.assertTrue(isinstance(getattr(_types.RAGModuleLike, "reranker_active"), property))
+        self.assertFalse(hasattr(_types.RAGModuleLike, "_reranker"))
+        self.assertFalse(hasattr(_types.RAGModuleLike, "_release_ml_memory"))
+        for name in ("release_ml_memory", "release_embedding_for_vision", "initialize_rag"):
             with self.subTest(method=name):
                 self.assertTrue(callable(getattr(_types.RAGModuleLike, name)))
 

@@ -125,7 +125,8 @@ class BootstrapServerCoverageGaps(unittest.TestCase):
             patch("ai_assistant.llm.load_backend", return_value=first_backend) as mock_load,
             patch("ai_assistant.llm.hardware.release_ml_memory") as release,
         ):
-            module.load_model()
+            with module.model_reload():
+                module.load_model()
             mock_load.assert_called_once()
             # Nothing was resident, so there is nothing to release.
             release.assert_not_called()
@@ -137,7 +138,8 @@ class BootstrapServerCoverageGaps(unittest.TestCase):
             patch("ai_assistant.llm.hardware.release_ml_memory") as release,
         ):
             # A second load replaces the resident model in the same owner.
-            module.load_model()
+            with module.model_reload():
+                module.load_model()
             # The previous weights are freed before the new ones are adopted.
             release.assert_called_once()
         self.assertIs(module.llm, second_backend)
@@ -165,7 +167,8 @@ class BootstrapServerCoverageGaps(unittest.TestCase):
         del backend
 
         with patch("ai_assistant.llm.hardware.release_ml_memory") as release:
-            self.assertTrue(module.release())
+            with module.model_reload():
+                self.assertTrue(module.release())
             release.assert_called_once()
         gc.collect()
 
@@ -174,7 +177,24 @@ class BootstrapServerCoverageGaps(unittest.TestCase):
         self.assertEqual(module.active_model_desc, "")
         self.assertFalse(module.is_vision_model)
         # Releasing twice is a no-op, not a second "released" signal.
-        self.assertFalse(module.release())
+        with module.model_reload():
+            self.assertFalse(module.release())
+
+    def test_a_model_swap_outside_the_drain_window_is_refused(self) -> None:
+        """The owner, not the route, enforces the drain invariant.
+
+        ``release``/``load_model`` used to be callable at any time; a future
+        caller could free the backend while a run held a lease. Both now
+        require ``model_reload()``.
+        """
+        from ai_assistant.bootstrap.modules import LlmModule
+
+        module = LlmModule(registry=MagicMock(), paths=MagicMock(),
+                           model_idx=0, use_vision_llm=False)
+        with self.assertRaisesRegex(RuntimeError, "model_reload"):
+            module.release()
+        with self.assertRaisesRegex(RuntimeError, "model_reload"):
+            module.load_model()
 
     def test_rag_bridge_methods(self) -> None:
         """Cover RagModule retrieval branches (initialize_rag / get_context)."""
@@ -187,8 +207,17 @@ class BootstrapServerCoverageGaps(unittest.TestCase):
         self.assertTrue(hasattr(rag.initialize_rag, "__call__"))
         self.assertTrue(hasattr(rag.get_context, "__call__"))
         self.assertTrue(hasattr(rag.release_embedding_for_vision, "__call__"))
-        self.assertTrue(hasattr(rag._release_ml_memory, "__call__"))
+        self.assertTrue(hasattr(rag.release_ml_memory, "__call__"))
         self.assertTrue(hasattr(rag._build_retrievers, "__call__"))
+        # The adapter contract exposes the reranker as a public fact, not as
+        # the private ``_reranker`` field.
+        self.assertFalse(rag.reranker_active)
+        rag._reranker = object()
+        self.assertTrue(rag.reranker_active)
+        rag._reranker = None
+        with patch.object(rag, "release_embedding_for_vision") as release_embedding:
+            rag.release_ml_memory()
+            release_embedding.assert_called_once_with()
         # No pipeline wired yet: get_context is honestly empty, not a stub that
         # pretends it searched.
         result = rag.get_context("test", None, None)
@@ -293,6 +322,22 @@ class ConfigPathsCoverage(unittest.TestCase):
                 docs_dirs=(),
             )
             self.assertIn("embed_model", str(p.embed_cache_dir))
+
+
+class RuntimeModulesShutdownTests(unittest.TestCase):
+    def test_the_admin_signal_is_owned_by_the_runtime_graph(self) -> None:
+        """``/admin/shutdown`` sets an event; the server watcher performs the stop."""
+        from ai_assistant.adapters.persistence.storage_crypto import AesGcmFieldCipher
+        from ai_assistant.bootstrap.modules import LlmModule, RagModule, RuntimeModules
+
+        llm = LlmModule(registry=MagicMock(), paths=MagicMock(),
+                        model_idx=0, use_vision_llm=False)
+        rag = RagModule(cipher=AesGcmFieldCipher(b"g" * 32))
+        modules = RuntimeModules(llm, rag, MagicMock())
+
+        self.assertFalse(modules.shutdown_requested.is_set())
+        modules.request_shutdown()
+        self.assertTrue(modules.shutdown_requested.is_set())
 
 
 class BootstrapStabilizer(unittest.TestCase):

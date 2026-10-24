@@ -90,7 +90,11 @@ class Mutant:
 #: The eighth review adds four more: one model lease per entry point that
 #: runs the graph (``execute``, ``approve``, the desktop ack) plus the chat
 #: route's inference span (ADR 0040).
-MIN_MUTANTS = 150
+#: The tenth review adds ten more: the owner-enforced reload window (guard and
+#: the startup caller), the fail-closed scope map, the missing-policy and
+#: missing-catalogue bootstrap refusals, the graceful stop (event, watcher and
+#: admin route) and the public RAG surface (property and health read).
+MIN_MUTANTS = 160
 
 MUTANTS: tuple[Mutant, ...] = (
     # ── Sandbox allow-list (ADR 0011) ────────────────────────────────────────
@@ -1417,6 +1421,107 @@ MUTANTS: tuple[Mutant, ...] = (
         ("tests.unit.test_a2a_http_router",),
         "a capacity refusal is reported as invalid params (the client retries "
         "the request instead of backing off)",
+    ),
+    # ── The tenth review: owner-enforced swaps, fail-closed defaults, public
+    #    RAG surface and a graceful stop (ADR 0042) ────────────────────────────
+    Mutant(
+        "src/ai_assistant/bootstrap/modules.py",
+        "        with self._model_condition:\n"
+        "            if not self._reloading:",
+        "        with self._model_condition:\n"
+        "            if False:",
+        ("tests.unit.test_bootstrap_coverage_gaps",),
+        "load/release is callable outside model_reload(): a route can free "
+        "the backend while a run holds a lease",
+    ),
+    Mutant(
+        "src/ai_assistant/bootstrap/server.py",
+        "    with runtime_modules.llm.model_reload():\n"
+        "        runtime_modules.llm.load_model()",
+        "    runtime_modules.llm.load_model()",
+        ("tests.integration.test_composition_root_bootstrap",),
+        "startup loads the model outside the drain window (the owner refuses "
+        "it; bootstrap regresses to a direct primitive call)",
+    ),
+    Mutant(
+        "src/ai_assistant/domain/security.py",
+        "    if capability_scopes is None:\n"
+        "        return READ_ONLY_SCOPES",
+        "    if capability_scopes is None:\n"
+        "        return frozenset({\"project.read\", \"project.write\", \"project.execute\"})",
+        ("tests.unit.test_final_edges_a",),
+        "a host that injects no scope map grants the trusted write/execute "
+        "scopes to every embedded caller",
+    ),
+    Mutant(
+        "src/ai_assistant/bootstrap/container.py",
+        "    if policy_value is None:\n"
+        "        # A missing label is not \"read-only\": a mutating tool whose policy was\n"
+        "        # never authored would otherwise inherit the weakest scope and could\n"
+        "        # be driven by a read-only principal. Unknown labels already fail in\n"
+        "        # ``_side_effect``; missing ones must fail here for the same reason.\n"
+        "        msg = f\"Tool {name!r} has no execution policy\"\n"
+        "        raise ValueError(msg)",
+        "    if policy_value is None:\n"
+        "        policy_value = \"read_only\"",
+        ("tests.unit.test_gateway_bootstrap_guards",),
+        "a tool with no authored policy silently becomes read-only (a "
+        "mutating tool inherits the weakest scope)",
+    ),
+    Mutant(
+        "src/ai_assistant/tools/factory.py",
+        "    if not config_file.exists():\n"
+        "        # A server that starts without a catalogue advertises itself as ready\n"
+        "        # but can execute nothing: the agent has no tools, and every request\n"
+        "        # fails far from the cause. A missing required catalogue is a\n"
+        "        # configuration error, not an empty-but-valid registry.\n"
+        "        msg = f\"Tool catalogue not found: {config_file}\"\n"
+        "        raise ConfigurationError(msg)",
+        "    if not config_file.exists():\n"
+        "        return registry",
+        ("tests.unit.test_final_edges_b",),
+        "a missing tool catalogue degrades into an empty registry (the server "
+        "reports ready while it can execute nothing)",
+    ),
+    Mutant(
+        "src/ai_assistant/bootstrap/modules.py",
+        "        self.shutdown_requested.set()",
+        "        pass",
+        ("tests.unit.test_bootstrap_coverage_gaps",),
+        "/admin/shutdown never signals the serving process (the stop is "
+        "requested but the event stays clear)",
+    ),
+    Mutant(
+        "src/ai_assistant/bootstrap/server.py",
+        "    shutdown_requested.wait()\n"
+        "    server.should_exit = True",
+        "    shutdown_requested.wait()\n"
+        "    server.should_exit = False",
+        ("tests.integration.test_main_entry_points",),
+        "the shutdown watcher never asks uvicorn to stop (graceful exit "
+        "silently becomes a no-op)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/http/admin_routes.py",
+        "            request_shutdown()",
+        "            pass",
+        ("tests.unit.test_http_admin_routes",),
+        "/admin/shutdown answers ok without asking the process to stop",
+    ),
+    Mutant(
+        "src/ai_assistant/bootstrap/modules.py",
+        "        return self._reranker is not None",
+        "        return True",
+        ("tests.unit.test_bootstrap_coverage_gaps",),
+        "the public reranker fact always reports active (health lies about the "
+        "retrieval pipeline)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/http/health_routes.py",
+        "            \"reranker\": rag_module.reranker_active,",
+        "            \"reranker\": False,",
+        ("tests.unit.test_http_health_routes",),
+        "/health never reports an active reranker",
     ),
 )
 

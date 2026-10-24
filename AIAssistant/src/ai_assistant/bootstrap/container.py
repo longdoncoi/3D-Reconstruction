@@ -120,7 +120,15 @@ def tool_spec_from(entry: Any, executor: ToolExecutor | None) -> ToolSpec | None
         # turn ``app_action_viewer`` into a read-only spec.
         msg = f"Tool alias {raw_name!r} has no execution policy; use {name!r}"
         raise ValueError(msg)
-    policy = str(getattr(entry, "policy", "read_only"))
+    policy_value = getattr(entry, "policy", None)
+    if policy_value is None:
+        # A missing label is not "read-only": a mutating tool whose policy was
+        # never authored would otherwise inherit the weakest scope and could
+        # be driven by a read-only principal. Unknown labels already fail in
+        # ``_side_effect``; missing ones must fail here for the same reason.
+        msg = f"Tool {name!r} has no execution policy"
+        raise ValueError(msg)
+    policy = str(policy_value)
     parameters = getattr(entry, "json_schema", None) or getattr(entry, "parameters", None)
     # The tool's data ceiling comes from the tool's own contract. It used to
     # be a constant (``RESTRICTED`` for every tool), which made the gateway's

@@ -5,6 +5,7 @@ import json
 from typing import Any, Callable
 
 from ai_assistant.config.paths import get_paths
+from ai_assistant.domain.errors import ConfigurationError
 from ai_assistant.ports import RagContextPort
 
 from .builtin import (
@@ -88,10 +89,14 @@ def create_tool_registry(rag_context: RagContextPort | None = None) -> ToolRegis
     registry = ToolRegistry()
     paths = get_paths()
     config_file = paths.project_root / "Config" / "agent_tools.json"
-    
+
     if not config_file.exists():
-        # Fallback or initialization error
-        return registry
+        # A server that starts without a catalogue advertises itself as ready
+        # but can execute nothing: the agent has no tools, and every request
+        # fails far from the cause. A missing required catalogue is a
+        # configuration error, not an empty-but-valid registry.
+        msg = f"Tool catalogue not found: {config_file}"
+        raise ConfigurationError(msg)
 
     with config_file.open(encoding="utf-8") as f:
         tools_def = json.load(f)

@@ -31,8 +31,10 @@ def classification_at_least(
 ) -> bool:
     """Whether ``value`` is at least as protective as ``minimum``.
 
-    The comparison the tool gateway needs: a principal may only use a tool
-    whose maximum classification is at least the principal's own.
+    The comparison the tool gateway needs: a principal's clearance must be at
+    least the tool's maximum classification (its data ceiling). The comparison
+    used to run the other way round (``tool >= principal``), which denied the
+    most trusted callers and let the least trusted ones through.
     """
     return CLASSIFICATION_ORDER[value] >= CLASSIFICATION_ORDER[minimum]
 
@@ -40,8 +42,8 @@ def classification_at_least(
 #: The scope lattice of the least-privilege model. ADR 0032 moved it here
 #: for the same reason as the classification order: the scopes are a fact
 #: about the domain's principals, not about the transport that resolves them.
-#: A capability that is not listed falls back to the read-only set.
-DEFAULT_TRUSTED_SCOPES = frozenset({"project.read", "project.write", "project.execute"})
+#: A capability that is not listed — or a host that supplies no map at all —
+#: falls back to the read-only set. There is deliberately no "trusted default".
 READ_ONLY_SCOPES = frozenset({"project.read"})
 DESKTOP_ACTION_SCOPE = "desktop.action"
 
@@ -53,11 +55,13 @@ def scopes_for_capability(
     """The scopes a capability may act under.
 
     ``capability_scopes`` is the deployment's capability→scope map; an
-    unknown capability gets the read-only set, so a capability nobody
-    described cannot act.
+    unknown capability, or a host that forgot to inject a map, gets the
+    read-only set. A missing map must fail closed: the old fallback granted
+    ``project.write``/``project.execute`` to every embedded caller, so an
+    unconfigured host silently ran with the desktop's trusted scopes.
     """
     if capability_scopes is None:
-        return DEFAULT_TRUSTED_SCOPES
+        return READ_ONLY_SCOPES
     return capability_scopes.get(capability, READ_ONLY_SCOPES)
 
 

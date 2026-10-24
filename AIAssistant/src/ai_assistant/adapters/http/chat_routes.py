@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import stat
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
@@ -240,10 +240,13 @@ def build_chat_router(
                 # single-threaded llama context; ``llm_lock`` only guards the
                 # handle swap itself, and the lease already keeps the reload
                 # from swapping it. A ``None`` backend was refused above.
+                # ``generate`` is the port; the raw llama.cpp call is the
+                # legacy fallback for a handle that predates it, so stepping
+                # outside the protocol there is deliberate.
                 stream_fn = (
                     backend.generate
                     if hasattr(backend, "generate")
-                    else backend.create_chat_completion
+                    else cast(Any, backend).create_chat_completion
                 )
                 started = time.monotonic()
                 answer, finish_reason = "", "stop"
@@ -286,7 +289,7 @@ def build_chat_router(
                     "total_ms": round(total_ms),
                     "estimated_tokens": estimated_tokens,
                     "max_tokens_used": max_tokens,
-                    "reranker_active": rag_module._reranker is not None,
+                    "reranker_active": rag_module.reranker_active,
                     "vision_model": llm_module.is_vision_model,
                 },
             }

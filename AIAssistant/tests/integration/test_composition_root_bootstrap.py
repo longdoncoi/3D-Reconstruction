@@ -58,12 +58,12 @@ class CompositionRootImportTests(unittest.TestCase):
             "knowledge_index",
             "knowledge_chunks",
             "bm25_index",
-            "_reranker",
+            "reranker_active",
             "rag_lock",
             "initialize_rag",
             "get_context",
             "release_embedding_for_vision",
-            "_release_ml_memory",
+            "release_ml_memory",
         ):
             self.assertTrue(hasattr(runtime_modules.rag, attribute), f"missing {attribute}")
 
@@ -95,7 +95,9 @@ class BootstrapRuntimeLoadTests(unittest.TestCase):
             self.server._registry = self._saved_registry
         # Stabilizer: the runtime module owns the backend now, so clearing it
         # here is the whole cleanup (there is no process-wide copy, ADR 0041).
-        runtime_modules.llm.release()
+        # The owner only permits a swap inside the drain window.
+        with runtime_modules.llm.model_reload():
+            runtime_modules.llm.release()
 
     @staticmethod
     def _patch_backend(backend):
@@ -128,6 +130,10 @@ class BootstrapRuntimeLoadTests(unittest.TestCase):
         mock_registry = MagicMock()
         mock_registry.get_by_index.return_value = mock_model_def
         def _fake_load(**kw):
+            # Mirror the real loader's owner-enforced precondition: it only
+            # runs inside ``model_reload()``. If bootstrap_runtime() forgets
+            # the drain window this raises instead of loading.
+            runtime_modules.llm._require_reload_window()
             runtime_modules.llm.llm = backend
             runtime_modules.llm.is_vision_model = False
             runtime_modules.llm.active_model_desc = "Test model (Q4_K_M)"
@@ -168,6 +174,7 @@ class BootstrapRuntimeLoadTests(unittest.TestCase):
         p1, p2, p3 = self._patch_backend(backend)
 
         def _fake_vision_load(**kw):
+            runtime_modules.llm._require_reload_window()
             runtime_modules.llm.llm = backend
             runtime_modules.llm.is_vision_model = True
             runtime_modules.llm.active_model_desc = "Vision model"

@@ -407,6 +407,25 @@ class AgentRunServiceTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("orchestrator", result["content"])
 
+    def test_a_host_without_a_scope_map_is_read_only(self):
+        """A missing map must not grant the desktop's trusted write scopes.
+
+        ``scopes_for_capability`` used to answer
+        ``{project.read, project.write, project.execute}`` when the host
+        injected no map, so every embedded caller silently ran with the
+        desktop's trusted scopes. The fail-closed default is read-only.
+        """
+        seen: list[frozenset[str]] = []
+
+        class _RecordingOrchestrator:
+            def run(self, task, principal):
+                seen.append(principal.scopes)
+                return {"status": "completed", "content": "", "steps": []}
+
+        service = AgentRunService(orchestrator=_RecordingOrchestrator())
+        service.run(_task())
+        self.assertEqual(seen, [frozenset({"project.read"})])
+
 
 class AgentCardReadTests(unittest.TestCase):
     def test_a_well_formed_card_parses_its_capabilities(self):

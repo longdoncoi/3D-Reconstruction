@@ -12,7 +12,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager
 from typing import Any, Protocol
 
-from ...ports import ToolCatalog
+from ...ports import LLMRuntime, ToolCatalog
 
 
 class LoggerLike(Protocol):
@@ -25,38 +25,48 @@ class LoggerLike(Protocol):
     def exception(self, message: str, *args: Any) -> None: ...
 
 
-class LLMModuleLike(Protocol):
-    """The injected LLM runtime handle (a live instance or an equivalent fake)."""
+class LLMModuleLike(LLMRuntime, Protocol):
+    """The injected LLM runtime handle (a live instance or an equivalent fake).
 
-    llm: Any
-    llm_lock: Any
+    The runtime-lifetime members (``llm``, ``llm_lock`` and ``model_lease``)
+    are inherited from :class:`~ai_assistant.ports.LLMRuntime`; this protocol
+    only adds the admin/chat surface the HTTP adapters need. Keeping one
+    source for the lease contract is what stops the two views from drifting.
+    """
+
     active_model_desc: str
     is_vision_model: bool
 
     def estimate_tokens(self, text: str) -> int: ...
     def release(self) -> bool: ...
     def load_model(self) -> None: ...
-    def model_lease(self) -> AbstractContextManager[Any]: ...
     def model_reload(self) -> AbstractContextManager[None]: ...
 
 
 class RAGModuleLike(Protocol):
-    """The injected RAG runtime handle (a live instance or an equivalent fake)."""
+    """The injected RAG runtime handle (a live instance or an equivalent fake).
+
+    Only public members are part of the adapter contract: the router asks the
+    module whether a reranker is active and tells it to release memory; it
+    does not reach into ``_reranker`` or call a private helper.
+    """
 
     knowledge_chunks: list[Any]
     knowledge_index: Any
     bm25_index: Any
     embed_model_ref: Any
-    _reranker: Any
     rag_lock: Any
     CHUNK_CHARS: int
     MAX_CONTEXT_CHARS: int
+
+    @property
+    def reranker_active(self) -> bool: ...
 
     def reset_index_state(self) -> None:
         """Drop every retrieval handle (ADR 0032: the module owns this)."""
         ...
 
-    def _release_ml_memory(self) -> None: ...
+    def release_ml_memory(self) -> None: ...
     def release_embedding_for_vision(self) -> None: ...
     def initialize_rag(self, *, force_rebuild: bool, enable_reranker: bool) -> int: ...
 

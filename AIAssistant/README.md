@@ -590,9 +590,9 @@ PYTHONPATH=src python scripts/mutation_check.py
 Các cổng là **cấu hình**, không phải cờ dòng lệnh: `pyproject.toml` sở hữu breadth
 lint (`E/W/F/I/BLE/S/RUF/C90/N/TRY`, complexity ≤ 15), thiết lập mypy strict và
 sàn coverage theo branch (`fail_under = 100`), nên lần chạy cục bộ và CI đo cùng
-một thứ. Theo lần đo ngày 2026-10-23 (các con số đo được được ghi lại trong
+một thứ. Theo lần đo ngày 2026-10-24 (các con số đo được được ghi lại trong
 `Docs/SCORECARD.md` — **đã theo git** từ ADR 0032): **100.00%** statement *và*
-branch toàn package (9 642 statement / 2 600 branch, 2 209 test), và **150/150**
+branch toàn package (9 662 statement / 2 604 branch, 2 214 test), và **160/160**
 kill trong mutation check. Số mutant tối thiểu cũng là một cổng
 (`MIN_MUTANTS`): xoá một mutant là một quyết định, và cổng biến nó thành
 quyết định *nhìn thấy được*.

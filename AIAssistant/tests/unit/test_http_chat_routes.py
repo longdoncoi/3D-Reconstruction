@@ -123,7 +123,7 @@ def _make_llm_module(
 
 def _make_rag_module(**kwargs) -> SimpleNamespace:
     attrs = {
-        "_reranker": None,
+        "reranker_active": False,
         "knowledge_chunks": [],
         "CHUNK_CHARS": 1200,
         "MAX_CONTEXT_CHARS": LLM_CTX,
@@ -287,7 +287,7 @@ class ChatRoutesTest(unittest.TestCase):
         import sys
         from unittest.mock import patch
 
-        rag = SimpleNamespace(_reranker=None)
+        rag = SimpleNamespace(reranker_active=False)
         with patch.dict(sys.modules, {"ai_assistant.image_utils": None}):
             client, agent = _build_client(rag_module=rag)
             response = client.post(
@@ -306,7 +306,7 @@ class ChatRoutesTest(unittest.TestCase):
         import sys
         from unittest.mock import patch
 
-        rag = SimpleNamespace(_reranker=None, _is_image_file=lambda _p: True)
+        rag = SimpleNamespace(reranker_active=False, _is_image_file=lambda _p: True)
         with patch.dict(sys.modules, {"ai_assistant.image_utils": None}):
             client, agent = _build_client(rag_module=rag)
             response = client.post(

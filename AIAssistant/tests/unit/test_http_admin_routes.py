@@ -1,8 +1,9 @@
 """Unit tests for the /admin/* HTTP router.
 
-The admin endpoints mutate module-level legacy singletons, so the tests replace
-``llm_module``/``rag_module`` with fakes and stub ``threading.Thread``
-and ``os._exit`` to keep the suite process-safe.
+The admin endpoints mutate the injected runtime handles, so the tests replace
+``llm_module``/``rag_module`` with fakes and stub ``threading.Thread`` to keep
+the suite process-safe. The shutdown route signals the injected
+``request_shutdown`` callback instead of exiting the process.
 """
 from __future__ import annotations
 
@@ -96,6 +97,10 @@ class _FakeRAGModule:
         self._reranker = None
         self.reset_calls = 0
 
+    @property
+    def reranker_active(self) -> bool:
+        return self._reranker is not None
+
     def reset_index_state(self) -> None:
         """ADR 0032: the module owns the "the RAG state is empty" transition."""
         self.reset_calls += 1
@@ -105,7 +110,7 @@ class _FakeRAGModule:
         self.embed_model_ref = None
         self._reranker = None
 
-    def _release_ml_memory(self) -> None:
+    def release_ml_memory(self) -> None:
         self.released_memory = True
 
     def initialize_rag(self, force_rebuild: bool = False, enable_reranker: bool = True) -> int:
@@ -138,14 +143,17 @@ def _build_client(
     llm: _FakeLLMModule | None = None,
     rag: _FakeRAGModule | None = None,
     manifest: _FakeActionManifest | None = None,
+    request_shutdown: mock.Mock | None = None,
 ) -> tuple[TestClient, dict[str, object]]:
     llm = llm or _FakeLLMModule()
     rag = rag or _FakeRAGModule()
     manifest = manifest or _FakeActionManifest()
+    request_shutdown = request_shutdown or mock.Mock()
     state: dict[str, object] = {
         "reset_calls": 0,
         "refresh_calls": 0,
         "rebuild_calls": 0,
+        "request_shutdown": request_shutdown,
     }
 
     def _reset() -> None:
@@ -169,6 +177,7 @@ def _build_client(
             refresh_agent_routes_fn=_refresh,
             rebuild_chatbot_agent_fn=_rebuild,
             logger=_FakeLogger(),
+            request_shutdown=request_shutdown,
         )
     )
     return TestClient(app, client=("127.0.0.1", 50000)), state
@@ -290,18 +299,18 @@ class AdminRoutesTest(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertIn("manifest boom", response.text)
 
-    def test_shutdown_requests_process_exit(self) -> None:
-        client, _ = _build_client()
-        fake_exit = mock.Mock()
+    def test_shutdown_asks_the_serving_process_to_stop(self) -> None:
+        """The route must not call ``os._exit``: lifespan cleanup has to run."""
+        shutdown = mock.Mock()
+        client, _ = _build_client(request_shutdown=shutdown)
         with (
             mock.patch.object(admin_routes, "time", SimpleNamespace(sleep=mock.Mock())),
-            mock.patch.object(admin_routes, "os", SimpleNamespace(_exit=fake_exit)),
             mock.patch.object(admin_routes, "threading", SimpleNamespace(Thread=_FakeThread)),
         ):
             response = client.post("/admin/shutdown")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
-        fake_exit.assert_called_once_with(0)
+        shutdown.assert_called_once_with()
 
 
 if __name__ == "__main__":

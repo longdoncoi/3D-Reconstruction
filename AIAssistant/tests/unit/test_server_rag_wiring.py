@@ -96,9 +96,9 @@ class WireIndexTests(unittest.TestCase):
     def test_retrievers_refuse_a_bare_state(self) -> None:
         self.assertEqual(self.rag._build_retrievers(None, None, None, None, None), (None, None))
 
-    def test_releasing_for_vision_delegates_to_the_hardware_helper(self) -> None:
+    def test_releasing_ml_memory_delegates_to_the_hardware_helper(self) -> None:
         with mock.patch("ai_assistant.llm.hardware.release_ml_memory") as release:
-            self.rag._release_ml_memory()
+            self.rag.release_ml_memory()
         release.assert_called_once_with()
 
     def test_a_disabled_rag_reports_zero_without_touching_the_corpus(self) -> None:
@@ -124,7 +124,7 @@ class WireIndexTests(unittest.TestCase):
         self.assertIsNone(self.rag.bm25_index)
         self.assertIsNone(self.rag._pipeline)
         self.assertIsNone(self.rag.embed_model_ref)
-        self.assertIsNone(self.rag._reranker)
+        self.assertFalse(self.rag.reranker_active)
         # And nothing is served any more.
         self.assertEqual(self.rag.get_context("DevManager"), ("", "", []))
 

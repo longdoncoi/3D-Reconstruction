@@ -18,6 +18,7 @@ import ctypes
 import io
 import os
 import sys
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -29,18 +30,25 @@ class ServerMainEntryTests(unittest.TestCase):
     """``server.main()`` warms the runtime first and never swallows a serve failure."""
 
     def test_warms_up_then_serves_the_app(self) -> None:
+        fake_server = MagicMock()
         fake_uvicorn = MagicMock()
+        fake_uvicorn.Server.return_value = fake_server
         with (
             patch.dict(sys.modules, {"uvicorn": fake_uvicorn}),
             patch.object(server_module, "bootstrap_runtime") as warmup,
+            patch.object(server_module, "_stop_server_when_requested") as watch,
         ):
             server_module.main()
 
         warmup.assert_called_once_with()
-        fake_uvicorn.run.assert_called_once()
-        self.assertIs(fake_uvicorn.run.call_args.args[0], server_module.app)
-        self.assertIsNone(fake_uvicorn.run.call_args.kwargs["log_config"])
-        self.assertFalse(fake_uvicorn.run.call_args.kwargs["access_log"])
+        fake_uvicorn.Config.assert_called_once()
+        self.assertIs(fake_uvicorn.Config.call_args.args[0], server_module.app)
+        self.assertIsNone(fake_uvicorn.Config.call_args.kwargs["log_config"])
+        self.assertFalse(fake_uvicorn.Config.call_args.kwargs["access_log"])
+        fake_uvicorn.Server.assert_called_once_with(fake_uvicorn.Config.return_value)
+        fake_server.run.assert_called_once_with()
+        # The graceful-stop watcher is armed with the process graph's event.
+        watch.assert_called_once_with(fake_server, server_module.runtime_modules.shutdown_requested)
 
     def test_runtime_failure_exits_one(self) -> None:
         """A server that cannot warm up must exit 1, not serve a broken facade."""
@@ -53,18 +61,42 @@ class ServerMainEntryTests(unittest.TestCase):
                 server_module.main()
 
         self.assertEqual(raised.exception.code, 1)
-        fake_uvicorn.run.assert_not_called()
+        fake_uvicorn.Config.assert_not_called()
+        fake_uvicorn.Server.assert_not_called()
 
     def test_serve_termination_is_logged_and_reraised(self) -> None:
         """BaseException from uvicorn (Ctrl-C, sys.exit) passes through after logging."""
+        fake_server = MagicMock()
+        fake_server.run.side_effect = KeyboardInterrupt
         fake_uvicorn = MagicMock()
-        fake_uvicorn.run.side_effect = KeyboardInterrupt
+        fake_uvicorn.Server.return_value = fake_server
         with (
             patch.dict(sys.modules, {"uvicorn": fake_uvicorn}),
             patch.object(server_module, "bootstrap_runtime"),
+            patch.object(server_module, "_stop_server_when_requested"),
         ):
             with self.assertRaises(KeyboardInterrupt):
                 server_module.main()
+
+    def test_the_shutdown_watcher_sets_should_exit(self) -> None:
+        """The admin event is what stops uvicorn; no ``os._exit`` in the path."""
+        server = MagicMock()
+        server.should_exit = False
+        event = threading.Event()
+
+        worker = threading.Thread(
+            target=server_module._stop_server_when_requested,
+            args=(server, event),
+            daemon=True,
+        )
+        worker.start()
+        try:
+            self.assertFalse(server.should_exit)
+            event.set()
+        finally:
+            worker.join(timeout=5)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(server.should_exit)
 
 
 class QtEntryTests(unittest.TestCase):

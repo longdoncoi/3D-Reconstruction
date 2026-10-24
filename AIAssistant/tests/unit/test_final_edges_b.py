@@ -41,7 +41,13 @@ from ai_assistant.settings import ArchitectureSettings
 
 
 class ToolFactoryTests(unittest.TestCase):
-    def test_a_missing_tool_config_yields_an_empty_registry(self):
+    def test_a_missing_tool_config_is_a_configuration_error(self):
+        """A server with no catalogue must refuse to start.
+
+        It used to build an empty registry, so the process reported itself
+        healthy while it could execute nothing — and every request failed far
+        from the cause.
+        """
         from ai_assistant.tools import factory as factory_mod
 
         with tempfile.TemporaryDirectory() as directory:
@@ -49,8 +55,8 @@ class ToolFactoryTests(unittest.TestCase):
                 factory_mod, "get_paths",
                 return_value=SimpleNamespace(project_root=Path(directory)),
             ):
-                registry = factory_mod.create_tool_registry()
-        self.assertIsNone(registry.get("read_file"))
+                with self.assertRaises(ConfigurationError):
+                    factory_mod.create_tool_registry()
 
     def test_a_config_without_application_action_gets_the_backfill(self):
         import json as _json

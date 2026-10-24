@@ -1,7 +1,7 @@
 # AIAssistant Scorecard
 
 > Measured signals, each produced by a command in this repository — nothing
-> here is an estimate. **Last measured: 2026-10-23**, Windows, Python 3.11,
+> here is an estimate. **Last measured: 2026-10-24**, Windows, Python 3.11,
 > dependencies per `requirements-test.lock` (hash-pinned: `faiss-cpu`, `rank-bm25`, `mcp`).
 > A stripped environment measures less: the optional-dependency branches flip
 > with it (ADR 0014).
@@ -12,16 +12,16 @@
 
 ## Quality gates
 
-| Gate | Command | Measured 2026-10-23 |
+| Gate | Command | Measured 2026-10-24 |
 |------|---------|---------------------|
 | Lint | `python -m ruff check .` | 0 issues |
 | Types | `python -m mypy src/ai_assistant` | 0 issues, 142 files, `strict = true` (3 SDK-boundary modules relax 2 flags, ADR 0022) |
 | Layer contracts | `PYTHONPATH=src lint-imports --no-logo` | 9/9 contracts kept (ADR 0032: the application layer may no longer import the plugin package — the catalogue is a port) |
 | Byte-compile | `python -m compileall -q evals src` | clean |
-| Tests | `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"` | 2 209 tests, 0 failures, 6 skipped |
-| Coverage | `PYTHONPATH=src python -m coverage run … && python -m coverage report` | **100.00%** — 9 642 statements, 2 600 branches, 0 missed, 0 partial |
-| Mutation | `PYTHONPATH=src python scripts/mutation_check.py` | **150/150 killed** (ADR 0041 added nine: the single model owner and its real release, the two health/model-list truths and the admission gate — submit, resume, worker slot, HTTP 429 and JSON-RPC backpressure; ADR 0032 added 7: the policy-tree write deny and its prefix match, the OpenAPI surface, the log redaction, the compare-and-set, the checkpoint seal, the adapter's CAS guard and the volatile-key rule; ADR 0033 added one: the write target is resolved, so a symlink into a policy tree is matched on the file it points at; ADR 0034 added five: the secret-file read guard, the PATH scan that never consults the current directory, the case-insensitive write deny, the sealed-regime read refusal and the value-shaped egress check; ADR 0035 added six: the path-shaped program name, the case-insensitive blocked-directory rule, the path confinement itself, the LSP server resolution, the fail-closed git resolution and the attachment gate, and one more: the registered-but-not-enabled declaration, plus the two halves of the path confinement — the spelling half and the resolved half, which are different rules; ADR 0036 replaced the implicit-migration mutant with the two guards that replaced it: a plaintext task store and a plaintext pending file are both refused; ADR 0037 added seventeen: the leading-option allow-list, the git destination confinement, the attached git config spelling, the pytest plugin options, the ctest option allow-list, the two write deny-tree guards, the classification comparison, the clearance derivation, the unknown classification label, the isolation gate's default, the row-bound associated data, the identity verification, the refusal of a pre-row-bound state, the success rule, the cursor detection, the cursor use and the regular-file gate on the attachment; ADR 0038 added seven: the corpus link rule, the secret names, the shared blocked directories, the one-walk-one-owner rule, the cache hash coverage, the refusal to re-seal an already-sealed state and the confined path positionals; ADR 0039 replaced the stale registered-but-not-enabled mutant with the unknown-tool fail-closed policy guard and added twenty-two: the alias execution refusal, the builtin merge guard, the plugin route, the dynamic authorise row, the builtin allow-list, plugin provenance, mutating-plugin approval, the session-lock release, the session-id bound, the MCP approval and alias filters, the cloud-policy AND/gate/response bound, the unpinned-pin, case-folded hash, pinned-reuse, post-download mismatch and mmproj revision rules, and the checkpointer/config/get_state forwarding; ADR 0040 added four: the model lease on execute, approve, the desktop ack and the chat route; the 2026-10-23 follow-up added three: the two resume budget sites and the shared release), 0 survived, 0 stale |
-| Mutation floor | `scripts/mutation_check.py` | `MIN_MUTANTS = 150` — deleting a mutant now fails the gate (ADR 0032) |
+| Tests | `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"` | 2 214 tests, 0 failures, 6 skipped |
+| Coverage | `PYTHONPATH=src python -m coverage run … && python -m coverage report` | **100.00%** — 9 662 statements, 2 604 branches, 0 missed, 0 partial |
+| Mutation | `PYTHONPATH=src python scripts/mutation_check.py` | **160/160 killed** (ADR 0042 added ten: the owner-enforced reload window and its startup caller, the fail-closed scope map, the missing-policy and missing-catalogue bootstrap refusals, the graceful stop (event, watcher, route) and the public RAG surface (property, health read); ADR 0041 added nine: the single model owner and its real release, the two health/model-list truths and the admission gate — submit, resume, worker slot, HTTP 429 and JSON-RPC backpressure; ADR 0032 added 7: the policy-tree write deny and its prefix match, the OpenAPI surface, the log redaction, the compare-and-set, the checkpoint seal, the adapter's CAS guard and the volatile-key rule; ADR 0033 added one: the write target is resolved, so a symlink into a policy tree is matched on the file it points at; ADR 0034 added five: the secret-file read guard, the PATH scan that never consults the current directory, the case-insensitive write deny, the sealed-regime read refusal and the value-shaped egress check; ADR 0035 added six: the path-shaped program name, the case-insensitive blocked-directory rule, the path confinement itself, the LSP server resolution, the fail-closed git resolution and the attachment gate, and one more: the registered-but-not-enabled declaration, plus the two halves of the path confinement — the spelling half and the resolved half, which are different rules; ADR 0036 replaced the implicit-migration mutant with the two guards that replaced it: a plaintext task store and a plaintext pending file are both refused; ADR 0037 added seventeen: the leading-option allow-list, the git destination confinement, the attached git config spelling, the pytest plugin options, the ctest option allow-list, the two write deny-tree guards, the classification comparison, the clearance derivation, the unknown classification label, the isolation gate's default, the row-bound associated data, the identity verification, the refusal of a pre-row-bound state, the success rule, the cursor detection, the cursor use and the regular-file gate on the attachment; ADR 0038 added seven: the corpus link rule, the secret names, the shared blocked directories, the one-walk-one-owner rule, the cache hash coverage, the refusal to re-seal an already-sealed state and the confined path positionals; ADR 0039 replaced the stale registered-but-not-enabled mutant with the unknown-tool fail-closed policy guard and added twenty-two: the alias execution refusal, the builtin merge guard, the plugin route, the dynamic authorise row, the builtin allow-list, plugin provenance, mutating-plugin approval, the session-lock release, the session-id bound, the MCP approval and alias filters, the cloud-policy AND/gate/response bound, the unpinned-pin, case-folded hash, pinned-reuse, post-download mismatch and mmproj revision rules, and the checkpointer/config/get_state forwarding; ADR 0040 added four: the model lease on execute, approve, the desktop ack and the chat route; the 2026-10-23 follow-up added three: the two resume budget sites and the shared release), 0 survived, 0 stale |
+| Mutation floor | `scripts/mutation_check.py` | `MIN_MUTANTS = 160` — deleting a mutant now fails the gate (ADR 0032) |
 | Policy evals | `python evals/run_tool_eval.py`, `python evals/run_agentic_eval.py` | exit 0; tool: 16/16 (adversarial included); agentic: 124 cases / 25 scenarios, 0 failed, **0 skipped** (ADR 0025) |
 | Model pins | `python scripts/verify_models.py` | 5 artifact local khớp pin, 1 chưa tải, **0 mismatched** (ADR 0023) |
 | Supply chain | `python scripts/generate_sbom.py` | CycloneDX 1.5: 171 distribution (kèm **3 941 SHA-256**) + 6 artifact GGUF kèm commit/SHA-256 (ADR 0023) |
@@ -29,6 +29,10 @@
 | Lock sync | `PYTHONPATH=src python -m unittest tests.unit.test_lockfile_sync` | 9 case OK; mọi direct requirement của `requirements.txt`, `requirements-test.txt` **và `requirements-docker.txt`** được lock tương ứng thỏa mãn; checker tự bị test bằng ca drift giả (range vượt lock / thiếu pin) nên không thể là no-op |
 | Container lock | `pip install --require-hashes --dry-run -r requirements-docker.lock` | exit 0; CPU-only (`faiss-cpu`, **không** `faiss-gpu`/CUDA) — ADR 0032 |
 | Cross-language contract | `PYTHONPATH=src python -m unittest tests.unit.test_at_rest_cipher_contract` | 6 case OK: hằng số format đọc từ `src/core/AtRestCipher.cpp` và vector đọc từ `tests/TestAtRestCipher.cpp` phải khớp bên Python — ADR 0032 |
+
+The 2026-10-24 pass re-ran lint, types, layer contracts, byte-compile, tests,
+coverage and mutation. The eval, model-pin, SBOM and lock rows above show their
+last measurement (2026-10-23); they were not re-run in that pass.
 
 
 `python evals/run_model_in_loop_eval.py` chạy tay với backend thật (fallback 3B
@@ -181,6 +185,54 @@ ADR 0041 closes both classes:
   `load_model()` is now the single reload path, so there is no second
   implementation to test. README, this table and the `pyproject.toml`
   comment now quote the same run.
+
+## Independent review follow-up (2026-10-24, ADR 0042)
+
+A tenth review read the source instead of this page and asked three questions
+a green gate table cannot answer: *who enforces the invariant*, *what happens
+when configuration is missing*, and *does shutdown run cleanup*. All three had
+a live defect while every gate above was green.
+
+| Defect | Why the gate was green |
+|---|---|
+| `LlmModule.release()` / `load_model()` were still public. ADR 0041 made the drain contract correct, but any new caller could call the primitive directly and swap the model under a live lease | The route tests exercised `model_reload()`, and the only direct callers (startup, teardown) were not leases at that moment — so the bypass had no failing case |
+| Three fail-open defaults: `scopes_for_capability(None)` returned `project.write`/`project.execute`; a tool without `policy` became read-only; a missing `Config/agent_tools.json` produced an empty registry | Each fallback was a *deliberate* line, covered by a test that asserted the fallback itself. Coverage measures execution, not whether the default is safe |
+| `/admin/shutdown` called `os._exit(0)`, skipping the lifespan `finally` (task-store close, checkpoints, flush) | The test pinned the exit code with a mock, so the missing cleanup was invisible — there was no observable post-exit state |
+| The HTTP adapters read `_reranker` / `_release_ml_memory`; `LLMModuleLike` re-declared the lease as `Any`; `ToolSpec.plugin_id` defaulted to a second `"builtin"` spelling | Names matched at runtime; only a type-level/one-source check would notice, and none was asserted |
+| The composition-root docstring claimed "no module-level mutable state" while `_COMPOSED` is a process-wide singleton | Documentation is not a gate. The statement was simply false |
+
+ADR 0042 closes the class:
+
+- `_require_reload_window()` makes the owner, not the caller, enforce the
+  drain: `release()` and `load_model()` raise outside `model_reload()`.
+  `bootstrap_runtime()` takes the same window at startup, and the bootstrap
+  test's fake loader calls the same precondition, so forgetting it fails.
+- `scopes_for_capability(None)` is `READ_ONLY_SCOPES`; `tool_spec_from()`
+  raises on a missing policy; `create_tool_registry()` raises
+  `ConfigurationError` on a missing catalogue. A deployment either declares
+  its authority or refuses to start.
+- The RAG adapter surface is public (`reranker_active`, `release_ml_memory()`),
+  and `/health` + chat status read it through the protocol.
+- `/admin/shutdown` sets `RuntimeModules.shutdown_requested`; the server's
+  `_stop_server_when_requested` watcher sets `uvicorn.Server.should_exit`, so
+  lifespan cleanup runs. `os` is gone from the router.
+- One lease type: `LLMRuntime.model_lease()` yields
+  `AbstractContextManager[LLMBackend | None]`, and `LLMModuleLike` inherits it.
+  `ToolSpec.plugin_id` defaults to `BUILTIN_PLUGIN_ID`.
+- The composition root documents its real scope: one process-wide graph; two
+  servers in one process are unsupported, not silently allowed.
+
+Ten mutants pin the class (reload window + startup caller, scope map, missing
+policy, missing catalogue, shutdown event/watcher/route, public reranker
+property + health read), so `MIN_MUTANTS` is **150 → 160**. Measured again:
+**160/160 killed, 0 survived, 0 stale**; **2 214 tests, 0 failures, 6
+skipped**; coverage **100.00 %** (9 662 statements, 2 604 branches).
+
+Tracked constraint: the 72 broad `except Exception` handlers are unchanged.
+They sit at boundaries (tool execution, HTTP translation, optional SDKs,
+background workers) where a failure has to become a structured result or a log
+line rather than a process abort. Narrowing them is behavioural work, not a
+security gate — every security decision has its own guard above.
 
 ## Independent review follow-up (2026-10-21, ADR 0032)
 

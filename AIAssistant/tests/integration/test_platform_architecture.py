@@ -137,7 +137,8 @@ class PlatformArchitectureTests(unittest.TestCase):
                      requires_approval=True, required_scope="project.write", plugin_id="test.plugin"),
             lambda _params: {"saved": True},
         )
-        agent = AgentRunService(orchestrator=DeterministicAgentOrchestrator(
+        agent = AgentRunService(capability_scopes={"supervisor": ["project.read", "project.write"]},
+                                orchestrator=DeterministicAgentOrchestrator(
             complete=lambda _messages, _temperature: '{"kind":"tool","tool":"write","params":{"password":"secret"}}',
             tools=ToolExecutionService(self.registry), tool_descriptions=lambda: "write", max_iterations=1,
         ))
@@ -177,7 +178,8 @@ class PlatformArchitectureTests(unittest.TestCase):
                      required_scope="project.write", plugin_id="test.plugin"),
             lambda _params: {"success": True},
         )
-        agent = AgentRunService(orchestrator=DeterministicAgentOrchestrator(
+        agent = AgentRunService(capability_scopes={"supervisor": ["project.read", "project.write"]},
+                                orchestrator=DeterministicAgentOrchestrator(
             complete=lambda _messages, _temperature: '{"kind":"tool","tool":"write","params":{}}',
             tools=ToolExecutionService(self.registry), tool_descriptions=lambda: "write", max_iterations=1,
         ))
@@ -211,7 +213,8 @@ class PlatformArchitectureTests(unittest.TestCase):
             '{"kind":"tool","tool":"write","params":{}}',
             '{"kind":"final","content":"done"}',
         ))
-        agent = AgentRunService(orchestrator=DeterministicAgentOrchestrator(
+        agent = AgentRunService(capability_scopes={"supervisor": ["project.read", "project.write"]},
+                                orchestrator=DeterministicAgentOrchestrator(
             complete=lambda _messages, _temperature: next(responses), tools=ToolExecutionService(self.registry),
             tool_descriptions=lambda: "write", max_iterations=2,
         ))

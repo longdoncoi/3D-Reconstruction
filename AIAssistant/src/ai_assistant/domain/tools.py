@@ -32,7 +32,7 @@ class ToolSpec:
     requires_approval: bool = False
     required_scope: str | None = None
     maximum_classification: DataClassification = DataClassification.RESTRICTED
-    plugin_id: str = "builtin"
+    plugin_id: str = BUILTIN_PLUGIN_ID
 
 
 @dataclass(frozen=True, slots=True)

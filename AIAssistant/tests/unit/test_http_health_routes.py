@@ -29,7 +29,7 @@ def _build_client(
     )
     rag_module = SimpleNamespace(
         knowledge_chunks=["c1", "c2"] if chunks is None else chunks,
-        _reranker=reranker,
+        reranker_active=reranker is not None,
         CHUNK_CHARS=1200,
         MAX_CONTEXT_CHARS=4096,
     )

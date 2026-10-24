@@ -6,7 +6,6 @@ that MUST NOT be exposed on the public network interface.
 from __future__ import annotations
 
 import gc
-import os
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable
@@ -42,7 +41,7 @@ def _rebuild_rag_index(
         # while retrieval still served the old corpus.
         rag_module.reset_index_state()
         gc.collect()
-        rag_module._release_ml_memory()
+        rag_module.release_ml_memory()
         # Delegate to canonical RAG pipeline (ADR 0018); no module reload needed.
         rebuild_chatbot_agent_fn()
         chunks = rag_module.initialize_rag(
@@ -73,6 +72,7 @@ def build_admin_router(
     refresh_agent_routes_fn: Callable[[], None],
     rebuild_chatbot_agent_fn: Callable[[], None],
     logger: "LoggerLike",
+    request_shutdown: Callable[[], None],
     policy: TransportPolicy | None = None,
 ) -> APIRouter:
     """Create the /admin/* APIRouter with all injected dependencies.
@@ -88,6 +88,7 @@ def build_admin_router(
     refresh_agent_routes_fn: Callback to re-attach agent router after reload.
     rebuild_chatbot_agent_fn: Callback to recreate ChatbotAgent after module reload.
     logger:                 Application logger.
+    request_shutdown:       Ask the serving process to stop gracefully.
     """
     router = APIRouter(
         prefix="/admin",
@@ -106,7 +107,7 @@ def build_admin_router(
                 # last reference; the route used to clear ``llm_module.llm``
                 # while a module-level global kept the weights alive.
                 llm_module.release()
-                rag_module._release_ml_memory()
+                rag_module.release_ml_memory()
             logger.info("VRAM released successfully")
         except Exception as error:
             logger.exception("Failed to release VRAM")
@@ -123,7 +124,7 @@ def build_admin_router(
             )
             with llm_module.model_reload():
                 llm_module.release()
-                rag_module._release_ml_memory()
+                rag_module.release_ml_memory()
                 rebuild_chatbot_agent_fn()
                 llm_module.load_model()
                 if llm_module.is_vision_model:
@@ -162,15 +163,18 @@ def build_admin_router(
 
     @router.post("/shutdown")
     def shutdown_server() -> dict[str, Any]:
-        """Terminate this AI Server process.
+        """Stop this AI Server process gracefully.
 
-        Runs the actual exit from a background thread with a tiny delay so
-        the HTTP response reaches the Qt client before the process disappears.
+        The actual stop runs from a background thread with a tiny delay so the
+        HTTP response reaches the Qt client first. It asks the serving process
+        (``uvicorn.Server.should_exit``) to stop instead of calling
+        ``os._exit``: the normal lifespan cleanup — task close, checkpoint and
+        store flush — must run on the way out.
         """
         def _terminate() -> None:
             time.sleep(0.3)
-            logger.info("Shutdown requested via /admin/shutdown — exiting process")
-            os._exit(0)
+            logger.info("Shutdown requested via /admin/shutdown — stopping server")
+            request_shutdown()
 
         threading.Thread(target=_terminate, daemon=True).start()
         return {"status": "ok", "message": "AI Server is shutting down"}

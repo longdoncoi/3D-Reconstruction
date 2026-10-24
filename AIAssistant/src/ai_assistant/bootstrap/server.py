@@ -137,9 +137,14 @@ def _resolve_model_idx(argv: list[str], models: list[dict[str, Any]]) -> int:
 # ── Runtime module graph ──────────────────────────────────────────────────────
 # The LLM/RAG handles and the chatbot-agent holder live on the single
 # ``RuntimeModules`` instance compose() builds and injects into the tool
-# catalog, the services and the routers (bootstrap.modules). No class-level or
-# module-level mutable state remains here: the composition root owns every
-# object and passes it to whoever needs it.
+# catalog, the services and the routers (bootstrap.modules). No service
+# locator remains: every consumer receives the handles it uses.
+#
+# This module is deliberately the *process-wide* composition root for the
+# desktop server: ``_COMPOSED`` and the composed names below are its single
+# instance (guarded by ``_COMPOSE_LOCK`` and built lazily). Running two
+# servers in one process is not supported; an embedding host must compose in
+# a separate process instead of importing this module twice.
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -590,6 +595,7 @@ def _compose_once() -> None:
             refresh_agent_routes_fn=_refresh_agent_routes,
             rebuild_chatbot_agent_fn=runtime_modules.chatbot_agent.rebuild,
             logger=logger,
+            request_shutdown=runtime_modules.request_shutdown,
             policy=transport_policy,
         ))
         app.include_router(build_agent_router(agent_service, policy=transport_policy))
@@ -623,9 +629,25 @@ def bootstrap_runtime() -> None:
     runtime_modules.rag.initialize_rag(
         enable_reranker=not MODELS[MODEL_IDX].get("is_vision", False),
     )
-    runtime_modules.llm.load_model()
+    # Startup performs a model swap too: the owner now refuses ``load_model``
+    # outside the drain window, so bootstrap takes the same gate an admin
+    # reload does instead of relying on there being no leases yet.
+    with runtime_modules.llm.model_reload():
+        runtime_modules.llm.load_model()
     if runtime_modules.llm.is_vision_model:
         runtime_modules.rag.release_embedding_for_vision()
+
+
+def _stop_server_when_requested(server: Any, shutdown_requested: threading.Event) -> None:
+    """Set ``uvicorn.Server.should_exit`` once the admin route asks to stop.
+
+    ``/admin/shutdown`` used to call ``os._exit``, which skips the lifespan
+    ``finally`` (task-store close, checkpoints, flush). The route now only
+    sets the event; this watcher performs the graceful stop from the serving
+    process. Extracted so the transition is unit-tested.
+    """
+    shutdown_requested.wait()
+    server.should_exit = True
 
 
 def main() -> None:
@@ -644,9 +666,17 @@ def main() -> None:
     except Exception:
         logger.exception("AI server startup failed")
         sys.exit(1)
+    server = uvicorn.Server(uvicorn.Config(
+        app, host=agent_bind_host(), port=agent_bind_port(),
+        log_config=None, access_log=False,
+    ))
+    threading.Thread(
+        target=_stop_server_when_requested,
+        args=(server, runtime_modules.shutdown_requested),
+        name="ai-server-shutdown", daemon=True,
+    ).start()
     try:
-        uvicorn.run(app, host=agent_bind_host(), port=agent_bind_port(),
-                    log_config=None, access_log=False)
+        server.run()
     except BaseException:
         logger.exception("Uvicorn terminated during server startup")
         raise
