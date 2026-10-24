@@ -8,9 +8,11 @@
 # synthetic dataset, CPU-only, and verifies the published manifest. Expensive,
 # so nightly + manual — plus every pull request that touches the package, where
 # it is the only check of the resume seam against the real framework (ADR 0012).
-# Tracking (yolo11x) stays out on purpose: its
-# backbone triples the nightly budget while exercising the same backend seam
-# the det/seg jobs already cover.
+# A second, smaller job runs the same real stack on windows-latest: the product
+# ships there and the export stack is native code, so its wheels have to be
+# proven to load and export on that platform (ADR 0014). Tracking (yolo11x)
+# stays out on purpose: its backbone triples the nightly budget while
+# exercising the same backend seam the det/seg jobs already cover.
 # ──────────────────────────────────────────────────────────────────────────────
 name: cvtrain nightly real-deps
 
@@ -178,6 +180,60 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cvtrain-nightly-logs
+          path: |
+            AIComputerVision/Models/manifest.json
+            AIComputerVision/runs/
+          if-no-files-found: ignore
+
+  windows-train-smoke:
+    # The product ships on Windows, and every package this job installs has a
+    # platform-specific native wheel (torch, ONNX Runtime, onnxslim's onnx
+    # stack). The Linux job proves the resume contract; this one proves the
+    # install → train → export → verify path actually loads and produces an
+    # artifact on the platform the users run (ADR 0014).
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.11"
+
+      - name: Install the real training stack (CPU torch)
+        run: |
+          python -m pip install --upgrade pip
+          # Same pins as the Linux job (ADR 0012): the verdict must not be a
+          # property of the day this ran. torch and torchvision come from the
+          # same CPU index so their op registrations match.
+          python -m pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r AIComputerVision/requirements.txt pillow==11.0.0
+
+      - name: Generate a toy dataset
+        run: |
+          # Start from an empty Models/: a CI checkout has LFS pointers, not
+          # the committed artifacts, and this job verifies the manifest it
+          # writes itself.
+          if (Test-Path AIComputerVision/Models) { Remove-Item -Recurse -Force AIComputerVision/Models }
+          python .github/scripts/make_toy_dataset.py --output "$env:GITHUB_WORKSPACE/Dataset"
+
+      - name: Train + export detection model (1 epoch, CPU)
+        # One detection path is enough here: the platform-specific part is the
+        # native stack (torch/onnx/onnxruntime/onnxslim), not the mask head,
+        # which the Linux job already exercises end to end.
+        run: |
+          python AIComputerVision/TrainModel.py --yes --det --epochs 1 --imgsz 64 --batch 2 --workers 0 --device cpu
+          python AIComputerVision/TrainModel.py --verify-manifest
+          if (-not (Test-Path AIComputerVision/Models/yolo11n.onnx)) { throw "the Windows export did not produce yolo11n.onnx" }
+
+      - name: Upload training logs (kept on failure too)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cvtrain-windows-logs
           path: |
             AIComputerVision/Models/manifest.json
             AIComputerVision/runs/

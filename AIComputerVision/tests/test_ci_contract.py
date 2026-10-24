@@ -157,6 +157,18 @@ class RealDependencyCheckTests(unittest.TestCase):
         self.assertIn("kill -9", text, "the real-dependency job no longer interrupts a run")
         self.assertIn("last.pt", text, "the real-dependency job no longer looks for the checkpoint the framework wrote")
 
+    def test_the_real_dependency_check_runs_on_the_product_platform(self) -> None:
+        # The export stack is native code (torch / ONNX Runtime / onnxslim's
+        # onnx stack), and the product ships on Windows. A real-dependency
+        # check that only runs on Linux never installs, loads or exports with
+        # the wheels the users get, so the Windows job is part of the contract
+        # (ADR 0014), not a convenience.
+        block = _job_block(NIGHTLY_WORKFLOW.read_text(encoding="utf-8"), "windows-train-smoke")
+        self.assertTrue(block, "the real-dependency workflow has no Windows job")
+        self.assertIn("runs-on: windows-latest", block)
+        self.assertIn("--det", block, "the Windows job does not train a model")
+        self.assertIn("--verify-manifest", block, "the Windows job does not verify the manifest it wrote")
+
     def test_the_check_runs_for_pull_requests_touching_the_package(self) -> None:
         text = NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("pull_request:", text, "the real-dependency check only runs on a schedule")

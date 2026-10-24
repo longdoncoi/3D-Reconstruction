@@ -55,8 +55,9 @@ jobs:
   gates:
     name: gates (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Finite budget: the suite (443 tests) plus the coverage report, on the
-    # slowest supported runner.
+    # Finite budget: the full suite plus the coverage report, on the
+    # slowest supported runner. The measured test count lives in
+    # Docs/SCORECARD.md §1 rather than in this comment, which would drift.
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -101,11 +102,14 @@ jobs:
   mutation:
     name: mutation (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # The mutation sweep runs the whole suite once per mutant (80 decisions,
-    # ADR 0007 + ADR 0011), so the budget has to cover the suite multiplied by
-    # the mutant count plus the baseline run. Measured locally: ~25 s per
-    # suite run, so 80 mutants ≈ 35 min. The Windows job sweeps the
-    # platform-sensitive subset only (11 mutants, ~5 min).
+    # The mutation sweep runs the whole suite once per mutant (the declared
+    # set is the contract — ADR 0007 + ADR 0011 — and the measured count and
+    # timing live in Docs/SCORECARD.md §1, not in this comment, which would
+    # drift), so the budget has to cover the suite multiplied by the mutant
+    # count plus the baseline run. The Windows job sweeps the
+    # platform-sensitive subset only: the advisory lock, the atomic publish
+    # and the retention rules are the decisions whose behaviour depends on
+    # the platform.
     timeout-minutes: 90
     strategy:
       fail-fast: false

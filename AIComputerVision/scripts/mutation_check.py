@@ -102,8 +102,8 @@ class Mutant:
 #: same commit — so the diff always shows the decision. (Same rule as the
 #: Python service's ``MIN_MUTANTS``, ADR 0032, and the C++ gate's.)
 #:
-#: Measured 2026-10: 101 mutants, 101 killed, 0 survived, 0 stale.
-MIN_MUTANTS = 101
+#: Measured 2026-10: 107 mutants, 107 killed, 0 survived, 0 stale.
+MIN_MUTANTS = 107
 
 MUTANTS: tuple[Mutant, ...] = (
     # ── Provenance: the skip rule is fail-closed, field by field ───────────
@@ -242,6 +242,12 @@ MUTANTS: tuple[Mutant, ...] = (
         "results = model.train(resume=True)",
         "results = model.train()",
         "the resumed run is not actually resumed (the checkpoint is ignored)",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "        if plan.resume_from is not None:\n            claim_run_marker(plan.resume_from.parent.parent)",
+        "        if False:\n            claim_run_marker(plan.resume_from.parent.parent)",
+        "a resumed run keeps the dead process's lease (--prune-runs can delete a live run)",
     ),
     Mutant(
         "cvtrain/gate.py",
@@ -620,6 +626,18 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "cvtrain/fsio.py",
+        '        run_dir.mkdir(parents=True, exist_ok=True)\n        marker.write_text(_owner_line(), encoding="utf-8")',
+        '        run_dir.mkdir(parents=True, exist_ok=True)\n        if marker.exists():\n            return\n        marker.write_text(_owner_line(), encoding="utf-8")',
+        "claiming a resumed run leaves the dead owner's lease in place",
+    ),
+    Mutant(
+        "cvtrain/fsio.py",
+        "    except OSError:\n        return time.time()",
+        "    except OSError:\n        return 0.0",
+        "an unreadable run is treated as the oldest (unknown age becomes a deletion)",
+    ),
+    Mutant(
+        "cvtrain/fsio.py",
         "    marker = run_dir / RUN_MARKER_NAME\n    try:\n        newest = max(newest, marker.stat().st_mtime)\n    except OSError:\n        pass",
         "    marker = run_dir / RUN_MARKER_NAME",
         "the lease's freshness no longer counts as activity (a remote run looks dead)",
@@ -636,6 +654,12 @@ MUTANTS: tuple[Mutant, ...] = (
         'f"onnx={_package_version(\'onnx\')}",',
         'f"onnx=unknown",',
         "the exporter identity drops the onnx version",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        'f"onnxslim={_package_version(\'onnxslim\')}",',
+        'f"onnxslim=unknown",',
+        "the exporter identity drops the onnxslim version (a simplified graph looks reproducible)",
     ),
     Mutant(
         "cvtrain/backend.py",
@@ -661,6 +685,18 @@ MUTANTS: tuple[Mutant, ...] = (
         "        except BackendUnavailableError as exc:\n            return False, str(exc)",
         "        except BackendUnavailableError as exc:\n            return True, str(exc)",
         "a broken install is reported as importable",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "                import_module(name)",
+        "                pass",
+        "a declared dependency is never imported (preflight proves only the framework)",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "            except Exception as exc:",
+        "            except ImportError as exc:",
+        "a native DLL load error escapes preflight instead of failing it",
     ),
     # ── Device resolution: "auto" is a request, the resolution is the fact ──
     Mutant(

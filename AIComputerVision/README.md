@@ -58,11 +58,11 @@ AIComputerVision/
 | `checks.py` | Từ vựng kiểm tra dùng chung: `Check` (tên + ok + thông điệp) và `PreflightReport`. Không module nào phải tự nghĩ lại cách báo lỗi. |
 | `dataset.py` | Đọc `data.yaml` bằng PyYAML (lazy), kiểm tra khóa `train`/`val`/`names`, resolve đường dẫn tương đối/tuyệt đối/glob theo đúng ngữ nghĩa của Ultralytics (kể cả khoá `path:` cấp trên). |
 | `errors.py` | `ExitCode` (`0/1/2/3/4/130`) khai báo **một lần** và phân cấp `CvTrainError` (`StorageError`, `ManifestIntegrityError`, `QualityGateError`, `ExportContractError`, `ConcurrentRunError`, `ResumeError`…). Lỗi dự kiến được log thành một dòng actionable; lỗi còn lại giữ trọn traceback. |
-| `fsio.py` | Primitive hệ thống tệp dùng chung: `sha256_file`, ghi nguyên tử (staging + `os.replace` + fsync thư mục), sao chép có backup `.bak`, **advisory lock** `Models/.cvtrain.lock`, và chính sách retention `prune_run_directories`. Lock là một **lease có chủ**: file ghi `host` + `pid`, heartbeat mỗi 30 s làm tươi mtime; chủ cùng máy còn sống thì lock **không bao giờ** bị đánh cắp dù quá hạn, chủ đã chết thì lock thành stale ngay, còn không chứng minh được (máy khác, lock cũ, thiếu quyền) thì mới dùng tuổi lease. Run cũng có lease riêng `.cvtrain-alive` (xem retention). |
+| `fsio.py` | Primitive hệ thống tệp dùng chung: `sha256_file`, ghi nguyên tử (staging + `os.replace` + fsync thư mục), sao chép có backup `.bak`, **advisory lock** `Models/.cvtrain.lock`, và chính sách retention `prune_run_directories`. Lock là một **lease có chủ**: file ghi `host` + `pid`, heartbeat mỗi 30 s làm tươi mtime; chủ cùng máy còn sống thì lock **không bao giờ** bị đánh cắp dù quá hạn, chủ đã chết thì lock thành stale ngay, còn không chứng minh được (máy khác, lock cũ, thiếu quyền) thì mới dùng tuổi lease. Run cũng có lease riêng `.cvtrain-alive`: làm tươi mỗi epoch, **claim lại bằng PID hiện tại khi `--resume`** (marker cũ còn ghi tiến trình đã bị giết), và xoá khi train xong; tuổi không đọc được thì coi như còn sống. |
 | `preflight.py` | Kiểm tra fail-fast: môi trường (`env.*`) và siêu tham số (`param.*`) — `epochs`, `imgsz`, `batch`, `workers`, `opset` (cửa sổ `MIN_OPSET=11..MAX_OPSET=21`), `device`, từng ngưỡng `--min-metric`. Nhận danh sách dependency từ backend thay vì hard-code framework. |
 | `gate.py` | Chính sách (không phải luồng điều khiển): `already_current` trả lời "ONNX đã publish có đúng những gì lần gọi này sẽ build không?" (quy tắc `--skip-unchanged`, và artifact của một run `--resume` **không bao giờ** được coi là tái lập được); `enforce_quality_gate` trả lời "artifact có đủ tốt để giữ không?" (mục Quality gate). |
 | `metrics.py` | Module lá cho đúng **một** câu hỏi: "giá trị này có phải số đo không?" — loại `bool`, `NaN`/`Infinity` và số tràn `float`, giữ `numbers.Real` (kể cả scalar của numpy). Backend dùng khi đọc kết quả framework, gate dùng khi đọc manifest do tay người sửa; nhờ nó hai bên không thể bất đồng về cùng một con số, và `gate` không phải import adapter. |
-| `backend.py` | Protocol `TrainingBackend` (`plan`/`prepare`/`train`/`export` + `required_modules`) và adapter `UltralyticsBackend` — nơi duy nhất được import `ultralytics`, và chỉ khi huấn luyện thực sự chạy. `plan()` chốt **file bắt đầu** (checkpoint gốc, hoặc `last.pt` khi resume) *trước* khi provenance hash; `--resume` fail-closed với checkpoint thiếu/đã xong/không có train_args/dataset khác; `RunFacts` đọc budget, số epoch đã chạy và device từ chính trainer. `exporter_identity()` ghi cả `cvtrain`/`ultralytics`/`torch`/`onnx` vào provenance, vì cả bốn đều có thể đổi graph được xuất. |
+| `backend.py` | Protocol `TrainingBackend` (`plan`/`prepare`/`train`/`export` + `required_modules`) và adapter `UltralyticsBackend` — nơi duy nhất được import `ultralytics`, và chỉ khi huấn luyện thực sự chạy. `plan()` chốt **file bắt đầu** (checkpoint gốc, hoặc `last.pt` khi resume) *trước* khi provenance hash; `--resume` fail-closed với checkpoint thiếu/đã xong/không có train_args/dataset khác; `RunFacts` đọc budget, số epoch đã chạy và device từ chính trainer. `exporter_identity()` ghi cả `cvtrain`/`ultralytics`/`torch`/`onnx`/`onnxslim` vào provenance, vì cả năm đều có thể đổi graph được xuất (`onnxslim` là simplifier mặc định của Ultralytics; `onnxruntime` chỉ kiểm hợp đồng nên không nằm trong identity). |
 | `trainer.py` | Điều phối “điều gì xảy ra”: preflight → plan → huấn luyện từng model → quality gate → export ONNX → **kiểm tra hợp đồng tensor** → publish nguyên tử (kèm backup) → ghi manifest → xác minh lại. Manifest ghi **sự thật của run** (`epochs` là budget hiệu lực, `epochs_completed` là số epoch đã chạy, `resume_from` khi tiếp tục run khác), không ghi lời gọi. Không bao giờ import `ultralytics`. |
 | `manifest.py` | Schema manifest dạng `TypedDict`, đọc/ghi (`schema_version` + migration `_MIGRATIONS`), xác minh hai chiều, và cách ly manifest không parse được thành `manifest.json.corrupt-<timestamp>`. |
 | `onnx_contract.py` | Hợp đồng tensor mà `AIProcessor.cpp` giả định: một input NCHW float32, output detection rank-3, hai output segmentation (một rank-4 proto), opset ≤ runtime được pin, và một smoke inference bằng chính ONNX Runtime trước khi publish. |
@@ -76,7 +76,7 @@ AIComputerVision/
 | `TrainModel.py` | Entry point mà `AITrainDockWidget` của Qt gọi (`python TrainModel.py …`). Chỉ khoảng vài dòng: bật logging rồi ủy quyền cho `cvtrain.cli.main()`. |
 | `Models/` | Sản phẩm: `yolo11n.onnx`, `yolo11n-seg.onnx`, `yolo11x-tracking.onnx` (Git LFS), `manifest.json` (provenance), `Models/.cvtrain.lock` (advisory lock, git-ignored) và `Models/*.onnx.bak` (một thế hệ khôi phục, git-ignored). |
 | `runs/` | Log huấn luyện mà Ultralytics ghi ra (git-ignored). `--runs-dir` di chuyển nó; `--prune-runs` dọn run cũ (xem mục *Dọn run cũ*). |
-| `Docs/adr/` | 13 ADR: 0001 đồ thị phụ thuộc một chiều + composition root; 0002 protocol `TrainingBackend`; 0003 manifest provenance + `--skip-unchanged` fail-closed; 0004 advisory lock, publish nguyên tử, quality gate; 0005 lỗi lưu trữ có kiểu, sở hữu lock, tiến trình đơn điệu; 0006 dependency có điều kiện, input fail-closed, heartbeat lock; 0007 mọi claim phải được *pin* bằng test/mutant hoặc bị xóa (+ sửa đổi 2026-10-21); 0008 đóng nợ đo được: provenance theo digest, `--resume`, fingerprint có tiến độ, preflight chứng minh import được; 0009 device được phân giải *trước* khi train (`auto` là yêu cầu, `device_resolved` là sự thật); 0010 retention là *chính sách* (`--prune-runs`), không phải tai nạn; 0011 quy tắc fail-closed ở cả hai phía, provenance ghi số epoch framework thực sự chạy, và mutation set phủ hết mọi claim; 0012 chuỗi công cụ có hash, cổng chạy trên cả hai nền tảng, và `--resume` là hợp đồng hai tầng; 0013 `--resume` là một continuation phải chứng minh được, manifest ghi run đã xảy ra (budget + completed + resume_from), và liveness là lease có chủ (host + PID). |
+| `Docs/adr/` | 14 ADR: 0001 đồ thị phụ thuộc một chiều + composition root; 0002 protocol `TrainingBackend`; 0003 manifest provenance + `--skip-unchanged` fail-closed; 0004 advisory lock, publish nguyên tử, quality gate; 0005 lỗi lưu trữ có kiểu, sở hữu lock, tiến trình đơn điệu; 0006 dependency có điều kiện, input fail-closed, heartbeat lock; 0007 mọi claim phải được *pin* bằng test/mutant hoặc bị xóa (+ sửa đổi 2026-10-21); 0008 đóng nợ đo được: provenance theo digest, `--resume`, fingerprint có tiến độ, preflight chứng minh import được; 0009 device được phân giải *trước* khi train (`auto` là yêu cầu, `device_resolved` là sự thật); 0010 retention là *chính sách* (`--prune-runs`), không phải tai nạn; 0011 quy tắc fail-closed ở cả hai phía, provenance ghi số epoch framework thực sự chạy, và mutation set phủ hết mọi claim; 0012 chuỗi công cụ có hash, cổng chạy trên cả hai nền tảng, và `--resume` là hợp đồng hai tầng; 0013 `--resume` là một continuation phải chứng minh được, manifest ghi run đã xảy ra (budget + completed + resume_from), và liveness là lease có chủ (host + PID); 0014 lease đổi chủ khi resume, `onnxslim` là provenance, preflight import toàn bộ stack, "tuổi không rõ" được giữ, và stack thật chạy trên Windows. |
 | `Docs/SCORECARD.md` | Số đo của từng gate kèm ngày đo, bảng nợ đang mở, và quy tắc "claim nào đã được ghim". Một nơi duy nhất để trả lời "package này đã ổn chưa". |
 | `scripts/mutation_check.py` | Đảo chiều từng quyết định trọng yếu một lần và bắt suite phải đỏ (ADR 0007). Danh sách mutant *là* hợp đồng: một guard không có mutant là một guard chưa ai ghim. `--files` chạy một *tập con* (job Windows chỉ quét lại các quyết định phụ thuộc nền tảng) nhưng **không** hạ được floor. |
 | `requirements.txt` | Dependency runtime đã pin: `ultralytics==8.4.41`, `PyYAML==6.0.2`, `onnx==1.21.0`, `onnxslim==0.1.91`, `onnxruntime==1.20.1` (đúng bằng `ONNXRUNTIME_VERSION` trong `CMakeLists.txt` — engine hợp đồng phải là engine mà ứng dụng ship), `tensorboard==2.15.2` (chỉ cần khi `--tensorboard`). `torch` dùng khoảng `>=2.7,<3`: bản CPU/CUDA chia sẻ cùng số version và được chọn bằng index cài đặt. |
@@ -137,7 +137,18 @@ dependency có điều kiện, input fail-closed và heartbeat lock,
 theo digest nội dung, `--resume`, fingerprint có tiến độ và preflight chứng minh
 stack import được,
 [0009](Docs/adr/0009-resolve-the-device-before-training.md) device được phân giải
-trước khi train — `auto` là yêu cầu, `device_resolved` là sự thật.
+trước khi train — `auto` là yêu cầu, `device_resolved` là sự thật,
+[0010](Docs/adr/0010-retention-is-a-policy-not-an-accident.md) retention là
+chính sách (`--prune-runs`), không phải tai nạn,
+[0011](Docs/adr/0011-fail-closed-on-both-sides-and-the-mutation-set-covers-every-claim.md)
+fail-closed ở cả hai phía và mutation set phủ mọi claim,
+[0012](Docs/adr/0012-a-hash-pinned-toolchain-the-shipping-platform-and-a-two-layer-resume-contract.md)
+chuỗi công cụ hash-pinned, nền tảng ship và `--resume` hai tầng,
+[0013](Docs/adr/0013-resume-is-provenance-effective-facts-and-a-lease-is-evidence-of-life.md)
+resume là provenance, effective facts và lease,
+[0014](Docs/adr/0014-the-lease-changes-hands-the-simplifier-is-provenance-and-the-real-stack-runs-on-windows.md)
+lease đổi chủ khi resume, `onnxslim` là provenance và stack thật chạy trên
+Windows.
 
 Sơ đồ trên là một **hợp đồng**, không phải gợi ý: `tests/test_architecture.py`
 parse `cvtrain/*.py` bằng `ast` và làm đỏ build khi có import nằm ngoài bản đồ
@@ -585,8 +596,9 @@ nên code mới phải đi kèm test của nó.
 
 Coverage chỉ chứng minh quyết định được *chạy*, không chứng minh nó đúng chiều.
 `scripts/mutation_check.py` đảo từng quyết định trọng yếu **một lần** rồi bắt
-suite phải đỏ. Danh sách 101 mutant trong script **là hợp đồng** (ADR 0007, mở
-rộng bởi ADR 0011 và 0013): nó phủ fail-closed provenance, quality gate, hợp đồng ONNX
+suite phải đỏ. Danh sách 107 mutant trong script **là hợp đồng** (ADR 0007, mở
+rộng bởi ADR 0011, 0013 và 0014): nó phủ fail-closed provenance, quality gate,
+hợp đồng ONNX
 dùng chung với runtime Qt, thứ tự publish, advisory lock, retention, giao thức
 progress và taxonomy mã thoát — một guard không có mutant là một guard chưa ai
 ghim. Mutant sống sót, mutant treo (`HUNG`) hoặc anchor đã cũ đều làm bước CI
@@ -625,7 +637,11 @@ Ba điều đáng nói thêm:
   `.github/workflows/cvtrain-nightly.yml` chạy stack thật (CPU torch) trên một
   dataset tổng hợp tí hon — một epoch cho detection và segmentation, huấn
   luyện → ONNX → manifest → xác minh — hằng đêm, khi gọi tay, **và khi có pull
-  request đụng vào package**. Tracking cố ý đứng ngoài nightly: `yolo11x` nhân
+  request đụng vào package**. Một job thứ hai (`windows-train-smoke`) chạy
+  đúng stack đó trên `windows-latest` (một epoch detection) vì sản phẩm ship
+  Windows và các wheel torch/ONNX Runtime/onnxslim là native: cài được, load
+  được và export được trên nền tảng đó phải là một verdict của CI, không phải
+  niềm tin (ADR 0014). Tracking cố ý đứng ngoài nightly: `yolo11x` nhân
   ba ngân sách trong khi vẫn diễn chạy cùng một seam backend.
 
 ### CI: hai nền tảng, một chuỗi công cụ đã pin
@@ -636,7 +652,7 @@ Workflow `.github/workflows/Build-cvtrain-ci.yml` chạy cổng chất lượng 
 của Windows — advisory lock `O_EXCL`, publish nguyên tử, lỗi sharing violation
 khi một file đang bị thay. Một CI chỉ chạy trên Linux sẽ báo xanh trong khi
 nền tảng người dùng thật chưa từng được kiểm tra. Job Windows còn quét lại
-mutation của `cvtrain/fsio.py` (19 mutant: advisory lock, lease/owner liveness,
+mutation của `cvtrain/fsio.py` (21 mutant: advisory lock, lease/owner liveness,
 publish nguyên tử, retention) — đúng những quyết định mà hành vi phụ thuộc
 nền tảng.
 

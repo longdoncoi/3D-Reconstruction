@@ -1,10 +1,17 @@
-"""Filesystem primitives: hashing and crash-safe writes.
+"""Filesystem primitives and the run lease: hashing, crash-safe writes, retention.
 
 Both the manifest writer and the model publisher need "write a file without
 ever leaving a half-written one behind". Keeping that logic here means there is
 exactly one temp-file + rename implementation to get right (and to test), and
 one hashing routine so a digest computed during training can never disagree
 with one recomputed by ``--verify-manifest``.
+
+The module also owns the advisory lock and the per-run lease: "a live run is
+never deleted" is a filesystem rule in the same sense as the atomic write, and
+the owner PID, the heartbeat and the activity mtime are only trustworthy when
+one policy reads and writes them. Retention lives here for the same reason —
+it is the one destructive path, so it shares this module's typed-error
+boundary instead of growing a second one.
 
 Reads the pipeline *depends on* (hashing, measuring) and writes it performs
 (staging a temp file, ``fsync``, the rename) raise
@@ -44,6 +51,7 @@ __all__ = [
     "atomic_copy",
     "atomic_replace_with_backup",
     "atomic_write_text",
+    "claim_run_marker",
     "clear_run_marker",
     "directory_lock",
     "file_size",
@@ -90,8 +98,9 @@ RUN_MARKER_NAME = ".cvtrain-alive"
 ``--prune-runs`` consults it together with the filesystem age: a run whose
 owner is still alive is never deleted, even when a long epoch has not touched
 ``weights/last.pt`` for a while. The owner removes it when training returns; a
-killed process leaves it behind and its dead PID lets the pruner age the run
-normally.
+killed process leaves it behind, and the resumed run re-claims it
+(:func:`claim_run_marker`) *before* its first epoch, so the lease names the
+process writing now rather than the one that crashed.
 """
 
 STEAL_SUFFIX = ".steal"
@@ -641,6 +650,13 @@ def directory_lock(
         _remove_lock(lock, token)
 
 
+def _owner_line() -> str:
+    """The one-line owner identity both marker writers record."""
+
+    started = datetime.now(timezone.utc).isoformat()
+    return f"owner pid={os.getpid()} host={socket.gethostname()} started={started}\n"
+
+
 def touch_run_marker(run_dir: Path) -> None:
     """Create/refresh the run's lease file naming this process.
 
@@ -648,19 +664,44 @@ def touch_run_marker(run_dir: Path) -> None:
     marker is a *process-liveness* signal; its mtime is a secondary one. Both
     are best effort: failing to write a lease must not fail a training run that
     is already underway, so this warns and returns.
+
+    Refreshing a lease is not taking it: an existing owner line is left alone.
+    That is what stops two processes from silently swapping ownership of the
+    same run. The run that *starts* training claims the lease explicitly with
+    :func:`claim_run_marker`.
     """
 
     marker = run_dir / RUN_MARKER_NAME
     try:
         run_dir.mkdir(parents=True, exist_ok=True)
         if not marker.exists():
-            marker.write_text(
-                f"owner pid={os.getpid()} host={socket.gethostname()} started={datetime.now(timezone.utc).isoformat()}\n",
-                encoding="utf-8",
-            )
+            marker.write_text(_owner_line(), encoding="utf-8")
         os.utime(marker)
     except OSError as exc:
         LOG.warning("Could not refresh run marker %s: %s", marker, exc)
+
+
+def claim_run_marker(run_dir: Path) -> None:
+    """Write the run's lease naming *this* process, replacing a stale owner.
+
+    Called once when training starts, before the first epoch. A resumed run
+    reuses the interrupted run's directory, whose marker still names the
+    process that was killed: refreshing that line would keep a dead PID, so
+    ``--prune-runs`` would read a live resumed run as abandoned for its whole
+    first epoch. The directory lock already refuses a second *training* writer,
+    so a marker naming another process is a crash leftover, not an owner to
+    protect.
+
+    Best effort like :func:`touch_run_marker`: failing to write a lease warns
+    instead of turning a run that already owns the directory into a crash.
+    """
+
+    marker = run_dir / RUN_MARKER_NAME
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        marker.write_text(_owner_line(), encoding="utf-8")
+    except OSError as exc:
+        LOG.warning("Could not claim run marker %s: %s", marker, exc)
 
 
 def clear_run_marker(run_dir: Path) -> None:
@@ -709,14 +750,16 @@ def _run_activity_mtime(run_dir: Path) -> float:
     so a run that keeps overwriting its checkpoint would look abandoned on
     NTFS. The checkpoint the framework rewrites after every epoch is consulted
     as well: it is the file whose freshness actually means "this run is
-    alive". ``0.0`` means "unknown", which sorts the run last and lets the
-    ordinary deletion rules speak.
+    alive". When even the directory cannot be inspected the answer is "now":
+    unknown activity must sort as *alive*, because the alternative is deleting
+    a run whose age could not be proven (the safe direction of the one
+    destructive operation is keep).
     """
 
     try:
         newest = run_dir.stat().st_mtime
     except OSError:
-        return 0.0
+        return time.time()
     checkpoint = run_dir / "weights" / "last.pt"
     try:
         newest = max(newest, checkpoint.stat().st_mtime)
@@ -745,7 +788,9 @@ def prune_run_directories(runs_dir: Path, *, keep: int, prefix: str) -> list[Pat
       still finds a checkpoint and a rollback is still possible;
     * a run whose last write is younger than :data:`RUN_ALIVE_SECONDS` is
       still running and is never deleted, whatever its position in the
-      history. For a destructive operation the safe direction is to keep;
+      history. The same rule covers a run whose activity cannot be read:
+      unknown age is not evidence of abandonment, and for a destructive
+      operation the safe direction is to keep;
     * a directory that cannot be read or removed is a typed
       :class:`StorageError`, not a traceback — and the runs already deleted
       stay deleted, because a cleanup that cannot finish is not a rollback.

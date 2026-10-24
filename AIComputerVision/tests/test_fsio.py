@@ -21,6 +21,7 @@ from cvtrain.fsio import (
     atomic_copy,
     atomic_replace_with_backup,
     atomic_write_text,
+    claim_run_marker,
     clear_run_marker,
     directory_lock,
     file_size,
@@ -868,9 +869,10 @@ class PruneRunDirectoriesTests(unittest.TestCase):
                     prune_run_directories(runs_dir, keep=1, prefix="train-")
         self.assertIn("Cannot read", str(ctx.exception))
 
-    def test_an_unstatable_run_is_treated_as_the_oldest_one(self) -> None:
-        # "Unknown" must not read as "alive": an unstatable directory sorts
-        # last and the ordinary deletion rules speak.
+    def test_an_unstatable_run_is_treated_as_alive(self) -> None:
+        # Unknown age is not evidence of abandonment: deleting the only copy
+        # of a run whose age could not be proved is the unsafe direction, so
+        # an unreadable run sorts as "active now" and survives this sweep.
         with tempfile.TemporaryDirectory() as tmp:
             runs_dir = Path(tmp) / "runs"
             model_dir = runs_dir / "detect"
@@ -883,8 +885,10 @@ class PruneRunDirectoriesTests(unittest.TestCase):
                     raise OSError("denied")
                 return real_stat(self, follow_symlinks=follow_symlinks)
 
+            before = time.time()
             with mock.patch("pathlib.Path.stat", _fail_on_run):
-                self.assertEqual(fsio_mod._run_activity_mtime(run_dir), 0.0)
+                activity = fsio_mod._run_activity_mtime(run_dir)
+        self.assertGreaterEqual(activity, before)
 
 
 class RunMarkerTests(unittest.TestCase):
@@ -915,6 +919,41 @@ class RunMarkerTests(unittest.TestCase):
             # marker whose owner PID happens to start with ``1`` (19232 does),
             # which is exactly the survivor this assertion exists to kill.
             self.assertEqual(marker.read_text(encoding="utf-8"), "owner pid=1 host=other\n")
+
+    def test_claiming_replaces_a_dead_owners_lease(self) -> None:
+        # A resumed run reuses the interrupted run's directory. Refreshing the
+        # old marker would keep the killed PID, so --prune-runs would read a
+        # live resumed run as abandoned for its whole first epoch.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "train-x"
+            run_dir.mkdir()
+            marker = run_dir / RUN_MARKER_NAME
+            marker.write_text("owner pid=1 host=other-host started=2026-01-01T00:00:00+00:00\n", encoding="utf-8")
+            old = time.time() - 10_000
+            os.utime(marker, (old, old))
+
+            claim_run_marker(run_dir)
+
+            text = marker.read_text(encoding="utf-8")
+            self.assertIn(f"pid={os.getpid()}", text)
+            self.assertIn(f"host={socket.gethostname()}", text)
+            self.assertGreater(marker.stat().st_mtime, old + 5_000)
+
+    def test_claiming_creates_the_run_directory_and_its_lease(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "runs" / "detect" / "train-x"
+            claim_run_marker(run_dir)
+            self.assertTrue((run_dir / RUN_MARKER_NAME).is_file())
+
+    def test_an_unwritable_claim_warns_instead_of_failing_the_run(self) -> None:
+        # Best effort like the epoch refresh: the run already owns the
+        # directory, so a lease that cannot be written must not crash it.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "train-x"
+            with mock.patch.object(Path, "write_text", side_effect=OSError("denied")):
+                with self.assertLogs("cvtrain.fsio", level="WARNING") as captured:
+                    claim_run_marker(run_dir)
+        self.assertTrue(any("Could not claim run marker" in line for line in captured.output))
 
     def test_clear_removes_the_marker_and_tolerates_its_absence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

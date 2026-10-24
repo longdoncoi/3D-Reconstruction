@@ -309,7 +309,7 @@ class LazyImportTests(_SandboxedTestCase):
         # dependency, and the adapter is the one module that knows which.
         self.assertEqual(
             UltralyticsBackend().required_modules(self.cfg),
-            ("ultralytics", "yaml", "onnx", "onnxruntime"),
+            ("ultralytics", "yaml", "onnx", "onnxslim", "onnxruntime"),
         )
 
     def test_tensorboard_is_demanded_only_when_it_was_asked_for(self) -> None:
@@ -326,8 +326,9 @@ class LazyImportTests(_SandboxedTestCase):
         self.assertIsNone(backend._yolo)
 
     def test_version_records_the_whole_export_stack_on_first_use(self) -> None:
-        # Ultralytics delegates the export to torch/onnx; a change in either can
-        # change the graph, so all four identities belong in the provenance.
+        # Ultralytics delegates the export to torch/onnx and simplifies the
+        # graph with onnxslim, so every one of those identities belongs in the
+        # provenance.
         with _stub_ultralytics():
             backend = UltralyticsBackend()
             backend.prepare(self.cfg)
@@ -336,6 +337,7 @@ class LazyImportTests(_SandboxedTestCase):
         self.assertEqual(fields["ultralytics"], "8.4.41-stub")
         self.assertIn("torch", fields)
         self.assertIn("onnx", fields)
+        self.assertIn("onnxslim", fields)
 
     def test_the_identity_carries_the_actual_version_of_each_dependency(self) -> None:
         # The *value* of every field, not only its presence. Asserting that the
@@ -345,13 +347,13 @@ class LazyImportTests(_SandboxedTestCase):
         # upgrade has to invalidate a ``--skip-unchanged`` verdict, because
         # ``onnx`` can change the exported graph.
         def _versions(name: str) -> str:
-            return {"torch": "2.7.0", "onnx": "1.21.0"}.get(name, "0.0.0")
+            return {"torch": "2.7.0", "onnx": "1.21.0", "onnxslim": "0.1.91"}.get(name, "0.0.0")
 
         with mock.patch("cvtrain.backend.metadata.version", side_effect=_versions):
             identity = exporter_identity("8.4.41")
         self.assertEqual(
             identity,
-            "cvtrain=1.0.0;ultralytics=8.4.41;torch=2.7.0;onnx=1.21.0",
+            "cvtrain=1.0.0;ultralytics=8.4.41;torch=2.7.0;onnx=1.21.0;onnxslim=0.1.91",
         )
 
     def test_a_moved_dependency_changes_the_exporter_identity(self) -> None:
@@ -359,16 +361,33 @@ class LazyImportTests(_SandboxedTestCase):
         # installed distribution, so a dependency that moves is visible in the
         # manifest. A hardcoded constant would make every identity identical.
         def _versions(name: str) -> str:
-            return {"torch": "2.7.0", "onnx": "1.21.0"}.get(name, "0.0.0")
+            return {"torch": "2.7.0", "onnx": "1.21.0", "onnxslim": "0.1.91"}.get(name, "0.0.0")
 
         with mock.patch("cvtrain.backend.metadata.version", side_effect=_versions):
             first = exporter_identity("8.4.41")
         with mock.patch(
             "cvtrain.backend.metadata.version",
-            side_effect=lambda name: {"torch": "2.8.0", "onnx": "1.21.0"}.get(name, "0.0.0"),
+            side_effect=lambda name: {"torch": "2.8.0", "onnx": "1.21.0", "onnxslim": "0.1.91"}.get(name, "0.0.0"),
         ):
             second = exporter_identity("8.4.41")
         self.assertNotEqual(first, second, "a torch upgrade must change the exporter identity")
+
+    def test_a_moved_simplifier_changes_the_exporter_identity(self) -> None:
+        # Ultralytics exports with ``simplify=True`` by default and runs
+        # onnxslim over the graph. A different simplifier emits different
+        # bytes under the same ultralytics/torch/onnx versions, so it has to
+        # invalidate --skip-unchanged on its own.
+        def _versions(name: str) -> str:
+            return {"torch": "2.7.0", "onnx": "1.21.0", "onnxslim": "0.1.91"}.get(name, "0.0.0")
+
+        with mock.patch("cvtrain.backend.metadata.version", side_effect=_versions):
+            before = exporter_identity("8.4.41")
+        with mock.patch(
+            "cvtrain.backend.metadata.version",
+            side_effect=lambda name: {"torch": "2.7.0", "onnx": "1.21.0", "onnxslim": "0.2.0"}.get(name, "0.0.0"),
+        ):
+            after = exporter_identity("8.4.41")
+        self.assertNotEqual(before, after, "an onnxslim upgrade must change the exporter identity")
 
     def test_a_missing_export_dependency_is_named_not_omitted(self) -> None:
         # "unknown" is a fact about the environment; silently dropping the key
@@ -380,7 +399,7 @@ class LazyImportTests(_SandboxedTestCase):
             identity = exporter_identity("9.9.9")
         self.assertEqual(
             identity,
-            "cvtrain=1.0.0;ultralytics=9.9.9;torch=unknown;onnx=unknown",
+            "cvtrain=1.0.0;ultralytics=9.9.9;torch=unknown;onnx=unknown;onnxslim=unknown",
         )
 
     def test_missing_dependency_raises_a_typed_error_not_a_traceback(self) -> None:
@@ -482,10 +501,18 @@ class ImportabilityTests(_SandboxedTestCase):
     """Preflight must prove the stack can be *loaded*, not only installed."""
 
     def test_a_working_stack_is_reported_importable(self) -> None:
+        # Every module the adapter declared is imported, not just the
+        # framework: a package that is installed and broken would otherwise
+        # pass preflight and fail at export, after the expensive training.
         with _stub_ultralytics():
-            ok, detail = UltralyticsBackend().check_importable(self.cfg)
+            with mock.patch("cvtrain.backend.import_module") as probe:
+                ok, detail = UltralyticsBackend().check_importable(self.cfg)
         self.assertTrue(ok)
         self.assertIn("importable", detail)
+        self.assertEqual(
+            [call.args[0] for call in probe.call_args_list],
+            ["ultralytics", "yaml", "onnx", "onnxslim", "onnxruntime"],
+        )
 
     def test_a_broken_install_is_reported_not_raised(self) -> None:
         # "Installed" is not "usable": the distribution is on disk, but its own
@@ -496,6 +523,30 @@ class ImportabilityTests(_SandboxedTestCase):
             ok, detail = UltralyticsBackend().check_importable(self.cfg)
         self.assertFalse(ok)
         self.assertIn("not importable", detail)
+
+    def test_a_declared_dependency_that_cannot_import_is_named(self) -> None:
+        # ``find_spec`` sees onnxslim, but the import is what proves it works.
+        # The verdict names the package and the fix, not a traceback.
+        def _probe(name: str) -> object:
+            if name == "onnxslim":
+                raise ImportError("DLL load failed while importing onnxslim")
+            return object()
+
+        with _stub_ultralytics():
+            with mock.patch("cvtrain.backend.import_module", side_effect=_probe):
+                ok, detail = UltralyticsBackend().check_importable(self.cfg)
+        self.assertFalse(ok)
+        self.assertIn("onnxslim is not importable", detail)
+        self.assertIn("pip install", detail)
+
+    def test_a_native_load_error_is_a_verdict_not_a_traceback(self) -> None:
+        # A Windows DLL failure raises OSError, not ImportError. Both mean the
+        # stack cannot be loaded, and neither may escape the preflight report.
+        with _stub_ultralytics():
+            with mock.patch("cvtrain.backend.import_module", side_effect=OSError("DLL load failed")):
+                ok, detail = UltralyticsBackend().check_importable(self.cfg)
+        self.assertFalse(ok)
+        self.assertIn("ultralytics is not importable", detail)
 
 
 class TrainTests(_SandboxedTestCase):
@@ -539,6 +590,27 @@ class TrainTests(_SandboxedTestCase):
         self.assertEqual(_FakeYOLO.last.train_kwargs, {"resume": True})
         self.assertEqual(model.facts.resumed_from, str(newest))
         self.assertEqual(model.facts.source_weights, str(newest))
+
+    def test_resuming_claims_the_run_lease_before_training(self) -> None:
+        # The interrupted run's marker still names the killed process. The
+        # resumed run must re-claim it *before* the first epoch, or a
+        # concurrent --prune-runs reads a live run as abandoned for hours.
+        checkpoint = self._write_checkpoint("train-crashed")
+        cfg = self._resume_cfg()
+        with _stub_ultralytics(checkpoint=self._checkpoint_args(cfg)):
+            backend = UltralyticsBackend()
+            with mock.patch("cvtrain.backend.claim_run_marker") as claim:
+                self._train(backend, MODEL_REGISTRY["det"], cfg, lambda epoch, total: None)
+        claim.assert_called_once_with(checkpoint.parent.parent)
+
+    def test_a_fresh_run_does_not_claim_a_run_lease(self) -> None:
+        # A fresh run has no directory yet, so there is no lease to take; the
+        # epoch callback creates the marker once the framework names its dir.
+        with _stub_ultralytics(export_path=str(self.exported_onnx)):
+            backend = UltralyticsBackend()
+            with mock.patch("cvtrain.backend.claim_run_marker") as claim:
+                self._train(backend, MODEL_REGISTRY["det"], self.cfg, lambda epoch, total: None)
+        claim.assert_not_called()
 
     def test_resume_without_a_previous_run_is_refused(self) -> None:
         # Starting over would overwrite the artifact the operator asked to

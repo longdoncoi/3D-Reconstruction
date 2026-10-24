@@ -19,7 +19,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
-from importlib import metadata
+from importlib import import_module, metadata
 from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar, cast, runtime_checkable
 
@@ -27,7 +27,7 @@ from . import __version__
 from .config import RUN_DIR_PREFIX, ModelSpec, TrainConfig
 from .dataset import dataset_content_fingerprint
 from .errors import BackendUnavailableError, ResumeError
-from .fsio import clear_run_marker, touch_run_marker
+from .fsio import claim_run_marker, clear_run_marker, touch_run_marker
 from .metrics import coerce_metric
 
 LOG = logging.getLogger("cvtrain.backend")
@@ -207,10 +207,12 @@ def exporter_identity(ultralytics_version: str) -> str:
     """Canonical identity of the stack that produced an export.
 
     ``ultralytics.__version__`` alone is not enough: the same Ultralytics build
-    delegates ONNX export to ``torch`` and the ``onnx`` package, and either can
-    change the graph it emits. Recording all four versions means a
-    ``--skip-unchanged`` verdict is invalidated when any export-relevant
-    dependency moves, which is the direction a false "unchanged" costs hours.
+    delegates ONNX export to ``torch`` and the ``onnx`` package, and simplifies
+    the graph with ``onnxslim``. Any of them can change the bytes it emits, so
+    all five versions are recorded and a ``--skip-unchanged`` verdict is
+    invalidated when one moves — the direction a false "unchanged" costs hours.
+    ``onnxruntime`` is deliberately *not* part of this identity: it validates
+    the exported graph (the pinned contract engine) but does not produce it.
 
     The format is a stable, greppable ``name=version;...`` string. ``unknown``
     is deliberate rather than an omission: a missing piece of the stack is
@@ -224,6 +226,7 @@ def exporter_identity(ultralytics_version: str) -> str:
             f"ultralytics={ultralytics_version}",
             f"torch={_package_version('torch')}",
             f"onnx={_package_version('onnx')}",
+            f"onnxslim={_package_version('onnxslim')}",
         )
     )
 
@@ -384,11 +387,14 @@ class UltralyticsBackend:
     """Adapter over ``ultralytics``. Imports happen on first real use only."""
 
     #: Modules preflight must see before this backend can train or export.
-    #: ``yaml`` parses ``data.yaml``, ``onnx`` validates the exported graph and
-    #: ``onnxruntime`` runs the post-export smoke inference that mirrors the
-    #: Qt loader. ``tensorboard`` joins them only under ``--tensorboard`` (see
-    #: :meth:`required_modules`): an optional feature still has to fail fast.
-    BASE_MODULES: tuple[str, ...] = ("ultralytics", "yaml", "onnx", "onnxruntime")
+    #: ``yaml`` parses ``data.yaml``, ``onnx`` validates the exported graph,
+    #: ``onnxslim`` produces the simplified graph Ultralytics exports by
+    #: default (without it the export is a different graph under the same
+    #: version), and ``onnxruntime`` runs the post-export smoke inference that
+    #: mirrors the Qt loader. ``tensorboard`` joins them only under
+    #: ``--tensorboard`` (see :meth:`required_modules`): an optional feature
+    #: still has to fail fast.
+    BASE_MODULES: tuple[str, ...] = ("ultralytics", "yaml", "onnx", "onnxslim", "onnxruntime")
 
     def __init__(self) -> None:
         self.version = ""
@@ -656,6 +662,12 @@ class UltralyticsBackend:
         )
 
     def train(self, spec: ModelSpec, cfg: TrainConfig, on_epoch: EpochCallback, plan: TrainPlan) -> TrainedModel[Any]:
+        # A resumed run reuses the interrupted run's directory, whose lease
+        # still names the killed process. Claim it *before* the framework is
+        # imported and training begins: a concurrent ``--prune-runs`` reads
+        # that marker as evidence of life, and the first epoch can be hours.
+        if plan.resume_from is not None:
+            claim_run_marker(plan.resume_from.parent.parent)
         self._ensure_loaded()
         project = cfg.runs_dir / spec.runs_subdir
         if plan.resumed:
@@ -732,11 +744,27 @@ class UltralyticsBackend:
         return "cpu"
 
     def check_importable(self, cfg: TrainConfig) -> tuple[bool, str]:
+        # ``_ensure_loaded`` proves the framework itself; every other module
+        # preflight declared is imported here too. A distribution whose own
+        # dependency (or native DLL) is missing is *installed and broken*:
+        # ``find_spec`` sees it, training starts, and the failure surfaces at
+        # export after the expensive part. This is the verdict that closes
+        # that window, so it must cover the declared set rather than one
+        # representative package.
         try:
             self._ensure_loaded()
         except BackendUnavailableError as exc:
             return False, str(exc)
-        return True, "framework importable"
+        for name in self.required_modules(cfg):
+            # A broken install can raise ImportError (missing dependency),
+            # OSError (a DLL that will not load) or an error raised by the
+            # package's own import-time code. All of them mean "not
+            # importable", and the report is where the operator reads it.
+            try:
+                import_module(name)
+            except Exception as exc:
+                return False, f"{name} is not importable ({exc}); run: pip install -r requirements.txt"
+        return True, "framework and declared dependencies importable"
 
     def export(self, model: TrainedModel[Any], cfg: TrainConfig) -> Path:
         return Path(model.handle.export(format="onnx", opset=cfg.opset))
