@@ -11,6 +11,13 @@
 vtkSmartPointer<vtkActor> Image2DLoader::load(const QString& fileName) {
     if (fileName.isEmpty()) return nullptr;
 
+    // The reader factory and the fallback readers only report a failure through
+    // VTK's error stream: they still hand back an empty image object, so the
+    // caller would get a textured plane for a file that does not exist. Refuse
+    // a missing/unreadable path before VTK is asked to parse it.
+    const QFileInfo fileInfo(fileName);
+    if (!fileInfo.isFile() || !fileInfo.isReadable()) return nullptr;
+
     vtkNew<vtkImageReader2Factory> readerFactory;
     vtkSmartPointer<vtkImageReader2> reader = readerFactory->CreateImageReader2(fileName.toStdString().c_str());
     

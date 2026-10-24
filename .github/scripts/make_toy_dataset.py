@@ -23,7 +23,13 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 IMGSZ = 64
-IMAGES_PER_SPLIT = 3
+# The nightly resume check has to catch a run *between* epochs: it finds
+# ``last.pt`` (written at the end of epoch 1), waits for the 5 MB write to
+# settle and only then kills the trainer. With three images an epoch is a
+# fraction of a second, so the five-epoch run can complete before the kill —
+# a completed checkpoint (epoch == -1) is not resumable. Enough images to make
+# one epoch take ~1 s keep the window open without measurable CI cost.
+IMAGES_PER_SPLIT = 32
 SEED = 20261011
 
 

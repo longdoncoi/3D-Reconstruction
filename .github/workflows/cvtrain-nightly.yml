@@ -110,26 +110,43 @@ jobs:
         # "resume" the old completed run. Isolating the directory makes the
         # checkpoint unambiguously this run's.
         run: |
+          set -euo pipefail
           RESUME_RUNS="$GITHUB_WORKSPACE/ResumeRuns"
           rm -rf "$RESUME_RUNS"
+          # The project directory must exist before the poll below. Steps run
+          # with ``bash -e``, and a failing command substitution in an
+          # assignment (``find`` on a path that does not exist yet returns 1)
+          # aborts the whole step before the trainer has created the directory.
+          mkdir -p "$RESUME_RUNS/detect"
           python AIComputerVision/TrainModel.py --yes --det --epochs 5 --imgsz 64 --batch 2 --workers 0 --device cpu --runs-dir "$RESUME_RUNS" &
           TRAIN_PID=$!
           CHECKPOINT=""
           for _ in $(seq 1 240); do
-            CHECKPOINT="$(find "$RESUME_RUNS/detect" -name last.pt -print -quit 2>/dev/null)"
+            CHECKPOINT="$(find "$RESUME_RUNS/detect" -name last.pt -print -quit 2>/dev/null || true)"
             if [ -n "$CHECKPOINT" ]; then break; fi
+            if ! kill -0 "$TRAIN_PID" 2>/dev/null; then break; fi
             sleep 1
           done
-          # The checkpoint is written asynchronously; a moment's grace lets the
-          # write finish so the kill cannot truncate it.
-          sleep 5
+          test -n "$CHECKPOINT"
+          # ``find`` sees the path as soon as ``torch.save`` creates it, so a
+          # fixed grace can either truncate the checkpoint (too short) or let a
+          # sub-second toy run finish first (too long — a completed checkpoint
+          # has epoch == -1 and is not resumable). Poll the size until two
+          # samples agree: the write is complete, the run is still training.
+          SIZE=0
+          for _ in $(seq 1 50); do
+            NEXT_SIZE="$(stat -c%s "$CHECKPOINT" 2>/dev/null || echo 0)"
+            if [ "$NEXT_SIZE" -gt 0 ] && [ "$NEXT_SIZE" -eq "$SIZE" ]; then break; fi
+            SIZE="$NEXT_SIZE"
+            sleep 0.2
+          done
           kill -9 "$TRAIN_PID" 2>/dev/null || true
           wait "$TRAIN_PID" 2>/dev/null || true
-          test -n "$CHECKPOINT"
           # A checkpoint whose remaining work is zero is not resumable, and a
           # checkpoint that cannot be loaded is not a checkpoint. Assert both
-          # facts on the artifact the kill left behind.
-          python -c "import sys, torch; c=torch.load(sys.argv[1], map_location='cpu', weights_only=False); assert isinstance(c.get('epoch'), int) and c['epoch'] >= 0, c.get('epoch'); assert c['train_args']['epochs'] == 5, c['train_args']['epochs']" "$CHECKPOINT"
+          # facts on the artifact the kill left behind: epoch is 0-based, so a
+          # 5-epoch run that has work left has epoch < 4.
+          python -c "import sys, torch; c=torch.load(sys.argv[1], map_location='cpu', weights_only=False); assert isinstance(c.get('epoch'), int) and c['epoch'] >= 0, c.get('epoch'); assert c['epoch'] < 4, c['epoch']; assert c['train_args']['epochs'] == 5, c['train_args']['epochs']" "$CHECKPOINT"
           # The killed process cannot release its advisory lock. The lock names
           # its owner, so the resume run detects the dead same-host PID and
           # steals it without waiting out the stale window — exactly the crash
