@@ -28,6 +28,7 @@ class SmtpOutbox;
 class ShellService;
 class LanguageManager;
 class IProgressDialog;
+class MutableServiceRegistry;
 
 /**
  * @brief Composition root — only file allowed to include concrete service
@@ -69,13 +70,25 @@ public:
      */
     void initializeDeferredServices();
 
+    /**
+     * @brief Stop exposing services (called after PluginHost::shutdown()).
+     *
+     * The registry does not own the implementations, so clearing it first
+     * turns any late get() into nullptr instead of a dangling pointer. The
+     * write side stays inside the composition root: MainWindow calls this
+     * method rather than reaching for a mutable registry through IAppContext.
+     */
+    void shutdownServices();
+
     // ─── IAppContext ───────────────────────────────────────────────────────────
     ISceneService*    scene()      override;
     IViewerService*   viewer()     override;
     ISettingsService* settings()   override;
     SignalBus*        signalBus()  override { return m_signalBus; }
     IShellService*    shell()      override;
-    ServiceRegistry*  services()   override { return m_registry.get(); }
+    /// Defined in AppShell.cpp: MutableServiceRegistry is forward-declared
+    /// here (the write side stays out of the app-shell header).
+    const ServiceRegistry* services() override;
 
     QString   translate(const QString& key) override;
     void      setLanguage(const QString& lang) override;
@@ -91,7 +104,7 @@ private:
 
     // Owned services
     SignalBus*                                  m_signalBus    = nullptr;
-    std::unique_ptr<ServiceRegistry>            m_registry;
+    std::unique_ptr<MutableServiceRegistry>     m_registry;
     std::unique_ptr<ShellService>               m_shellService;
     std::unique_ptr<SceneService>               m_sceneService;
     std::unique_ptr<ViewerService>              m_viewerService;
@@ -99,7 +112,8 @@ private:
     std::unique_ptr<ReconstructionService>      m_reconService;
     std::unique_ptr<AIService>                  m_aiService;
     /// Must be declared after AIService so it is destroyed before it: the
-    /// model-load worker keeps a pointer to IAIService.
+    /// model-load worker keeps a pointer to the AIService loader seam
+    /// (IAIModelAdmin).
     std::unique_ptr<AIModelLoadService>         m_aiModelLoadService;
     /// Declared after AIModelLoadService so it is destroyed before it.
     std::unique_ptr<AIPredictionLogService>     m_aiPredictionLogService;

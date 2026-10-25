@@ -8,7 +8,7 @@ after the build step. The reference run recorded here is
 | # | Gate | Command | What it proves |
 |---|------|---------|----------------|
 | 1 | Architecture boundaries | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | Layering invariants (heavy/light PCH split, plugin includes, plugin **include path**, blocking-I/O waits, singleton confinement, event-filter ownership, shell-window lookup …). Runs in CTest as `TestArchitectureBoundaries`. |
-| 2 | Unit + integration suite | `ctest --test-dir build -C Release --output-on-failure` | 44 CTest entries (40 test executables + 4 CMake-script tests): kernel units, plugin host/resolver with an injected loader, real-plugin smoke, `TestAppShell` composition-root wiring, `TestAIAssistant` request state machine (injected transport), AppCore-owned model-load lifetime (`TestAIModelLoadService`), the non-blocking server-process teardown (`TestAIServerProcessController`, which re-runs the test executable as a stand-in for the Python wrapper), the interface ABI guard (`TestInterfaceAbi`), the AI service against the REAL ONNX models (`TestAIService` — needs `git lfs pull`), the at-rest cipher shared with the Python service (`TestAtRestCipher`), the at-rest confidentiality of the user INI (`TestSecretProtection`), the shared utility layer (`TestUtilsLayer`), the scene/viewer layers, the reconstruction service boundary (`TestReconstructionService` — the UI-facing queries and mutators must not wait for the worker, and the published result must be complete), plus `TestReconstructionFinalize` and `TestReconstructionService` (both labelled `slow` — they need a completed reconstruction). |
+| 2 | Unit + integration suite | `ctest --test-dir build -C Release --output-on-failure` | 48 CTest entries (42 test executables + 6 CMake-script tests): kernel units, plugin host/resolver with an injected loader, real-plugin smoke, `TestAppShell` composition-root wiring, `TestMainWindow` (the tab-panel contract a plugin resolves by tab id), `TestAIAssistant` request state machine (injected transport), AppCore-owned model-load lifetime (`TestAIModelLoadService`), the non-blocking server-process teardown (`TestAIServerProcessController`, which re-runs the test executable as a stand-in for the Python wrapper), the interface ABI guard (`TestInterfaceAbi`), the AI service against the REAL ONNX models (`TestAIService` — needs `git lfs pull`), the at-rest cipher shared with the Python service (`TestAtRestCipher`), the at-rest confidentiality of the user INI (`TestSecretProtection`), the shared utility layer (`TestUtilsLayer`), the scene/viewer layers, the reconstruction service boundary (`TestReconstructionService` — the UI-facing queries and mutators must not wait for the worker, and the published result must be complete), plus `TestReconstructionFinalize` and `TestReconstructionService` (both labelled `slow` — they need a completed reconstruction). |
 | 3 | Coverage gate | `python tests/coverage_gate.py` | Measured line coverage of the kernel/guard, composition, service and utility files, with per-file floors, a completeness check (no translation unit may escape the measurement), a **ratchet** (a floor may never be lowered) and a printed debt list; runs OpenCppCoverage over the owning tests. |
 | 4 | Mutation check | `python tests/mutation_check.py` | Every load-bearing guard decision is *pinned*: one inverted decision per mutant, rebuilt and re-run; the owning test must fail. |
 
@@ -33,7 +33,7 @@ ABI.
 
 | Piece | Where | What it does |
 |-------|-------|--------------|
-| the surface (one definition) | `cmake/PluginInterface.cmake` | every `src/core/I*.h`, the allow-listed core glue, `src/utils/*.h`, `AgentActionManifest.h` |
+| the surface (one definition) | `cmake/PluginInterface.cmake` | every `src/include/*.h` (the `I*.h` interfaces, the allow-listed core glue and the DTOs they expose) + `src/utils/*.h`; `src/core` and `src/services/**` are PRIVATE on AppCore |
 | the hash | `cmake/InterfaceAbi.cmake` | stable over file **name + content** (not the absolute path, so the value is the same on every machine) |
 | the generator | `cmake/GenerateInterfaceAbi.cmake` | writes `InterfaceAbiHash.h`; the custom command depends on **every** file of the surface, so the hash can never go stale |
 | the guard | `tests/CheckInterfaceAbi.cmake` (`TestInterfaceAbi`) | **freshness** (the generated hash equals a fresh computation) + **sensitivity** (changing any interface header changes the hash) |
@@ -58,10 +58,10 @@ executes it) and enforces three things:
 2. **Completeness** — every translation unit of `src/` that a test can reach
    must appear in the merged report. A file that goes missing fails the run:
    that happens when it is not compiled into an instrumented module, or when
-   the unity build inlined it away (see below). Five units are exempt, each
+   the unity build inlined it away (see below). Four units are exempt, each
    with a recorded reason (`_NOT_MEASURABLE` in the script): the two PCH
-   carriers, `src/app/main.cpp` + `src/app/mainwindow.cpp` (they live in the
-   application executable, which no test executes) and
+   carriers, `src/app/main.cpp` (the application entry point, exercised by
+   running the application itself) and
    `src/services/scene/panstyle.cpp` (a `vtkStandardNewMacro` boilerplate).
 3. **The ratchet is a one-way street** — `tests/coverage_floors.json` is the
    committed baseline. The gate fails when a floor is *lowered* (a coverage
@@ -158,6 +158,7 @@ reporting a gap.
 | file | measured | floor |
 |------|----------|-------|
 | `src/app/appshell.cpp` | 100.0 % (69/69) | 100 |
+| `src/app/mainwindow.cpp` | 70.7 % (123/174) | 70 |
 
 **kernel + guard**
 
@@ -188,7 +189,7 @@ reporting a gap.
 | `src/services/ai/chatsessionmanager.cpp` | 100.0 % (78/78) | 100 |
 | `src/services/ai/chatsessionstore.cpp` | 100.0 % (62/62) | 100 |
 | `src/services/ai/chatmessage.cpp` | 88.6 % (39/44) | 88 |
-| `src/services/ai/agentactionmanifest.cpp` | 45.7 % (32/70) | 45 |
+| `src/services/ai/agentactionmanifest.cpp` | 100.0 % (70/70) | 100 |
 | `src/services/ai/aiassistant.cpp` | 55.7 % (306/549) | 42 |
 | `src/services/ai/aiserverprocesscontroller.cpp` | 94.7 % (107/113) | 94 |
 | `src/services/ai/aiinferenceguard.cpp` | 75.0 % (30/40) | 75 |
@@ -248,7 +249,7 @@ references a vertex the trim removed.
 | file | measured | floor |
 |------|----------|-------|
 | `src/services/viewer/image2dloader.cpp` | 98.7 % (75/76) | 98 |
-| `src/services/viewer/model3dloader.cpp` | 46.9 % (30/64) | 46 |
+| `src/services/viewer/model3dloader.cpp` | 100.0 % (64/64) | 100 |
 | `src/services/viewer/viewerservice.cpp` | 13.6 % (8/59) | 13 |
 | `src/services/viewer/dicomloader.cpp` | 1.5 % (2/135) | 1 |
 
@@ -287,7 +288,7 @@ references a vertex the trim removed.
 | `src/modules/aiassistantplugin/chatimageviewer.cpp` | 100.0 % (35/35) | 100 |
 | `src/modules/aiassistantplugin/chatbotdockwidget.cpp` | 96.4 % (135/140) | 96 |
 | `src/modules/aiassistantplugin/aiassistantplugin.cpp` | 18.2 % (73/400) | 18 |
-| `src/modules/aiassistantplugin/chatmessagerenderer.cpp` | 39.0 % (83/213) | 38 |
+| `src/modules/aiassistantplugin/chatmessagerenderer.cpp` | 100.0 % (213/213) | 100 |
 
 **plugin: AI processor**
 
@@ -340,8 +341,8 @@ references a vertex the trim removed.
 | `src/modules/viewerplugin/viewerribbonui.cpp` | 100.0 % (8/8) | 100 |
 | `src/modules/viewerplugin/viewernavigatorui.cpp` | 94.7 % (36/38) | 94 |
 | `src/modules/viewerplugin/viewerplugin.cpp` | 51.4 % (74/144) | 51 |
-| `src/modules/viewerplugin/viewerviewmodel.cpp` | 9.0 % (6/67) | 8 |
-| `src/modules/viewerplugin/viewerlistui.cpp` | 10.2 % (6/59) | 7 |
+| `src/modules/viewerplugin/viewerviewmodel.cpp` | 98.5 % (66/67) | 98 |
+| `src/modules/viewerplugin/viewerlistui.cpp` | 100.0 % (59/59) | 100 |
 
 Rules for the table:
 
@@ -634,4 +635,4 @@ Discipline (mirrors `AIAssistant/scripts/mutation_check.py`):
   build (or run the gate in CI) while it runs;
 * `--only SUBSTR` runs a subset by label.
 
-Reference result: **71/71 killed, 0 survived, 0 stale, 0 invalid**.
+Reference result: **78/78 killed, 0 survived, 0 stale, 0 invalid**.

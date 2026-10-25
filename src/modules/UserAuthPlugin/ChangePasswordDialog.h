@@ -6,11 +6,14 @@
 class QLineEdit;
 class QLabel;
 class QPushButton;
+class IUserManager;
 
 class ChangePasswordDialog : public ModernDialog {
     Q_OBJECT
 public:
-    explicit ChangePasswordDialog(const QString &username, QWidget *parent = nullptr);
+    /// `users` is injected by the owner (registry-resolved). See AboutDialog.
+    explicit ChangePasswordDialog(const QString &username, IUserManager *users,
+                                  QWidget *parent = nullptr);
 
 private slots:
     void onApply();
@@ -28,6 +31,7 @@ private:
     QPushButton *m_applyBtn = nullptr;
     QString      m_username;
     bool         m_isExternal = false;
+    IUserManager *m_users = nullptr;
 };
 
 #endif // CHANGE_PASSWORD_DIALOG_H

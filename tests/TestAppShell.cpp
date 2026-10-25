@@ -69,7 +69,7 @@ private:
     QVTKOpenGLNativeWidget m_vtkWidget;
     vtkSmartPointer<vtkGenericOpenGLRenderWindow> m_renderWindow;
     std::unique_ptr<AppShell> m_shell;
-    ServiceRegistry* m_registry = nullptr;
+    const ServiceRegistry* m_registry = nullptr;
     QString m_missingKey;
 };
 

@@ -122,6 +122,30 @@ MUTANTS: tuple[Mutant, ...] = (
         "TestServiceRegistry",
         "duplicate service registration replaces the existing service",
     ),
+    # ── ServiceRegistry: the write side belongs to the composition root. If
+    #    the base class exposes registration publicly, every plugin can
+    #    unregister a service and install a replacement — the "first
+    #    registration wins" rule and the read-only IAppContext contract both
+    #    stop meaning anything.
+    Mutant(
+        "src/include/ServiceRegistry.h",
+        "protected:\n    // ─── Write side: reachable only through MutableServiceRegistry (src/core) ─",
+        "public:\n    // ─── Write side: reachable only through MutableServiceRegistry (src/core) ─",
+        "TestServiceRegistry",
+        "TestServiceRegistry",
+        "the ServiceRegistry write side is public for every consumer",
+    ),
+    # ── GuardedApplication: the GUI-thread exception barrier. Rethrowing from
+    #    the catch lets the exception leave notify(), reach Qt's event loop and
+    #    end in std::terminate() — the whole process aborts.
+    Mutant(
+        "src/app/GuardedApplication.h",
+        "                << e.what();\n        } catch (...) {",
+        "                << e.what();\n            throw; // mutant: the exception escapes notify()\n        } catch (...) {",
+        "TestGuardedApplication",
+        "TestGuardedApplication",
+        "GuardedApplication: a throwing slot aborts the process",
+    ),
     # ── ReconstructionPostProcessor: the Poisson trim replaces the vertex
     #    list, so the faces have to be remapped WITH it. Keeping the old
     #    indices leaves the faces pointing at vertices that no longer exist —
@@ -489,11 +513,36 @@ MUTANTS: tuple[Mutant, ...] = (
     #    installed into the shell — the shell outlives the plugin.
     Mutant(
         "src/modules/UserAuthPlugin/UserAuthPlugin.cpp",
-        "    releaseShellWidgets();\n    if (s_users) s_users->saveConfig();",
-        "    if (s_users) s_users->saveConfig();",
+        "    releaseShellWidgets();\n    if (m_users) m_users->saveConfig();",
+        "    if (m_users) m_users->saveConfig();",
         "TestPluginSmoke",
         "TestPluginSmoke",
         "UserAuthPlugin: cleanup() leaves the shell widgets behind (dead UI)",
+    ),
+    # ── MainWindow: the tab panels are the plugin contract. A panel that is
+    #    built but never registered in the shell is invisible to every plugin
+    #    (getTabPanel() returns nullptr) and nothing reports it — the plugin
+    #    simply installs nothing.
+    Mutant(
+        "src/app/MainWindow.cpp",
+        "    m_shell->shell()->registerTabPanel(key, panel);",
+        "    // m_shell->shell()->registerTabPanel(key, panel);",
+        "TestMainWindow",
+        "TestMainWindow",
+        "MainWindow: a tab panel is built but not registered in the shell (a plugin installs nothing)",
+    ),
+    # ── MainWindow: the tab button must route to its panel. A checked button
+    #    that does not switch the stack shows the wrong tab's tools.
+    Mutant(
+        "src/app/MainWindow.cpp",
+        "  if (m_tabPanels.contains(tabName) && m_tabContent)\n"
+        "    m_tabContent->setCurrentWidget(m_tabPanels[tabName]);",
+        "  if (m_tabPanels.contains(tabName) && m_tabContent) {\n"
+        "    // mutation: the stack is not switched\n"
+        "  }",
+        "TestMainWindow",
+        "TestMainWindow",
+        "MainWindow: clicking a tab does not show its panel",
     ),
     # ── PluginHost: the shutdown must release the plugin objects. The root
     #    component has no parent — only the loader's unload() destroys it.
@@ -591,6 +640,19 @@ MUTANTS: tuple[Mutant, ...] = (
         "TestArchitectureBoundaries",
         "planted: heavy SDK include in src/utils (light-plugin ABI surface)",
     ),
+    # ── Architecture guard itself: the plugin-facing IAIService must not
+    #    expose the synchronous model loaders. A GUI slot calling one freezes
+    #    the window for the whole ONNX session creation; the loader seam is
+    #    IAIModelAdmin (src/services/ai), reached only by AIModelLoadService.
+    Mutant(
+        "src/include/IAIService.h",
+        "",
+        "\n    // planted by mutation_check — the synchronous loader belongs to AppCore\n"
+        "    virtual bool loadDetectionModel(const QString& modelPath) = 0;\n",
+        _PLANT,
+        "TestArchitectureBoundaries",
+        "planted: IAIService exposes a synchronous model loader to plugins",
+    ),
     # ── Architecture guard itself: a plugin's include path must not contain
     #    src/core — the public surface is src/include, so adding src/core
     #    would hand the plugin the concrete kernel headers.
@@ -602,6 +664,18 @@ MUTANTS: tuple[Mutant, ...] = (
         _PLANT,
         "TestArchitectureBoundaries",
         "planted: a plugin's include path hands it the concrete kernel headers",
+    ),
+    # ── Teardown rule: a NEW unbounded wait must be rejected, not just the
+    #    historical `waitForFinished()` call it was written for. The marker is
+    #    the only way to opt out, and it forces the author to state a reason.
+    Mutant(
+        "src/services/ai/AIPredictionLogService.cpp",
+        "",
+        "\nvoid mutation_probe(QThreadPool& p) { p.waitForDone(); }"
+        " // planted by mutation_check — an unbounded teardown wait\n",
+        _PLANT,
+        "TestArchitectureBoundaries",
+        "planted: a new unbounded teardown wait is accepted",
     ),
     # ── AppShell: the composition root must register the SEGREGATED user
     #    contracts under their own keys — otherwise a consumer that depends
@@ -773,6 +847,18 @@ MUTANTS: tuple[Mutant, ...] = (
         "TestPluginWidgets",
         "VideoTrackerThread: an exception in the tracking loop escapes the thread (the app aborts)",
     ),
+    # ── VideoTrackerThread::stopAndWait() — the last-resort join. A thread
+    #    stuck inside the inference backend cannot observe m_stopRequested; a
+    #    cooperative-only stop returns with the thread still alive, and the
+    #    plugin then unloads the DLL the thread is executing.
+    Mutant(
+        "src/modules/AIProcessorPlugin/VideoTrackerThread.cpp",
+        "    terminate();\n    wait(2000);\n    return false;",
+        "    wait(2000);\n    return false;",
+        "TestPluginWidgets",
+        "TestPluginWidgets",
+        "VideoTrackerThread: a thread stuck in the inference is never terminated (it outlives the plugin)",
+    ),
     # ── ReconstructionService: the lock split is a CLASS of decisions, not one
     #    method. Every UI-facing query must read the PUBLISHED state, never
     #    the pipeline (the worker holds the pipeline lock for the whole run).
@@ -922,7 +1008,7 @@ MUTANTS: tuple[Mutant, ...] = (
 # gate into a failing one. It is not lowered to make a run pass — a mutant that
 # no longer applies is replaced, not removed.
 #
-# 71 is the number of load-bearing decisions the guard layer pins today
+# 78 is the number of load-bearing decisions the guard layer pins today
 # (PluginHost, ServiceRegistry, SecretVault, CryptoUtils, UserManager,
 # LicenseKeyLedger, OtpStore, UserSettingsStore, ReconstructionService,
 # ReconstructionPostProcessor, AIModelLoadService, AIServerProcessController,
@@ -930,8 +1016,11 @@ MUTANTS: tuple[Mutant, ...] = (
 # AIProcessor model loading, AIProcessor inference dispatch,
 # BlockingCall, AIInferenceGuard, VideoTrackerThread, architecture guard,
 # AIService failure semantics, AIPredictionLogService pool barrier,
-# VideoTrackerThread failed-inference stop, AIProcessorPlugin false success).
-MIN_MUTANTS = 71
+# VideoTrackerThread failed-inference stop, AIProcessorPlugin false success,
+# ServiceRegistry read-only surface, GuardedApplication barrier, IAIService
+# loader seam, VideoTrackerThread terminate fallback, teardown rule,
+# MainWindow tab contract).
+MIN_MUTANTS = 78
 
 
 #: Header-only files on the plugin-facing surface carry load-bearing decisions
@@ -946,6 +1035,7 @@ PINNED_HEADERS: tuple[str, ...] = (
     "src/include/IPlugin.h",
     "src/include/ServiceRegistry.h",
     "src/include/ChatMessage.h",
+    "src/app/GuardedApplication.h",
     "src/services/mail/MailThreadGuard.h",
     "src/utils/BlockingCall.h",
 )

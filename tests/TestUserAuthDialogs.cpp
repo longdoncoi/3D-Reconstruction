@@ -19,17 +19,18 @@
 #include "LoginDialog.h"
 #include "SettingsDialog.h"
 #include "ThemeSelectionDialog.h"
-#include "UserAuthPlugin.h"
+#include "OverlayResizer.h"
 #include "mock/PluginContextMock.h"
 
 /**
  * @brief The authentication dialogs of the user-auth plugin.
  *
  * These dialogs are the biggest GUI blocks of the plugin layer (≈1 000
- * lines) and had no test at all.  They all read the user through
- * `UserAuthPlugin::users()`, the static the plugin binds during
- * `initialize()` — so the test initializes the plugin with a stub context
- * first and only then builds the dialogs.
+ * lines). Each one receives the user service through its CONSTRUCTOR, so the
+ * test builds them directly — no plugin instance, no process-global binding.
+ * (They used to read `UserAuthPlugin::users()`, a static the plugin bound in
+ * `initialize()`, which forced this test to initialize the whole plugin just
+ * to construct a dialog.)
  *
  * The dialogs are never shown: construction is what builds their widget tree
  * (and that is where the layout/wiring bugs live).
@@ -55,7 +56,6 @@ private slots:
 private:
     QTemporaryDir m_root;
     PluginMock::AppContext *m_context = nullptr;
-    UserAuthPlugin *m_plugin = nullptr;
 };
 
 void TestUserAuthDialogs::initTestCase()
@@ -64,16 +64,11 @@ void TestUserAuthDialogs::initTestCase()
 
     m_context = new PluginMock::AppContext(m_root.path());
     m_context->users().signIn(QStringLiteral("tester"));
-
-    m_plugin = new UserAuthPlugin;
-    // The plugin binds the user manager and the language service; the dialogs
-    // read them through the plugin's statics.
-    QVERIFY(m_plugin->initialize(m_context));
 }
 
 void TestUserAuthDialogs::loginDialogIsBuilt()
 {
-    LoginDialog dialog;
+    LoginDialog dialog(&m_context->users());
     // ModernDialog draws its own title bar: the title lives in a label.
     auto *title = dialog.findChild<QLabel *>(QStringLiteral("modernTitleLabel"));
     QVERIFY(title != nullptr);
@@ -85,7 +80,7 @@ void TestUserAuthDialogs::loginDialogIsBuilt()
 
 void TestUserAuthDialogs::aboutDialogShowsTheUser()
 {
-    AboutDialog dialog(QStringLiteral("tester"));
+    AboutDialog dialog(QStringLiteral("tester"), &m_context->users());
     auto *title = dialog.findChild<QLabel *>(QStringLiteral("modernTitleLabel"));
     QVERIFY(title != nullptr);
     QVERIFY(!dialog.findChildren<QLabel *>().isEmpty());
@@ -93,21 +88,21 @@ void TestUserAuthDialogs::aboutDialogShowsTheUser()
 
 void TestUserAuthDialogs::changePasswordDialogIsBuilt()
 {
-    ChangePasswordDialog dialog(QStringLiteral("tester"));
+    ChangePasswordDialog dialog(QStringLiteral("tester"), &m_context->users());
     QVERIFY(!dialog.findChildren<QLineEdit *>().isEmpty());
     QVERIFY(!dialog.findChildren<QPushButton *>().isEmpty());
 }
 
 void TestUserAuthDialogs::forgotPasswordDialogIsBuilt()
 {
-    ForgotPasswordDialog dialog;
+    ForgotPasswordDialog dialog(&m_context->users());
     QVERIFY(!dialog.findChildren<QLineEdit *>().isEmpty());
     QVERIFY(!dialog.findChildren<QPushButton *>().isEmpty());
 }
 
 void TestUserAuthDialogs::settingsDialogTestsTheMailConnection()
 {
-    SettingsDialog dialog(QStringLiteral("tester"), false, m_context);
+    SettingsDialog dialog(QStringLiteral("tester"), false, m_context, &m_context->users());
 
     // The mail page is the last one in the navigation list.
     auto *nav = dialog.findChild<QListWidget *>(QStringLiteral("settingsNavList"));
@@ -197,7 +192,7 @@ void TestUserAuthDialogs::backgroundOverlayFollowsTheWindow()
 }
 
 void TestUserAuthDialogs::forgotPasswordDialogGuardsTheReset(){
-    ForgotPasswordDialog dialog;
+    ForgotPasswordDialog dialog(&m_context->users());
     // The three steps of the dialog: e-mail, OTP, new password + confirmation.
     const QList<QLineEdit *> edits = dialog.findChildren<QLineEdit *>();
     QVERIFY(edits.size() >= 4);
@@ -228,13 +223,13 @@ void TestUserAuthDialogs::forgotPasswordDialogGuardsTheReset(){
 
 void TestUserAuthDialogs::licenseActivationDialogIsBuilt()
 {
-    LicenseActivationDialog dialog(QStringLiteral("tester"), true);
+    LicenseActivationDialog dialog(QStringLiteral("tester"), &m_context->users(), true);
     QVERIFY(!dialog.findChildren<QLineEdit *>().isEmpty());
 }
 
 void TestUserAuthDialogs::settingsDialogIsBuilt()
 {
-    SettingsDialog dialog(QStringLiteral("tester"), true, m_context);
+    SettingsDialog dialog(QStringLiteral("tester"), true, m_context, &m_context->users());
     // The settings dialog is a navigation stack: the list plus the pages.
     QVERIFY(!dialog.findChildren<QListWidget *>().isEmpty());
     QVERIFY(!dialog.findChildren<QStackedWidget *>().isEmpty());
@@ -243,7 +238,7 @@ void TestUserAuthDialogs::settingsDialogIsBuilt()
 
 void TestUserAuthDialogs::adminUserManagerDialogIsBuilt()
 {
-    AdminUserManagerDialog dialog;
+    AdminUserManagerDialog dialog(&m_context->users());
     // The users and the licence keys are listed in tables.
     QVERIFY(!dialog.findChildren<QTableWidget *>().isEmpty());
     QVERIFY(!dialog.findChildren<QPushButton *>().isEmpty());
@@ -252,7 +247,8 @@ void TestUserAuthDialogs::adminUserManagerDialogIsBuilt()
 void TestUserAuthDialogs::avatarCropperDialogIsBuilt()
 {
     // No avatar file exists in the stub path: the dialog has to cope with it.
-    AvatarCropperDialog dialog(QStringLiteral("tester"), &m_context->paths(), nullptr);
+    AvatarCropperDialog dialog(QStringLiteral("tester"), &m_context->paths(),
+                              &m_context->users(), nullptr);
     QVERIFY(dialog.findChildren<QPushButton *>().size() >= 1);
 }
 
@@ -265,7 +261,7 @@ void TestUserAuthDialogs::themeSelectionDelegatesTheBackgroundToItsOwner()
     // plugin, which owns the overlay and the event filter. It must never
     // install a filter itself — the filter outlives this widget and its vtable
     // lives in the plugin DLL.
-    ThemeSelectionDialog dialog(QStringLiteral("tester"));
+    ThemeSelectionDialog dialog(QStringLiteral("tester"), &m_context->users());
     QVERIFY(dialog.findChildren<OverlayResizer *>().isEmpty());
 
     int calls = 0;

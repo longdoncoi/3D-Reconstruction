@@ -59,7 +59,10 @@ public:
     /// v3: IShellService::getProgressDialog() returns IProgressDialog (the
     ///     concrete CustomProgressDialog no longer derives QDialog).
     /// v4: IAIAssistantService::renameSession() (rename a chat in the sidebar).
-    static constexpr int kApiVersion = 4;
+    /// v5: IAppContext::services() returns const ServiceRegistry* (the write
+    ///     side is composition-root only); IAIService no longer exposes the
+    ///     synchronous model loaders (IAIModelLoadService + is*Ready()).
+    static constexpr int kApiVersion = 5;
 
     /**
      * Toolchain fingerprint: the virtual surface can stay identical while

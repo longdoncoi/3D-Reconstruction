@@ -3,9 +3,8 @@
 # refactor that forgets them fails CI instead of silently eroding the plugin ABI:
 #
 #   1. Plugin-facing surface = core interfaces (I*.h) + shared non-interface
-#      core glue (Global/AppConstants/AIMode/SignalBus/AgentActionManifest/
-#      ServiceRegistry) + shared UI utilities (src/utils/**) + the plugin's
-#      own headers. Includes of concrete service headers (SceneService,
+#      core glue (Global/AppConstants/AIMode/SignalBus/ServiceRegistry) +
+#      shared UI utilities (src/utils/**) + the plugin's own headers. Includes of concrete service headers (SceneService,
 #      ShellService, …), app-shell headers (AppShell, MainWindow, …), or core
 #      singleton headers (UserManager, AppConfig, SecretVault, …) are
 #      boundary violations. Forbidden names are derived from the source tree
@@ -34,6 +33,14 @@
 #   9. Plugin không được dò QApplication::topLevelWidgets() để tìm shell.
 #  10. Plugin không được dùng pool nó không sở hữu (QtConcurrent::run,
 #      QThreadPool::globalInstance()) — task có thể sống lâu hơn plugin.
+#  11. Include path của plugin không được chứa src/core.
+#  12. Mỗi lời gọi inference thô phải đi qua một exception guard.
+#  13. Plugin không được ghi vào ServiceRegistry: IAppContext::services() trả
+#      const ServiceRegistry* (chỉ get/getRequired/has). Write side
+#      (MutableServiceRegistry) là PRIVATE của AppCore, composition root sở hữu.
+#  14. IAIService không được phơi loader model đồng bộ: plugin kích hoạt load
+#      qua IAIModelLoadService (worker AppCore sở hữu), loader thật nằm ở
+#      IAIModelAdmin (src/services/ai, PRIVATE).
 #
 # Bypass-resistance: so sánh tên header là KHÔNG phân biệt hoa/thường (Windows
 # filesystem cũng vậy) và include bằng <...> được kiểm tra y như "...".
@@ -265,17 +272,40 @@ foreach(h IN LISTS UTILS_HEADERS)
     endif()
 endforeach()
 
-# ── 7. Teardown có biên: không waitForFinished() trần ────────────────────────
-# Bản không tham số chờ mặc định 30 s của Qt — treo shutdown nếu process con
-# "cứng đầu"; guard chặn phát sinh mới.
+# ── 7. Teardown có biên: không wait()/waitForDone()/waitForFinished() trần ───
+# Bản không tham số của Qt:
+#   * waitForFinished()/waitForStarted() — mặc định 30 s (treo shutdown);
+#   * QThread::wait() / QThreadPool::waitForDone() — mặc định -1 = CHỜ MÃI.
+# Guard chặn phát sinh mới. Một ngoại lệ phải tự khai báo trên CÙNG DÒNG bằng
+# `// teardown-unbounded: <lý do>` — allow-list theo đường dẫn sẽ âm thầm nuốt
+# mọi lời gọi mới trong file đó, còn marker thì buộc người viết giải thích.
+#
+# NOTE (CMake regex): `\(` mở một NHÓM, không phải dấu ngoặc literal — dùng
+# `[(]`/`[)]`. Và tiền tố `[.>]` bắt đúng lời gọi thành viên, nên câu comment
+# kiểu "the argument-less wait() blocks" không bị báo nhầm.
 file(GLOB_RECURSE ALL_CXX_SOURCES "${SOURCE_DIR}/src/*.cpp" "${SOURCE_DIR}/src/*.h")
 foreach(source IN LISTS ALL_CXX_SOURCES)
-    file(READ "${source}" content)
-    if(content MATCHES "waitForFinished[ \t]*\\([ \t]*\\)")
-        file(RELATIVE_PATH rel "${SOURCE_DIR}" "${source}")
-        list(APPEND VIOLATIONS
-            "${rel}: waitForFinished() không truyền timeout — luôn dùng waitForFinished(<ms>) (mặc định Qt 30 s, treo teardown)")
-    endif()
+    file(READ "${source}" _content)
+    # `;` trong một dòng sẽ bị coi là dấu phân cách list; escape trước để số
+    # dòng báo lỗi khớp với file thật.
+    string(REPLACE ";" "\\;" _content "${_content}")
+    string(REPLACE "\n" ";" _lines "${_content}")
+    set(_line_no 0)
+    foreach(_line IN LISTS _lines)
+        math(EXPR _line_no "${_line_no} + 1")
+        # `wait(` chỉ khớp lời gọi KHÔNG tham số: QWaitCondition::wait(&mutex)
+        # và TaskTracker::waitForFinished(ms) không bị bắt.
+        if(_line MATCHES "[.>][ \t]*waitForFinished[ \t]*[(][ \t]*[)]" OR
+           _line MATCHES "[.>][ \t]*waitForStarted[ \t]*[(][ \t]*[)]" OR
+           _line MATCHES "[.>][ \t]*waitForDone[ \t]*[(][ \t]*[)]" OR
+           _line MATCHES "[.>][ \t]*wait[ \t]*[(][ \t]*[)]")
+            if(NOT _line MATCHES "teardown-unbounded:[ \t]*[^ \t]")
+                file(RELATIVE_PATH rel "${SOURCE_DIR}" "${source}")
+                list(APPEND VIOLATIONS
+                    "${rel}:${_line_no}: wait không biên — truyền timeout, hoặc khai báo ngoại lệ bằng '// teardown-unbounded: <lý do>'")
+            endif()
+        endif()
+    endforeach()
 endforeach()
 
 # ── 8. Event filter: a plugin that installs one on a widget it does NOT own
@@ -388,6 +418,39 @@ if(EXISTS "${_ai_service}")
     if(NOT _raw_count EQUAL _guard_count)
         list(APPEND VIOLATIONS
             "src/services/ai/AIService.cpp: ${_raw_count} lời gọi inference thô nhưng chỉ ${_guard_count} guard — mỗi lời gọi thô phải có một ai::runInferenceGuarded/runDetectionGuarded (exception ONNX/OpenCV nếu thoát ra sẽ giết app)")
+    endif()
+endif()
+
+
+# ── 13. Plugin không được ghi vào ServiceRegistry ────────────────────────────
+#     services() trả const ServiceRegistry* nên registerService/unregister/
+#     clear không gọi được từ plugin (lỗi biên dịch). Rule này chặn đường
+#     vòng const_cast và giữ cho hợp đồng "chỉ composition root được đăng ký"
+#     không bị nới ra trong im lặng.
+foreach(source IN LISTS PLUGIN_SOURCES)
+    file(READ "${source}" content)
+    if(content MATCHES "services[ \t]*\\([ \t]*\\)[ \t]*->[ \t]*(registerService|unregister|clear)[ \t]*[<(]")
+        file(RELATIVE_PATH rel "${SOURCE_DIR}" "${source}")
+        list(APPEND VIOLATIONS
+            "${rel}: ghi vào ServiceRegistry từ plugin — IAppContext::services() là read-only; write side (MutableServiceRegistry) thuộc composition root")
+    endif()
+    if(content MATCHES "const_cast[ \t]*<[ \t]*ServiceRegistry")
+        file(RELATIVE_PATH rel "${SOURCE_DIR}" "${source}")
+        list(APPEND VIOLATIONS
+            "${rel}: const_cast<ServiceRegistry> — plugin không được lấy lại quyền ghi registry")
+    endif()
+endforeach()
+
+
+# ── 14. IAIService không được phơi loader model đồng bộ ──────────────────────
+#     Loader ONNX là blocking; một slot GUI gọi thẳng sẽ đóng băng cửa sổ.
+#     Plugin chỉ được trigger qua IAIModelLoadService và đọc is*Ready().
+set(_iai_header "${SOURCE_DIR}/src/include/IAIService.h")
+if(EXISTS "${_iai_header}")
+    file(READ "${_iai_header}" _iai_content)
+    if(_iai_content MATCHES "load(Detection|Segmentation|Tracking)Model")
+        list(APPEND VIOLATIONS
+            "src/include/IAIService.h: loader model đồng bộ lộ ra plugin — chuyển sang IAIModelAdmin (src/services/ai) và IAIModelLoadService")
     endif()
 endif()
 

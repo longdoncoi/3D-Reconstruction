@@ -22,6 +22,12 @@ struct AIDetectionResult {
  *   if (ai && ai->isDetectionReady()) {
  *       cv::Mat result = ai->runDetection(inputMat);
  *   }
+ *
+ * Model LOADING is deliberately not part of this interface: the loaders are
+ * synchronous/blocking, and a GUI slot calling one would freeze the app. A
+ * plugin triggers a load through IAIModelLoadService (AppCore owns the
+ * worker) and observes is*Ready() here. The internal loader seam is
+ * IAIModelAdmin in src/services/ai (not plugin-facing).
  */
 class IAIService {
 public:
@@ -30,16 +36,6 @@ public:
         "com.3dreconstruction.service.IAIService";
 
     virtual ~IAIService() = default;
-
-    // --- Model Loading ---
-    /** Tải model detection (ONNX). Trả về true nếu thành công. */
-    virtual bool loadDetectionModel(const QString& modelPath) = 0;
-
-    /** Tải model segmentation (ONNX). Trả về true nếu thành công. */
-    virtual bool loadSegmentationModel(const QString& modelPath) = 0;
-
-    /** Tải model tracking (ONNX). Trả về true nếu thành công. */
-    virtual bool loadTrackingModel(const QString& modelPath) = 0;
 
     // --- State Query ---
     /** Kiểm tra detection model đã sẵn sàng chưa. */

@@ -40,7 +40,12 @@ AIPredictionLogService::~AIPredictionLogService()
     // The pool's destructor waits for the pending write. It is the last
     // thing that touches the service's state, so it happens here and not
     // somewhere in the middle of the teardown.
-    m_pool.waitForDone();
+    //
+    // Unbounded on purpose: the runnable below captures ONLY copies (path,
+    // Mat, writer) — never `this` — so there is no lifetime hazard, and one
+    // image encode is the worst case. A prediction log is a diagnostic side
+    // effect; it must never outlive the service that scheduled it.
+    m_pool.waitForDone(); // teardown-unbounded: the runnable captures copies only; one image encode is the worst case
 }
 
 void AIPredictionLogService::logPrediction(const QString &mode, const QString &sourceImagePath,

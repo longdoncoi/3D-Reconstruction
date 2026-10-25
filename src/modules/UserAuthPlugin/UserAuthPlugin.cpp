@@ -35,14 +35,9 @@
 #include <QGroupBox>
 
 ILanguageService* UserAuthPlugin::s_lang = nullptr;
-IUserManager* UserAuthPlugin::s_users = nullptr;
 
 QString UserAuthPlugin::translate(const QString& key) {
     return s_lang ? s_lang->translate(key) : key;
-}
-
-IUserManager* UserAuthPlugin::users() {
-    return s_users;
 }
 
 // ─── Helper: create circular avatar pixmap ────────────────────────────────────
@@ -68,13 +63,13 @@ static QPixmap createAvatarPixmap(const QString &username, const QString &avatar
 bool UserAuthPlugin::initialize(IAppContext* context) {
     m_context = context;
     s_lang = context->services()->getRequired<ILanguageService>();
-    s_users = context->services()->getRequired<IUserManager>();
+    m_users = context->services()->getRequired<IUserManager>();
 
     auto* paths = context->services()->getRequired<IAppPaths>();
     QString configDir = QFileInfo(paths ? paths->configPath() : QString()).absolutePath();
     QDir().mkpath(configDir);
     QString configPath = configDir + "/Config_User.ini";
-    UserAuthPlugin::users()->loadConfig(configPath);
+    m_users->loadConfig(configPath);
 
     if (!ensureAuthenticated()) {
         return false;
@@ -113,9 +108,9 @@ bool UserAuthPlugin::initialize(IAppContext* context) {
             handled = true;
         } else if (action == "admin.login") {
             QString errorMsg;
-            UserAuthPlugin::users()->logout();
-            if (UserAuthPlugin::users()->login(parameters.value("username", "Admin").toString(), parameters.value("password", "1").toString(), errorMsg)) {
-                m_currentUser = UserAuthPlugin::users()->currentUsername();
+            m_users->logout();
+            if (m_users->login(parameters.value("username", "Admin").toString(), parameters.value("password", "1").toString(), errorMsg)) {
+                m_currentUser = m_users->currentUsername();
                 loadUserSettings();
                 checkLicense();
                 setupMenus();
@@ -145,8 +140,8 @@ void UserAuthPlugin::cleanup() {
     // host unloads the plugin DLL right after cleanup(), and a widget whose
     // vtable lives in that DLL must not survive it.
     releaseShellWidgets();
-    if (s_users) s_users->saveConfig();  // flush while the binding is alive
-    s_users = nullptr;
+    if (m_users) m_users->saveConfig();  // flush while the binding is alive
+    m_users = nullptr;
     s_lang = nullptr;
 }
 
@@ -182,12 +177,12 @@ void UserAuthPlugin::releaseShellWidgets() {
 
 // ─── Authentication ───────────────────────────────────────────────────────────
 bool UserAuthPlugin::ensureAuthenticated() {
-    auto *um = UserAuthPlugin::users();
+    auto *um = m_users;
     if (um->isLoggedIn()) {
         m_currentUser = um->currentUsername();
         return true;
     }
-    LoginDialog dlg(m_context->shell()->dialogParent());
+    LoginDialog dlg(m_users, m_context->shell()->dialogParent());
     if (dlg.exec() == QDialog::Accepted) {
         m_currentUser = dlg.loggedInUsername();
         return true;
@@ -196,9 +191,9 @@ bool UserAuthPlugin::ensureAuthenticated() {
 }
 
 void UserAuthPlugin::checkLicense() {
-    auto *um = UserAuthPlugin::users();
+    auto *um = m_users;
     if (um->needsActivation(m_currentUser)) {
-        LicenseActivationDialog dlg(m_currentUser, false, m_context->shell()->dialogParent());
+        LicenseActivationDialog dlg(m_currentUser, m_users, false, m_context->shell()->dialogParent());
         dlg.exec();
     }
     if (um->isLicenseExpired(m_currentUser)) {
@@ -211,7 +206,7 @@ void UserAuthPlugin::checkLicense() {
 
 // ─── Per-user settings ────────────────────────────────────────────────────────
 void UserAuthPlugin::loadUserSettings() {
-    auto *um = UserAuthPlugin::users();
+    auto *um = m_users;
 
     // Language
     QString lang = um->getUserPref(m_currentUser, "language", "vi");
@@ -255,13 +250,13 @@ void UserAuthPlugin::releaseOverlayResizer()
 }
 
 void UserAuthPlugin::saveUserPref(const QString &key, const QString &value) {
-    UserAuthPlugin::users()->setUserPref(m_currentUser, key, value);
+    m_users->setUserPref(m_currentUser, key, value);
 }
 
 void UserAuthPlugin::setupMenus() {
     QMenuBar* menuBar = m_context->shell()->menuBar();
 
-    UserInfo u = UserAuthPlugin::users()->userInfo(m_currentUser);
+    UserInfo u = m_users->userInfo(m_currentUser);
 
     // ── Inject Help Buttons into tab.help panel ──────────────────────────────
     if (QWidget* panel = m_context->shell()->getTabPanel(AppConstants::TabIds::Help)) {
@@ -350,7 +345,7 @@ void UserAuthPlugin::setupMenus() {
         isNewAvatarBtn = true;
     }
 
-    u = UserAuthPlugin::users()->userInfo(m_currentUser);
+    u = m_users->userInfo(m_currentUser);
     QString displayName = u.username;
     if (!displayName.isEmpty()) displayName[0] = displayName[0].toUpper();
 
@@ -448,8 +443,8 @@ void UserAuthPlugin::onLanguageChanged(const QString &/*lang*/) {
 void UserAuthPlugin::onOpenSettings() {
     // The role comes from the core: the core is what enforces it, so asking
     // it is the same answer the guard layer would give.
-    const bool isAdmin = UserAuthPlugin::users()->isAdmin();
-    SettingsDialog dlg(m_currentUser, isAdmin, m_context, m_context->shell()->dialogParent());
+    const bool isAdmin = m_users->isAdmin();
+    SettingsDialog dlg(m_currentUser, isAdmin, m_context, m_users, m_context->shell()->dialogParent());
     // The plugin owns the shell's background decoration, so the dialog asks
     // for a change instead of applying one itself.
     dlg.setBackgroundRequest([this](const QString &path, int opacity, bool enabled) {
@@ -460,14 +455,14 @@ void UserAuthPlugin::onOpenSettings() {
 
 void UserAuthPlugin::onChangeAvatar() {
     AvatarCropperDialog dlg(m_currentUser, m_context->services()->getRequired<IAppPaths>(),
-                            m_context->shell()->dialogParent());
+                            m_users, m_context->shell()->dialogParent());
     if (dlg.exec() == QDialog::Accepted) {
         setupMenus();
     }
 }
 
 void UserAuthPlugin::onLogout() {
-    UserAuthPlugin::users()->logout();
+    m_users->logout();
     m_currentUser.clear();
 
     // The menu bar is rebuilt from scratch after the logout: release the
@@ -487,11 +482,11 @@ void UserAuthPlugin::onLogout() {
 }
 
 void UserAuthPlugin::onChangePassword() {
-    ChangePasswordDialog dlg(m_currentUser, m_context->shell()->dialogParent());
+    ChangePasswordDialog dlg(m_currentUser, m_users, m_context->shell()->dialogParent());
     dlg.exec();
 }
 
 void UserAuthPlugin::onAbout() {
-    AboutDialog dlg(m_currentUser, m_context->shell()->dialogParent());
+    AboutDialog dlg(m_currentUser, m_users, m_context->shell()->dialogParent());
     dlg.exec();
 }

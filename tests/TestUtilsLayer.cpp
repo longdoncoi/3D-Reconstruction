@@ -258,6 +258,13 @@ void TestUtilsLayer::processAttachmentSealsTheStoredFiles()
     QVERIFY(FileUtilities::readAttachment(result.thumbPath,
                                           QString::fromLatin1(FileUtilities::AttachmentContext))
                 .isEmpty());
+
+    // loadThumbnailPixmap decodes the sealed thumbnail directly into RAM
+    const QPixmap thumbPix = FileUtilities::loadThumbnailPixmap(result.thumbPath);
+    QVERIFY(!thumbPix.isNull());
+    QCOMPARE(thumbPix.size(), QSize(80, 80));
+    QVERIFY(FileUtilities::loadThumbnailPixmap(result.destPath).isNull());
+    QVERIFY(FileUtilities::loadThumbnailPixmap(tmp.filePath(QStringLiteral("none.png"))).isNull());
 }
 
 void TestUtilsLayer::processAttachmentFailsWhenTheKeyIsUnavailable()

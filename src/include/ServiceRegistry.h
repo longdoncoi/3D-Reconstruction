@@ -26,9 +26,17 @@
  * exe ↔ AppCore.dll ↔ plugin DLL boundaries — unlike typeid().name(),
  * whose mangling is implementation-defined and can differ per module.
  *
+ * Two-tier surface — the registry a plugin receives is READ-ONLY:
+ *   - `ServiceRegistry` exposes only get()/getRequired()/has(). It is what
+ *     `IAppContext::services()` returns, so a plugin cannot unregister a
+ *     service and install a replacement (that would defeat the "first
+ *     registration wins" rule).
+ *   - `MutableServiceRegistry` (src/core, composition root only) adds
+ *     registerService()/unregister()/clear(). AppShell owns that type.
+ *
  * Usage:
- *   // Register (AppShell::initializeServices — composition root only):
- *   registry->registerService<IReconstructionService>(m_reconService.get());
+ *   // Register (AppShell — composition root only):
+ *   m_registry->registerService<IReconstructionService>(m_reconService.get());
  *
  *   // Look up (Plugin::initialize):
  *   auto* svc = ctx->services()->get<IReconstructionService>();
@@ -44,38 +52,6 @@ public:
     // Non-copyable
     ServiceRegistry(const ServiceRegistry&) = delete;
     ServiceRegistry& operator=(const ServiceRegistry&) = delete;
-
-    /**
-     * @brief Đăng ký một service implementation theo interface type.
-     * @tparam Interface  Interface có ServiceKey (e.g. IReconstructionService)
-     * @param impl        Pointer tới implementation (không own, caller quản lý lifetime)
-     *
-     * Duplicate registration of the same interface is a wiring bug: it is
-     * loudly reported and **refused**. The first registration wins, so a
-     * later one (e.g. a plugin that registers a service the composition root
-     * already installed) cannot silently take the service over.
-     */
-    template<typename Interface>
-    void registerService(Interface* impl) {
-        static_assert(hasServiceKey<Interface>,
-                      "Interface must declare 'static constexpr const char* ServiceKey' "
-                      "for ServiceRegistry registration.");
-        static_assert(!std::is_const_v<Interface>,
-                      "Cannot register a const interface pointer.");
-        if (!impl) {
-            qWarning() << "ServiceRegistry: refusing to register null service"
-                       << keyOf<Interface>();
-            return;
-        }
-        const QString key = keyOf<Interface>();
-        std::unique_lock lock(m_mutex);
-        if (m_services.contains(key)) {
-            qWarning() << "ServiceRegistry: duplicate registration of"
-                       << key << "- keeping the existing entry.";
-            return;
-        }
-        m_services[key] = static_cast<void*>(impl);
-    }
 
     /**
      * @brief Tìm kiếm service theo interface type.
@@ -121,6 +97,44 @@ public:
         const QString key = keyOf<Interface>();
         std::shared_lock lock(m_mutex);
         return m_services.contains(key);
+    }
+
+protected:
+    // ─── Write side: reachable only through MutableServiceRegistry (src/core) ─
+    // AppShell owns the only MutableServiceRegistry in production. A plugin
+    // receives the const ServiceRegistry* from IAppContext::services(), so the
+    // capability below is not part of the plugin-facing contract.
+
+    /**
+     * @brief Đăng ký một service implementation theo interface type.
+     * @tparam Interface  Interface có ServiceKey (e.g. IReconstructionService)
+     * @param impl        Pointer tới implementation (không own, caller quản lý lifetime)
+     *
+     * Duplicate registration of the same interface is a wiring bug: it is
+     * loudly reported and **refused**. The first registration wins, so a
+     * later one (e.g. a plugin that registers a service the composition root
+     * already installed) cannot silently take the service over.
+     */
+    template<typename Interface>
+    void registerService(Interface* impl) {
+        static_assert(hasServiceKey<Interface>,
+                      "Interface must declare 'static constexpr const char* ServiceKey' "
+                      "for ServiceRegistry registration.");
+        static_assert(!std::is_const_v<Interface>,
+                      "Cannot register a const interface pointer.");
+        if (!impl) {
+            qWarning() << "ServiceRegistry: refusing to register null service"
+                       << keyOf<Interface>();
+            return;
+        }
+        const QString key = keyOf<Interface>();
+        std::unique_lock lock(m_mutex);
+        if (m_services.contains(key)) {
+            qWarning() << "ServiceRegistry: duplicate registration of"
+                       << key << "- keeping the existing entry.";
+            return;
+        }
+        m_services[key] = static_cast<void*>(impl);
     }
 
     /**

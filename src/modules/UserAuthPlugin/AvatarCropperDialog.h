@@ -8,12 +8,13 @@
 class QListWidget;
 class QPushButton;
 class IAppPaths;
+class IUserManager;
 
 class AvatarCropperDialog : public ModernDialog {
     Q_OBJECT
 public:
     explicit AvatarCropperDialog(const QString& username, IAppPaths* paths,
-                                 QWidget *parent = nullptr);
+                                 IUserManager* users, QWidget *parent = nullptr);
     QPixmap getCroppedAvatar() const;
     void accept() override;
 
@@ -36,6 +37,7 @@ private:
 
     QString m_username;
     IAppPaths* m_paths = nullptr;  ///< injected, never null in practice
+    IUserManager* m_users = nullptr; ///< injected, never null in practice
     QImage m_sourceImage;
     QString m_currentImagePath;
     double m_scale = 1.0;

@@ -13,12 +13,15 @@
 #include <functional>
 
 class QWidget;
+class IUserManager;
 
 class ThemeSelectionDialog : public QWidget {
     Q_OBJECT
 public:
     /** username — để save/load accent color per-user */
-    explicit ThemeSelectionDialog(const QString &username, QWidget *parent = nullptr);
+    /// `users` is injected by the owner (registry-resolved). See AboutDialog.
+    explicit ThemeSelectionDialog(const QString &username, IUserManager *users,
+                                  QWidget *parent = nullptr);
 
     /**
      * @brief How the owner applies a background change to the shell.
@@ -56,6 +59,7 @@ private:
     QSlider    *m_opacitySlider = nullptr;
     QLabel     *m_opacityLabel  = nullptr;
     QLabel     *m_bgPreview     = nullptr;
+    IUserManager *m_users = nullptr;
 };
 
 #endif // THEME_SELECTION_DIALOG_H

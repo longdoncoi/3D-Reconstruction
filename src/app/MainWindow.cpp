@@ -344,7 +344,7 @@ void MainWindow::shutdownPlugins() {
   // plugin ngừng dùng services thì registry ngừng expose them, bất kỳ get()
   // nào trễ hơn sẽ trả nullptr thay vì con trỏ đã chết.
   m_pluginHost->shutdown();
-  context()->services()->clear();
+  m_shell->shutdownServices();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {

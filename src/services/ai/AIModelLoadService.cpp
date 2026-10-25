@@ -1,12 +1,12 @@
 #include "AIModelLoadService.h"
-#include "IAIService.h"
+#include "IAIModelAdmin.h"
 
 #include <QFileInfo>
 #include <QtConcurrent>
 
 #include <exception>
 
-AIModelLoadService::AIModelLoadService(IAIService* ai, QObject* parent)
+AIModelLoadService::AIModelLoadService(IAIModelAdmin* ai, QObject* parent)
     : IAIModelLoadService(parent)
     , m_ai(ai)
 {
@@ -20,14 +20,14 @@ AIModelLoadService::~AIModelLoadService()
         m_future.cancel();
 
     // The join is intentionally UNBOUNDED. The worker captures `this` and
-    // calls into m_ai (IAIService), which AppShell destroys only after this
-    // service — so the worker MUST be finished before this destructor
+    // calls into m_ai (IAIModelAdmin), which AppShell destroys only after
+    // this service — so the worker MUST be finished before this destructor
     // returns. A bounded wait would return with the worker still alive and
-    // let it touch a freed IAIService / emit into a destroyed QObject (a
+    // let it touch a freed AIService / emit into a destroyed QObject (a
     // use-after-free crash, not a slow shutdown). ONNX cannot be interrupted
     // mid-call, so the only safe option is to wait it out; the app is exiting
     // anyway.
-    m_pool.waitForDone();
+    m_pool.waitForDone(); // teardown-unbounded: the worker captures `this` and m_ai; it must finish before this destructor returns
 }
 
 void AIModelLoadService::loadModelsAsync(const QString& detectionPath,
@@ -46,7 +46,7 @@ void AIModelLoadService::loadModelsAsync(const QString& detectionPath,
             QString error;
 
             auto loadOne = [&](const QString& path, const char* stage,
-                               bool (IAIService::*loader)(const QString&)) {
+                               bool (IAIModelAdmin::*loader)(const QString&)) {
                 if (m_cancel.load())
                     return;
                 if (path.isEmpty() || !QFileInfo::exists(path))
@@ -69,9 +69,9 @@ void AIModelLoadService::loadModelsAsync(const QString& detectionPath,
             // Catching here also keeps the exception from reaching
             // std::terminate on the pool thread.
             try {
-                loadOne(detectionPath, "detection", &IAIService::loadDetectionModel);
-                loadOne(segmentationPath, "segmentation", &IAIService::loadSegmentationModel);
-                loadOne(trackingPath, "tracking", &IAIService::loadTrackingModel);
+                loadOne(detectionPath, "detection", &IAIModelAdmin::loadDetectionModel);
+                loadOne(segmentationPath, "segmentation", &IAIModelAdmin::loadSegmentationModel);
+                loadOne(trackingPath, "tracking", &IAIModelAdmin::loadTrackingModel);
             } catch (const std::exception& e) {
                 ok = false;
                 const QString detail = QStringLiteral("Model load failed: %1")

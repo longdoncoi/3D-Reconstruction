@@ -377,6 +377,12 @@ class DocumentLoaderRegistry:
             return []
         try:
             return loader.load(fp, project_dir)
+        except ValueError as e:
+            if "File rỗng" in str(e):
+                logger.debug("Skipping empty file: %s", fp)
+                return []
+            logger.exception("Error loading %s", fp)
+            return []
         except Exception:
             logger.exception("Error loading %s", fp)
             return []

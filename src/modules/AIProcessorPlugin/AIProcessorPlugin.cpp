@@ -306,7 +306,6 @@ void AIProcessorPlugin::onObjectDetection() {
   // Clear any active 3D models before showing 2D results
   m_ctx->scene()->clear3DModel();
   m_ctx->scene()->clearPointCloud();
-  m_ctx->scene()->resetToSingleRenderer();
 
   if (!m_aiSvc || !m_aiSvc->isDetectionReady()) {
       ModernMessageBox::warning(m_ctx->shell()->dialogParent(), m_ctx->translate("common.error"), m_ctx->translate("aiproc.model_not_loaded_warn"));
@@ -316,6 +315,7 @@ void AIProcessorPlugin::onObjectDetection() {
   // The inference itself is dispatched to a background thread (see
   // requestInference): running it here froze the window for the whole ONNX
   // call. The result is applied when the future finishes.
+  m_ctx->viewer()->setAIMode(AIMode::Detection);
   requestInference(InferenceKind::Detection);
 }
 
@@ -329,13 +329,13 @@ void AIProcessorPlugin::onSegmentation() {
   // Clear any active 3D models before showing 2D results
   m_ctx->scene()->clear3DModel();
   m_ctx->scene()->clearPointCloud();
-  m_ctx->scene()->resetToSingleRenderer();
 
   if (!m_aiSvc || !m_aiSvc->isSegmentationReady()) {
       ModernMessageBox::warning(m_ctx->shell()->dialogParent(), m_ctx->translate("common.error"), m_ctx->translate("aiproc.model_not_loaded_warn"));
       return;
   }
 
+  m_ctx->viewer()->setAIMode(AIMode::Segmentation);
   requestInference(InferenceKind::Segmentation);
 }
 
@@ -356,8 +356,8 @@ void AIProcessorPlugin::requestInference(InferenceKind kind) {
     // One inference at a time: the ONNX session is shared, and two results
     // racing for the same viewer would show the older one.
     if (m_inferenceRunning) return;
+    if (m_ctx->viewer()->getCurrentAIMode() == AIMode::Tracking) return;
     m_inferenceRunning = true;
-    updateActions();
 
     const QString imagePath = m_ctx->viewer()->getCurrent2DImagePath();
     const QString stage = QString::fromLatin1(inferenceStage(kind));
@@ -398,10 +398,29 @@ void AIProcessorPlugin::finishInference(InferenceKind kind, const QString &image
     if (result.empty()) {
         // blocking::run() delivers a default-constructed value when the task
         // threw: report the failure instead of rendering an empty frame.
+        m_ctx->viewer()->setAIMode(AIMode::None);
         updateActions();
         ModernMessageBox::warning(m_ctx->shell()->dialogParent(),
                                   m_ctx->translate("common.error"),
                                   m_ctx->translate("aiproc.inference_failed"));
+        return;
+    }
+
+    // The prediction log lives in AppCore: the write runs on a worker the
+    // service owns and joins, so no plugin code outlives the plugin.
+    if (m_predictionLog)
+        m_predictionLog->logPrediction(stage, imagePath, result);
+
+    // If the viewer has already navigated away to a different image while
+    // inference was in flight, do not overwrite the current image with the stale result.
+    const QString currentPath = m_ctx->viewer()->getCurrent2DImagePath();
+    if (currentPath != imagePath) {
+        AIMode mode = m_ctx->viewer()->getCurrentAIMode();
+        if (mode == AIMode::Detection) {
+            onObjectDetection();
+        } else if (mode == AIMode::Segmentation) {
+            onSegmentation();
+        }
         return;
     }
 
@@ -411,13 +430,6 @@ void AIProcessorPlugin::finishInference(InferenceKind kind, const QString &image
     m_ctx->scene()->showImage(result);
     m_ctx->scene()->render();
     m_ctx->shell()->updateMenuStates();
-
-    // The prediction log lives in AppCore: the write runs on a worker the
-    // service owns and joins, so no plugin code outlives the plugin.
-    if (m_predictionLog)
-        m_predictionLog->logPrediction(stage, imagePath, result);
-
-    updateActions();
 }
 
 void AIProcessorPlugin::onHideAIResults() {
@@ -541,6 +553,7 @@ void AIProcessorPlugin::onObjectTracking() {
         ModernMessageBox::warning(m_ctx->shell()->dialogParent(), m_ctx->translate("common.error"), m_ctx->translate("aiproc.model_not_loaded_warn"));
         return;
     }
+    if (m_inferenceRunning) return;
 
     QString videoPath = m_agentVideoPath;
     m_agentVideoPath.clear();
@@ -684,18 +697,18 @@ void AIProcessorPlugin::updateActions() {
           m_ribbonUI->btnTrack()->setVisible(true);
       }
   } else {
-      m_runDetAct->setEnabled(!m_inferenceRunning && !isTrackingMode && mode != AIMode::Detection && has2D && detReady);
-      m_runSegAct->setEnabled(!m_inferenceRunning && !isTrackingMode && mode != AIMode::Segmentation && has2D && segReady);
-      m_runTrackingAct->setEnabled(!m_inferenceRunning && !isTrackingMode && trackReady);
+      m_runDetAct->setEnabled(!isTrackingMode && has2D && detReady);
+      m_runSegAct->setEnabled(!isTrackingMode && has2D && segReady);
+      m_runTrackingAct->setEnabled(!isTrackingMode && trackReady);
       m_pauseTrackingAct->setEnabled(isTrackingMode);
       m_stopTrackingAct->setEnabled(isTrackingMode);
       
       if (m_ribbonUI) {
           m_ribbonUI->btnDet()->setText(m_ctx->translate("ai.run_detection"));
-          m_ribbonUI->btnDet()->setEnabled(!m_inferenceRunning && !isTrackingMode && mode != AIMode::Detection && has2D && detReady);
+          m_ribbonUI->btnDet()->setEnabled(!isTrackingMode && has2D && detReady);
           m_ribbonUI->btnSeg()->setText(m_ctx->translate("ai.run_segmentation"));
-          m_ribbonUI->btnSeg()->setEnabled(!m_inferenceRunning && !isTrackingMode && mode != AIMode::Segmentation && has2D && segReady);
-          m_ribbonUI->btnTrack()->setEnabled(!m_inferenceRunning && !isTrackingMode && trackReady);
+          m_ribbonUI->btnSeg()->setEnabled(!isTrackingMode && has2D && segReady);
+          m_ribbonUI->btnTrack()->setEnabled(!isTrackingMode && trackReady);
           
           m_ribbonUI->btnPauseTrack()->setEnabled(isTrackingMode);
           m_ribbonUI->btnStopTrack()->setEnabled(isTrackingMode);

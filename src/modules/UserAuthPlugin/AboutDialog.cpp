@@ -9,8 +9,9 @@
 #include <QPushButton>
 #include <QFrame>
 
-AboutDialog::AboutDialog(const QString &username, QWidget *parent)
-    : ModernDialog(UserAuthPlugin::translate("about.title"), parent), m_username(username)
+AboutDialog::AboutDialog(const QString &username, IUserManager *users, QWidget *parent)
+    : ModernDialog(UserAuthPlugin::translate("about.title"), parent), m_username(username),
+      m_users(users)
 {
     setMinimumWidth(440);
     setupUi();
@@ -18,7 +19,7 @@ AboutDialog::AboutDialog(const QString &username, QWidget *parent)
 }
 
 void AboutDialog::setupUi() {
-    auto *um = UserAuthPlugin::users();
+    auto *um = m_users;
     UserInfo u = um->userInfo(m_username);
     int daysLeft = um->daysRemaining(m_username);
     QString status = um->licenseStatusStr(m_username);
@@ -128,7 +129,7 @@ void AboutDialog::applyStyle() {
 }
 
 void AboutDialog::onActivateLicense() {
-    LicenseActivationDialog dlg(m_username, true, this);
+    LicenseActivationDialog dlg(m_username, m_users, true, this);
     if (dlg.exec() == QDialog::Accepted) {
         accept();
     }

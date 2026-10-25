@@ -14,8 +14,10 @@
 #include <QApplication>
 
 LicenseActivationDialog::LicenseActivationDialog(const QString &username,
+                                                  IUserManager *users,
                                                   bool allowClose, QWidget *parent)
-    : ModernDialog(UserAuthPlugin::translate("license.title"), parent), m_username(username), m_allowClose(allowClose)
+    : ModernDialog(UserAuthPlugin::translate("license.title"), parent), m_username(username),
+      m_allowClose(allowClose), m_users(users)
 {
     setMinimumWidth(480);
     setupUi();
@@ -120,7 +122,7 @@ void LicenseActivationDialog::setStatus(const QString &msg, bool ok) {
 }
 
 void LicenseActivationDialog::onActivate() {
-    IUserManager *um = UserAuthPlugin::users();
+    IUserManager *um = m_users;
     bool success = false;
     QString msg;
     AuthError code = AuthError::Unknown;

@@ -1,4 +1,5 @@
 #include "AppShell.h"
+#include "MutableServiceRegistry.h"
 #include "ISceneService.h"
 #include "IUserManager.h"
 #include "IAuthService.h"
@@ -43,7 +44,7 @@ AppShell::AppShell(QMainWindow*           mainWindow,
                    QObject*               parent)
     : QObject(parent)
     , m_vtkWidget(vtkWidget)
-    , m_registry(std::make_unique<ServiceRegistry>())
+    , m_registry(std::make_unique<MutableServiceRegistry>())
     , m_languageManager(std::make_unique<LanguageManager>())
 {
     m_signalBus = new SignalBus(this);
@@ -93,6 +94,14 @@ AppShell::~AppShell() {
   // Registry không sở hữu services, nhưng phải ngừng expose chúng trước khi
   // các unique_ptr dưới đây giải phóng impl — bất kỳ get() trễ nào trong
   // teardown sẽ nhận nullptr thay vì dangling pointer.
+  m_registry->clear();
+}
+
+const ServiceRegistry* AppShell::services() {
+  return m_registry.get();
+}
+
+void AppShell::shutdownServices() {
   m_registry->clear();
 }
 

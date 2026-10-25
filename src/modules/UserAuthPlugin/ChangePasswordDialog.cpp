@@ -8,10 +8,12 @@
 #include <QPushButton>
 #include <QTimer>
 
-ChangePasswordDialog::ChangePasswordDialog(const QString &username, QWidget *parent)
-    : ModernDialog(UserAuthPlugin::translate("changepw.title"), parent), m_username(username)
+ChangePasswordDialog::ChangePasswordDialog(const QString &username, IUserManager *users,
+                                           QWidget *parent)
+    : ModernDialog(UserAuthPlugin::translate("changepw.title"), parent), m_username(username),
+      m_users(users)
 {
-    m_isExternal = !UserAuthPlugin::users()->isLoggedIn();
+    m_isExternal = !m_users->isLoggedIn();
     if (m_isExternal) {
         setFixedSize(380, 500);
     } else {
@@ -102,7 +104,7 @@ void ChangePasswordDialog::onApply() {
             return;
         }
         if (targetUser.contains('@')) {
-            QString resolved = UserAuthPlugin::users()->findUsernameByEmail(targetUser);
+            QString resolved = m_users->findUsernameByEmail(targetUser);
             if (!resolved.isEmpty()) {
                 targetUser = resolved;
             }
@@ -124,7 +126,7 @@ void ChangePasswordDialog::onApply() {
 
     QString msg;
     AuthError code = AuthError::Unknown;
-    if (UserAuthPlugin::users()->changePassword(targetUser, oldP, newP, msg, &code)) {
+    if (m_users->changePassword(targetUser, oldP, newP, msg, &code)) {
         setStatus(UserAuthPlugin::translate("changepw.success"), true);
         m_applyBtn->setEnabled(false);
         QTimer::singleShot(1500, this, &QDialog::accept);

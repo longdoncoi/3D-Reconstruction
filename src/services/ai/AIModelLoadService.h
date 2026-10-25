@@ -2,13 +2,12 @@
 #define AI_MODELLOADSERVICE_H
 
 #include "IAIModelLoadService.h"
+#include "IAIModelAdmin.h"
 #include "Global.h"
 
 #include <QFuture>
 #include <QThreadPool>
 #include <atomic>
-
-class IAIService;
 
 /**
  * @brief AppCore implementation of IAIModelLoadService.
@@ -21,7 +20,7 @@ class IAIService;
 class APP_EXPORT AIModelLoadService : public IAIModelLoadService {
     Q_OBJECT
 public:
-    explicit AIModelLoadService(IAIService* ai, QObject* parent = nullptr);
+    explicit AIModelLoadService(IAIModelAdmin* ai, QObject* parent = nullptr);
     ~AIModelLoadService() override;
 
     void loadModelsAsync(const QString& detectionPath,
@@ -31,7 +30,7 @@ public:
     bool isLoading() const override { return m_running.load(); }
 
 private:
-    IAIService* m_ai = nullptr; ///< not owned; AppShell destroys AI after this service
+    IAIModelAdmin* m_ai = nullptr; ///< not owned; AppShell destroys AI after this service
     QThreadPool m_pool;
     QFuture<void> m_future;
     std::atomic<bool> m_cancel{false};

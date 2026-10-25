@@ -114,6 +114,14 @@ QByteArray FileUtilities::readAttachment(const QString &filePath, const QString 
     return AtRestCipher::open(raw, context);
 }
 
+QPixmap FileUtilities::loadThumbnailPixmap(const QString &thumbPath) {
+    const QByteArray bytes = readAttachment(thumbPath, QString::fromLatin1(ThumbnailContext));
+    if (bytes.isEmpty()) return {};
+    QPixmap pixmap;
+    pixmap.loadFromData(bytes);
+    return pixmap;
+}
+
 bool FileUtilities::isSealedAttachment(const QString &filePath)
 {
     QFile file(filePath);

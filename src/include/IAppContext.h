@@ -29,6 +29,11 @@ class ISettingsService;
  * optional / late-registered services (IMailService, IReconstructionService,
  * IAIService, IUserManager, …).
  *
+ * services() is READ-ONLY by design. Registration belongs to the composition
+ * root (AppShell owns the MutableServiceRegistry from src/core); a plugin
+ * that could unregister a service and install a replacement would defeat the
+ * "first registration wins" rule and the service-locator contract.
+ *
  * translate() stays as the single i18n convenience for UI code; it delegates
  * to ILanguageService, which remains the canonical translation interface.
  */
@@ -45,12 +50,15 @@ public:
     virtual IShellService*    shell() = 0;
 
     /**
-     * @brief Trả về ServiceRegistry để plugin tự look-up bất kỳ service nào.
+     * @brief Read-only ServiceRegistry for plugin look-ups.
      *
      * Ví dụ:
      *   auto* svc = ctx->services()->get<IReconstructionService>();
+     *
+     * The returned view cannot register, unregister or clear services: those
+     * are composition-root operations (MutableServiceRegistry in src/core).
      */
-    virtual ServiceRegistry* services() = 0;
+    virtual const ServiceRegistry* services() = 0;
 
     virtual QString translate(const QString& key) = 0;
     virtual void    setLanguage(const QString& lang) = 0;

@@ -15,8 +15,9 @@
 #include <QDebug>
 #include <QRegularExpression>
 
-ForgotPasswordDialog::ForgotPasswordDialog(QWidget *parent)
+ForgotPasswordDialog::ForgotPasswordDialog(IUserManager *users, QWidget *parent)
     : ModernDialog(UserAuthPlugin::translate("forgot.title"), parent)
+    , m_users(users)
 {
     setFixedSize(400, 350);
     setupUi();
@@ -135,7 +136,7 @@ void ForgotPasswordDialog::onSendOtp() {
         return;
     }
 
-    if (UserAuthPlugin::users()->findUsernameByEmail(email).isEmpty()) {
+    if (m_users->findUsernameByEmail(email).isEmpty()) {
         ModernMessageBox::warning(this, UserAuthPlugin::translate("common.error"), UserAuthPlugin::translate("forgot.err_no_email"));
         return;
     }
@@ -159,7 +160,7 @@ void ForgotPasswordDialog::onSendOtp() {
     // plugin's static binding is cleared in cleanup(), so a worker that
     // resolved it late would dereference a null pointer. The captured
     // pointer refers to the process-lifetime service.
-    IUserManager *users = UserAuthPlugin::users();
+    IUserManager *users = m_users;
     watcher->setFuture(blocking::run([users, email]() {
         QString error;
         const bool ok = users->sendPasswordResetOtp(email, error);
@@ -169,7 +170,7 @@ void ForgotPasswordDialog::onSendOtp() {
 
 void ForgotPasswordDialog::onVerifyOtp() {
     QString otp = m_otpEdit->text().trimmed();
-    if (UserAuthPlugin::users()->verifyOtp(m_pendingEmail, otp)) {
+    if (m_users->verifyOtp(m_pendingEmail, otp)) {
         m_stack->setCurrentIndex(2);
         m_statusLabel->setVisible(false);
     } else {
@@ -187,7 +188,7 @@ void ForgotPasswordDialog::onResetPassword() {
     // reset a password.
     QString error;
     AuthError code = AuthError::None;
-    if (UserAuthPlugin::users()->resetPassword(m_pendingEmail, p1, error, &code)) {
+    if (m_users->resetPassword(m_pendingEmail, p1, error, &code)) {
         m_statusLabel->setText(UserAuthPlugin::translate("changepw.success"));
         m_statusLabel->setStyleSheet("color: #4ade80; background: rgba(74,222,128,0.1);");
         m_statusLabel->setVisible(true);

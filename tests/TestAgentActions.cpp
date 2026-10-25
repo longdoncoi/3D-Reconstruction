@@ -230,6 +230,127 @@ private slots:
         AgentActionManifest::applySampleDefaults("viewer.load_2d", explicitPath, &paths);
         QCOMPARE(explicitPath.value("path").toString(), QString("C:/custom.png"));
     }
+
+    /// `canonicalize()` is the Qt-side gate in front of every agent action:
+    /// the Python server and the desktop read the SAME manifest, so an alias
+    /// must resolve to the canonical id and a stale/invalid action must be
+    /// refused with a concrete message instead of being emitted.
+    void testCanonicalizeResolvesAliasesAndStampsTheAction() {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        FakeAppPaths paths = writeManifest(tmp.path());
+
+        // An alias is resolved to its canonical id — the plugins only ever
+        // see the canonical action (there is no alias handling in a plugin).
+        QString action = "mail.inbox";
+        QVariantMap params;
+        QString error;
+        QVERIFY(AgentActionManifest::canonicalize(action, params, &error, &paths));
+        QCOMPARE(action, QString("mail.open"));
+        QVERIFY(error.isEmpty());
+        // The action is stamped into the parameters handed to the plugin.
+        QCOMPARE(params.value("action").toString(), QString("mail.open"));
+
+        // The canonical id itself passes through unchanged.
+        QString canonical = "mail.open";
+        QVariantMap canonicalParams;
+        QVERIFY(AgentActionManifest::canonicalize(canonical, canonicalParams, nullptr, &paths));
+        QCOMPARE(canonical, QString("mail.open"));
+        QCOMPARE(canonicalParams.value("action").toString(), QString("mail.open"));
+    }
+
+    void testCanonicalizeRejectsUnknownActionsAndMissingManifest() {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        FakeAppPaths paths = writeManifest(tmp.path());
+
+        // A stale action (one the manifest no longer declares) is refused
+        // instead of being emitted and silently ignored by every plugin.
+        QString unknown = "viewer.load_legacy";
+        QVariantMap noParams;
+        QString error;
+        QVERIFY(!AgentActionManifest::canonicalize(unknown, noParams, &error, &paths));
+        QCOMPARE(error, QString("Unsupported agent action: viewer.load_legacy"));
+
+        // No manifest at all is a load failure, not "unsupported action": the
+        // two failures have different causes and different operator fixes.
+        FakeAppPaths empty(tmp.filePath("nowhere"));
+        QString action = "mail.open";
+        QVariantMap emptyParams;
+        error.clear();
+        QVERIFY(!AgentActionManifest::canonicalize(action, emptyParams, &error, &empty));
+        QCOMPARE(error, QString("Unable to load agent action manifest"));
+
+        // A null IAppPaths cannot resolve the manifest either; the error
+        // pointer is optional (the production caller passes one, a caller
+        // that only wants the verdict does not have to).
+        QVariantMap nullPathsParams;
+        QVERIFY(!AgentActionManifest::canonicalize(action, nullPathsParams, nullptr, nullptr));
+    }
+
+    void testCanonicalizeEnforcesRequiredAndEnumParameters() {
+        QTemporaryDir tmp;
+        QVERIFY(tmp.isValid());
+        FakeAppPaths paths = writeManifest(tmp.path());
+
+        // Required parameter missing → the action is refused with the action
+        // and the parameter named.
+        QString load2d = "viewer.load_2d";
+        QVariantMap missingPath;
+        QString error;
+        QVERIFY(!AgentActionManifest::canonicalize(load2d, missingPath, &error, &paths));
+        QCOMPARE(error, QString("viewer.load_2d requires path"));
+
+        // An empty string is not a value: the same refusal.
+        QVariantMap blank;
+        blank["path"] = QString();
+        error.clear();
+        QVERIFY(!AgentActionManifest::canonicalize(load2d, blank, &error, &paths));
+        QCOMPARE(error, QString("viewer.load_2d requires path"));
+
+        // Supplied → accepted, and the caller's parameters survive untouched.
+        QVariantMap withPath;
+        withPath["path"] = "C:/scan.png";
+        error.clear();
+        QVERIFY(AgentActionManifest::canonicalize(load2d, withPath, &error, &paths));
+        QCOMPARE(withPath.value("path").toString(), QString("C:/scan.png"));
+
+        // An enum field accepts only the declared values; a wrong value names
+        // the action and the field.
+        QString change = "language.change";
+        QVariantMap invalid;
+        invalid["language"] = "fr";
+        error.clear();
+        QVERIFY(!AgentActionManifest::canonicalize(change, invalid, &error, &paths));
+        QCOMPARE(error, QString("language.change.language has an invalid value"));
+
+        QVariantMap valid;
+        valid["language"] = "en";
+        error.clear();
+        QVERIFY(AgentActionManifest::canonicalize(change, valid, &error, &paths));
+        QCOMPARE(valid.value("language").toString(), QString("en"));
+        QCOMPARE(valid.value("action").toString(), QString("language.change"));
+    }
+
+private:
+    /// Writes a small manifest that carries every shape the canonicalizer
+    /// has to handle: an alias, a required field, an enum and a free action.
+    static FakeAppPaths writeManifest(const QString &root) {
+        QDir(root).mkpath("Config");
+        QFile manifest(root + "/Config/agent_action_manifest.json");
+        const bool opened = manifest.open(QIODevice::WriteOnly);
+        if (opened) {
+            manifest.write(R"({
+  "actions": [
+    {"id": "mail.open", "aliases": ["mail.inbox"]},
+    {"id": "language.change", "parameters": {"language": {"type": "string", "enum": ["vi", "en"], "required": true}}},
+    {"id": "viewer.load_2d", "parameters": {"path": {"type": "string", "required": true}}}
+  ],
+  "sample_data": {}
+})");
+        }
+        return FakeAppPaths(root);
+    }
 };
 
 QTEST_MAIN(TestAgentActions)

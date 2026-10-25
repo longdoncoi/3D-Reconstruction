@@ -53,9 +53,9 @@ static QIcon makeNavIcon(const QString &emoji, const QColor &c1,
 }
 
 SettingsDialog::SettingsDialog(const QString &username, bool isAdmin,
-                               IAppContext *ctx, QWidget *parent)
+                               IAppContext *ctx, IUserManager *users, QWidget *parent)
     : ModernDialog(UserAuthPlugin::translate("menu.settings"), parent),
-      m_username(username), m_isAdmin(isAdmin), m_ctx(ctx) {
+      m_username(username), m_isAdmin(isAdmin), m_ctx(ctx), m_users(users) {
   resize(1000, 700);
   setMinimumSize(1000, 700);
   setupUi();
@@ -126,11 +126,11 @@ void SettingsDialog::setupUi() {
   // Create pages
   QWidget *adminPage = nullptr;
   if (m_isAdmin) {
-    adminPage = new AdminUserManagerDialog(m_stack);
+    adminPage = new AdminUserManagerDialog(m_users, m_stack);
     m_stack->addWidget(adminPage);
   }
 
-  auto *themePage = new ThemeSelectionDialog(m_username, m_stack);
+  auto *themePage = new ThemeSelectionDialog(m_username, m_users, m_stack);
   themePage->setBackgroundRequest(m_backgroundRequest);
   m_stack->addWidget(themePage);
 
@@ -155,32 +155,32 @@ void SettingsDialog::setupUi() {
                              UserAuthPlugin::translate("settings.view.quality_medium"),
                              UserAuthPlugin::translate("settings.view.quality_high")});
     renderQuality->setCurrentIndex(
-        UserAuthPlugin::users()
+        m_users
             ->getUserPref(m_username, "view_render_quality", "2")
             .toInt());
     connect(renderQuality, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int index) {
-              UserAuthPlugin::users()->setUserPref(
+              m_users->setUserPref(
                   m_username, "view_render_quality", QString::number(index));
             });
     form->addRow(UserAuthPlugin::translate("settings.view.render_quality"), renderQuality);
 
     QCheckBox *showGrid = new QCheckBox(
         UserAuthPlugin::translate("settings.view.show_grid"));
-    showGrid->setChecked(UserAuthPlugin::users()->getUserPref(
+    showGrid->setChecked(m_users->getUserPref(
                              m_username, "view_show_grid", "true") == "true");
     connect(showGrid, &QCheckBox::toggled, this, [this](bool checked) {
-      UserAuthPlugin::users()->setUserPref(m_username, "view_show_grid",
+      m_users->setUserPref(m_username, "view_show_grid",
                                            checked ? "true" : "false");
     });
     form->addRow("", showGrid);
 
     QCheckBox *showAxes = new QCheckBox(
         UserAuthPlugin::translate("settings.view.show_axes"));
-    showAxes->setChecked(UserAuthPlugin::users()->getUserPref(
+    showAxes->setChecked(m_users->getUserPref(
                              m_username, "view_show_axes", "true") == "true");
     connect(showAxes, &QCheckBox::toggled, this, [this](bool checked) {
-      UserAuthPlugin::users()->setUserPref(m_username, "view_show_axes",
+      m_users->setUserPref(m_username, "view_show_axes",
                                            checked ? "true" : "false");
     });
     form->addRow("", showAxes);
@@ -189,12 +189,12 @@ void SettingsDialog::setupUi() {
     bgColor->addItems({UserAuthPlugin::translate("settings.view.bg_dark"),
                        UserAuthPlugin::translate("settings.view.bg_light"),
                        UserAuthPlugin::translate("settings.view.bg_gray")});
-    bgColor->setCurrentIndex(UserAuthPlugin::users()
+    bgColor->setCurrentIndex(m_users
                                  ->getUserPref(m_username, "view_bg_color", "0")
                                  .toInt());
     connect(bgColor, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int index) {
-              UserAuthPlugin::users()->setUserPref(m_username, "view_bg_color",
+              m_users->setUserPref(m_username, "view_bg_color",
                                                    QString::number(index));
             });
     form->addRow(UserAuthPlugin::translate("settings.view.bg_color"), bgColor);
@@ -218,12 +218,12 @@ void SettingsDialog::setupUi() {
                          UserAuthPlugin::translate("settings.recon.algorithm_nerf"),
                          UserAuthPlugin::translate("settings.recon.algorithm_gaussian")});
     algorithm->setCurrentIndex(
-        UserAuthPlugin::users()
+        m_users
             ->getUserPref(m_username, "recon_algorithm", "0")
             .toInt());
     connect(algorithm, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int index) {
-              UserAuthPlugin::users()->setUserPref(
+              m_users->setUserPref(
                   m_username, "recon_algorithm", QString::number(index));
             });
     form->addRow(UserAuthPlugin::translate("settings.recon.algorithm"), algorithm);
@@ -233,12 +233,12 @@ void SettingsDialog::setupUi() {
                        UserAuthPlugin::translate("settings.recon.density_medium"),
                        UserAuthPlugin::translate("settings.recon.density_high"),
                        UserAuthPlugin::translate("settings.recon.density_very_high")});
-    density->setCurrentIndex(UserAuthPlugin::users()
+    density->setCurrentIndex(m_users
                                  ->getUserPref(m_username, "recon_density", "1")
                                  .toInt());
     connect(density, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int index) {
-              UserAuthPlugin::users()->setUserPref(m_username, "recon_density",
+              m_users->setUserPref(m_username, "recon_density",
                                                    QString::number(index));
             });
     form->addRow(UserAuthPlugin::translate("settings.recon.density"), density);
@@ -246,10 +246,10 @@ void SettingsDialog::setupUi() {
     QCheckBox *autoClean = new QCheckBox(
         UserAuthPlugin::translate("settings.recon.auto_clean"));
     autoClean->setChecked(
-        UserAuthPlugin::users()->getUserPref(m_username, "recon_auto_clean",
+        m_users->getUserPref(m_username, "recon_auto_clean",
                                              "true") == "true");
     connect(autoClean, &QCheckBox::toggled, this, [this](bool checked) {
-      UserAuthPlugin::users()->setUserPref(m_username, "recon_auto_clean",
+      m_users->setUserPref(m_username, "recon_auto_clean",
                                            checked ? "true" : "false");
     });
     form->addRow("", autoClean);
@@ -257,12 +257,12 @@ void SettingsDialog::setupUi() {
     QSpinBox *maxFeatures = new QSpinBox();
     maxFeatures->setRange(1000, 100000);
     maxFeatures->setValue(
-        UserAuthPlugin::users()
+        m_users
             ->getUserPref(m_username, "recon_max_features", "10000")
             .toInt());
     connect(maxFeatures, QOverload<int>::of(&QSpinBox::valueChanged), this,
             [this](int value) {
-              UserAuthPlugin::users()->setUserPref(
+              m_users->setUserPref(
                   m_username, "recon_max_features", QString::number(value));
             });
     form->addRow(UserAuthPlugin::translate("settings.recon.max_features"), maxFeatures);
@@ -285,12 +285,12 @@ void SettingsDialog::setupUi() {
     modelSelection->addItems(
         {"YOLOv8 - Segmentation", "ResNet50 - Classification", "Custom Model"});
     modelSelection->setCurrentIndex(
-        UserAuthPlugin::users()
+        m_users
             ->getUserPref(m_username, "aitool_model", "0")
             .toInt());
     connect(modelSelection, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int index) {
-              UserAuthPlugin::users()->setUserPref(m_username, "aitool_model",
+              m_users->setUserPref(m_username, "aitool_model",
                                                    QString::number(index));
             });
     form->addRow(UserAuthPlugin::translate("settings.ai.model"), modelSelection);
@@ -298,21 +298,21 @@ void SettingsDialog::setupUi() {
     QSlider *confidence = new QSlider(Qt::Horizontal);
     confidence->setRange(0, 100);
     confidence->setValue(
-        UserAuthPlugin::users()
+        m_users
             ->getUserPref(m_username, "aitool_confidence", "75")
             .toInt());
     connect(confidence, &QSlider::valueChanged, this, [this](int value) {
-      UserAuthPlugin::users()->setUserPref(m_username, "aitool_confidence",
+      m_users->setUserPref(m_username, "aitool_confidence",
                                            QString::number(value));
     });
     form->addRow(UserAuthPlugin::translate("settings.ai.confidence"), confidence);
 
     QCheckBox *useGpu = new QCheckBox(
         UserAuthPlugin::translate("settings.ai.use_gpu"));
-    useGpu->setChecked(UserAuthPlugin::users()->getUserPref(
+    useGpu->setChecked(m_users->getUserPref(
                            m_username, "aitool_use_gpu", "true") == "true");
     connect(useGpu, &QCheckBox::toggled, this, [this](bool checked) {
-      UserAuthPlugin::users()->setUserPref(m_username, "aitool_use_gpu",
+      m_users->setUserPref(m_username, "aitool_use_gpu",
                                            checked ? "true" : "false");
     });
     form->addRow("", useGpu);
@@ -335,12 +335,12 @@ void SettingsDialog::setupUi() {
     apiProvider->addItems(
         {"OpenAI (ChatGPT)", "Google (Gemini)", "Local (Ollama)"});
     apiProvider->setCurrentIndex(
-        UserAuthPlugin::users()
+        m_users
             ->getUserPref(m_username, "ai_provider", "1")
             .toInt());
     connect(apiProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int index) {
-              UserAuthPlugin::users()->setUserPref(m_username, "ai_provider",
+              m_users->setUserPref(m_username, "ai_provider",
                                                    QString::number(index));
             });
     form->addRow(UserAuthPlugin::translate("settings.ai.provider"), apiProvider);
@@ -350,21 +350,21 @@ void SettingsDialog::setupUi() {
     apiKey->setPlaceholderText(
         UserAuthPlugin::translate("settings.ai.api_key_placeholder"));
     apiKey->setText(
-        UserAuthPlugin::users()->getUserPref(m_username, "ai_api_key", ""));
+        m_users->getUserPref(m_username, "ai_api_key", ""));
     connect(apiKey, &QLineEdit::textChanged, this, [this](const QString &text) {
-      UserAuthPlugin::users()->setUserPref(m_username, "ai_api_key", text);
+      m_users->setUserPref(m_username, "ai_api_key", text);
     });
     form->addRow(UserAuthPlugin::translate("settings.ai.api_key"), apiKey);
 
     QDoubleSpinBox *temperature = new QDoubleSpinBox();
     temperature->setRange(0.0, 2.0);
     temperature->setSingleStep(0.1);
-    temperature->setValue(UserAuthPlugin::users()
+    temperature->setValue(m_users
                               ->getUserPref(m_username, "ai_temperature", "0.7")
                               .toDouble());
     connect(temperature, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, [this](double value) {
-              UserAuthPlugin::users()->setUserPref(m_username, "ai_temperature",
+              m_users->setUserPref(m_username, "ai_temperature",
                                                    QString::number(value));
             });
     form->addRow(UserAuthPlugin::translate("settings.ai.temperature"), temperature);
@@ -372,10 +372,10 @@ void SettingsDialog::setupUi() {
     QCheckBox *saveHistory = new QCheckBox(
         UserAuthPlugin::translate("settings.ai.save_history"));
     saveHistory->setChecked(
-        UserAuthPlugin::users()->getUserPref(m_username, "ai_save_history",
+        m_users->getUserPref(m_username, "ai_save_history",
                                              "true") == "true");
     connect(saveHistory, &QCheckBox::toggled, this, [this](bool checked) {
-      UserAuthPlugin::users()->setUserPref(m_username, "ai_save_history",
+      m_users->setUserPref(m_username, "ai_save_history",
                                            checked ? "true" : "false");
     });
     form->addRow("", saveHistory);
@@ -395,23 +395,23 @@ void SettingsDialog::setupUi() {
     form->setVerticalSpacing(15);
 
     QLineEdit *smtpServer = new QLineEdit();
-    smtpServer->setText(UserAuthPlugin::users()->getUserPref(
+    smtpServer->setText(m_users->getUserPref(
         m_username, "mail_smtp_server", "smtp.gmail.com"));
     connect(smtpServer, &QLineEdit::textChanged, this,
             [this](const QString &text) {
-              UserAuthPlugin::users()->setUserPref(m_username,
+              m_users->setUserPref(m_username,
                                                    "mail_smtp_server", text);
             });
     form->addRow(UserAuthPlugin::translate("settings.mail.smtp_server"), smtpServer);
 
     QSpinBox *port = new QSpinBox();
     port->setRange(1, 65535);
-    port->setValue(UserAuthPlugin::users()
+    port->setValue(m_users
                        ->getUserPref(m_username, "mail_port", "587")
                        .toInt());
     connect(port, QOverload<int>::of(&QSpinBox::valueChanged), this,
             [this](int value) {
-              UserAuthPlugin::users()->setUserPref(m_username, "mail_port",
+              m_users->setUserPref(m_username, "mail_port",
                                                    QString::number(value));
             });
     form->addRow(UserAuthPlugin::translate("settings.mail.port"), port);
@@ -419,9 +419,9 @@ void SettingsDialog::setupUi() {
     QLineEdit *email = new QLineEdit();
     email->setPlaceholderText("example@gmail.com");
     email->setText(
-        UserAuthPlugin::users()->getUserPref(m_username, "mail_email", ""));
+        m_users->getUserPref(m_username, "mail_email", ""));
     connect(email, &QLineEdit::textChanged, this, [this](const QString &text) {
-      UserAuthPlugin::users()->setUserPref(m_username, "mail_email", text);
+      m_users->setUserPref(m_username, "mail_email", text);
     });
     form->addRow(UserAuthPlugin::translate("settings.mail.email"), email);
 
@@ -430,10 +430,10 @@ void SettingsDialog::setupUi() {
     password->setPlaceholderText(
         UserAuthPlugin::translate("settings.mail.password_placeholder"));
     password->setText(
-        UserAuthPlugin::users()->getUserSecret(m_username, "mail_password", ""));
+        m_users->getUserSecret(m_username, "mail_password", ""));
     connect(password, &QLineEdit::textChanged, this,
             [this](const QString &text) {
-              UserAuthPlugin::users()->setUserSecret(m_username, "mail_password",
+              m_users->setUserSecret(m_username, "mail_password",
                                                      text);
             });
     form->addRow(UserAuthPlugin::translate("settings.mail.password"), password);
@@ -445,7 +445,7 @@ void SettingsDialog::setupUi() {
     connect(testBtn, &QPushButton::clicked, this,
             [this, smtpServer, port, email, password, testBtn]() {
               // Lưu giá trị hiện tại từ UI vào UserManager trước khi test
-              auto *um = UserAuthPlugin::users();
+              auto *um = m_users;
               if (um) {
                 um->setUserPref(m_username, "mail_smtp_server",
                                 smtpServer->text());
@@ -600,7 +600,7 @@ void SettingsDialog::setupUi() {
   applyBtn->setCursor(Qt::PointingHandCursor);
 
   connect(applyBtn, &QPushButton::clicked, this, [this]() {
-    auto *um = UserAuthPlugin::users();
+    auto *um = m_users;
 
     // ── TAB "XEM": Áp dụng màu nền, trục toạ độ, lưới nền ──────────────
     if (m_ctx && m_ctx->scene()) {

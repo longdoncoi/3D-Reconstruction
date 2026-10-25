@@ -8,11 +8,13 @@ class QLineEdit;
 class QLabel;
 class QPushButton;
 class QStackedWidget;
+class IUserManager;
 
 class ForgotPasswordDialog : public ModernDialog {
     Q_OBJECT
 public:
-    explicit ForgotPasswordDialog(QWidget *parent = nullptr);
+    /// `users` is injected by the owner (registry-resolved). See AboutDialog.
+    explicit ForgotPasswordDialog(IUserManager *users, QWidget *parent = nullptr);
     ~ForgotPasswordDialog() override;
 
 private slots:
@@ -46,6 +48,7 @@ private:
 
     QLabel  *m_statusLabel;
     QString  m_pendingEmail;
+    IUserManager *m_users = nullptr;
 };
 
 #endif // FORGOT_PASSWORD_DIALOG_H

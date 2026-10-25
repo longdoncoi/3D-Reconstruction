@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <vtkOpenGLRenderWindow.h>
+#include "GuardedApplication.h"
 #include "MainWindow.h"
 #include "Logger.h"
 #include "AppConfig.h"
@@ -31,7 +32,9 @@ int main(int argc, char* argv[])
     }
 #endif
 
-    QApplication app(argc, argv);
+    // GuardedApplication, not QApplication: a slot that throws must not reach
+    // std::terminate() and abort the process. See GuardedApplication.h.
+    GuardedApplication app(argc, argv);
     // Set window icon — prefer embedded Qt resource, fall back to file on disk
     {
         QIcon appIcon(QStringLiteral(":/app_icon.png"));

@@ -4,7 +4,7 @@
 #include <QThread>
 
 #include "IAIModelLoadService.h"
-#include "IAIService.h"
+#include "IAIModelAdmin.h"
 #include "AIModelLoadService.h"
 
 #include <opencv2/core.hpp>
@@ -19,7 +19,10 @@
  * worker lifetime, skip missing paths, report progress and finish, and let a
  * cancel request reach the worker between models.
  */
-class FakeAIService : public IAIService {
+// The loader talks to the AppCore-internal IAIModelAdmin seam, not to the
+// plugin-facing IAIService: the synchronous loaders are deliberately not part
+// of the plugin contract.
+class FakeAIService : public IAIModelAdmin {
 public:
     bool loadDetectionModel(const QString &) override {
         ++loadCalls;
@@ -34,16 +37,6 @@ public:
         return !failSegmentation;
     }
     bool loadTrackingModel(const QString &) override { return true; }
-    bool isDetectionReady() const override { return true; }
-    bool isSegmentationReady() const override { return true; }
-    bool isTrackingReady() const override { return true; }
-    std::vector<AIDetectionResult> detectObjects(const cv::Mat &) override { return {}; }
-    cv::Mat runDetection(const cv::Mat &) override { return {}; }
-    cv::Mat runSegmentation(const cv::Mat &) override { return {}; }
-    cv::Mat runTracking(const cv::Mat &) override { return {}; }
-    void resetTrackingState() override {}
-    void setConfidenceThreshold(float) override {}
-    float confidenceThreshold() const override { return 0.5f; }
 
     int loadCalls = 0;
     int segmentationCalls = 0;

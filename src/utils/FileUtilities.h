@@ -43,6 +43,11 @@ public:
     /// means the file could not be read or unsealed.
     static QByteArray readAttachment(const QString &filePath, const QString &context);
 
+    /// Read and decode a thumbnail directly into a QPixmap in memory without
+    /// exposing plaintext files on disk. An empty pixmap means unsealing failed
+    /// or the file does not exist.
+    static QPixmap loadThumbnailPixmap(const QString &thumbPath);
+
     /// Whether the stored attachment is a sealed envelope.
     ///
     /// A sealed file cannot be handed to an OS handler: the bytes are

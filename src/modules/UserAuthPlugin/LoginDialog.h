@@ -7,11 +7,13 @@ class QLineEdit;
 class QLabel;
 class QPushButton;
 class QCheckBox;
+class IUserManager;
 
 class LoginDialog : public ModernDialog {
     Q_OBJECT
 public:
-    explicit LoginDialog(QWidget *parent = nullptr);
+    /// `users` is injected by the owner (registry-resolved). See AboutDialog.
+    explicit LoginDialog(IUserManager *users, QWidget *parent = nullptr);
     QString loggedInUsername() const { return m_loggedInUser; }
 
 private slots:
@@ -29,6 +31,7 @@ private:
     QLabel      *m_statusLabel;
     QCheckBox   *m_rememberCheck;
     QString      m_loggedInUser;
+    IUserManager *m_users = nullptr;
 };
 
 #endif // LOGIN_DIALOG_H

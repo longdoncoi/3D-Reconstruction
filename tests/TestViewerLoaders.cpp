@@ -35,6 +35,9 @@ private slots:
     void imageLoaderFallsBackToAnExplicitReader();
     void modelLoaderRejectsMissingAndUnsupportedFiles();
     void modelLoaderBuildsAnActorFromAnObjFile();
+    void modelLoaderReadsEverySupportedFormat();
+    void modelLoaderImportsAnObjWithItsMaterial();
+    void modelLoaderRejectsAnEmptyMesh();
 };
 
 namespace {
@@ -51,6 +54,16 @@ bool writeTriangleObj(const QString &path)
                "v 0.0 1.0 0.0\n"
                "f 1 2 3\n");
     return true;
+}
+
+/// Writes `text` to `path`; false when the file cannot be opened.
+bool writeText(const QString &path, const char *text)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        return false;
+    }
+    return file.write(text) >= 0;
 }
 
 } // namespace
@@ -158,6 +171,114 @@ void TestViewerLoaders::modelLoaderBuildsAnActorFromAnObjFile()
     QVERIFY(actors.front() != nullptr);
     QVERIFY(actors.front()->GetMapper() != nullptr);
     QVERIFY(actors.front()->GetProperty() != nullptr);
+}
+
+void TestViewerLoaders::modelLoaderReadsEverySupportedFormat()
+{
+    // Every supported suffix has its own reader; a missing branch here is a
+    // model that silently refuses to open in the viewer. The fixtures are the
+    // smallest valid file of each format (one triangle).
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString stl = dir.filePath(QStringLiteral("triangle.stl"));
+    QVERIFY(writeText(stl, "solid t\n"
+                           "  facet normal 0 0 1\n"
+                           "    outer loop\n"
+                           "      vertex 0 0 0\n"
+                           "      vertex 1 0 0\n"
+                           "      vertex 0 1 0\n"
+                           "    endloop\n"
+                           "  endfacet\n"
+                           "endsolid t\n"));
+
+    const QString ply = dir.filePath(QStringLiteral("triangle.ply"));
+    QVERIFY(writeText(ply, "ply\n"
+                           "format ascii 1.0\n"
+                           "element vertex 3\n"
+                           "property float x\n"
+                           "property float y\n"
+                           "property float z\n"
+                           "element face 1\n"
+                           "property list uchar int vertex_indices\n"
+                           "end_header\n"
+                           "0 0 0\n"
+                           "1 0 0\n"
+                           "0 1 0\n"
+                           "3 0 1 2\n"));
+
+    const QString vtk = dir.filePath(QStringLiteral("triangle.vtk"));
+    QVERIFY(writeText(vtk, "# vtk DataFile Version 3.0\n"
+                           "triangle\n"
+                           "ASCII\n"
+                           "DATASET POLYDATA\n"
+                           "POINTS 3 float\n"
+                           "0 0 0\n"
+                           "1 0 0\n"
+                           "0 1 0\n"
+                           "POLYGONS 1 4\n"
+                           "3 0 1 2\n"));
+
+    const QString vtp = dir.filePath(QStringLiteral("triangle.vtp"));
+    QVERIFY(writeText(vtp, "<?xml version=\"1.0\"?>\n"
+                           "<VTKFile type=\"PolyData\" version=\"1.0\" byte_order=\"LittleEndian\">\n"
+                           "  <PolyData>\n"
+                           "    <Piece NumberOfPoints=\"3\" NumberOfPolys=\"1\">\n"
+                           "      <Points>\n"
+                           "        <DataArray type=\"Float32\" NumberOfComponents=\"3\" format=\"ascii\">\n"
+                           "          0 0 0 1 0 0 0 1 0\n"
+                           "        </DataArray>\n"
+                           "      </Points>\n"
+                           "      <Polys>\n"
+                           "        <DataArray type=\"Int32\" Name=\"connectivity\" format=\"ascii\">0 1 2</DataArray>\n"
+                           "        <DataArray type=\"Int32\" Name=\"offsets\" format=\"ascii\">3</DataArray>\n"
+                           "      </Polys>\n"
+                           "    </Piece>\n"
+                           "  </PolyData>\n"
+                           "</VTKFile>\n"));
+
+    for (const QString &path : {stl, ply, vtk, vtp}) {
+        const auto actors = Model3DLoader::load(path, QString());
+        QVERIFY2(static_cast<int>(actors.size()) == 1,
+                 qPrintable(QStringLiteral("no actor for %1").arg(path)));
+        QVERIFY(actors.front()->GetMapper() != nullptr);
+    }
+}
+
+void TestViewerLoaders::modelLoaderImportsAnObjWithItsMaterial()
+{
+    // With a material file the loader prefers vtkOBJImporter (it carries the
+    // MTL's colours), and only falls back to the plain reader when the
+    // importer produced no renderer. Both branches must yield the mesh.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString obj = dir.filePath(QStringLiteral("triangle.obj"));
+    const QString mtl = dir.filePath(QStringLiteral("triangle.mtl"));
+    QVERIFY(writeTriangleObj(obj));
+    QVERIFY(writeText(mtl, "newmtl material0\n"
+                           "Ka 1.000000 1.000000 1.000000\n"
+                           "Kd 0.700000 0.700000 0.700000\n"
+                           "Ks 0.000000 0.000000 0.000000\n"
+                           "d 1.000000\n"
+                           "illum 2\n"));
+
+    const auto actors = Model3DLoader::load(obj, mtl);
+    QVERIFY(!actors.empty());
+    QVERIFY(actors.front() != nullptr);
+    QVERIFY(actors.front()->GetProperty() != nullptr);
+}
+
+void TestViewerLoaders::modelLoaderRejectsAnEmptyMesh()
+{
+    // A readable file with no geometry is not an error in the reader but is
+    // an empty view: the loader must report "no mesh data" instead of adding
+    // an actor with nothing in it.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString empty = dir.filePath(QStringLiteral("empty.stl"));
+    QVERIFY(writeText(empty, "solid empty\nendsolid empty\n"));
+
+    QVERIFY(Model3DLoader::load(empty, QString()).empty());
 }
 
 QTEST_GUILESS_MAIN(TestViewerLoaders)

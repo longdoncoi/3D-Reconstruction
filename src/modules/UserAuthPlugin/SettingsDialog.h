@@ -8,12 +8,15 @@
 #include <QStackedWidget>
 
 class IAppContext;
+class IUserManager;
 
 class SettingsDialog : public ModernDialog {
     Q_OBJECT
 public:
+    /// `users` is injected by the owner (registry-resolved). See AboutDialog.
     explicit SettingsDialog(const QString &username, bool isAdmin,
-                            IAppContext *ctx, QWidget *parent = nullptr);
+                            IAppContext *ctx, IUserManager *users,
+                            QWidget *parent = nullptr);
     ~SettingsDialog() override;
 
     /// How a background change is applied to the shell. The dialog never
@@ -30,6 +33,7 @@ private:
     QString         m_username;
     bool            m_isAdmin;
     IAppContext    *m_ctx = nullptr;
+    IUserManager   *m_users = nullptr;
 
     ThemeSelectionDialog::BackgroundRequest m_backgroundRequest;
 

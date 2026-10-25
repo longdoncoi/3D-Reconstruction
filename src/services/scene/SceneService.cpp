@@ -35,7 +35,9 @@ SceneService::SceneService(IUserPreferences* prefs, QVTKOpenGLNativeWidget* vtkW
 {
     m_renderer = vtkSmartPointer<vtkRenderer>::New();
     m_renderer->SetBackground(0, 0, 0);
-    m_vtkWidget->renderWindow()->AddRenderer(m_renderer);
+    if (m_vtkWidget && m_vtkWidget->renderWindow()) {
+        m_vtkWidget->renderWindow()->AddRenderer(m_renderer);
+    }
 
     vtkSmartPointer<vtkLight> headlight = vtkSmartPointer<vtkLight>::New();
     headlight->SetLightTypeToHeadlight();
@@ -170,20 +172,27 @@ void SceneService::resetToSingleRenderer() {
         m_crosshair = nullptr;
     }
     m_crosshairStyle = nullptr;
-    auto *rw = m_vtkWidget->renderWindow();
+    auto *rw = m_vtkWidget ? m_vtkWidget->renderWindow() : nullptr;
     
-    if (m_axialRenderer) { m_axialRenderer->RemoveAllViewProps(); rw->RemoveRenderer(m_axialRenderer); m_axialRenderer = nullptr; }
-    if (m_sagittalRenderer) { m_sagittalRenderer->RemoveAllViewProps(); rw->RemoveRenderer(m_sagittalRenderer); m_sagittalRenderer = nullptr; }
-    if (m_coronalRenderer) { m_coronalRenderer->RemoveAllViewProps(); rw->RemoveRenderer(m_coronalRenderer); m_coronalRenderer = nullptr; }
+    if (rw) {
+        if (m_axialRenderer) { m_axialRenderer->RemoveAllViewProps(); rw->RemoveRenderer(m_axialRenderer); m_axialRenderer = nullptr; }
+        if (m_sagittalRenderer) { m_sagittalRenderer->RemoveAllViewProps(); rw->RemoveRenderer(m_sagittalRenderer); m_sagittalRenderer = nullptr; }
+        if (m_coronalRenderer) { m_coronalRenderer->RemoveAllViewProps(); rw->RemoveRenderer(m_coronalRenderer); m_coronalRenderer = nullptr; }
+    } else {
+        if (m_axialRenderer) { m_axialRenderer->RemoveAllViewProps(); m_axialRenderer = nullptr; }
+        if (m_sagittalRenderer) { m_sagittalRenderer->RemoveAllViewProps(); m_sagittalRenderer = nullptr; }
+        if (m_coronalRenderer) { m_coronalRenderer->RemoveAllViewProps(); m_coronalRenderer = nullptr; }
+    }
     
     m_renderer->SetViewport(0.0, 0.0, 1.0, 1.0);
     m_renderer->RemoveAllViewProps();
     
-    vtkNew<PanStyle> style;
-    if (rw->GetInteractor()) rw->GetInteractor()->SetInteractorStyle(style);
-    
-    m_renderer->SetBackground(0, 0, 0);
-    rw->Render();
+    if (rw) {
+        vtkNew<PanStyle> style;
+        if (rw->GetInteractor()) rw->GetInteractor()->SetInteractorStyle(style);
+        m_renderer->SetBackground(0, 0, 0);
+        rw->Render();
+    }
 }
 
 void SceneService::loadOBJwithMTL(const QString &objPath, const QString &mtlPath) {
@@ -257,10 +266,12 @@ void SceneService::setupDicomRenderers(vtkSmartPointer<vtkImageData> volume) {
     m_coronalRenderer->SetBackground(0, 0, 0);
     m_renderer->SetBackground(0, 0, 0);
 
-    auto *rw = m_vtkWidget->renderWindow();
-    rw->AddRenderer(m_axialRenderer);
-    rw->AddRenderer(m_sagittalRenderer);
-    rw->AddRenderer(m_coronalRenderer);
+    auto *rw = m_vtkWidget ? m_vtkWidget->renderWindow() : nullptr;
+    if (rw) {
+        rw->AddRenderer(m_axialRenderer);
+        rw->AddRenderer(m_sagittalRenderer);
+        rw->AddRenderer(m_coronalRenderer);
+    }
 
     auto addTitle = [](vtkRenderer* ren, const char* text) {
         vtkNew<vtkCornerAnnotation> ann;
@@ -329,11 +340,13 @@ void SceneService::setupCrosshairInteractor() {
     style->renderer3D = m_renderer;
     m_crosshairStyle = style;
 
-    m_vtkWidget->renderWindow()->GetInteractor()->SetInteractorStyle(m_crosshairStyle);
+    if (m_vtkWidget && m_vtkWidget->renderWindow() && m_vtkWidget->renderWindow()->GetInteractor()) {
+        m_vtkWidget->renderWindow()->GetInteractor()->SetInteractorStyle(m_crosshairStyle);
+    }
 }
 
 void SceneService::applyViewSettings(const QString& username) {
-    if (!m_renderer || !m_vtkWidget || !m_vtkWidget->renderWindow()) return;
+    if (!m_renderer) return;
 
     IUserPreferences* prefs = m_prefs;
     if (!prefs) return;
@@ -361,19 +374,24 @@ void SceneService::applyViewSettings(const QString& username) {
     // 2. Axes
     bool showAxes = prefs->getUserPref(username, "view_show_axes", "true") == "true";
     if (showAxes) {
-        if (!m_axesWidget) {
-            auto axesActor = vtkSmartPointer<vtkAxesActor>::New();
-            m_axesWidget = vtkOrientationMarkerWidget::New();
-            m_axesWidget->SetOutlineColor(0.93, 0.57, 0.13);
-            m_axesWidget->SetOrientationMarker(axesActor);
-            m_axesWidget->SetInteractor(m_vtkWidget->renderWindow()->GetInteractor());
-            const bool dicomLayout = m_axialRenderer && m_sagittalRenderer && m_coronalRenderer;
-            m_axesWidget->SetViewport(dicomLayout ? 0.51 : 0.02, 0.01,
-                                      dicomLayout ? 0.61 : 0.18, dicomLayout ? 0.13 : 0.22);
-            m_axesWidget->EnabledOn();
-            m_axesWidget->InteractiveOff();
-        } else {
-            m_axesWidget->EnabledOn();
+        auto *interactor = (m_vtkWidget && m_vtkWidget->renderWindow())
+                               ? m_vtkWidget->renderWindow()->GetInteractor()
+                               : nullptr;
+        if (interactor) {
+            if (!m_axesWidget) {
+                auto axesActor = vtkSmartPointer<vtkAxesActor>::New();
+                m_axesWidget = vtkOrientationMarkerWidget::New();
+                m_axesWidget->SetOutlineColor(0.93, 0.57, 0.13);
+                m_axesWidget->SetOrientationMarker(axesActor);
+                m_axesWidget->SetInteractor(interactor);
+                const bool dicomLayout = m_axialRenderer && m_sagittalRenderer && m_coronalRenderer;
+                m_axesWidget->SetViewport(dicomLayout ? 0.51 : 0.02, 0.01,
+                                          dicomLayout ? 0.61 : 0.18, dicomLayout ? 0.13 : 0.22);
+                m_axesWidget->EnabledOn();
+                m_axesWidget->InteractiveOff();
+            } else {
+                m_axesWidget->EnabledOn();
+            }
         }
     } else {
         if (m_axesWidget) m_axesWidget->EnabledOff();

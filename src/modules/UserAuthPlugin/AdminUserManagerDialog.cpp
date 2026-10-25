@@ -19,8 +19,9 @@
 #include <QClipboard>
 #include <QApplication>
 
-AdminUserManagerDialog::AdminUserManagerDialog(QWidget *parent)
+AdminUserManagerDialog::AdminUserManagerDialog(IUserManager *users, QWidget *parent)
     : QWidget(parent)
+    , m_users(users)
 {
     setMinimumSize(800, 600);
     setupUi();
@@ -111,7 +112,7 @@ void AdminUserManagerDialog::setupUi() {
     svl->addWidget(new QLabel(UserAuthPlugin::translate("smtp.outlook_hint"), smtpTab));
 
     auto *smtpForm = new QFormLayout;
-    auto *smtpEmailEdit = new QLineEdit(UserAuthPlugin::users()->smtpSenderEmail(), smtpTab);
+    auto *smtpEmailEdit = new QLineEdit(m_users->smtpSenderEmail(), smtpTab);
     smtpEmailEdit->setObjectName("inputField");
     smtpEmailEdit->setFixedHeight(38);
     auto *smtpPassEdit = new QLineEdit(smtpTab);
@@ -135,8 +136,8 @@ void AdminUserManagerDialog::setupUi() {
         // Empty field = keep the stored password; re-type is required to change
         // it, and the secret is never echoed back into the UI.
         if (pass.isEmpty())
-            pass = UserAuthPlugin::users()->smtpSenderPassword();
-        UserAuthPlugin::users()->setSmtpCredentials(smtpEmailEdit->text().trimmed(), pass);
+            pass = m_users->smtpSenderPassword();
+        m_users->setSmtpCredentials(smtpEmailEdit->text().trimmed(), pass);
         smtpPassEdit->clear();
         ModernMessageBox::information(this, UserAuthPlugin::translate("common.success"), UserAuthPlugin::translate("smtp.save_success"));
     });
@@ -150,7 +151,7 @@ void AdminUserManagerDialog::applyStyle() {
 }
 
 void AdminUserManagerDialog::refreshTable() {
-    auto *um = UserAuthPlugin::users();
+    auto *um = m_users;
 
     // Refresh user table
     QStringList names = um->allUsernames();
@@ -235,7 +236,7 @@ void AdminUserManagerDialog::onAddUser() {
     u.email    = emailEdit->text().trimmed();
     u.role     = roleCombo->currentText() == "Admin" ? UserRole::Admin : UserRole::User;
     QString error;
-    if (!UserAuthPlugin::users()->addUser(u, passwordEdit->text(), error))
+    if (!m_users->addUser(u, passwordEdit->text(), error))
         ModernMessageBox::warning(this, UserAuthPlugin::translate("common.error"), error);
     refreshTable();
 }
@@ -244,7 +245,7 @@ void AdminUserManagerDialog::onEditUser() {
     int row = m_userTable->currentRow();
     if (row < 0) return;
     QString username = m_userTable->item(row, 0)->text();
-    UserInfo u = UserAuthPlugin::users()->userInfo(username);
+    UserInfo u = m_users->userInfo(username);
 
     ModernDialog dlg(UserAuthPlugin::translate("admin.edit_user_title") + username, this);
     dlg.setFixedSize(400, 260);
@@ -280,7 +281,7 @@ void AdminUserManagerDialog::onEditUser() {
     u.email = emailEdit->text().trimmed();
     u.role  = roleCombo->currentText() == "Admin" ? UserRole::Admin : UserRole::User;
     QString err;
-    if (!UserAuthPlugin::users()->updateUser(u, err))
+    if (!m_users->updateUser(u, err))
         ModernMessageBox::warning(this, UserAuthPlugin::translate("common.error"), err);
     refreshTable();
 }
@@ -291,7 +292,7 @@ void AdminUserManagerDialog::onDeleteUser() {
     QString username = m_userTable->item(row, 0)->text();
     if (ModernMessageBox::question(UserAuthPlugin::languageService(), this, UserAuthPlugin::translate("common.confirm"), UserAuthPlugin::translate("admin.del_confirm_msg") + username + "'?")) {
         QString error;
-        if (!UserAuthPlugin::users()->deleteUser(username, error))
+        if (!m_users->deleteUser(username, error))
             ModernMessageBox::warning(this, UserAuthPlugin::translate("common.error"), error);
         refreshTable();
     }
@@ -299,7 +300,7 @@ void AdminUserManagerDialog::onDeleteUser() {
 
 void AdminUserManagerDialog::onGenerateLicenseKey() {
     AuthError code = AuthError::None;
-    QString key = UserAuthPlugin::users()->generateLicenseKey(&code);
+    QString key = m_users->generateLicenseKey(&code);
     if (key.isEmpty()) {
         // The core refuses key generation without the administrator role.
         ModernMessageBox::warning(this, UserAuthPlugin::translate("common.error"),
@@ -323,7 +324,7 @@ void AdminUserManagerDialog::onRevokeLicenseKey() {
     if (!ModernMessageBox::question(UserAuthPlugin::languageService(), this, UserAuthPlugin::translate("common.confirm"),
         UserAuthPlugin::translate("admin.revoke_key_msg").arg(key))) return;
     QString error;
-    if (!UserAuthPlugin::users()->revokeLicenseKey(key, error))
+    if (!m_users->revokeLicenseKey(key, error))
         ModernMessageBox::warning(this, UserAuthPlugin::translate("common.error"), error);
     refreshTable();
 }

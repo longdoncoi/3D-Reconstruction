@@ -81,6 +81,9 @@ TESTS: tuple[tuple[str, str, dict[str, str]], ...] = (
     # the only test covering PluginHost::loadWithQPluginLoader.
     ("TestPluginSmoke", "TestPluginSmoke.exe", {}),
     ("TestAppShell", "TestAppShell.exe", {"QT_QPA_PLATFORM": "offscreen"}),
+    # The real shell window: the tab panels a plugin resolves by tab id, the
+    # translated labels, the menu bar and the shutdown path.
+    ("TestMainWindow", "TestMainWindow.exe", {"QT_QPA_PLATFORM": "offscreen"}),
     ("TestUserManagerCrypto", "TestUserManagerCrypto.exe", {}),
     ("TestMailCredentialLifecycle", "TestMailCredentialLifecycle.exe", {}),
     # The at-rest confidentiality contract of the user INI (fail-closed vault,
@@ -189,6 +192,7 @@ FLOORS: dict[str, float] = {
     "src/core/signalbus.cpp": 100,                # measured 100
     # Composition root + the service files the wiring test owns end-to-end.
     "src/app/appshell.cpp": 100,                  # measured 100
+    "src/app/mainwindow.cpp": 70,                 # measured 70.7 (123/174)
     "src/services/ai/chatsessionmanager.cpp": 100,  # measured 100
     "src/services/ai/chatsessionstore.cpp": 100,    # measured 100
     "src/services/ai/chatmessage.cpp": 88,           # measured 88.6
@@ -196,7 +200,7 @@ FLOORS: dict[str, float] = {
     "src/services/ai/airequestqueue.cpp": 100,      # measured 100
     "src/services/ai/aimodelloadservice.cpp": 100,  # measured 100
     "src/services/ai/aiyolopostprocessor.cpp": 100,  # measured 100
-    "src/services/ai/agentactionmanifest.cpp": 45,  # measured 45.7
+    "src/services/ai/agentactionmanifest.cpp": 100, # measured 100 (70/70)
     "src/services/ai/aiassistant.cpp": 42,          # measured 42.0
     "src/services/ai/aiserverprocesscontroller.cpp": 94,  # measured 94.7
     # The exception guard of the AI inference path: one place where an
@@ -230,7 +234,7 @@ FLOORS: dict[str, float] = {
     "src/services/shell/shellservice.cpp": 98,    # measured 98.2 (one closing brace)
     "src/services/viewer/dicomloader.cpp": 1,      # measured 1.5
     "src/services/viewer/image2dloader.cpp": 98,    # measured 98.7 (75/76)
-    "src/services/viewer/model3dloader.cpp": 46,    # measured 46.9 (30/64)
+    "src/services/viewer/model3dloader.cpp": 100,   # measured 100 (64/64)
     "src/services/viewer/viewerservice.cpp": 13,   # measured 13.6
     # Shared utility layer — the helpers every plugin links against.
     "src/utils/abstractribbonpanel.cpp": 100,     # measured 100
@@ -266,8 +270,8 @@ FLOORS: dict[str, float] = {
     "src/modules/aiprocessorplugin/aiprocessorplugin.cpp": 45,       # measured 45.7 (204/446)
     "src/modules/reconstructionplugin/reconstructionplugin.cpp": 21, # measured 21.3
     "src/modules/aiassistantplugin/aiassistantplugin.cpp": 18,       # measured 18.3
-    "src/modules/viewerplugin/viewerlistui.cpp": 7,                 # measured 7.0
-    "src/modules/aiassistantplugin/chatmessagerenderer.cpp": 38,     # measured 39.0
+    "src/modules/viewerplugin/viewerlistui.cpp": 100,               # measured 100 (59/59)
+    "src/modules/aiassistantplugin/chatmessagerenderer.cpp": 100,    # measured 100 (213/213)
     "src/modules/aiassistantplugin/aiattachmentpreviewfactory.cpp": 100,  # measured 100
     "src/modules/sendmailplugin/mailinboxitemfactory.cpp": 100,            # measured 100
     "src/modules/sendmailplugin/mailmessageformatter.cpp": 84,              # measured 84.7
@@ -277,7 +281,7 @@ FLOORS: dict[str, float] = {
     "src/modules/viewerplugin/viewerribbonui.cpp": 100,                # measured 100
     "src/modules/sendmailplugin/mailfilterdialog.cpp": 81,             # measured 81.8
     "src/modules/sendmailplugin/mailsettingsdialog.cpp": 65,           # measured 65.6
-    "src/modules/viewerplugin/viewerviewmodel.cpp": 8,                 # measured 9.0 (6/67)
+    "src/modules/viewerplugin/viewerviewmodel.cpp": 98,                # measured 98.5 (66/67)
     "src/modules/aiassistantplugin/chatimageviewer.cpp": 100,       # measured 100
     "src/modules/aiprocessorplugin/videotrackerthread.cpp": 77,     # measured 77.1 (54/70)
 }
@@ -334,11 +338,11 @@ _NOT_MEASURABLE = {
     # PCH carriers: the dummy .cpp exists only to hold the precompiled header.
     "src/pch_dummy.cpp",
     "src/pch_light_dummy.cpp",
-    # The application entry point and the main window are compiled into the
-    # application executable, which no test executes — they are exercised by
-    # running the application itself.
+    # The application entry point is compiled into the application executable
+    # and is exercised by running the application itself. (The main window
+    # used to be here too; TestMainWindow now compiles it and it carries a
+    # floor.)
     "src/app/main.cpp",
-    "src/app/mainwindow.cpp",
     # VTK boilerplate only (vtkStandardNewMacro), no logic of its own.
     "src/services/scene/panstyle.cpp",
 }

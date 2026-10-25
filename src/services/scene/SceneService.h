@@ -19,7 +19,7 @@ class IUserPreferences;
 class APP_EXPORT SceneService : public QObject, public ISceneService {
     Q_OBJECT
 public:
-    SceneService(IUserPreferences* prefs, QVTKOpenGLNativeWidget* vtkWidget, QObject* parent = nullptr);
+    SceneService(IUserPreferences* prefs = nullptr, QVTKOpenGLNativeWidget* vtkWidget = nullptr, QObject* parent = nullptr);
     ~SceneService();
 
     vtkRenderer*            renderer() override { return m_renderer; }

@@ -11,8 +11,9 @@
 #include <QCheckBox>
 #include <QGraphicsDropShadowEffect>
 
-LoginDialog::LoginDialog(QWidget *parent)
+LoginDialog::LoginDialog(IUserManager *users, QWidget *parent)
     : ModernDialog(UserAuthPlugin::translate("login.title"), parent)
+    , m_users(users)
 {
     setWindowFlags(windowFlags() | Qt::WindowStaysOnTopHint);
     setFixedSize(400, 480);
@@ -20,7 +21,7 @@ LoginDialog::LoginDialog(QWidget *parent)
     applyStyle();
 
     // Restore remember me state
-    auto *um = UserAuthPlugin::users();
+    auto *um = m_users;
     if (um->isRememberMeEnabled()) {
         m_userEdit->setText(um->savedUsername());
         m_rememberCheck->setChecked(true);
@@ -128,11 +129,11 @@ void LoginDialog::onLogin() {
 
     QString error;
     AuthError code = AuthError::Unknown;
-    if (UserAuthPlugin::users()->login(user, pass, error, &code)) {
-        m_loggedInUser = UserAuthPlugin::users()->currentUser().username;
+    if (m_users->login(user, pass, error, &code)) {
+        m_loggedInUser = m_users->currentUser().username;
         
         // Handle remember me
-        UserAuthPlugin::users()->setRememberMe(m_rememberCheck->isChecked(), user);
+        m_users->setRememberMe(m_rememberCheck->isChecked(), user);
         
         accept();
     } else {
@@ -145,12 +146,12 @@ void LoginDialog::onLogin() {
 }
 
 void LoginDialog::onForgotPassword() {
-    ForgotPasswordDialog dlg(this);
+    ForgotPasswordDialog dlg(m_users, this);
     dlg.exec();
 }
 
 void LoginDialog::onChangePassword() {
     QString user = m_userEdit->text().trimmed();
-    ChangePasswordDialog dlg(user, this);
+    ChangePasswordDialog dlg(user, m_users, this);
     dlg.exec();
 }

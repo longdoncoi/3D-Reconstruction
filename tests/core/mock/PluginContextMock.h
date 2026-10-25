@@ -13,6 +13,7 @@
 #include "include/IUserManager.h"
 #include "include/SignalBus.h"
 #include "include/ServiceRegistry.h"
+#include "core/MutableServiceRegistry.h"
 #include "include/ISceneService.h"
 #include "include/ISettingsService.h"
 #include "include/IViewerService.h"
@@ -21,6 +22,7 @@
 
 #include <vtkSmartPointer.h>
 #include <vtkActor.h>
+#include <vtkRenderer.h>
 
 #include <QDockWidget>
 #include <QHash>
@@ -103,7 +105,13 @@ public:
         // plugins create are parented to it, so they die with the shell —
         // before the plugin DLL is unloaded.  The stub keeps that ownership
         // (a parent-less dock would outlive the DLL and crash the teardown).
-        m_shellWidget.setCentralWidget(new QWidget);
+        // The central widget carries a layout exactly like MainWindow's:
+        // ViewerListUI only installs its list when the central widget has a
+        // QVBoxLayout, so without one the plugin's list path is invisible to
+        // the test.
+        auto *central = new QWidget;
+        central->setLayout(new QVBoxLayout);
+        m_shellWidget.setCentralWidget(central);
         // The real shell's menu bar is a child of the main window, not a
         // top-level widget: plugins parent their buttons to it.
         m_menuBar = new QMenuBar(&m_shellWidget);
@@ -398,9 +406,6 @@ public:
     int segmentationCalls = 0;
     Qt::HANDLE lastInferenceThread = nullptr;
 
-    bool loadDetectionModel(const QString &) override { return false; }
-    bool loadSegmentationModel(const QString &) override { return false; }
-    bool loadTrackingModel(const QString &) override { return false; }
     bool isDetectionReady() const override { return detectionReady; }
     bool isSegmentationReady() const override { return segmentationReady; }
     bool isTrackingReady() const override { return trackingReady; }
@@ -421,7 +426,13 @@ public:
         if (returnEmpty) return {};
         return cv::Mat(8, 8, CV_8UC3, cv::Scalar(255, 0, 0));
     }
-    cv::Mat runTracking(const cv::Mat &) override { return {}; }
+    cv::Mat runTracking(const cv::Mat &) override {
+        lastInferenceThread = QThread::currentThreadId();
+        if (inferenceDelayMs > 0) QThread::msleep(static_cast<unsigned long>(inferenceDelayMs));
+        if (throwOnInference) throw std::runtime_error("the inference backend failed");
+        if (returnEmpty) return {};
+        return cv::Mat(8, 8, CV_8UC3, cv::Scalar(0, 0, 255));
+    }
     void resetTrackingState() override {}
     void setConfidenceThreshold(float threshold) override { m_threshold = threshold; }
     float confidenceThreshold() const override { return m_threshold; }
@@ -493,7 +504,16 @@ public:
 // ── Scene / viewer / settings ────────────────────────────────────────────────
 class SceneService : public ISceneService {
 public:
-    vtkSmartPointer<vtkActor> loadImageActor(const QString &) override { return nullptr; }
+    /// Knobs: an image load that returns an actor exercises the actor branch
+    /// of ViewerViewModel (texture + camera reset), and the DICOM result
+    /// decides whether the view model shows the modal error — a dialog the
+    /// test cannot dismiss without an event loop.
+    vtkSmartPointer<vtkActor> imageActor;
+    bool dicomSucceeds = false;
+    int dicomCalls = 0;
+    QString lastObjPath;
+
+    vtkSmartPointer<vtkActor> loadImageActor(const QString &) override { return imageActor; }
     vtkSmartPointer<vtkActor> loadImageActor(const cv::Mat &) override { return nullptr; }
     void showImage(const QString &) override {}
     void showImage(const cv::Mat &) override {}
@@ -503,23 +523,31 @@ public:
     void clear2DTexture() override {}
     void clearPointCloud() override {}
     void resetToSingleRenderer() override {}
-    void loadOBJwithMTL(const QString &, const QString &) override {}
-    bool onLoadDicom(const QString &) override { return false; }
-    vtkRenderer *renderer() override { return nullptr; }
+    void loadOBJwithMTL(const QString &path, const QString &) override { lastObjPath = path; }
+    bool onLoadDicom(const QString &) override { ++dicomCalls; return dicomSucceeds; }
+    vtkRenderer *renderer() override { return m_renderer; }
     QVTKOpenGLNativeWidget *vtkWidget() override { return nullptr; }
     void render() override {}
     void setPointCloudData(const std::vector<Point3D> &, const std::vector<PointColor> &) override {}
     bool isPointCloudVisible() const override { return false; }
     void setPointCloudVisible(bool) override {}
     void applyViewSettings(const QString &) override {}
+
+private:
+    vtkSmartPointer<vtkRenderer> m_renderer = vtkSmartPointer<vtkRenderer>::New();
 };
 
 class ViewerService : public IViewerService {
 public:
     QString getCurrent2DImagePath() const override { return m_currentPath; }
     void setCurrent2DImagePath(const QString &path) override { m_currentPath = path; }
-    void setImageList(const QStringList &, int) override {}
-    void loadCurrentIndexImage() override {}
+    void setImageList(const QStringList &images, int index) override
+    {
+        m_imageList = images;
+        m_imageIndex = index;
+        ++setImageListCalls;
+    }
+    void loadCurrentIndexImage() override { ++loadCurrentIndexCalls; }
     void onNextImage() override {}
     void onPrevImage() override {}
     void onAutoNext() override {}
@@ -529,8 +557,17 @@ public:
     bool isUpdateSceneEnabled() const override { return false; }
     void setUpdateSceneEnabled(bool) override {}
 
+    /// What the view model published, and how often the viewer was asked to
+    /// load — the observable half of the ViewerListUI/ViewerViewModel contract.
+    QStringList imageList() const { return m_imageList; }
+    int imageIndex() const { return m_imageIndex; }
+    int setImageListCalls = 0;
+    int loadCurrentIndexCalls = 0;
+
 private:
     QString m_currentPath;
+    QStringList m_imageList;
+    int m_imageIndex = -1;
     AIMode m_mode = AIMode::None;
 };
 
@@ -572,7 +609,7 @@ public:
     ISettingsService *settings() override { return &m_settings; }
     SignalBus *signalBus() override { return &m_signalBus; }
     IShellService *shell() override { return &m_shell; }
-    ServiceRegistry *services() override { return &m_registry; }
+    const ServiceRegistry *services() override { return &m_registry; }
     QString translate(const QString &key) override { return key; }
     void setLanguage(const QString &) override {}
 
@@ -580,11 +617,12 @@ public:
     AppPaths &paths() { return m_paths; }
     ShellService &shellService() { return m_shell; }
     AIService &ai() { return m_ai; }
+    SceneService &sceneService() { return m_scene; }
     ViewerService &viewerService() { return m_viewer; }
     MailService &mailService() { return m_mail; }
 
 private:
-    ServiceRegistry m_registry;
+    MutableServiceRegistry m_registry;
     SignalBus m_signalBus;
     LanguageService m_language;
     AppPaths m_paths;

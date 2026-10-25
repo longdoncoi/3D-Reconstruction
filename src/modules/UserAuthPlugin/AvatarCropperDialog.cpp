@@ -19,9 +19,10 @@
 #include "IUserManager.h"
 #include "UserAuthPlugin.h"
 
-AvatarCropperDialog::AvatarCropperDialog(const QString& username, IAppPaths* paths, QWidget *parent)
+AvatarCropperDialog::AvatarCropperDialog(const QString& username, IAppPaths* paths,
+                                         IUserManager* users, QWidget *parent)
     : ModernDialog(UserAuthPlugin::translate("avatar.cropper_title"), parent),
-      m_username(username), m_paths(paths)
+      m_username(username), m_paths(paths), m_users(users)
 {
     setFixedSize(700, 500);
 
@@ -137,7 +138,7 @@ void AvatarCropperDialog::accept() {
         // avatar). The account may write its own record; the core enforces
         // that, so the plugin does not have to.
         QString err;
-        if (!UserAuthPlugin::users()->updateProfile(m_username, QString(), thumbFile, err)) {
+        if (!m_users->updateProfile(m_username, QString(), thumbFile, err)) {
             qWarning() << "[UserAuth] Could not store the avatar:" << err;
         }
     }
@@ -165,7 +166,7 @@ void AvatarCropperDialog::loadHistory() {
         }
     }
 
-    QString currentAvatar = UserAuthPlugin::users()->userInfo(m_username).avatarPath;
+    QString currentAvatar = m_users->userInfo(m_username).avatarPath;
     
     QString metaFile = uploadDir + "/_current_avatar.txt";
     QString originalAvatarPath;

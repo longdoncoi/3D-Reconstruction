@@ -19,11 +19,16 @@ QString attachmentImageDataUrl(const QString &path) {
     const auto cached = cache.constFind(path);
     if (cached != cache.constEnd()) return cached.value();
 
-    const QByteArray bytes =
-        FileUtilities::readAttachment(path, QString::fromLatin1(FileUtilities::AttachmentContext));
+    QString thumbPath = path;
+    thumbPath.replace(QStringLiteral("/Upload/"), QStringLiteral("/Thumbnails/"));
+    QByteArray bytes = FileUtilities::readAttachment(thumbPath, QString::fromLatin1(FileUtilities::ThumbnailContext));
+    if (bytes.isEmpty()) {
+        bytes = FileUtilities::readAttachment(path, QString::fromLatin1(FileUtilities::AttachmentContext));
+    }
     if (bytes.isEmpty()) return {};
 
-    const bool isJpeg = path.endsWith(".jpg") || path.endsWith(".jpeg");
+    const bool isJpeg = path.endsWith(QStringLiteral(".jpg"), Qt::CaseInsensitive)
+                        || path.endsWith(QStringLiteral(".jpeg"), Qt::CaseInsensitive);
     const QString mimeType = isJpeg ? QStringLiteral("image/jpeg") : QStringLiteral("image/png");
     const QString url = QStringLiteral("data:") + mimeType + QStringLiteral(";base64,")
                         + QString::fromLatin1(bytes.toBase64());

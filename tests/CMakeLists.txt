@@ -7,6 +7,21 @@ set(CMAKE_AUTOMOC ON)
 find_package(PCL REQUIRED COMPONENTS common filters io)
 find_package(OpenCV REQUIRED COMPONENTS core)
 
+# Sources compiled into more than one test target. Keeping them in one variable
+# is what stops the two lists from drifting: a target that still lists a file
+# keeps passing while the other silently stops measuring it.
+set(APP_SHELL_SOURCES
+    ../src/app/AppShell.cpp
+    ../src/app/AppShell.h
+)
+set(SENDMAIL_HELPER_SOURCES
+    ../src/modules/SendMailPlugin/MailMessageFormatter.cpp
+    ../src/modules/SendMailPlugin/MailInboxItemFactory.cpp
+)
+set(VIDEO_TRACKER_SOURCES
+    ../src/modules/AIProcessorPlugin/VideoTrackerThread.cpp
+)
+
 # Architecture guard — plugin boundaries + UserManager singleton usage.
 # Encodes the invariants documented in AGENTS.md; runs in milliseconds.
 add_test(NAME TestArchitectureBoundaries
@@ -35,6 +50,23 @@ add_test(NAME TestInterfaceAbiIncremental
                  "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/interface_abi_incremental"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckInterfaceAbiIncremental.cmake")
 
+# Documentation-consistency guard — every machine-checkable number in the
+# architecture docs (ABI surface, PINNED_HEADERS, MIN_MUTANTS, CTest count,
+# coverage snapshot) is re-derived from the tree, so prose cannot drift from
+# the code it claims to describe.
+add_test(NAME TestDocs
+         COMMAND ${CMAKE_COMMAND}
+                 "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckDocs.cmake")
+
+# Agent-action contract — every action advertised in
+# Config/agent_action_manifest.json must be handled by exactly one plugin, and
+# every plugin handler must exist in the manifest (no dead handler).
+add_test(NAME TestAgentActionsContract
+         COMMAND ${CMAKE_COMMAND}
+                 "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckAgentActions.cmake")
+
 # Deploy guard — the ~4.1 GB runtime deploy must decide with stat() only:
 # copy when missing/size-differs/source-newer, never rewrite an up-to-date file.
 add_test(NAME TestDeployRuntime
@@ -55,9 +87,19 @@ add_test(NAME TestArchitectureBoundary COMMAND TestArchitectureBoundary)
 
 # Test ServiceRegistry
 qt_add_executable(TestServiceRegistry TestServiceRegistry.cpp)
-target_include_directories(TestServiceRegistry PRIVATE ../src/include)
+# MutableServiceRegistry is the composition-root write side and lives in
+# src/core (PRIVATE on AppCore) — the test asks for it explicitly.
+target_include_directories(TestServiceRegistry PRIVATE ../src/include ../src/core)
 target_link_libraries(TestServiceRegistry PRIVATE Qt6::Test Qt6::Core)
 add_test(NAME TestServiceRegistry COMMAND TestServiceRegistry)
+
+# Global exception barrier — a slot that throws must not abort the process.
+# Its own main(): the subject under test is the QApplication subclass, while
+# QTEST_MAIN would construct a plain QApplication.
+qt_add_executable(TestGuardedApplication TestGuardedApplication.cpp)
+target_include_directories(TestGuardedApplication PRIVATE ../src/app)
+target_link_libraries(TestGuardedApplication PRIVATE Qt6::Widgets)
+add_test(NAME TestGuardedApplication COMMAND TestGuardedApplication)
 
 # Test PluginDependencyResolver — thứ tự init plugin (deps graph + phase + cycle)
 qt_add_executable(TestPluginDependencyResolver TestPluginDependencyResolver.cpp)
@@ -323,8 +365,7 @@ set_tests_properties(TestShellService PROPERTIES
 # pattern as RECON_PIPELINE_SOURCES) and links AppCore + VTK itself.
 qt_add_executable(TestAppShell
     TestAppShell.cpp
-    ../src/app/AppShell.cpp
-    ../src/app/AppShell.h
+    ${APP_SHELL_SOURCES}
 )
 target_include_directories(TestAppShell PRIVATE
     ../src/include
@@ -356,6 +397,49 @@ target_link_libraries(TestAppShell PRIVATE
 add_test(NAME TestAppShell COMMAND TestAppShell)
 # QTEST_MAIN → QApplication; CI không có desktop → offscreen platform plugin.
 set_tests_properties(TestAppShell PROPERTIES
+    ENVIRONMENT_MODIFICATION "QT_QPA_PLATFORM=set:offscreen")
+
+# Test MainWindow — the shell's tab-panel contract (the panels a plugin looks
+# up by tab id), the translated labels, the menu bar and the shutdown path.
+# MainWindow also lives in the exe target: compile it (and its .ui) into the
+# test, exactly like TestAppShell does for AppShell. AUTOUIC is on globally,
+# and CMAKE_AUTOUIC_SEARCH_PATHS already contains src/app.
+qt_add_executable(TestMainWindow
+    TestMainWindow.cpp
+    ../src/app/MainWindow.cpp
+    ../src/app/MainWindow.h
+    ../src/app/MainWindow.ui
+    ${APP_SHELL_SOURCES}
+)
+target_include_directories(TestMainWindow PRIVATE
+    ../src/include
+    ../src/app
+    ../src/core
+    ../src/services/scene
+    ../src/services/viewer
+    ../src/services/settings
+    ../src/services/shell
+    ../src/services/reconstruction
+    ../src/services/ai
+    ../src/services/mail
+    ${VTK_INCLUDE_DIRS}
+    ${OpenCV_INCLUDE_DIRS}
+    ${PCL_INCLUDE_DIRS}
+    ${onnxruntime_SOURCE_DIR}/include
+)
+target_compile_definitions(TestMainWindow PRIVATE
+    ${VTK_DEFINITIONS}
+    ${PCL_DEFINITIONS}
+    PCL_SILENCE_MALLOC_WARNING=1
+)
+target_link_libraries(TestMainWindow PRIVATE
+    Qt6::Test Qt6::Core Qt6::Widgets Qt6::OpenGLWidgets
+    AppCore
+    ${VTK_LIBRARIES}
+    ${onnxruntime_SOURCE_DIR}/lib/onnxruntime.lib
+)
+add_test(NAME TestMainWindow COMMAND TestMainWindow)
+set_tests_properties(TestMainWindow PROPERTIES
     ENVIRONMENT_MODIFICATION "QT_QPA_PLATFORM=set:offscreen")
 
 # Test Agent Actions
@@ -491,8 +575,7 @@ set_target_properties(TestCrosshairGeometry PROPERTIES UNITY_BUILD OFF)
 # export them) and kept out of the unity build so the exporter can map them.
 qt_add_executable(TestPluginHelpers
     TestPluginHelpers.cpp
-    ../src/modules/SendMailPlugin/MailMessageFormatter.cpp
-    ../src/modules/SendMailPlugin/MailInboxItemFactory.cpp
+    ${SENDMAIL_HELPER_SOURCES}
     ../src/modules/AIAssistantPlugin/AIAttachmentPreviewFactory.cpp
 )
 target_include_directories(TestPluginHelpers PRIVATE
@@ -561,8 +644,7 @@ qt_add_executable(TestPluginUi
     TestPluginUi.cpp
     ../src/modules/SendMailPlugin/SendMailRibbonUI.cpp
     ../src/modules/SendMailPlugin/MailDockWidget.cpp
-    ../src/modules/SendMailPlugin/MailMessageFormatter.cpp
-    ../src/modules/SendMailPlugin/MailInboxItemFactory.cpp
+    ${SENDMAIL_HELPER_SOURCES}
     ../src/modules/SendMailPlugin/MailFilterDialog.cpp
     ../src/modules/SendMailPlugin/MailSettingsDialog.cpp
     ../src/modules/AIAssistantPlugin/AIAssistantRibbonUI.cpp
@@ -570,9 +652,10 @@ qt_add_executable(TestPluginUi
     ../src/modules/AIProcessorPlugin/AIProcessorRibbonUI.cpp
     ../src/modules/AIProcessorPlugin/AITrainDockWidget.cpp
     ../src/modules/AIProcessorPlugin/AIProcessorPlugin.cpp
-    ../src/modules/AIProcessorPlugin/VideoTrackerThread.cpp
+    ${VIDEO_TRACKER_SOURCES}
     ../src/modules/ViewerPlugin/ViewerRibbonUI.cpp
     ../src/modules/ViewerPlugin/ViewerViewModel.cpp
+    ../src/modules/ViewerPlugin/ViewerListUI.cpp
 )
 target_include_directories(TestPluginUi PRIVATE
     ../src
@@ -644,7 +727,7 @@ add_test(NAME TestSecretProtection COMMAND TestSecretProtection)
 qt_add_executable(TestPluginWidgets
     TestPluginWidgets.cpp
     ../src/modules/AIAssistantPlugin/ChatImageViewer.cpp
-    ../src/modules/AIProcessorPlugin/VideoTrackerThread.cpp
+    ${VIDEO_TRACKER_SOURCES}
 )
 target_include_directories(TestPluginWidgets PRIVATE
     ../src
@@ -713,6 +796,22 @@ target_link_libraries(TestViewerLoaders PRIVATE
     AppCore
 )
 add_test(NAME TestViewerLoaders COMMAND TestViewerLoaders)
+
+# Test SceneService — 3-D scene manager, VTK actor lifecycle, point clouds, view settings.
+qt_add_executable(TestSceneService TestSceneService.cpp)
+target_include_directories(TestSceneService PRIVATE
+    ../src/include
+    ../src/services/scene
+    ${OpenCV_INCLUDE_DIRS}
+    ${VTK_INCLUDE_DIRS}
+)
+target_link_libraries(TestSceneService PRIVATE
+    Qt6::Test Qt6::Core
+    ${OpenCV_LIBS}
+    ${VTK_LIBRARIES}
+    AppCore
+)
+add_test(NAME TestSceneService COMMAND TestSceneService)
 
 # ── UTF-8 source literals in the tests ───────────────────────────────────────
 # The test sources contain Vietnamese literals (mail previews, user-facing

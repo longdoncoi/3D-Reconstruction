@@ -42,6 +42,10 @@ logger = logging.getLogger("ai_assistant.rag.index")
 EXCLUDED_DIRS = {
     ".qtcreator", ".cache", "Cache", "runs", "Dicom", "Predict", "3DModels",
     "Dataset", "logs", ".github", ".prompts", ".review", ".tasks", "scripts",
+    "3DRecontruction", "3drecontruction", "2DImages", "2dimages",
+    "Upload", "upload", "Thumbnails", "thumbnails",
+    "tests", "evals",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".agents", ".codex",
 }
 #: The source-ish files the project walk indexes.
 SCANNABLE_EXTS = {".cpp", ".h", ".py", ".md", ".cmake", ".jpg", ".jpeg", ".png", ".webp"}

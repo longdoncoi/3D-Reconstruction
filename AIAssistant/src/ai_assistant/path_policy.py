@@ -50,6 +50,9 @@ def is_blocked_dir(name: str) -> bool:
     returned the repository's git configuration — remote URL and credential
     helper included — while ``read_file(".git/config")`` was refused.
     """
+    lowered = name.lower()
+    if lowered.startswith("build"):
+        return True
     return name.lower() in _BLOCKED_DIR_NAMES
 
 

@@ -67,6 +67,7 @@ private slots:
     void videoTrackerStopsCleanly();
     void videoTrackerContainsAThrowingInference();
     void videoTrackerReportsAFailedInference();
+    void videoTrackerTerminatesAThreadThatCannotStopCooperatively();
 };
 
 void TestPluginWidgets::chatImageViewerShowsASealedAttachment()
@@ -199,8 +200,9 @@ void TestPluginWidgets::videoTrackerReportsAFailedInference()
         QSKIP("this OpenCV build has no usable video backend — the clip cannot be written");
     }
 
-    // The base mock returns an EMPTY image from runTracking().
+    // The base mock returns an EMPTY image from runTracking() when asked to.
     PluginMock::AIService aiService;
+    aiService.returnEmpty = true;
     VideoTrackerThread thread(&aiService, clip);
 
     QSignalSpy errors(&thread, &VideoTrackerThread::errorOccurred);
@@ -215,6 +217,39 @@ void TestPluginWidgets::videoTrackerReportsAFailedInference()
     QTRY_VERIFY2(finished.count() > 0, "the session never ended");
 
     QVERIFY(thread.stopAndWait(5000));
+}
+
+void TestPluginWidgets::videoTrackerTerminatesAThreadThatCannotStopCooperatively()
+{
+    // The last-resort path of the join. A thread stuck inside the inference
+    // backend cannot observe m_stopRequested: the cooperative stop waits out
+    // its timeout and MUST fall back to terminate(). Without the fallback the
+    // thread outlives the plugin and calls into a destroyed IAIService — the
+    // exact use-after-free the bounded wait exists to prevent.
+    //
+    // The join budget here is deliberately shorter than the inference, so the
+    // cooperative path cannot succeed. The destructor joins again with the
+    // default 15 s, so a failed assertion still tears the thread down.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString clip = dir.filePath(QStringLiteral("clip.avi"));
+    if (!writeSyntheticClip(clip) || !clipIsReadable(clip)) {
+        QSKIP("this OpenCV build has no usable video backend — the clip cannot be written");
+    }
+
+    PluginMock::AIService aiService;
+    aiService.inferenceDelayMs = 3000; // far longer than the 100 ms join budget
+    VideoTrackerThread thread(&aiService, clip);
+    thread.start();
+
+    // Give the loop time to enter runTracking() and park there.
+    QTest::qWait(200);
+    QVERIFY(thread.isRunning());
+
+    QVERIFY2(!thread.stopAndWait(100),
+             "stopAndWait() reported a cooperative stop while the inference was still running");
+    QVERIFY2(!thread.isRunning(),
+             "the thread survived the terminate() fallback — it would outlive its IAIService");
 }
 
 QTEST_MAIN(TestPluginWidgets)

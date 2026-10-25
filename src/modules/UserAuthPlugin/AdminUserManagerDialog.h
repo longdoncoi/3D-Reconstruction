@@ -6,11 +6,13 @@
 class QTableWidget;
 class QPushButton;
 class QLabel;
+class IUserManager;
 
 class AdminUserManagerDialog : public QWidget {
     Q_OBJECT
 public:
-    explicit AdminUserManagerDialog(QWidget *parent = nullptr);
+    /// `users` is injected by the owner (registry-resolved). See AboutDialog.
+    explicit AdminUserManagerDialog(IUserManager *users, QWidget *parent = nullptr);
 
 private slots:
     void refreshTable();
@@ -32,6 +34,7 @@ private:
     QPushButton  *m_editBtn;
     QPushButton  *m_deleteBtn;
     QPushButton  *m_revokeBtn;
+    IUserManager *m_users = nullptr;
 };
 
 #endif // ADMIN_USER_MANAGER_DIALOG_H

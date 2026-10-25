@@ -163,9 +163,25 @@ concrete singletons or exe classes. Conventions:
 - AI model loading is owned by AppCore `AIModelLoadService`
   (`IAIModelLoadService`), not by `AIProcessorPlugin`: an AppCore worker can
   outlive or be cancelled during plugin unload without executing plugin code.
+  The synchronous loaders are **not** on the plugin-facing `IAIService`; they
+  live on the internal `IAIModelAdmin` seam (`src/services/ai`, PRIVATE) so a
+  plugin cannot freeze the GUI thread with a direct load. Plugins trigger
+  through `IAIModelLoadService` and observe `is*Ready()`.
+- **`IAppContext::services()` is read-only** (`const ServiceRegistry*`). The
+  write side (`registerService`/`unregister`/`clear`) is `protected` and only
+  re-exposed by `MutableServiceRegistry` in `src/core`, which is PRIVATE on
+  AppCore and owned by the composition root. A plugin cannot unregister a
+  service and install a replacement; architecture rule 13 rejects the
+  `const_cast` bypass too.
 - Translation goes through `ILanguageService` / `IAppContext::translate()`;
   the `LM`/`LM_TR` macros are gone. `UserAuthPlugin::translate()` is a
   module-scoped facade over the registry-bound service.
+- **A dialog resolves its services through its constructor.** The user-auth
+  dialogs used to read `UserAuthPlugin::users()`, a static the plugin bound in
+  `initialize()`; constructing one therefore required a live plugin instance
+  and the binding was process-global. They now take `IUserManager*` as a
+  constructor parameter (the plugin resolves it from the registry), so a
+  dialog is constructible — and testable — on its own.
 - `UserManager::instance()` appears in exactly one production site: the
   AppShell registration (composition root). Everything else — plugins,
   dialogs, AppCore services — resolves `IUserManager` from the registry
@@ -294,6 +310,12 @@ reach them needs a barrier.
   through it; architecture-guard rule 12 requires *one guard per raw
   `m_processor->…` call* in `AIService.cpp`, so a new entry point cannot
   forget the guard.
+- **The GUI thread has one global barrier**: `GuardedApplication`
+  (`src/app/GuardedApplication.h`) overrides `QApplication::notify()` and
+  contains an exception thrown by any slot/timer/queued call. It complements
+  the worker barriers above; it does not replace them (worker threads never
+  pass through `notify()`). `TestGuardedApplication` posts a throwing slot
+  through the event loop and fails the run if the process aborts.
 - **A thread entry point** wraps its body and reports the failure through a
   signal (`VideoTrackerThread::run()` emits `errorOccurred` +
   `finishedTracking`). An exception that escapes is a process abort.
@@ -345,6 +367,17 @@ reach them needs a barrier.
   the report and failures look empty. First-party targets compile with
   `/W4 /WX` (`/external:anglebrackets /external:W0` keeps SDK headers out of
   the stream): a new warning fails the build instead of accumulating.
+- **The docs are part of the contract.** `TestDocs` (`tests/CheckDocs.cmake`)
+  re-derives every machine-checkable number in `Docs/ARCHITECTURE_SRC.md` and
+  `tests/README.md` from the tree (ABI surface count, `PINNED_HEADERS`,
+  `MIN_MUTANTS`, the CTest count, the coverage snapshot) and fails on drift.
+  Adding or removing a CTest therefore means updating the `N/N` row in
+  `Docs/ARCHITECTURE_SRC.md` §6.1 in the same change, and the coverage snapshot
+  has to match the last gate run.
+- **Every agent action has exactly one owner.** `TestAgentActionsContract`
+  (`tests/CheckAgentActions.cmake`) cross-checks
+  `Config/agent_action_manifest.json` against the plugin handlers: an action
+  that no plugin handles and a handler that no action declares both fail.
 - Guard-layer C++ changes (`src/core/Plugin*`, `SecretVault`, `UserManager`,
   `AppShell`, chat-session/settings/shell services): run
   `python tests/coverage_gate.py` (measured floors; Release must ship PDBs —

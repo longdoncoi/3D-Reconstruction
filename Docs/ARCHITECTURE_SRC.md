@@ -14,7 +14,7 @@
 | # | Gate | Lệnh | Chứng minh điều gì |
 |---|------|------|-------------------|
 | 1 | Ranh giới kiến trúc | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | 12 nhóm luật: plugin↔service, service↔app, confinement của singleton, khớp heavy/light PCH, `src/utils` không heavy SDK, `waitForFinished()` phải có timeout, event filter phải gỡ được, không dò cửa sổ shell, blocking I/O không qua thread pool, include path của plugin không chứa `src/core`, **mỗi lời gọi inference phải đi qua exception guard** |
-| 2 | Bộ test | `ctest --test-dir build -C Release --output-on-failure` | Hành vi quan sát được của toàn bộ hợp đồng đã test (44 CTest entry: 40 executable + 4 CMake-script test) |
+| 2 | Bộ test | `ctest --test-dir build -C Release --output-on-failure` | Hành vi quan sát được của toàn bộ hợp đồng đã test (49 CTest entry: 45 executable + 4 CMake-script test) |
 | 3 | Coverage gate | `python tests/coverage_gate.py` | Mọi TU đo được có floor riêng; không TU nào "thoát" khỏi phép đo; **floor không được hạ** |
 | 4 | Mutation check | `python tests/mutation_check.py` | Mọi quyết định bảo vệ (guard) đã được *ghim*: đảo quyết định → test phải đỏ (71 mutant) |
 
@@ -46,7 +46,7 @@ Chi tiết cách chạy, biến môi trường và bảng số đo: `tests/READM
 | # | Tiêu chí | Lệnh / ngưỡng | Lớp lỗi còn lọt qua? | Bằng chứng chống lọt |
 |---|----------|---------------|----------------------|----------------------|
 | **C1** | 4 gate xanh | §1 — cả 4 lệnh exit 0 | *Một gate chết **im lặng*** | Tiền kiểm tự-mục tiêu của gate 4 (§1): mỗi mutant phải trỏ vào file tồn tại với anchor đúng một lần → sai là **đỏ ngay** |
-| **C2** | Không TU nào thoát khỏi phép đo | Mọi `.cpp` trong `src/` (trừ 5 mục miễn trừ có lý do) xuất hiện trong báo cáo coverage | *Code **header-only*** — không phải TU nên gate 3 không thấy | §4.9 — `PINNED_HEADERS`: mọi header mang quyết định đều phải có ≥ 1 mutant, gate 4 từ chối khi thiếu |
+| **C2** | Không TU nào thoát khỏi phép đo | Mọi `.cpp` trong `src/` (trừ 4 mục miễn trừ có lý do) xuất hiện trong báo cáo coverage | *Code **header-only*** — không phải TU nên gate 3 không thấy | §4.9 — `PINNED_HEADERS`: mọi header mang quyết định đều phải có ≥ 1 mutant, gate 4 từ chối khi thiếu |
 | **C3** | Floor không bao giờ giảm | Mỗi file đo được có floor suy ra từ giá trị đo (làm tròn xuống) **và** ≥ baseline đã commit | *Một quyết định quan trọng nằm trong file có coverage cao* | coverage đo **dòng**, không đo **quyết định** → gate 4 ghim quyết định |
 | **C4** | Nợ coverage được ghi nhận tường minh | File 0 % nằm trong bảng nợ (README) + in ra mỗi lần chạy | *Một lớp lỗi sống dưới một guard đã ghim ở **một thể hiện*** | §4.8 + §4.10 + §4.12 — mutant theo **lớp** quyết định, không theo một hàm |
 | **C5** | Tài liệu khớp code | `AGENTS.md` + `tests/README.md` + file này mô tả đúng trạng thái đo được | *Tài liệu tự đánh giá mình* | Số liệu trong tài liệu **lấy từ output của gate**, không viết tay (§6) |
@@ -77,13 +77,15 @@ còn lại** — không phải một mutant đại diện.
 | lớp | file .cpp | dòng đo được | tỉ lệ |
 |-----|-----------|----------------|--------|
 | `src/core` (kernel + guard) | 13 | 1 258 / 1 273 | 98,8 % |
-| `src/app` (composition root) | 1 | 69 / 69 | 100 % |
-| `src/services` | 41 | 2 606 / 4 274 | 61,0 % |
+| `src/app` (composition root) | 2 | 192 / 243 | 79,0 % |
+| `src/services` | 40 | 2 678 / 4 273 | 62,7 % |
 | `src/utils` (tiện ích dùng chung) | 9 | 390 / 458 | 85,2 % |
-| `src/modules` (lớp plugin) | 35 | 2 482 / 4 432 | 56,0 % |
-| **tổng** | **99** | **6 805 / 10 506** | **64,8 %** |
+| `src/modules` (lớp plugin) | 35 | 2 725 / 4 432 | 61,5 % |
+| **tổng** | **99** | **7 243 / 10 679** | **67,8 %** |
 
-`src/services` tăng từ 40 lên 41 translation unit ở đợt §4.13:
+`src/services` có 41 translation unit **nguồn** nhưng 40 file **đo được**:
+`PanStyle.cpp` chỉ là VTK boilerplate (`vtkStandardNewMacro`), nằm trong
+`_NOT_MEASURABLE` của `tests/coverage_gate.py`. Ở đợt §4.13,
 `AIInferenceGuard.cpp` là file mới (một chỗ duy nhất bọc exception của cả ba
 đường inference), không phải một file cũ được đo lại.
 
@@ -119,7 +121,8 @@ inference dựng và đóng **hộp thoại cảnh báo thật**, kéo `src/util
 commit.
 
 Đợt §4.13 (đóng lớp "inference thất bại bị báo thành công") đo lại toàn bộ
-`src/`: **99 file, 6 805 / 10 506 dòng = 64,8 %**. Các file có quyết định mới
+`src/`: **99 file đo được, 7 243 / 10 679 dòng = 67,8 %** (`MainWindow.cpp` gia
+nhập phép đo cùng `TestMainWindow`). Các file có quyết định mới
 đều **tăng**, vì test mới đi qua đúng nhánh vừa được thêm:
 
 | file | trước | sau | vì sao |
@@ -364,6 +367,18 @@ cướp service mà composition root đã cài. Nay lần **đầu tiên thắng
 đăng ký sau bị từ chối, service cũ giữ nguyên. Mutant "duplicate service
 registration replaces the existing service" phải làm đỏ `TestServiceRegistry`.
 
+**Bề mặt plugin là read-only (đóng 2026-10).** `IAppContext::services()` trả
+`const ServiceRegistry*`; lớp cơ sở chỉ còn `get()/getRequired()/has()`, còn
+`registerService()/unregister()/clear()` là `protected` và chỉ được mở lại qua
+`MutableServiceRegistry` — một header trong `src/core`, tức là **PRIVATE** trên
+AppCore. Trước đó một plugin có thể `unregister<T>()` rồi
+`registerService<T>(&fake)`: luật "lần đầu thắng" bị vô hiệu ngay từ phía
+plugin. `TestServiceRegistry::testWriteSideIsCompositionRootOnly` kiểm bằng
+SFINAE rằng write side **không biểu diễn được** qua `ServiceRegistry`; mutant
+"the ServiceRegistry write side is public for every consumer" phải làm đỏ nó.
+Rule 13 của guard chặn thêm đường `const_cast` và mọi lời gọi
+`services()->registerService/unregister/clear` trong `src/modules/**`.
+
 ### 4.5 Ranh giới plugin: từ regex của guard → **compiler** (đã đóng)
 
 Trước đây ranh giới "plugin chỉ được include interface" được **regex** của
@@ -399,8 +414,9 @@ guard kiểm *include path* của từng plugin: không được có `src/core`.
 làm đỏ `TestArchitectureBoundaries`.
 
 Hệ quả phụ đáng kể: bề mặt ABI của plugin **bằng đúng một thư mục**
-(`src/include` + `src/utils`), nên hash ABI (giờ gồm 39 file) và ranh giới đều
-lấy từ cùng một nguồn sự thật.
+(`src/include` + `src/utils`), nên hash ABI (giờ gồm 45 file: 35 header trong
+`src/include` + 10 header trong `src/utils`) và ranh giới đều lấy từ cùng một
+nguồn sự thật.
 
 ### 4.6 `IUserManager` là AGGREGATE, không phải hợp đồng để phụ thuộc (đã đóng)
 
@@ -518,7 +534,8 @@ nhưng không ai bắt buộc phải làm thế. Hệ quả: `src/utils/Blocking
    header-only mang quyết định phải có **≥ 1 mutant**; thiếu ⇒ gate 4 **đỏ**
    với danh sách file thiếu. Danh sách hiện tại:
    `src/include/IPlugin.h`, `src/include/ServiceRegistry.h`,
-   `src/services/mail/MailThreadGuard.h`, `src/utils/BlockingCall.h`.
+   `src/include/ChatMessage.h`, `src/services/mail/MailThreadGuard.h`,
+   `src/utils/BlockingCall.h`, `src/app/GuardedApplication.h`.
 2. **Gate 4 tự kiểm mục tiêu của mình** trước khi rebuild bất cứ thứ gì:
    mỗi mutant phải trỏ vào file **tồn tại** với anchor **đúng một lần**.
    Sai ⇒ **đỏ ngay** với danh sách mutant hỏng.
@@ -581,6 +598,17 @@ rào của `blocking::run`) + **1 mutant "planted"** cho luật 12 + 3 test mớ
 (`TestAIService::anInferenceExceptionIsContained`,
 `TestAIService::aDetectionExceptionIsContained`,
 `TestPluginWidgets::videoTrackerContainsAThrowingInference`).
+
+**Nửa còn lại: GUI thread (đóng 2026-10).** Các rào trên chỉ phủ *worker
+thread* và các entry point inference. Một slot GUI bất kỳ — timer, queued
+connection, `QMetaObject::invokeMethod` — vẫn có thể ném và đi thẳng tới
+`std::terminate()`. `src/app/GuardedApplication.h` override
+`QApplication::notify()` và chứa exception ngay tại **một cửa duy nhất** mà
+mọi event GUI đi qua; event được coi là đã xử lý (`return true`) để Qt không
+đẩy tiếp cho widget cha và chạy lại đúng đoạn code hỏng. `TestGuardedApplication`
+là một `main()` riêng: nó post một slot ném qua event loop và **sống sót** —
+nếu rào mất, tiến trình abort (0xC0000409) và CTest đỏ. Mutant
+"GuardedApplication: a throwing slot aborts the process" phải làm đỏ nó.
 
 ### 4.11 `blocking::run`: hợp đồng hoàn tất thay vì "may mắn" (đã đóng 2026-10-22)
 
@@ -685,6 +713,49 @@ Bài học: một guard chỉ thật sự đóng khi **quyết định thất b�
 tới nơi tiêu thụ nó**. Guard nào "trả về giá trị an toàn thay vì báo lỗi" thì
 phải kèm một cờ — và cờ đó phải có **đúng một** nơi tiêu thụ.
 
+### 4.14 Loader đồng bộ không còn trên `IAIService` (đã đóng 2026-10)
+
+`IAIService` từng phơi ba loader `loadDetectionModel` / `loadSegmentationModel`
+/ `loadTrackingModel`. Chúng **blocking** (tạo ONNX session), và hợp đồng đúng
+đã có sẵn: `IAIModelLoadService` chạy load trên worker do AppCore sở hữu. Nhưng
+một plugin vẫn *biểu diễn được* lời gọi đồng bộ trực tiếp — đúng lỗi mà §4.12
+đã đóng cho inference, chỉ ở đường load.
+
+Đã đóng bằng kiểu: loader chuyển sang `IAIModelAdmin` trong
+`src/services/ai` (PRIVATE trên AppCore); `AIService` implement cả hai,
+`AIModelLoadService` nhận `IAIModelAdmin*`. Plugin chỉ còn
+`IAIModelLoadService` (trigger) + `is*Ready()` (quan sát). Rule 14 của guard
+cấm `IAIService.h` khai báo lại `load*Model`, và mutant "planted: IAIService
+exposes a synchronous model loader to plugins" phải làm đỏ
+`TestArchitectureBoundaries`.
+
+### 4.15 Giải mã ảnh đính kèm và thumbnail in-memory (đã đóng 2026-10)
+
+Trước đây tầng hiển thị tin nhắn (`ChatMessageRenderer`) và tiện ích file chỉ hỗ trợ nạp thumbnail dạng file ảnh thông thường trên đĩa. Khi hệ thống áp dụng niêm phong at-rest (AES-256-GCM, ADR 0031), ảnh đính kèm và thumbnail lưu dưới dạng phong bì mã hoá `enc:v1:`. Nếu giải mã bằng cách ghi file plaintext tạm ra đĩa, dữ liệu bí mật sẽ bị rò rỉ.
+
+Đã đóng hoàn toàn:
+* `FileUtilities::loadThumbnailPixmap(thumbPath)` nạp trực tiếp qua `readAttachment()` với ngữ cảnh `ThumbnailContext`, giải mã trong RAM và nạp thành `QPixmap` mà không ghi đĩa.
+* `ChatMessageRenderer::attachmentImageDataUrl()` giải mã phong bì trực tiếp trong bộ nhớ để tạo base64 Data URL nhúng vào view HTML.
+* Được ghim bởi `TestUtilsLayer` (`processAttachmentSealsTheStoredFiles`).
+
+### 4.16 SceneService kiểm thử cô lập chế độ headless (đã đóng 2026-10)
+
+Trước đây `SceneService` phụ thuộc cứng vào `QVTKOpenGLNativeWidget` và VTK RenderWindow hợp lệ trong constructor. Trong môi trường CI hoặc unit test không có màn hình/GPU thật (headless), việc khởi tạo `SceneService` gây segmentation fault / crash khi truy cập con trỏ null.
+
+Đã đóng:
+* Constructor của `SceneService` cho phép truyền widget null (`SceneService(nullptr, nullptr)`).
+* Toàn bộ các luồng thao tác: `resetToSingleRenderer`, `setupDicomRenderers`, `setupCrosshairInteractor`, `applyViewSettings`, `setPointCloudData`, `loadImageActor`, `clear*` đều được bọc null-guard chặt chẽ đối với `m_vtkWidget` và `renderWindow()`.
+* Bổ sung mục test CTest mới `#49: TestSceneService` (100% pass) kiểm chứng toàn bộ vòng đời đối tượng 3D, point cloud, camera, cấu hình hiển thị trong môi trường headless mà không cần GPU.
+
+### 4.17 Vòng đời dỡ nạp plugin Qt và Hợp đồng Zero-Leak QObject (ADR-0032, đã đóng 2026-10)
+
+Qt framework cố định thư viện nạp động thông qua cờ `QLibrary::PreventUnloadHint` nhằm bảo vệ vùng nhớ RTTI, vtable và hệ thống meta-object toàn cục không bị sập (`0xC0000005`) khi unmap thư viện. Do đó mã nhị phân `.dll` vẫn tồn tại trong không gian địa chỉ tiến trình.
+
+Kiến trúc đã đóng đinh hợp đồng tách biệt giữa vòng đời ánh xạ nhị phân và vòng đời thành phần logic:
+* Phân tầng 2 pha giải phóng: Pha 1 dỡ sạch đồng bộ toàn bộ widget UI (`IPlugin::cleanup()`), Pha 2 huỷ root component và đếm số lượng release (`PluginHost::shutdown()`).
+* Quy chuẩn hoá thành văn bản kiến trúc chính thức: `Docs/ADR_PLUGIN_UNLOAD_LIFECYCLE.md` (ADR-0032).
+* Được ghim và kiểm chứng tự động bởi `TestPluginSmoke`: cây widget của host shell sau `cleanup()` phải chứa **0** đối tượng của plugin.
+
 ## 5. Nợ còn lại (có đo, chưa xử lý)
 
 Xem bảng "coverage debt" trong `tests/README.md` — mỗi dòng là một file chưa
@@ -702,12 +773,8 @@ cũng phải ghi** — không có trạng thái "không biết".
 | Lịch sử chat (`chat_sessions_<user>.json`) | **Đã niêm phong** | `SecretVault` (DPAPI CurrentUser trên Windows); file cũ dạng plaintext vẫn đọc được và được seal lại ở lần `save()` kế tiếp |
 | Khoá licence, mật khẩu, SMTP credential | **Đã niêm phong** | `SecretVault` (`enc1:`) |
 | **Khoá API của nhà cung cấp AI** | **Đã niêm phong** | `UserSettingsStore::secretKeys()` — khoá nằm trong namespace `secret_`, mã hoá bằng `SecretVault`; bản plaintext cũ được dọn khi nạp |
-| Ảnh đính kèm & thumbnail (`Upload/`, `Thumbnails/`) | **Đã niêm phong** | ADR 0031 — AES-256-GCM bằng **cùng key at-rest** mà dịch vụ AI dùng, nên cả hai tiến trình đọc được file đã mã hoá. Envelope khớp byte-for-byte giữa hai ngôn ngữ, ghim bằng **vector chéo**: mỗi bên giữ output của bên kia |
-| **Trên POSIX** (`SecretVault`, `AtRestCipher`) | **KHÔNG có OS crypto** | Không có backend mã hoá cho POSIX trong app này: `encrypt()` ghi `plain:<giá trị>` kèm cảnh báo. Đây là giới hạn nền tảng **đã biết**, không phải bí mật: app C++ nhắm Windows (DPAPI), còn state của dịch vụ AI được niêm phong bằng `cryptography` trên **mọi** nền tảng |
-
-Hai mutant trong `tests/mutation_check.py` ghim hành vi của lớp chat: bỏ bước
-seal khi ghi, và bỏ bước unseal khi đọc. Cả hai đều phải làm đỏ
-`TestChatSessionManager`.
+| Ảnh đính kèm & thumbnail (`Upload/`, `Thumbnails/`) | **Đã niêm phong** | ADR 0031 — AES-256-GCM bằng **cùng key at-rest** mà dịch vụ AI dùng; giải mã hoàn toàn in-memory (§4.15) |
+| **Trên POSIX** (`SecretVault`, `AtRestCipher`) | **Giới hạn nền tảng (documented)** | C++ app nhắm Windows Native (DPAPI + CNG); trên POSIX fallback lưu `plain:` có cảnh báo tường minh. AI Python service sở hữu cryptography độc lập trên mọi OS |
 
 ### 5.2 Vault fail-closed (đã đóng)
 
@@ -723,10 +790,33 @@ giữ nguyên giá trị đang lưu (`UserSettingsStore::storeSecret`,
 định có tên, `setProtectionFailureForTesting()` là seam để ghim hành vi
 fail-closed của các caller bằng mutation.
 
-### 5.3 Nợ còn lại đã ghi nhận
+### 5.3 Nợ đã giải quyết & các quyết định kiến trúc
 
-Nợ "ảnh đính kèm" được ghi ở đây để không biến mất: nó cần một thay đổi ở
-tầng hiển thị, không phải một bước bọc file.
+* **Nợ "ảnh đính kèm & thumbnail in-memory":** Đã giải quyết triệt để ở §4.15.
+* **Nợ "SceneService testability":** Đã giải quyết triệt để ở §4.16.
+* **Nợ "QPlugin unload lifecycle":** Đã giải quyết và chuẩn hoá tại ADR-0032 (§4.17).
+
+#### `IAIAssistantService` là aggregate — **quyết định**, không phải nợ
+
+`IUserManager` đã được tách thành các hợp đồng hẹp (§4.6) vì nó có **năm**
+consumer độc lập, mỗi consumer chỉ dùng một phần bề mặt. `IAIAssistantService`
+thì khác: nó có **đúng một** consumer (`AIAssistantPlugin`), và consumer đó
+dùng **toàn bộ** bề mặt — vòng đời server (`startServer`/`stopServer`/
+`isServerRunning`), phiên chat (`newChat`/`loadSession`/`renameSession`/
+`deleteSession`/`getSessions`/`currentSessionId`), gửi/nhận (`sendMessage`,
+`sendMessageToSession`, `getHistory`, `historyChanged`, `sessionsChanged`),
+lỗi (`errorOccurred`), và cả nhánh agent (`executeAgentTask`/
+`approveAgentAction`/`rejectAgentAction`/`reportUiActionResult` cùng bốn tín
+hiệu agent). Một `IAIAssistantChatService` + `IAIAssistantServerService` sẽ
+chỉ tạo ra hai interface mà cùng một lớp cài đặt cả hai, cùng một caller
+resolve cả hai — tức là thêm bề mặt ABI (và một lần bump `kApiVersion`) mà
+**không** cắt được phụ thuộc nào.
+
+Quy tắc để đổi quyết định này (ghi lại để lần sau không phải suy lại): tách
+khi và chỉ khi có **consumer thứ hai** chỉ cần một nửa bề mặt — ví dụ một
+plugin "trạng thái server" chỉ đọc `serverStatus`/`serverStatusChanged`, hoặc
+một cửa sổ lịch sử chỉ cần danh sách phiên. Lúc đó phép tách có một người
+hưởng lợi đo được, và điều kiện "một caller dùng cả hai" không còn đúng.
 
 ## 6. Cách đo lại
 
@@ -749,9 +839,9 @@ Bốn gate đều chạy offline (không tải ONNX Runtime 323 MB, không cài 
 | bước | lệnh | phải xanh | nếu đỏ thì nghĩa là gì |
 |------|-------|-----------|-----------------------|
 | 1 | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | exit 0 | một luật ranh giới bị vi phạm |
-| 2 | `ctest --test-dir build -C Release --output-on-failure` | 44/44 | một hợp đồng quan sát được bị phá |
-| 3 | `python tests/coverage_gate.py` | "98 file(s) at or above their floors" | một file đã **thoát** khỏi phép đo, hoặc coverage **tụt** dưới floor |
-| 4 | `python tests/mutation_check.py` | "71/71 killed, 0 survived, 0 stale, 0 invalid" | một quyết định bảo vệ **không còn được ghim** |
+| 2 | `ctest --test-dir build -C Release --output-on-failure` | 49/49 | một hợp đồng quan sát được bị phá |
+| 3 | `python tests/coverage_gate.py` | "99 file(s) at or above their floors" | một file đã **thoát** khỏi phép đo, hoặc coverage **tụt** dưới floor |
+| 4 | `python tests/mutation_check.py` | "78/78 killed, 0 survived, 0 stale, 0 invalid" | một quyết định bảo vệ **không còn được ghim** |
 
 Bước 4 **tự kiểm mục tiêu của mình trước khi rebuild** (file tồn tại, anchor
 đúng một lần, header đã ghim) — nên nó đỏ **ngay** với danh sách mutant hỏng,

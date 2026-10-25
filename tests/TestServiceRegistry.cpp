@@ -1,6 +1,10 @@
 #include <QTest>
 #include <QRegularExpression>
 #include "ServiceRegistry.h"
+#include "MutableServiceRegistry.h"
+
+#include <type_traits>
+#include <utility>
 
 class DummyService1 {
 public:
@@ -26,12 +30,23 @@ public:
     bool isReady() override { return true; }
 };
 
+// Detects whether a registry type exposes the write side to a consumer. The
+// plugin-facing ServiceRegistry must answer false; only the composition-root
+// MutableServiceRegistry may answer true.
+template<typename Registry, typename = void>
+struct CanRegisterService : std::false_type {};
+
+template<typename Registry>
+struct CanRegisterService<Registry, std::void_t<decltype(
+    std::declval<Registry&>().template registerService<DummyService1>(
+        static_cast<DummyService1*>(nullptr)))>> : std::true_type {};
+
 class TestServiceRegistry : public QObject {
     Q_OBJECT
 
 private slots:
     void testRegisterAndGet() {
-        ServiceRegistry registry;
+        MutableServiceRegistry registry;
         DummyServiceImpl1 impl1;
         DummyServiceImpl2 impl2;
 
@@ -48,13 +63,23 @@ private slots:
     }
 
     void testGetUnregistered() {
-        ServiceRegistry registry;
+        MutableServiceRegistry registry;
         DummyService1* svc1 = registry.get<DummyService1>();
         QVERIFY(svc1 == nullptr);
     }
 
+    // The capability boundary: a plugin receives IAppContext::services() as a
+    // const ServiceRegistry*, so registration/removal is not expressible for
+    // it. Only the composition root's MutableServiceRegistry exposes the
+    // write side. Inverting the access level of the base class is a real
+    // capability leak, and this test is what notices it.
+    void testWriteSideIsCompositionRootOnly() {
+        QVERIFY(!CanRegisterService<ServiceRegistry>::value);
+        QVERIFY(CanRegisterService<MutableServiceRegistry>::value);
+    }
+
     void testHasAndUnregister() {
-        ServiceRegistry registry;
+        MutableServiceRegistry registry;
         DummyServiceImpl1 impl1;
         QVERIFY(!registry.has<DummyService1>());
         registry.registerService<DummyService1>(&impl1);
@@ -65,7 +90,7 @@ private slots:
     }
 
     void testClear() {
-        ServiceRegistry registry;
+        MutableServiceRegistry registry;
         DummyServiceImpl1 impl1;
         DummyServiceImpl2 impl2;
         registry.registerService<DummyService1>(&impl1);
@@ -76,14 +101,14 @@ private slots:
     }
 
     void testNullRegistrationIsRejected() {
-        ServiceRegistry registry;
+        MutableServiceRegistry registry;
         QTest::ignoreMessage(QtWarningMsg, "ServiceRegistry: refusing to register null service \"test.DummyService1\"");
         registry.registerService<DummyService1>(nullptr);
         QVERIFY(!registry.has<DummyService1>());
     }
 
     void testDuplicateRegistrationIsRefused() {
-        ServiceRegistry registry;
+        MutableServiceRegistry registry;
         DummyServiceImpl1 first;
         DummyServiceImpl1 second;
         registry.registerService<DummyService1>(&first);
@@ -97,7 +122,7 @@ private slots:
     }
 
     void testGetRequiredReturnsRegistered() {
-        ServiceRegistry registry;
+        MutableServiceRegistry registry;
         DummyServiceImpl1 impl1;
         registry.registerService<DummyService1>(&impl1);
         QCOMPARE(registry.getRequired<DummyService1>(), static_cast<DummyService1*>(&impl1));
