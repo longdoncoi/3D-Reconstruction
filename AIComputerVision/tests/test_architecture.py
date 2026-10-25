@@ -45,7 +45,7 @@ ALLOWED_IMPORTS: dict[str, frozenset[str]] = {
     "logging_setup": frozenset(),
     "manifest": frozenset({"config", "errors", "fsio"}),
     "metrics": frozenset(),
-    "onnx_contract": frozenset({"checks", "config", "dataset", "errors", "preflight"}),
+    "onnx_contract": frozenset({"checks", "config", "dataset", "errors"}),
     "preflight": frozenset({"checks", "config", "dataset"}),
     "progress": frozenset(),
     "trainer": frozenset(

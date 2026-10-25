@@ -102,8 +102,8 @@ class Mutant:
 #: same commit — so the diff always shows the decision. (Same rule as the
 #: Python service's ``MIN_MUTANTS``, ADR 0032, and the C++ gate's.)
 #:
-#: Measured 2026-10: 107 mutants, 107 killed, 0 survived, 0 stale.
-MIN_MUTANTS = 107
+#: Measured 2026-10-25: 126 mutants, 126 killed, 0 survived, 0 stale.
+MIN_MUTANTS = 126
 
 MUTANTS: tuple[Mutant, ...] = (
     # ── Provenance: the skip rule is fail-closed, field by field ───────────
@@ -124,6 +124,18 @@ MUTANTS: tuple[Mutant, ...] = (
         "if recorded != requested:",
         "if False:",
         "hyper-parameter comparison removed from --skip-unchanged",
+    ),
+    Mutant(
+        "cvtrain/gate.py",
+        '    if entry.get("export_args") != export_args:\n        return False',
+        "    if False:\n        return False",
+        "the export request is not compared (another opset passes for the published artifact)",
+    ),
+    Mutant(
+        "cvtrain/gate.py",
+        "    if cfg.batch == AUTO_BATCH:\n        return False",
+        "    if False:\n        return False",
+        "an automatic batch is skipped although the next run's batch is unknown",
     ),
     Mutant(
         "cvtrain/gate.py",
@@ -194,6 +206,12 @@ MUTANTS: tuple[Mutant, ...] = (
         "return raw",
         "the device request is not normalised (two spellings of one request look different)",
     ),
+    Mutant(
+        "cvtrain/config.py",
+        '        elif component.isdigit():\n            component = f"cuda:{int(component)}"',
+        "        elif component.isdigit():\n            component = component",
+        "a bare GPU index is not written in the framework's spelling (--device 0 never skips)",
+    ),
     # ── Resuming an interrupted run ─────────────────────────────────────────
     Mutant(
         "cvtrain/backend.py",
@@ -263,8 +281,8 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "cvtrain/backend.py",
-        '    if cfg.device_resolved:\n        kwargs["device"] = cfg.device_resolved',
-        '    if False:\n        kwargs["device"] = cfg.device_resolved',
+        '    if cfg.device_resolved:\n        kwargs["device"] = canonical_device(cfg.device_resolved)',
+        '    if False:\n        kwargs["device"] = canonical_device(cfg.device_resolved)',
         "the resolved device is not forwarded to the framework (it picks for itself)",
     ),
     # ── Preflight: fail before the expensive work starts ────────────────────
@@ -291,6 +309,12 @@ MUTANTS: tuple[Mutant, ...] = (
         "1 <= cfg.epochs <= MAX_EPOCHS",
         "True",
         "the epoch ceiling is not enforced",
+    ),
+    Mutant(
+        "cvtrain/preflight.py",
+        "MIN_IMGSZ <= cfg.imgsz <= MAX_IMGSZ and cfg.imgsz % IMGSZ_STRIDE == 0",
+        "MIN_IMGSZ <= cfg.imgsz <= MAX_IMGSZ",
+        "an image size off the stride grid reaches training and fails only at export",
     ),
     Mutant(
         "cvtrain/preflight.py",
@@ -712,6 +736,54 @@ MUTANTS: tuple[Mutant, ...] = (
         "'auto' never resolves to a GPU",
     ),
     Mutant(
+        "cvtrain/backend.py",
+        "            return canonical_device(requested)",
+        "            return requested",
+        "an explicit device keeps the operator's spelling (--device 0 never skips)",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "        if reported_device in (None, \"auto\"):\n            reported_device = _device_name(getattr(trainer, \"device\", None))",
+        "        if True:\n            reported_device = _device_name(getattr(trainer, \"device\", None))",
+        "a multi-GPU fact collapses to the primary device (0,1 passes for 0)",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "        if len(cuda_components) != len(components):",
+        "        if False:",
+        "a device list mixing CUDA and non-CUDA components reaches the framework",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "            if index >= count:",
+        "            if False:",
+        "a CUDA index beyond the visible GPUs passes preflight",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "        try:\n            available = bool(torch.cuda.is_available())\n        except Exception as exc:\n            return False, f\"torch cannot report CUDA availability ({exc}); fix the installation or pass --device cpu\"",
+        "        try:\n            available = bool(torch.cuda.is_available())\n        except TypeError as exc:\n            return False, f\"torch cannot report CUDA availability ({exc}); fix the installation or pass --device cpu\"",
+        "a torch install that cannot report CUDA availability escapes preflight",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "        try:\n            count = int(torch.cuda.device_count())\n        except Exception as exc:\n            return False, f\"torch cannot report the CUDA device count ({exc}); pass --device cpu or fix the installation\"",
+        "        try:\n            count = int(torch.cuda.device_count())\n        except TypeError as exc:\n            return False, f\"torch cannot report the CUDA device count ({exc}); pass --device cpu or fix the installation\"",
+        "a torch install that cannot report the device count escapes preflight",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "        except Exception as exc:  # a broken DLL is not the same as a missing package\n            return False, f\"torch could not be loaded ({exc}); fix the installation or pass --device cpu\"",
+        "        except TypeError as exc:  # a broken DLL is not the same as a missing package\n            return False, f\"torch could not be loaded ({exc}); fix the installation or pass --device cpu\"",
+        "a torch install that cannot load its native library escapes preflight",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "                if not suffix.isdigit():\n                    return False, f\"device {cfg.device!r} has an invalid CUDA index {component!r}; use cuda:N\"",
+        "                if False:\n                    return False, f\"device {cfg.device!r} has an invalid CUDA index {component!r}; use cuda:N\"",
+        "an invalid CUDA index spelling reaches int() and crashes the check",
+    ),
+    Mutant(
         "cvtrain/trainer.py",
         "cfg = replace(cfg, device_resolved=backend.resolve_device(cfg))",
         "cfg = cfg  # never resolved",
@@ -719,15 +791,82 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "cvtrain/gate.py",
-        'if entry.get("device_resolved") != cfg.device_resolved:',
-        "if False:",
+        "    if canonical_device(entry.get(\"device_resolved\")) != canonical_device(cfg.device_resolved):\n        return False",
+        "    if False:\n        return False",
         "the resolved device is not compared (a CPU run passes for a GPU run)",
     ),
     Mutant(
         "cvtrain/gate.py",
-        '    if cfg.device_resolved is None:\n        return False\n    if entry.get("device_resolved") != cfg.device_resolved:',
-        '    if entry.get("device_resolved") != cfg.device_resolved:',
+        "    if cfg.device_resolved is None:\n        return False",
+        "    if False:\n        return False",
         "an unresolved configuration claims a model is current (the device fact is never compared)",
+    ),
+    Mutant(
+        "cvtrain/gate.py",
+        "    if canonical_device(entry.get(\"device_resolved\")) != canonical_device(cfg.device_resolved):\n        return False",
+        "    if entry.get(\"device_resolved\") != cfg.device_resolved:\n        return False",
+        "the device comparison is spelling-sensitive (an older operator spelling retrains forever)",
+    ),
+    # ── Request vs fact: no resolution is compared under the request's name ──
+    Mutant(
+        "cvtrain/trainer.py",
+        "        # why it must never be recorded here: it is not the request.\n"
+        "        device=cfg.device_class,\n"
+        "        device_resolved=effective(\"device_resolved\", cfg.device_resolved),",
+        "        # why it must never be recorded here: it is not the request.\n"
+        "        device=cfg.device_resolved,\n"
+        "        device_resolved=effective(\"device_resolved\", cfg.device_resolved),",
+        "the resolved device is recorded as the request (every default-device re-run retrains)",
+    ),
+    Mutant(
+        "cvtrain/trainer.py",
+        "        imgsz=cfg.imgsz,\n"
+        "        seed=cfg.seed,\n"
+        "        opset=cfg.opset,\n"
+        "        batch=cfg.batch,\n"
+        "        workers=cfg.workers,\n"
+        "        backend_version=backend_version,",
+        "        imgsz=cfg.imgsz,\n"
+        "        seed=cfg.seed,\n"
+        "        opset=cfg.opset,\n"
+        '        batch=effective("batch", cfg.batch),\n'
+        "        workers=cfg.workers,\n"
+        "        backend_version=backend_version,",
+        "the resolved batch is recorded as the request (an automatic batch can never skip)",
+    ),
+    Mutant(
+        "cvtrain/trainer.py",
+        "        imgsz=cfg.imgsz,\n"
+        "        seed=cfg.seed,\n"
+        "        opset=cfg.opset,\n"
+        "        batch=cfg.batch,\n"
+        "        workers=cfg.workers,\n"
+        "        backend_version=backend_version,",
+        '        imgsz=effective("imgsz", cfg.imgsz),\n'
+        "        seed=cfg.seed,\n"
+        "        opset=cfg.opset,\n"
+        "        batch=cfg.batch,\n"
+        "        workers=cfg.workers,\n"
+        "        backend_version=backend_version,",
+        "the rounded image size is recorded as the request (a valid size can never skip)",
+    ),
+    Mutant(
+        "cvtrain/trainer.py",
+        "            spec, cfg, manifest, backend.version, dataset=dataset_snapshot, export_args=export_args",
+        "            spec, cfg, manifest, backend.version, dataset=dataset_snapshot, export_args={}",
+        "the skip verdict compares an export request the run would not make",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        'return {**dict(EXPORT_OPTIONS), "imgsz": cfg.imgsz, "opset": cfg.opset}',
+        'return {**dict(EXPORT_OPTIONS), "imgsz": cfg.imgsz, "opset": 12}',
+        "the recorded export request ignores --opset (every opset looks like 12)",
+    ),
+    Mutant(
+        "cvtrain/backend.py",
+        "return Path(model.handle.export(**self.export_args(cfg)))",
+        'return Path(model.handle.export(format="onnx", opset=cfg.opset))',
+        "the exporter is not driven by the request the manifest records",
     ),
     # ── CLI and exit codes: the contract with the desktop app ──────────────
     Mutant(

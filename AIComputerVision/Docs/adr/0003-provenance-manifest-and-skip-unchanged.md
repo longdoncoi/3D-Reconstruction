@@ -3,6 +3,9 @@
 - Status: Accepted
 - Date: 2026-10-12
 - Supersedes: none
+- Amended by: ADR 0015 (compared values are the **requests**; the framework's
+  resolutions are recorded separately and never under the request's name — the
+  resolved device is still compared as its own fact)
 
 ## Context
 
@@ -23,9 +26,24 @@ Every export is recorded in `Models/manifest.json` with:
   `.txt` listings and list-valued splits — captured **before** `backend.train`
   starts (amended 2026-10-20; the original revision deliberately hashed only
   the YAML and was blind to same-path content/glob changes);
-- epochs, imgsz, seed, opset, batch, workers, the device class, and the
-  composite exporter identity (`cvtrain`/`ultralytics`/`torch`/`onnx`), because
-  any of those dependencies can change the emitted graph.
+- epochs, imgsz, seed, opset, batch, workers, the device class, the exporter
+  options, and the composite exporter identity
+  (`cvtrain`/`ultralytics`/`torch`/`onnx`/`onnxslim`), because any of those
+  dependencies can change the emitted graph.
+
+> **Amended 2026-10-24 (ADR 0015): those fields are the *request*, and a
+> resolution is never recorded or compared under the request's name.** The
+> framework may rewrite the device argument (`"auto"` → `"0"`), resolve
+> `--batch -1` to a machine-sized integer, or round `--imgsz`; those results are
+> recorded as `device_resolved`, `batch_resolved` and `imgsz_resolved` for audit,
+> never under the compared name. `device_resolved` is itself compared as a fact
+> because hardware is not derivable from `auto`, and the effective `epochs`
+> budget is compared because a resumed run takes it from the checkpoint. The
+> export request (`format`, `imgsz`, `opset`, `simplify`, `dynamic`, `half`,
+> `int8`, `nms`) is recorded in `export_args` and is part of the artifact
+> identity, and an automatic batch is never skippable because its answer is not
+> knowable before training. Recording a resolved value as the request made an
+> identical re-run retrain forever (N15 in `Docs/SCORECARD.md`).
 
 > **Amended 2026-10-20 (ADR 0007): this describes what a run *writes*, not
 > what every checked-in entry holds.** The models shipped in `Models/` were

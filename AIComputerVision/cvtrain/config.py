@@ -59,6 +59,34 @@ MAX_EPOCHS = 10000
 MAX_IMGSZ = 4096
 """Fail-fast ceiling: larger images OOM long before they train."""
 
+IMGSZ_STRIDE = 32
+"""Coarsest YOLO stride: an image size must be a multiple of it.
+
+The framework rounds a size that is not aligned up to the next multiple, and
+the ONNX contract then compares the *exported* static shape against
+``--imgsz``. A run started at 641 would therefore train happily and fail the
+export check after the expensive part — so preflight rejects it up front.
+"""
+
+MAX_OPSET = 21
+"""Largest ONNX opset the product can load.
+
+ONNX Runtime 1.20 implements **opset 21** (its published compatibility table),
+and ``ONNXRUNTIME_VERSION`` in the repository ``CMakeLists.txt`` pins 1.20.1 —
+an artifact stamped higher than that would fail only when someone loads it in
+the Qt app, long after a run that produced it looked successful. It lives in
+:mod:`cvtrain.config` because two layers read it: the preflight window and the
+post-export contract check (which must not depend on the preflight module).
+"""
+
+AUTO_BATCH = -1
+"""Ultralytics' "size the batch automatically" sentinel for ``--batch``.
+
+Shared by the preflight (which accepts it) and the gate (which refuses to
+skip it): a request spelled differently in two places is a skip rule that
+disagrees with itself.
+"""
+
 MAX_WORKERS = 64
 """Fail-fast ceiling: beyond this the loader only adds contention."""
 
@@ -263,6 +291,42 @@ def resolve_models(
     return defaults
 
 
+def canonical_device(value: object) -> str:
+    """The concrete spelling of a device request, in the framework's domain.
+
+    ``None``/blank/``"auto"`` mean "let the framework choose" and stay
+    ``"auto"``. Every other request is written as the device the framework
+    will actually use: a bare GPU index (``"0"``) and ``"cuda"`` become
+    ``"cuda:0"``, and a list (``"0,1"``) becomes ``"cuda:0,cuda:1"``.
+
+    The *request* recorded in the manifest keeps its own spelling (see
+    :attr:`TrainConfig.device_class`); this function is for the *resolution*.
+    Ultralytics resolves ``--device 0`` to ``torch.device("cuda:0")`` and
+    reports that concrete object, so comparing the framework's fact with the
+    raw request spelling made an identical ``--device 0`` re-run look like a
+    different experiment and retrain forever (ADR 0016). The framework accepts
+    the canonical spelling too — it strips ``cuda:`` before selecting — so the
+    same value can be forwarded without changing what training does.
+    """
+
+    raw = "" if value is None else str(value).strip().lower()
+    if not raw or raw == "auto":
+        return "auto"
+    parts: list[str] = []
+    for component in raw.split(","):
+        component = component.strip()
+        if not component:
+            continue
+        if component == "cuda":
+            component = "cuda:0"
+        elif component.startswith("cuda:") and component[5:].isdigit():
+            component = f"cuda:{int(component[5:])}"
+        elif component.isdigit():
+            component = f"cuda:{int(component)}"
+        parts.append(component)
+    return ",".join(parts) if parts else "auto"
+
+
 @dataclass
 class TrainConfig:
     """Resolved runtime configuration for a single training invocation."""
@@ -292,6 +356,13 @@ class TrainConfig:
     GPU and on one without, and differently again if the GPU is busy. The
     pipeline therefore resolves it itself, before any weight is touched, and
     records the answer next to the request.
+
+    The value is written in the framework's spelling (see
+    :func:`canonical_device`): ``--device 0`` resolves to ``cuda:0`` and
+    ``--device 0,1`` to ``cuda:0,cuda:1``. That is the spelling the framework
+    reports back (``torch.device``), so the fact recorded after training and
+    the resolution computed before the next run compare equal instead of
+    differing only by syntax.
 
     Two consequences, both wanted: the provenance names a device that can be
     *compared* with the next run's (a CPU run can no longer pass for a GPU

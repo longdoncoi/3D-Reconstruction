@@ -24,7 +24,13 @@ from cvtrain import gate
 from cvtrain import manifest as manifest_mod
 from cvtrain.backend import RunFacts, TrainedModel, TrainPlan, UltralyticsBackend
 from cvtrain.checks import module_available
-from cvtrain.config import MANIFEST_NAME, MODEL_REGISTRY, ModelSpec, TrainConfig
+from cvtrain.config import (
+    MANIFEST_NAME,
+    MODEL_REGISTRY,
+    ModelSpec,
+    TrainConfig,
+    canonical_device,
+)
 from cvtrain.errors import (
     ConcurrentRunError,
     ExitCode,
@@ -84,6 +90,10 @@ class FakeBackend:
         """The epoch budget the framework reports, when it can say one."""
         self.epochs_completed_reported: int | None = None
         """The completed count the framework reports, when it can say one."""
+        self.batch_reported: int | None = None
+        """The batch the framework resolved, when it differs from the request."""
+        self.imgsz_reported: int | None = None
+        """The image size the framework resolved, when it differs from the request."""
         self.resumed_from_reported: str | None = None
         """The checkpoint this run continued, when it was a resumed run."""
         self.plan_source_weights: Path | None = None
@@ -109,12 +119,15 @@ class FakeBackend:
         return True, "framework importable"
 
     def resolve_device(self, cfg: TrainConfig) -> str:
-        # The fake machine applies no policy: it hands the request back, so
-        # these tests keep comparing the *request*. The real adapter's policy
-        # ("auto" -> the first CUDA device, else CPU) is tested in
-        # test_backend, and the orchestrator's use of the answer is tested
-        # with a backend that resolves to something concrete.
-        return cfg.device_class
+        # The real policy on a machine without a CUDA device: "auto" is
+        # resolved to CPU *before* training; an explicit request is its own
+        # answer, in the framework's spelling. The fake applies the same
+        # policy on purpose — a fake that hands the request back cannot expose
+        # the difference between the request the manifest records and the fact
+        # the framework reports.
+        if cfg.device_class == "auto":
+            return "cpu"
+        return canonical_device(cfg.device_class)
 
     def prepare(self, cfg: TrainConfig) -> None:
         self.prepared = cfg
@@ -142,6 +155,12 @@ class FakeBackend:
         run_dir = cfg.runs_dir / spec.runs_subdir / "train-test"
         run_dir.mkdir(parents=True, exist_ok=True)
         (run_dir / "args.yaml").write_text(f"epochs: {cfg.epochs}\n", encoding="utf-8")
+        # ``--batch -1`` is a request the framework answers from the machine:
+        # the fake stands in for a machine that picked 8.
+        resolved_batch = self.batch_reported
+        if resolved_batch is None:
+            resolved_batch = 8 if cfg.batch == -1 else cfg.batch
+        resolved_imgsz = self.imgsz_reported if self.imgsz_reported is not None else cfg.imgsz
         return TrainedModel(
             metrics={"metrics/mAP50(B)": 0.42},
             run_dir=run_dir,
@@ -149,10 +168,19 @@ class FakeBackend:
             facts=RunFacts(
                 epochs=self.epochs_reported,
                 epochs_completed=self.epochs_completed_reported,
+                # The framework's effective argument set, which for a device
+                # is the concrete value it was told, not the request. The
+                # recorder must never mistake one for the other (P1).
+                imgsz=resolved_imgsz,
+                batch=resolved_batch,
+                device_resolved=cfg.device_resolved,
                 source_weights=str(plan.source_weights),
                 resumed_from=self.resumed_from_reported,
             ),
         )
+
+    def export_args(self, cfg: TrainConfig) -> dict[str, object]:
+        return {"format": "onnx", "imgsz": cfg.imgsz, "opset": cfg.opset}
 
     def export(self, model: TrainedModel[Any], cfg: TrainConfig) -> Path:
         self.calls.append(f"export:{model.handle}")
@@ -232,7 +260,10 @@ class HappyPathTests(_SandboxedTestCase):
         self.assertEqual(prepared.models, self.cfg.models)
         self.assertEqual(prepared.data_yaml, self.cfg.data_yaml)
         self.assertEqual(prepared.epochs, self.cfg.epochs)
-        self.assertEqual(prepared.device_resolved, self.cfg.device_class)
+        # The fake machine has no CUDA device, so the request "auto" is
+        # resolved to "cpu" before the backend sees the configuration.
+        self.assertEqual(self.cfg.device_class, "auto")
+        self.assertEqual(prepared.device_resolved, "cpu")
         self.assertEqual(
             self.backend.calls,
             ["prepare", "plan:det", "train:det", "export:det", "plan:seg", "train:seg", "export:seg"],
@@ -582,6 +613,45 @@ class DeviceResolutionTests(_SandboxedTestCase):
         run(cfg, backend=backend)
         self.assertNotIn("train:det", backend.calls)
 
+    def test_an_explicit_gpu_index_rerun_is_skipped(self) -> None:
+        # Regression: the framework reports ``cuda:0`` for ``--device 0``, so a
+        # request-spelled fact made an identical rerun retrain forever. The
+        # request keeps the operator's spelling; the fact is canonical.
+        cfg = _config(self.root, models=("det",), device="0", skip_unchanged=True)
+        run(cfg, backend=FakeBackend())
+        entry = manifest_mod.load_manifest(cfg.models_dir)["entries"][MODEL_REGISTRY["det"].output]
+        self.assertEqual(entry["device"], "0")
+        self.assertEqual(entry["device_resolved"], "cuda:0")
+
+        backend = FakeBackend()
+        run(cfg, backend=backend)
+        self.assertNotIn("train:det", backend.calls)
+
+    def test_an_explicit_multi_gpu_rerun_is_skipped(self) -> None:
+        cfg = _config(self.root, models=("det",), device="0,1", skip_unchanged=True)
+        run(cfg, backend=FakeBackend())
+        entry = manifest_mod.load_manifest(cfg.models_dir)["entries"][MODEL_REGISTRY["det"].output]
+        self.assertEqual(entry["device"], "0,1")
+        self.assertEqual(entry["device_resolved"], "cuda:0,cuda:1")
+
+        backend = FakeBackend()
+        run(cfg, backend=backend)
+        self.assertNotIn("train:det", backend.calls)
+
+    def test_an_older_entry_with_the_operator_spelling_is_still_current(self) -> None:
+        # An entry written before ADR 0016 recorded ``0`` where the framework
+        # reports ``cuda:0``. Both describe one device, so the comparison is
+        # canonical — syntax is not a different experiment.
+        cfg = _config(self.root, models=("det",), device="0", skip_unchanged=True)
+        run(cfg, backend=FakeBackend())
+        manifest = manifest_mod.load_manifest(cfg.models_dir)
+        manifest["entries"][MODEL_REGISTRY["det"].output]["device_resolved"] = "0"
+        manifest_mod.save_manifest(cfg.models_dir, manifest)
+
+        backend = FakeBackend()
+        run(cfg, backend=backend)
+        self.assertNotIn("train:det", backend.calls)
+
     def test_a_run_that_would_resolve_to_another_device_is_trained(self) -> None:
         # The request was the same both times ("auto"); the *resolution*
         # differs, so the published artifact is not what this run would build.
@@ -622,7 +692,15 @@ class DeviceResolutionTests(_SandboxedTestCase):
 
         unresolved = _config(self.root, models=("det",), skip_unchanged=True)
         self.assertIsNone(unresolved.device_resolved)
-        self.assertFalse(gate.already_current(MODEL_REGISTRY["det"], unresolved, manifest, FakeBackend.version))
+        self.assertFalse(
+            gate.already_current(
+                MODEL_REGISTRY["det"],
+                unresolved,
+                manifest,
+                FakeBackend.version,
+                export_args=FakeBackend().export_args(unresolved),
+            )
+        )
 
 
 class EffectiveEpochProvenanceTests(_SandboxedTestCase):
@@ -666,6 +744,19 @@ class EffectiveEpochProvenanceTests(_SandboxedTestCase):
         self.assertEqual(entry["epochs"], 7)
         self.assertNotIn("epochs_completed", entry)
 
+    def test_the_recorded_image_size_is_the_request_not_the_rounding_fact(self) -> None:
+        # Ultralytics rounds ``--imgsz`` to its stride. The manifest compares
+        # the request, because replaying it reproduces the same rounding; the
+        # rounded value is kept next to it so an auditor can see what trained.
+        cfg = _config(self.root, models=("det",), imgsz=640)
+        backend = FakeBackend()
+        backend.imgsz_reported = 672
+        run(cfg, backend=backend)
+
+        entry = manifest_mod.load_manifest(cfg.models_dir)["entries"][MODEL_REGISTRY["det"].output]
+        self.assertEqual(entry["imgsz"], 640)
+        self.assertEqual(entry["imgsz_resolved"], 672)
+
     def test_a_resumed_artifact_is_never_skipped(self) -> None:
         # Even when every recorded value agrees, an artifact produced by a
         # resumed run did not start from the base checkpoint and did not follow
@@ -679,7 +770,15 @@ class EffectiveEpochProvenanceTests(_SandboxedTestCase):
         manifest = manifest_mod.load_manifest(cfg.models_dir)
         entry = manifest["entries"][MODEL_REGISTRY["det"].output]
         self.assertEqual(entry["resume_from"], checkpoint)
-        self.assertFalse(gate.already_current(MODEL_REGISTRY["det"], cfg, manifest, FakeBackend.version))
+        self.assertFalse(
+            gate.already_current(
+                MODEL_REGISTRY["det"],
+                cfg,
+                manifest,
+                FakeBackend.version,
+                export_args=FakeBackend().export_args(cfg),
+            )
+        )
 
         backend = FakeBackend()
         run(cfg, backend=backend)
@@ -778,6 +877,22 @@ class SkipUnchangedTests(_SandboxedTestCase):
         # exported, so the published artifact is never touched again.
         self.assertEqual(backend.calls, ["prepare"])
 
+    def test_the_default_device_is_skipped_on_an_identical_rerun(self) -> None:
+        # Regression for the P1 seam: Ultralytics rewrites ``args.device``
+        # during training (to "cpu", or to "0" on a GPU), so recording the
+        # framework's argument as the request made every default-device re-run
+        # look like a different experiment and retrain forever. The request is
+        # "auto"; the answer is "cpu" on this fake machine.
+        cfg = _config(self.root, models=("det",), skip_unchanged=True)
+        run(cfg, backend=FakeBackend())
+        entry = manifest_mod.load_manifest(cfg.models_dir)["entries"][MODEL_REGISTRY["det"].output]
+        self.assertEqual(entry["device"], "auto")
+        self.assertEqual(entry["device_resolved"], "cpu")
+
+        backend = FakeBackend()
+        run(cfg, backend=backend)
+        self.assertNotIn("train:det", backend.calls)
+
     def test_a_skipped_model_still_advances_the_progress_bar(self) -> None:
         self._run(models=("det",), skip_unchanged=True)
         with self.assertLogs("cvtrain.progress", level="INFO") as captured:
@@ -839,6 +954,29 @@ class SkipUnchangedTests(_SandboxedTestCase):
         _, backend = self._run(models=("det",), skip_unchanged=True, batch=8)
         self.assertIn("train:det", backend.calls)
 
+    def test_an_automatic_batch_is_never_skipped(self) -> None:
+        # ``--batch -1`` is a request the framework answers from the machine's
+        # memory during training. The next run's answer is not knowable before
+        # it trains, and two runs that both recorded -1 are not proof they used
+        # the same batch — so "cannot prove" is retrained (ADR 0015).
+        self._run(models=("det",), skip_unchanged=True, batch=-1)
+        _, backend = self._run(models=("det",), skip_unchanged=True, batch=-1)
+        self.assertIn("train:det", backend.calls)
+
+    def test_the_recorded_batch_is_the_request_not_the_resolution(self) -> None:
+        # The framework may size or clamp the batch; the manifest compares
+        # what the next invocation asks for. Recording the resolution under
+        # ``batch`` would make an explicit ``--batch 16`` look different from
+        # the run that used 8 because the machine could not hold 16.
+        cfg = _config(self.root, models=("det",), batch=16)
+        backend = FakeBackend()
+        backend.batch_reported = 8
+        run(cfg, backend=backend)
+
+        entry = manifest_mod.load_manifest(cfg.models_dir)["entries"][MODEL_REGISTRY["det"].output]
+        self.assertEqual(entry["batch"], 16)
+        self.assertEqual(entry["batch_resolved"], 8)
+
     def test_a_changed_worker_count_is_trained(self) -> None:
         self._run(models=("det",), skip_unchanged=True)
         _, backend = self._run(models=("det",), skip_unchanged=True, workers=4)
@@ -857,6 +995,33 @@ class SkipUnchangedTests(_SandboxedTestCase):
         stored = manifest["entries"][MODEL_REGISTRY["det"].output]
         legacy = manifest_mod.ManifestEntry(**{**stored, "backend_version": "8.4.41"})
         manifest["entries"][MODEL_REGISTRY["det"].output] = legacy
+        manifest_mod.save_manifest(cfg.models_dir, manifest)
+
+        _, backend = self._run(models=("det",), skip_unchanged=True)
+        self.assertIn("train:det", backend.calls)
+
+    def test_a_changed_export_request_is_trained(self) -> None:
+        # The same weights exported with another opset are another artifact.
+        # The training parameters are identical, so only the export request
+        # can tell the two apart.
+        self._run(models=("det",), skip_unchanged=True)
+        cfg = _config(self.root, models=("det",), skip_unchanged=True)
+        manifest = manifest_mod.load_manifest(cfg.models_dir)
+        entry = manifest["entries"][MODEL_REGISTRY["det"].output]
+        entry["export_args"] = {**entry["export_args"], "opset": cfg.opset + 1}
+        manifest_mod.save_manifest(cfg.models_dir, manifest)
+
+        _, backend = self._run(models=("det",), skip_unchanged=True)
+        self.assertIn("train:det", backend.calls)
+
+    def test_an_entry_without_an_export_request_is_trained(self) -> None:
+        # Written before the export options were recorded: nothing proves the
+        # published graph was produced by the request this run would make, so
+        # the skip is retracted.
+        cfg = _config(self.root, models=("det",), skip_unchanged=True)
+        run(cfg, backend=FakeBackend())
+        manifest = manifest_mod.load_manifest(cfg.models_dir)
+        manifest["entries"][MODEL_REGISTRY["det"].output].pop("export_args", None)
         manifest_mod.save_manifest(cfg.models_dir, manifest)
 
         _, backend = self._run(models=("det",), skip_unchanged=True)
@@ -945,7 +1110,15 @@ class SkipUnchangedTests(_SandboxedTestCase):
         cfg = _config(self.root, models=("det",), skip_unchanged=True)
         cfg.data_yaml = cfg.data_yaml.parent / "ghost.yaml"
         manifest = manifest_mod.load_manifest(cfg.models_dir)
-        self.assertFalse(gate.already_current(MODEL_REGISTRY["det"], cfg, manifest, FakeBackend.version))
+        self.assertFalse(
+            gate.already_current(
+                MODEL_REGISTRY["det"],
+                cfg,
+                manifest,
+                FakeBackend.version,
+                export_args=FakeBackend().export_args(cfg),
+            )
+        )
 
     def test_an_entry_without_a_content_digest_is_trained(self) -> None:
         # An entry written before ``dataset_content_sha256`` existed, or by an

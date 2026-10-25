@@ -33,7 +33,7 @@ AIComputerVision/
 │  └─ logging_setup.py    # Định dạng log ra stdout
 ├─ Models/                # *.onnx xuất bản (Git LFS) + manifest.json + advisory lock
 ├─ runs/                  # Log huấn luyện của Ultralytics (git-ignored)
-├─ Docs/adr/              # 13 Architecture Decision Record cho các quyết định dưới đây
+├─ Docs/adr/              # 15 Architecture Decision Record cho các quyết định dưới đây
 ├─ Docs/SCORECARD.md      # Số đo các gate + bảng nợ đang mở (nguồn sự thật của "10/10")
 ├─ scripts/               # Công cụ kiểm chứng (mutation check) — ngoài package
 ├─ requirements.txt       # Dependency runtime đã pin phiên bản
@@ -59,7 +59,7 @@ AIComputerVision/
 | `dataset.py` | Đọc `data.yaml` bằng PyYAML (lazy), kiểm tra khóa `train`/`val`/`names`, resolve đường dẫn tương đối/tuyệt đối/glob theo đúng ngữ nghĩa của Ultralytics (kể cả khoá `path:` cấp trên). |
 | `errors.py` | `ExitCode` (`0/1/2/3/4/130`) khai báo **một lần** và phân cấp `CvTrainError` (`StorageError`, `ManifestIntegrityError`, `QualityGateError`, `ExportContractError`, `ConcurrentRunError`, `ResumeError`…). Lỗi dự kiến được log thành một dòng actionable; lỗi còn lại giữ trọn traceback. |
 | `fsio.py` | Primitive hệ thống tệp dùng chung: `sha256_file`, ghi nguyên tử (staging + `os.replace` + fsync thư mục), sao chép có backup `.bak`, **advisory lock** `Models/.cvtrain.lock`, và chính sách retention `prune_run_directories`. Lock là một **lease có chủ**: file ghi `host` + `pid`, heartbeat mỗi 30 s làm tươi mtime; chủ cùng máy còn sống thì lock **không bao giờ** bị đánh cắp dù quá hạn, chủ đã chết thì lock thành stale ngay, còn không chứng minh được (máy khác, lock cũ, thiếu quyền) thì mới dùng tuổi lease. Run cũng có lease riêng `.cvtrain-alive`: làm tươi mỗi epoch, **claim lại bằng PID hiện tại khi `--resume`** (marker cũ còn ghi tiến trình đã bị giết), và xoá khi train xong; tuổi không đọc được thì coi như còn sống. |
-| `preflight.py` | Kiểm tra fail-fast: môi trường (`env.*`) và siêu tham số (`param.*`) — `epochs`, `imgsz`, `batch`, `workers`, `opset` (cửa sổ `MIN_OPSET=11..MAX_OPSET=21`), `device`, từng ngưỡng `--min-metric`. Nhận danh sách dependency từ backend thay vì hard-code framework. |
+| `preflight.py` | Kiểm tra fail-fast: môi trường (`env.*`) và siêu tham số (`param.*`) — `epochs`, `imgsz`, `batch`, `workers`, `opset` (cửa sổ `MIN_OPSET=11..MAX_OPSET=21`), `device` (grammar + mọi CUDA index so với `torch.cuda.device_count()`), từng ngưỡng `--min-metric`. Nhận danh sách dependency từ backend thay vì hard-code framework. |
 | `gate.py` | Chính sách (không phải luồng điều khiển): `already_current` trả lời "ONNX đã publish có đúng những gì lần gọi này sẽ build không?" (quy tắc `--skip-unchanged`, và artifact của một run `--resume` **không bao giờ** được coi là tái lập được); `enforce_quality_gate` trả lời "artifact có đủ tốt để giữ không?" (mục Quality gate). |
 | `metrics.py` | Module lá cho đúng **một** câu hỏi: "giá trị này có phải số đo không?" — loại `bool`, `NaN`/`Infinity` và số tràn `float`, giữ `numbers.Real` (kể cả scalar của numpy). Backend dùng khi đọc kết quả framework, gate dùng khi đọc manifest do tay người sửa; nhờ nó hai bên không thể bất đồng về cùng một con số, và `gate` không phải import adapter. |
 | `backend.py` | Protocol `TrainingBackend` (`plan`/`prepare`/`train`/`export` + `required_modules`) và adapter `UltralyticsBackend` — nơi duy nhất được import `ultralytics`, và chỉ khi huấn luyện thực sự chạy. `plan()` chốt **file bắt đầu** (checkpoint gốc, hoặc `last.pt` khi resume) *trước* khi provenance hash; `--resume` fail-closed với checkpoint thiếu/đã xong/không có train_args/dataset khác; `RunFacts` đọc budget, số epoch đã chạy và device từ chính trainer. `exporter_identity()` ghi cả `cvtrain`/`ultralytics`/`torch`/`onnx`/`onnxslim` vào provenance, vì cả năm đều có thể đổi graph được xuất (`onnxslim` là simplifier mặc định của Ultralytics; `onnxruntime` chỉ kiểm hợp đồng nên không nằm trong identity). |
@@ -76,7 +76,7 @@ AIComputerVision/
 | `TrainModel.py` | Entry point mà `AITrainDockWidget` của Qt gọi (`python TrainModel.py …`). Chỉ khoảng vài dòng: bật logging rồi ủy quyền cho `cvtrain.cli.main()`. |
 | `Models/` | Sản phẩm: `yolo11n.onnx`, `yolo11n-seg.onnx`, `yolo11x-tracking.onnx` (Git LFS), `manifest.json` (provenance), `Models/.cvtrain.lock` (advisory lock, git-ignored) và `Models/*.onnx.bak` (một thế hệ khôi phục, git-ignored). |
 | `runs/` | Log huấn luyện mà Ultralytics ghi ra (git-ignored). `--runs-dir` di chuyển nó; `--prune-runs` dọn run cũ (xem mục *Dọn run cũ*). |
-| `Docs/adr/` | 14 ADR: 0001 đồ thị phụ thuộc một chiều + composition root; 0002 protocol `TrainingBackend`; 0003 manifest provenance + `--skip-unchanged` fail-closed; 0004 advisory lock, publish nguyên tử, quality gate; 0005 lỗi lưu trữ có kiểu, sở hữu lock, tiến trình đơn điệu; 0006 dependency có điều kiện, input fail-closed, heartbeat lock; 0007 mọi claim phải được *pin* bằng test/mutant hoặc bị xóa (+ sửa đổi 2026-10-21); 0008 đóng nợ đo được: provenance theo digest, `--resume`, fingerprint có tiến độ, preflight chứng minh import được; 0009 device được phân giải *trước* khi train (`auto` là yêu cầu, `device_resolved` là sự thật); 0010 retention là *chính sách* (`--prune-runs`), không phải tai nạn; 0011 quy tắc fail-closed ở cả hai phía, provenance ghi số epoch framework thực sự chạy, và mutation set phủ hết mọi claim; 0012 chuỗi công cụ có hash, cổng chạy trên cả hai nền tảng, và `--resume` là hợp đồng hai tầng; 0013 `--resume` là một continuation phải chứng minh được, manifest ghi run đã xảy ra (budget + completed + resume_from), và liveness là lease có chủ (host + PID); 0014 lease đổi chủ khi resume, `onnxslim` là provenance, preflight import toàn bộ stack, "tuổi không rõ" được giữ, và stack thật chạy trên Windows. |
+| `Docs/adr/` | 16 ADR: 0001 đồ thị phụ thuộc một chiều + composition root; 0002 protocol `TrainingBackend`; 0003 manifest provenance + `--skip-unchanged` fail-closed; 0004 advisory lock, publish nguyên tử, quality gate; 0005 lỗi lưu trữ có kiểu, sở hữu lock, tiến trình đơn điệu; 0006 dependency có điều kiện, input fail-closed, heartbeat lock; 0007 mọi claim phải được *pin* bằng test/mutant hoặc bị xóa (+ sửa đổi 2026-10-21); 0008 đóng nợ đo được: provenance theo digest, `--resume`, fingerprint có tiến độ, preflight chứng minh import được; 0009 device được phân giải *trước* khi train (`auto` là yêu cầu, `device_resolved` là sự thật); 0010 retention là *chính sách* (`--prune-runs`), không phải tai nạn; 0011 quy tắc fail-closed ở cả hai phía, provenance ghi số epoch framework thực sự chạy, và mutation set phủ hết mọi claim; 0012 chuỗi công cụ có hash, cổng chạy trên cả hai nền tảng, và `--resume` là hợp đồng hai tầng; 0013 `--resume` là một continuation phải chứng minh được, manifest ghi run đã xảy ra (budget + completed + resume_from), và liveness là lease có chủ (host + PID); 0014 lease đổi chủ khi resume, `onnxslim` là provenance, preflight import toàn bộ stack, "tuổi không rõ" được giữ, và stack thật chạy trên Windows; 0015 yêu cầu và sự thật có nhà riêng (sự thật không bao giờ được ghi/so dưới tên yêu cầu; `device_resolved` vẫn được so như fact), `export_args` thuộc danh tính artifact, `--batch -1` không bao giờ skip, và lần chạy lại default-device có kiểm chứng skip với framework thật trong nightly; 0016 device fact viết theo cách của framework, multi-GPU không bị thu về GPU chính, và mọi CUDA index được kiểm tra trước khi hỏi. |
 | `Docs/SCORECARD.md` | Số đo của từng gate kèm ngày đo, bảng nợ đang mở, và quy tắc "claim nào đã được ghim". Một nơi duy nhất để trả lời "package này đã ổn chưa". |
 | `scripts/mutation_check.py` | Đảo chiều từng quyết định trọng yếu một lần và bắt suite phải đỏ (ADR 0007). Danh sách mutant *là* hợp đồng: một guard không có mutant là một guard chưa ai ghim. `--files` chạy một *tập con* (job Windows chỉ quét lại các quyết định phụ thuộc nền tảng) nhưng **không** hạ được floor. |
 | `requirements.txt` | Dependency runtime đã pin: `ultralytics==8.4.41`, `PyYAML==6.0.2`, `onnx==1.21.0`, `onnxslim==0.1.91`, `onnxruntime==1.20.1` (đúng bằng `ONNXRUNTIME_VERSION` trong `CMakeLists.txt` — engine hợp đồng phải là engine mà ứng dụng ship), `tensorboard==2.15.2` (chỉ cần khi `--tensorboard`). `torch` dùng khoảng `>=2.7,<3`: bản CPU/CUDA chia sẻ cùng số version và được chọn bằng index cài đặt. |
@@ -148,7 +148,13 @@ chuỗi công cụ hash-pinned, nền tảng ship và `--resume` hai tầng,
 resume là provenance, effective facts và lease,
 [0014](Docs/adr/0014-the-lease-changes-hands-the-simplifier-is-provenance-and-the-real-stack-runs-on-windows.md)
 lease đổi chủ khi resume, `onnxslim` là provenance và stack thật chạy trên
-Windows.
+Windows,
+[0015](Docs/adr/0015-the-request-and-the-fact-have-separate-homes.md)
+manifest tách *yêu cầu* khỏi *sự thật* (không ghi/so sánh sự thật dưới tên yêu cầu), `export_args` thuộc danh tính artifact, và lần chạy lại default-device phải
+skip,
+[0016](Docs/adr/0016-the-device-fact-is-canonical-and-every-index-is-checked.md)
+device fact viết theo cách của framework, multi-GPU không bị thu về GPU chính,
+và mọi CUDA index được kiểm tra trước khi hỏi.
 
 Sơ đồ trên là một **hợp đồng**, không phải gợi ý: `tests/test_architecture.py`
 parse `cvtrain/*.py` bằng `ast` và làm đỏ build khi có import nằm ngoài bản đồ
@@ -421,7 +427,8 @@ Mỗi model xuất bản được ghi vào `Models/manifest.json` kèm SHA-256, 
 đường dẫn dataset *và digest của `data.yaml`*, digest nội dung của mọi file
 mà `train`/`val` tham chiếu — kể cả directory, glob, file đơn, listing `.txt`
 và split dạng list — mọi siêu tham số, thiết bị tính toán, digest của checkpoint
-gốc, **composite exporter identity** (`cvtrain`, `ultralytics`, `torch`, `onnx`)
+gốc, **composite exporter identity** (`cvtrain`, `ultralytics`, `torch`, `onnx`,
+`onnxslim`)
 đã tạo ra nó, và (best-effort) các metric. Metric chỉ được ghi khi thực sự là
 một số đo hữu hạn: `bool`, `NaN`, `Infinity` và số tràn `float` bị loại
 (`cvtrain/metrics.py`), và manifest được ghi với `allow_nan=False` — một tài
@@ -468,28 +475,71 @@ thư mục khác (hoặc checkout ở một đường dẫn tuyệt đối khác
 thí nghiệm, và một phán quyết phụ thuộc vào *nơi* dữ liệu nằm sẽ không sống sót
 qua một lần checkout trên máy khác (ADR 0008).
 
-**Device được ghi thành hai: yêu cầu và sự thật.** `device` là thứ *được yêu
-cầu* (`auto` = "để framework chọn"), `device_resolved` là thứ *đã chạy*
-(`cuda:0`, `cpu`…). Pipeline tự phân giải `auto` **trước khi train** (ADR 0009):
-nếu không, một lần chạy trên GPU và một lần chạy trên CPU sẽ ghi cùng một
-giá trị, dù artifact khác nhau — và quy tắc skip không thể phân biệt. Việc
-phân giải nằm trong adapter (module duy nhất được import `torch`), framework
-được *báo* dùng device nào thay vì tự chọn, và không có fallback âm thầm: một
-run trên GPU lỗi thì lỗi, không tự lặng lẽ chạy CPU và ghi sai provenance.
+**Device: yêu cầu và sự thật là hai trường, không được lẫn nhau.** `device` là
+thứ *được yêu cầu* (`auto` = "để framework chọn"), lấy nguyên từ
+`TrainConfig.device_class`; `device_resolved` là thứ *đã chạy* (`cuda:0`, `cpu`…),
+do pipeline phân giải **trước khi train** (ADR 0009) và được viết theo **cách
+viết của framework**: `--device 0` là `cuda:0`, `--device 0,1` là
+`cuda:0,cuda:1` (`canonical_device`, ADR 0016). Ultralytics viết lại `args.device`
+trong lúc train (thành `"0"` trên GPU, `"cpu"` trên CPU): đó là *argument của
+framework*, không phải yêu cầu, nên nó **không được ghi vào `device`**. Nó chỉ
+là một nguồn cho `device_resolved` — và là nguồn **ưu tiên**, vì nó giữ nguyên
+danh sách nhiều GPU mà `trainer.device` đã thu về GPU chính. So sánh fact với
+yêu cầu bằng chuỗi thô làm `--device 0` / `0,1` retrain vô hạn (P1; ADR 0016).
 
-**Manifest ghi run *đã xảy ra*, không ghi lời gọi.** `epochs` là **budget hiệu
-lực** — khi `--resume`, Ultralytics **không** dùng `--epochs` của dòng lệnh: nó
-khôi phục toàn bộ tham số từ checkpoint, và danh sách override được phép không
-chứa `epochs`, nên budget là con số của checkpoint. `epochs_completed` là số
-epoch **thực sự hoàn thành** (cộng dồn qua các lần resume): early stopping có
-thể kết thúc budget 100 epoch ở epoch 40, và hai sự thật đó không được gộp làm
-một. `resume_from` chỉ có mặt khi artifact được tạo bởi một run tiếp tục run
-khác — và chính sự có mặt đó khiến `--skip-unchanged` **không bao giờ** bỏ qua
-artifact (một lần chạy mới sẽ không tái lập nó). Các siêu tham số khác cũng
-được đọc từ `trainer.args` (sau train), rồi `ckpt["train_args"]`, rồi mới đến
-lời gọi; giá trị không nguồn nào chứng minh được thì để trống thay vì bịa ra.
-Ghim bởi `test_trainer.EffectiveEpochProvenanceTests`, `test_backend` và các
-mutant tương ứng (ADR 0013).
+**Mọi CUDA index được kiểm tra trước khi hỏi.** `check_device` không chỉ hỏi
+"CUDA có sẵn không": nó đọc `torch.cuda.device_count()` và từ chối index
+`>= count` (kèm dải hợp lệ trong thông điệp), từ chối danh sách trộn CUDA với
+`cpu`/`mps`, và biến một `torch` không đọc được (`import`, `is_available()`,
+`device_count()` ném lỗi) thành preflight đỏ thay vì traceback. Nhờ vậy
+`--device 5` trên máy một GPU dừng *trước* lời nhắc retrain, không phải sau khi
+đã xác nhận (ADR 0016).
+
+**Manifest tách yêu cầu khỏi sự thật, và không ghi sự thật vào tên của yêu
+cầu.** Trường không hậu tố (`imgsz`, `batch`, `seed`, `opset`, `workers`,
+`device`) là *điều lần chạy sau sẽ yêu cầu lại*; trường `*_resolved`
+(`imgsz_resolved`, `batch_resolved`, `device_resolved`) là *điều framework đã
+làm*. `gate` so sánh nhóm yêu cầu: phát lại cùng một yêu cầu sẽ tái lập cùng
+một phân giải (nó là hàm thuần của yêu cầu và backend identity), còn ghi phân
+giải vào trường được so sánh thì một lần chạy `--batch 16` bị máy ép xuống 8 sẽ
+không bao giờ khớp lại. Hai sự thật vẫn được so sánh vì không suy ra được từ
+yêu cầu: `epochs` là **budget hiệu lực** của checkpoint khi `--resume` (giải
+thích ở dưới), và `device_resolved` — `auto` không cho biết máy đã chạy CPU hay
+GPU, nên một run CPU không được coi là cùng artifact với run GPU.
+`imgsz_resolved` và `batch_resolved` chỉ để audit.
+
+**`--batch -1` không bao giờ được bỏ qua.** Framework chọn batch từ bộ nhớ máy
+*trong lúc train*, nên trước khi train không ai biết lần này sẽ là bao nhiêu;
+hai lần cùng ghi `-1` không chứng minh chúng dùng cùng batch. "Không chứng minh
+được" thì huấn luyện lại, đúng như một cấu hình chưa phân giải device.
+
+**`export_args` là một phần của danh tính artifact.** Cùng weights nhưng opset
+khác (hoặc `simplify`/`dynamic`/`half`/`int8`/`nms` khác, hoặc `imgsz` khác) là
+một artifact khác. Pipeline truyền tường minh cả bộ cờ thay vì phó mặc default
+của package, ghi nguyên mapping vào `export_args` và so sánh nguyên mapping
+trước khi skip; entry không có trường này bị huấn luyện lại. `imgsz` phải là bội
+của 32 — preflight từ chối trước khi train, vì framework sẽ làm tròn và contract
+ONNX so sánh shape tĩnh với `--imgsz` sau khi đã train xong.
+
+**Manifest ghi run *đã xảy ra*.** `epochs` là **budget hiệu lực** — khi
+`--resume`, Ultralytics khôi phục toàn bộ tham số từ checkpoint và bỏ qua
+`--epochs`, nên budget là con số của checkpoint (và entry có `resume_from` không
+bao giờ được skip). `epochs_completed` là số epoch **thực sự hoàn thành** (cộng
+dồn qua các lần resume): early stopping có thể kết thúc budget 100 epoch ở epoch
+40, và budget với số đã hoàn thành không được gộp làm một. `resume_from` chỉ có
+mặt khi artifact được tạo bởi một run tiếp tục run khác — và chính sự có mặt đó
+khiến `--skip-unchanged` **không bao giờ** bỏ qua artifact (một lần chạy mới sẽ
+không tái lập nó). Các **sự thật** khác (`imgsz_resolved`, `batch_resolved`,
+`dataset`) được đọc từ `trainer.args` (sau train), rồi `ckpt["train_args"]`,
+rồi mới đến giá trị pipeline đã phân giải; `device_resolved` cũng đọc
+`trainer.args.device` trước (giữ nguyên danh sách nhiều GPU), rồi
+`trainer.device`, rồi giá trị pipeline đã phân giải, và được chuẩn hóa về cách
+viết của framework. Sự thật không
+nguồn nào chứng minh được thì **để trống** (`epochs_completed` vắng mặt) thay vì
+bịa ra. Các **yêu cầu** (`imgsz`, `batch`, `seed`, `device`…) thì lấy nguyên từ
+`TrainConfig`, vì đó chính là điều lần chạy sau sẽ hỏi lại. Ghim bởi
+`test_trainer.EffectiveEpochProvenanceTests`, `test_backend` và các mutant tương
+ứng (ADR 0013/0015).
 
 Tài liệu mang theo `schema_version`. Khi đọc, tài liệu cũ hơn (schema `0`: được
 ghi trước khi trường tồn tại) được migrate tới bằng `cvtrain/manifest.py::
@@ -512,15 +562,25 @@ nhận về (mà không ghi provenance) bị huấn luyện lại:
   checkpoint của run khác và không theo bộ tham số của lần gọi này, nên nó
   không phải thứ một lần chạy sạch sẽ tạo ra — kể cả khi mọi trường được ghi
   tình cờ khớp;
-* `epochs`, `imgsz`, `seed`, `opset`, `batch`, `workers` và đường dẫn dataset
-  khớp **chính xác** với lần gọi này;
+* `epochs`, `imgsz`, `seed`, `opset`, `batch`, `workers` và `device` khớp
+  **chính xác** với lần gọi này (đây là các *yêu cầu*; giá trị framework phân
+  giải được ghi riêng ở `*_resolved` và không tham gia so sánh);
+* `export_args` khớp nguyên vẹn: cùng weights nhưng opset/`simplify`/`dynamic`/
+  `half`/`int8`/`nms`/`imgsz` khác là artifact khác, và entry thiếu trường này
+  là provenance không đủ để tin;
+* `--batch -1` **không bao giờ** được skip: batch do framework chọn từ bộ nhớ
+  máy trong lúc train, nên lần chạy này sẽ dùng batch nào là điều không biết
+  trước khi train;
 * phiên bản backend đã ghi lại là phiên bản sẽ tạo ra nó ngay lúc này (upgrade
   framework làm đổi bản export);
 * hạng device khớp (lần chạy CPU và CUDA với cùng tham số là hai artifact khác
   sau cùng một tên file; “unspecified” và `auto` là cùng một thiết bị);
 * device **đã phân giải** cũng khớp (`device_resolved`) — và cả hai phía của
   phép so sánh này đều phải *biết*: một cấu hình chưa phân giải device không
-  thể biết lần chạy này sẽ build ra gì, nên nó cũng bị huấn luyện lại;
+  thể biết lần chạy này sẽ build ra gì, nên nó cũng bị huấn luyện lại. Phép so
+  sánh dùng cách viết chuẩn của framework (`0` ≡ `cuda:0`, `0,1` ≡
+  `cuda:0,cuda:1`), nên một entry cũ ghi theo cách của người vận hành vẫn là
+  cùng một artifact (ADR 0016);
 * `data.yaml` vẫn cho cùng một digest — riêng đường dẫn không phải là provenance,
   vì đổi tên class hoặc chuyển split sau một cái tên không đổi là một thí điểm
   khác;
@@ -596,8 +656,8 @@ nên code mới phải đi kèm test của nó.
 
 Coverage chỉ chứng minh quyết định được *chạy*, không chứng minh nó đúng chiều.
 `scripts/mutation_check.py` đảo từng quyết định trọng yếu **một lần** rồi bắt
-suite phải đỏ. Danh sách 107 mutant trong script **là hợp đồng** (ADR 0007, mở
-rộng bởi ADR 0011, 0013 và 0014): nó phủ fail-closed provenance, quality gate,
+suite phải đỏ. Danh sách 126 mutant trong script **là hợp đồng** (ADR 0007, mở
+rộng bởi ADR 0011, 0013, 0014, 0015 và 0016): nó phủ fail-closed provenance, quality gate,
 hợp đồng ONNX
 dùng chung với runtime Qt, thứ tự publish, advisory lock, retention, giao thức
 progress và taxonomy mã thoát — một guard không có mutant là một guard chưa ai

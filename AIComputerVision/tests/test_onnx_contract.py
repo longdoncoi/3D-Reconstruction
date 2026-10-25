@@ -20,7 +20,7 @@ import onnx
 from onnx import TensorProto, helper
 
 from cvtrain import onnx_contract
-from cvtrain.config import ModelSpec, TrainConfig
+from cvtrain.config import MAX_OPSET, ModelSpec, TrainConfig
 from cvtrain.errors import ExportContractError
 from cvtrain.onnx_contract import (
     DETECTION_OUTPUT_RANK,
@@ -29,7 +29,6 @@ from cvtrain.onnx_contract import (
     SEGMENTATION_PROTO_RANK,
     validate_export,
 )
-from cvtrain.preflight import MAX_OPSET
 
 
 def _vi(name: str, dtype: int, dims: Sequence[str | int | None]) -> onnx.ValueInfoProto:

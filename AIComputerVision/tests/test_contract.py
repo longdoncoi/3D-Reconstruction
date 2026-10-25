@@ -11,8 +11,7 @@ import unittest
 from pathlib import Path
 
 from cvtrain import onnx_contract
-from cvtrain.config import MODEL_REGISTRY, SUPPORTED_ROLES, TRACKER_INFO
-from cvtrain.preflight import MAX_OPSET
+from cvtrain.config import MAX_OPSET, MODEL_REGISTRY, SUPPORTED_ROLES, TRACKER_INFO
 
 ROOT = Path(__file__).resolve().parents[2]
 HEADER = ROOT / "src" / "include" / "AIConstants.h"
@@ -122,7 +121,7 @@ class OpsetCeilingTests(unittest.TestCase):
         self.assertEqual(
             MAX_OPSET,
             ORT_OPSET_CEILING[short],
-            f"preflight MAX_OPSET must be the opset ONNX Runtime {version} implements",
+            f"config MAX_OPSET must be the opset ONNX Runtime {version} implements",
         )
 
 

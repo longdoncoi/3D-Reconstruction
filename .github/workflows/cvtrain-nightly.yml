@@ -85,10 +85,29 @@ jobs:
         # real framework reports (a renamed key turns this job red). The bar is
         # 0 on purpose: a one-epoch toy model would never clear a real one, and
         # the point here is the plumbing, not the score.
+        #
+        # --device is deliberately omitted: the runner has no GPU, so "auto"
+        # resolves to CPU, and the default path is the one the skip step below
+        # has to prove. Passing --device cpu here would hide the P1 seam where
+        # Ultralytics rewrites the framework argument the provenance used to
+        # record as the request.
         run: |
-          python AIComputerVision/TrainModel.py --yes --det --epochs 1 --imgsz 64 --batch 2 --workers 0 --device cpu --min-metric 'metrics/mAP50(B)=0'
+          python AIComputerVision/TrainModel.py --yes --det --epochs 1 --imgsz 64 --batch 2 --workers 0 --min-metric 'metrics/mAP50(B)=0'
           python AIComputerVision/TrainModel.py --verify-manifest
           test -f AIComputerVision/Models/yolo11n.onnx
+
+      - name: Prove an identical re-run is a no-op (default device)
+        # The skip rule has to compare the *request* ("auto"), never the
+        # framework's rewritten device argument ("cpu" here, "0" on a GPU).
+        # Recording the latter made every default-device re-run retrain; only
+        # the real stack exposes it, so the check lives here and not in the
+        # fake-backend suite alone (ADR 0015).
+        run: |
+          BEFORE=$(sha256sum AIComputerVision/Models/yolo11n.onnx | cut -d' ' -f1)
+          python AIComputerVision/TrainModel.py --yes --det --epochs 1 --imgsz 64 --batch 2 --workers 0 --min-metric 'metrics/mAP50(B)=0' --skip-unchanged 2>&1 | tee /tmp/skip.log
+          grep -q "already matches this invocation; skipping" /tmp/skip.log
+          AFTER=$(sha256sum AIComputerVision/Models/yolo11n.onnx | cut -d' ' -f1)
+          test "$BEFORE" = "$AFTER"
 
       - name: Train + export segmentation model (1 epoch, CPU)
         # The second export path (mask head) through the same backend seam.

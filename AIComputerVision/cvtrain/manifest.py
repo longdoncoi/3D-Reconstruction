@@ -49,7 +49,8 @@ SCHEMA_VERSION = 1
 """Version of the document shape this build writes. See :func:`migrate`."""
 
 # Adding optional entry fields (batch, workers, backend_version,
-# source_weights_sha256, device, dataset_sha256, dataset_content_sha256)
+# source_weights_sha256, device, device_resolved, imgsz_resolved,
+# batch_resolved, export_args, dataset_sha256, dataset_content_sha256)
 # deliberately does *not* bump
 # this: ``ManifestEntry`` is ``total=False``, so their absence is a shape this
 # build already knows how to read, and the consumer that cares —
@@ -111,8 +112,9 @@ class ManifestEntry(TypedDict, total=False):
     backend_version: str
     """Composite exporter identity of the stack that produced this artifact.
 
-    Names ``cvtrain``, ``ultralytics``, ``torch`` and ``onnx``; see
-    :func:`cvtrain.backend.exporter_identity`. Recorded *per entry* (the
+    Names every export-relevant dependency (``cvtrain``, ``ultralytics``,
+    ``torch``, ``onnx`` and ``onnxslim``; see
+    :func:`cvtrain.backend.exporter_identity`). Recorded *per entry* (the
     document-level ``ultralytics`` field describes only the last run) because
     :func:`cvtrain.gate.already_current` has to know which exporter wrote the
     file it is being asked to trust — an Ultralytics upgrade is not the only
@@ -137,6 +139,35 @@ class ManifestEntry(TypedDict, total=False):
     is *absent* in documents written before the field existed. Either way the
     entry is unprovable about its device and is retrained rather than
     trusted."""
+
+    imgsz_resolved: int
+    """Image size the framework actually trained at, when it differs from ``imgsz``.
+
+    Audit only: the framework rounds a size to its stride, so the fact can
+    differ from the request. ``gate.already_current`` compares the *request*
+    (``imgsz``), because the resolution is a pure function of it and of the
+    frozen backend identity — replaying the same request reproduces the same
+    resolution. Absent in documents written before the field existed."""
+
+    batch_resolved: int
+    """Batch size the framework actually used (``-1`` is never a batch).
+
+    Audit only, and deliberately not compared: ``--batch -1`` asks the
+    framework to size the batch from the machine, so the answer is a fact about
+    that machine. ``gate.already_current`` refuses to skip an automatic batch
+    outright (it cannot know the next run's answer before training); the field
+    is recorded so an auditor can tell which batch produced the artifact.
+    Absent in documents written before the field existed."""
+
+    export_args: dict[str, object]
+    """The exporter options the artifact was produced with.
+
+    A *request*: ``format``, ``imgsz``, ``opset`` and the pinned simplification
+    flags (see :data:`cvtrain.backend.EXPORT_OPTIONS`). The same weights
+    exported with another opset are another artifact, so
+    :func:`cvtrain.gate.already_current` compares this mapping and retrains
+    when it is absent — an entry that never recorded its export request is
+    unprovable, not automatically current."""
 
     dataset_sha256: str
     """Digest of ``data.yaml`` captured *before* the artifact was trained.

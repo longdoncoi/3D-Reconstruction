@@ -9,11 +9,10 @@ from typing import Any
 from unittest import mock
 
 from cvtrain.checks import Check, PreflightReport, module_available
-from cvtrain.config import MODEL_REGISTRY, ModelSpec, TrainConfig, register_model_spec
+from cvtrain.config import IMGSZ_STRIDE, MAX_OPSET, MODEL_REGISTRY, ModelSpec, TrainConfig, register_model_spec
 from cvtrain.preflight import (
     MAX_EPOCHS,
     MAX_IMGSZ,
-    MAX_OPSET,
     MAX_WORKERS,
     MIN_IMGSZ,
     MIN_OPSET,
@@ -86,6 +85,17 @@ class HyperparameterTests(unittest.TestCase):
         failed = self._failures(imgsz=MIN_IMGSZ - 1)
         self.assertEqual([check.name for check in failed], ["param.imgsz"])
         self.assertEqual(self._failures(imgsz=MIN_IMGSZ), [])
+
+    def test_an_image_size_off_the_stride_grid_is_rejected_before_training(self) -> None:
+        # The framework rounds 641 up to 672. The export contract compares the
+        # exported static shape with ``--imgsz``, so a run started at 641 would
+        # train for hours and then fail at export. Preflight must refuse it up
+        # front, and the message must name the flag.
+        failed = self._failures(imgsz=IMGSZ_STRIDE * 20 + 1)
+        self.assertEqual([check.name for check in failed], ["param.imgsz"])
+        self.assertIn("--imgsz", failed[0].detail)
+        self.assertEqual(self._failures(imgsz=MIN_IMGSZ), [])
+        self.assertEqual(self._failures(imgsz=IMGSZ_STRIDE * 21), [])
 
     def test_the_automatic_batch_sentinel_is_accepted_but_zero_is_not(self) -> None:
         self.assertEqual(self._failures(batch=-1), [])

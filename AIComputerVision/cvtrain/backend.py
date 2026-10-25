@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar, cast, runtime_checkable
 
 from . import __version__
-from .config import RUN_DIR_PREFIX, ModelSpec, TrainConfig
+from .config import RUN_DIR_PREFIX, ModelSpec, TrainConfig, canonical_device
 from .dataset import dataset_content_fingerprint
 from .errors import BackendUnavailableError, ResumeError
 from .fsio import claim_run_marker, clear_run_marker, touch_run_marker
@@ -33,6 +33,7 @@ from .metrics import coerce_metric
 LOG = logging.getLogger("cvtrain.backend")
 
 __all__ = [
+    "EXPORT_OPTIONS",
     "EpochCallback",
     "RunFacts",
     "TrainPlan",
@@ -65,29 +66,32 @@ def _as_int(value: object) -> int | None:
 
 
 def _normalise_device(value: object) -> str | None:
-    """The canonical spelling of a device request, or ``None`` when unset.
+    """The canonical spelling of a device, or ``None`` when it was unset.
 
-    Mirrors :attr:`cvtrain.config.TrainConfig.device_class`: ``None`` and
-    ``"auto"`` mean "let the framework choose", and ``"0, 1"``/``"0,1"`` are
-    one request. Keeping the spelling identical is what lets the provenance
-    and the skip rule compare them.
+    ``None`` means "this run never named a device" and is kept distinct from
+    ``"auto"``, which is a request. Every named device goes through
+    :func:`cvtrain.config.canonical_device`, so ``"0"``, ``"cuda"`` and
+    ``"cuda:0"`` are one answer and the resume log compares like with like.
     """
 
     if value is None:
         return None
-    raw = str(value).strip()
-    if not raw or raw.lower() == "auto":
-        return "auto"
-    return ",".join(part.strip().lower() for part in raw.split(","))
+    return canonical_device(value)
 
 
 def _device_name(value: object) -> str | None:
-    """A concrete device as the framework reports it (``cpu``, ``cuda:0``…)."""
+    """A concrete device as the framework reports it (``cpu``, ``cuda:0``…).
+
+    The framework reports a ``torch.device``; its ``str`` is already the
+    canonical spelling for the common cases. The canonicaliser is applied
+    anyway because a checkpoint may carry the operator's spelling (``"0"``)
+    and the manifest must not record two names for one device.
+    """
 
     if value is None:
         return None
     text = str(value).strip()
-    return text or None
+    return canonical_device(text) if text else None
 
 
 @dataclass(frozen=True)
@@ -146,12 +150,14 @@ class RunFacts:
     dataset: str | None = None
     imgsz: int | None = None
     batch: int | None = None
-    seed: int | None = None
-    device: str | None = None
-    """Device *request* recorded in the effective argument set (``auto`` when unset)."""
-
     device_resolved: str | None = None
-    """Device the run actually used, as reported by the framework."""
+    """Device the run actually used, in the framework's spelling.
+
+    ``torch.device`` is reported as ``cuda:0``/``cpu``; a multi-GPU argument is
+    kept as the list the framework was told (``cuda:0,cuda:1``). The canonical
+    spelling matters because the next run's resolution is written the same way
+    (ADR 0016).
+    """
 
     source_weights: str | None = None
     """The file the run started from."""
@@ -317,7 +323,21 @@ class TrainingBackend(Protocol[H]):
         """
 
     def export(self, model: TrainedModel[H], cfg: TrainConfig) -> Path:
-        """Export ``model`` to ONNX and return the path of the generated file."""
+        """Export ``model`` to ONNX and return the path of the generated file.
+
+        The call must be driven by exactly :meth:`export_args`: the recorder
+        stores that mapping as the artifact's identity, and a second run skips
+        only when it would ask for the same export.
+        """
+
+    def export_args(self, cfg: TrainConfig) -> dict[str, object]:
+        """The complete option set :meth:`export` will be driven by.
+
+        Values come from the invocation (``--opset``, ``--imgsz``) and from the
+        exporter's pinned defaults: the same weights exported with another
+        opset are another artifact, so "what this run would build" includes
+        the export request, not only the training request.
+        """
 
 
 def metrics_from(results: object) -> dict[str, float]:
@@ -374,13 +394,34 @@ def train_kwargs(cfg: TrainConfig) -> dict[str, object]:
     # ``auto`` is provenance spelling ("let the framework choose"), not a
     # device the framework accepts: only a concrete device is forwarded.
     # The *resolved* device wins when the pipeline has already resolved it —
-    # that is the value the framework is told to use, and the one the
-    # provenance records.
+    # that is the value the framework is told to use. It is deliberately not
+    # the value the manifest records as the request: the request is
+    # ``cfg.device_class`` and the answer is ``cfg.device_resolved``.
     if cfg.device_resolved:
-        kwargs["device"] = cfg.device_resolved
+        kwargs["device"] = canonical_device(cfg.device_resolved)
     elif cfg.device and cfg.device_class != "auto":
-        kwargs["device"] = cfg.device_class
+        kwargs["device"] = canonical_device(cfg.device_class)
     return kwargs
+
+
+EXPORT_OPTIONS: tuple[tuple[str, object], ...] = (
+    ("format", "onnx"),
+    ("simplify", True),
+    ("dynamic", False),
+    ("half", False),
+    ("int8", False),
+    ("nms", False),
+)
+"""The fixed half of the ONNX export request.
+
+These are Ultralytics defaults, spelled out on purpose: a default lives in a
+moving package, and a version that flips one of them changes the emitted graph
+without changing a single recorded training parameter. The pipeline passes
+them explicitly, records the whole mapping in the manifest and compares it on
+the next ``--skip-unchanged`` verdict (see
+:meth:`TrainingBackend.export_args`). ``imgsz``/``opset`` are per-run requests
+and are added by that method.
+"""
 
 
 class UltralyticsBackend:
@@ -648,15 +689,21 @@ class UltralyticsBackend:
             completed = None
         dataset = effective("data")
         dataset_text = str(dataset) if dataset is not None and str(dataset).strip() else None
+        # The framework's effective argument set is the first fact: it preserves
+        # a multi-GPU list (``"0,1"``), which ``trainer.device`` collapses to the
+        # primary device. It is written in the canonical spelling so the next
+        # run's resolution can be compared with it (ADR 0016). ``trainer.device``
+        # is the fallback for a framework that does not echo the argument.
+        reported_device = _device_name(effective("device"))
+        if reported_device in (None, "auto"):
+            reported_device = _device_name(getattr(trainer, "device", None))
         return RunFacts(
             epochs=epochs,
             epochs_completed=completed,
             dataset=dataset_text,
             imgsz=_as_int(effective("imgsz")),
             batch=_as_int(effective("batch")),
-            seed=_as_int(effective("seed")),
-            device=_normalise_device(effective("device")),
-            device_resolved=_device_name(getattr(trainer, "device", None)) or cfg.device_resolved,
+            device_resolved=reported_device or cfg.device_resolved,
             source_weights=str(plan.source_weights),
             resumed_from=str(plan.resume_from) if plan.resume_from is not None else None,
         )
@@ -720,21 +767,65 @@ class UltralyticsBackend:
         device = (cfg.device or "").strip().lower()
         if not device or device == "auto" or device == "cpu":
             return True, "device ok"
-        if "cuda" in device or device.isdigit() or any(token.isdigit() for token in device.split(",")):
-            try:
-                import torch
-
-                if not torch.cuda.is_available():
-                    return False, f"device {cfg.device!r} requested but CUDA is not available in torch"
-            except ImportError:
-                pass
+        components = [component.strip() for component in device.split(",") if component.strip()]
+        cuda_components = [
+            component
+            for component in components
+            if component == "cuda" or component.startswith("cuda:") or component.isdigit()
+        ]
+        if not cuda_components:
+            # ``mps``/``metal`` are platform devices; their availability is the
+            # framework's answer, not something this check can prove.
+            return True, "device ok"
+        if len(cuda_components) != len(components):
+            return False, (
+                f"device {cfg.device!r} mixes CUDA and non-CUDA components; "
+                "request either a CUDA device list or cpu, not both"
+            )
+        try:
+            import torch
+        except ImportError:
+            # The dependency preflight owns the missing-package verdict; this
+            # check must not turn "torch is not installed" into a device error.
+            return True, "device ok"
+        except Exception as exc:  # a broken DLL is not the same as a missing package
+            return False, f"torch could not be loaded ({exc}); fix the installation or pass --device cpu"
+        try:
+            available = bool(torch.cuda.is_available())
+        except Exception as exc:
+            return False, f"torch cannot report CUDA availability ({exc}); fix the installation or pass --device cpu"
+        if not available:
+            return False, f"device {cfg.device!r} requested but CUDA is not available in torch"
+        try:
+            count = int(torch.cuda.device_count())
+        except Exception as exc:
+            return False, f"torch cannot report the CUDA device count ({exc}); pass --device cpu or fix the installation"
+        for component in cuda_components:
+            if component == "cuda":
+                index = 0
+            elif component.startswith("cuda:"):
+                suffix = component[5:]
+                if not suffix.isdigit():
+                    return False, f"device {cfg.device!r} has an invalid CUDA index {component!r}; use cuda:N"
+                index = int(suffix)
+            else:
+                index = int(component)
+            if index >= count:
+                return False, (
+                    f"device {cfg.device!r} asks for CUDA index {index}, but torch sees {count} device(s); "
+                    f"pass --device 0..{count - 1} or cpu"
+                )
         return True, "device ok"
 
     def resolve_device(self, cfg: TrainConfig) -> str:
         requested = cfg.device_class
         if requested != "auto":
-            # An explicit request is already the answer.
-            return requested
+            # An explicit request is already the answer — but written in the
+            # framework's spelling. ``--device 0`` must resolve to ``cuda:0``,
+            # not to the string ``"0"``: the framework reports a ``torch.device``
+            # (``cuda:0``), and comparing that fact with the raw request spelling
+            # made an identical explicit-device re-run retrain forever (ADR 0016).
+            return canonical_device(requested)
         try:
             import torch
         except ImportError:
@@ -766,5 +857,8 @@ class UltralyticsBackend:
                 return False, f"{name} is not importable ({exc}); run: pip install -r requirements.txt"
         return True, "framework and declared dependencies importable"
 
+    def export_args(self, cfg: TrainConfig) -> dict[str, object]:
+        return {**dict(EXPORT_OPTIONS), "imgsz": cfg.imgsz, "opset": cfg.opset}
+
     def export(self, model: TrainedModel[Any], cfg: TrainConfig) -> Path:
-        return Path(model.handle.export(format="onnx", opset=cfg.opset))
+        return Path(model.handle.export(**self.export_args(cfg)))

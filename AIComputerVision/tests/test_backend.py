@@ -76,6 +76,9 @@ class ProtocolTests(unittest.TestCase):
             def export(self, model: TrainedModel[Any], cfg: TrainConfig) -> Path:  # pragma: no cover
                 raise NotImplementedError
 
+            def export_args(self, cfg: TrainConfig) -> dict[str, object]:  # pragma: no cover
+                raise NotImplementedError
+
         self.assertIsInstance(Minimal(), TrainingBackend)
 
     def test_missing_method_breaks_conformance(self) -> None:
@@ -124,19 +127,23 @@ class MetricsFromTests(unittest.TestCase):
 
 
 class DeviceSpellingTests(unittest.TestCase):
-    """The one spelling of a device request, shared by provenance and the gate."""
+    """The one spelling of a device, shared by provenance and the gate (ADR 0016)."""
 
     def test_normalises_auto_and_separators(self) -> None:
         self.assertIsNone(_normalise_device(None))
         self.assertEqual(_normalise_device("auto"), "auto")
         self.assertEqual(_normalise_device("  AUTO  "), "auto")
-        self.assertEqual(_normalise_device("0, 1"), "0,1")
+        self.assertEqual(_normalise_device("0, 1"), "cuda:0,cuda:1")
         self.assertEqual(_normalise_device("CPU"), "cpu")
 
     def test_reports_a_concrete_device_or_nothing(self) -> None:
         self.assertIsNone(_device_name(None))
         self.assertIsNone(_device_name("   "))
         self.assertEqual(_device_name(" cuda:0 "), "cuda:0")
+        # The framework's fact and the operator's request must not be two
+        # names for one device: ``--device 0`` runs on ``cuda:0``.
+        self.assertEqual(_device_name("0"), "cuda:0")
+        self.assertEqual(_device_name("cuda"), "cuda:0")
 
 
 class TrainKwargsTests(unittest.TestCase):
@@ -173,6 +180,7 @@ class _FakeYOLO:
     epochs: int | None = None
     completed_epoch: int | None = None
     trainer_args: dict[str, Any] | None = None
+    trainer_device: str | None = None
     checkpoint: dict[str, Any] | None = None
     export_path = ""
 
@@ -198,6 +206,8 @@ class _FakeYOLO:
             self.trainer.epoch = _FakeYOLO.completed_epoch
         if _FakeYOLO.trainer_args is not None:
             self.trainer.args = SimpleNamespace(**_FakeYOLO.trainer_args)
+        if _FakeYOLO.trainer_device is not None:
+            self.trainer.device = _FakeYOLO.trainer_device
         return _Results({"metrics/mAP50(B)": 0.77, "non_numeric": "dropped"})
 
     def export(self, **kwargs: Any) -> str:
@@ -214,6 +224,7 @@ def _stub_ultralytics(
     epochs: int | None = None,
     completed_epoch: int | None = None,
     trainer_args: dict[str, Any] | None = None,
+    trainer_device: str | None = None,
     checkpoint: dict[str, Any] | None = None,
 ) -> Iterator[tuple[Any, Any]]:
     """Install a fake ``ultralytics`` package for the duration of the block."""
@@ -229,6 +240,7 @@ def _stub_ultralytics(
     _FakeYOLO.epochs = epochs
     _FakeYOLO.completed_epoch = completed_epoch
     _FakeYOLO.trainer_args = trainer_args
+    _FakeYOLO.trainer_device = trainer_device
     _FakeYOLO.checkpoint = checkpoint
 
     settings: dict[str, Any] = {}
@@ -483,17 +495,23 @@ class DeviceResolutionTests(_SandboxedTestCase):
             self.assertEqual(UltralyticsBackend().resolve_device(TrainConfig()), "cpu")
 
     def test_an_explicit_device_is_its_own_answer(self) -> None:
-        # No probing, no policy: the operator named the device.
+        # No probing, no policy: the operator named the device. It is written
+        # in the framework's spelling, because the framework reports a
+        # ``torch.device`` and an identical rerun must compare equal (ADR 0016).
         backend = UltralyticsBackend()
-        self.assertEqual(backend.resolve_device(TrainConfig(device="0, 1")), "0,1")
+        self.assertEqual(backend.resolve_device(TrainConfig(device="0, 1")), "cuda:0,cuda:1")
+        self.assertEqual(backend.resolve_device(TrainConfig(device="0")), "cuda:0")
         self.assertEqual(backend.resolve_device(TrainConfig(device="cpu")), "cpu")
         self.assertEqual(backend.resolve_device(TrainConfig(device="cuda:0")), "cuda:0")
 
     def test_the_resolved_device_is_what_the_framework_is_told_to_use(self) -> None:
         cfg = TrainConfig(models=("det",), device_resolved="cuda:0")
         self.assertEqual(train_kwargs(cfg)["device"], "cuda:0")
-        # Without a resolution, an explicit request is still forwarded.
+        # Without a resolution, an explicit request is still forwarded — in
+        # the spelling the framework echoes back, so a rerun can compare it.
         self.assertEqual(train_kwargs(TrainConfig(device="cpu"))["device"], "cpu")
+        self.assertEqual(train_kwargs(TrainConfig(device="0"))["device"], "cuda:0")
+        self.assertEqual(train_kwargs(TrainConfig(device="0,1"))["device"], "cuda:0,cuda:1")
         self.assertNotIn("device", train_kwargs(TrainConfig()))
 
 
@@ -869,7 +887,7 @@ class TrainTests(_SandboxedTestCase):
 
     def test_effective_facts_come_from_the_trainer_arguments(self) -> None:
         # The framework may resolve auto-batch and image size itself; the
-        # provenance must record what it used, not what was requested.
+        # manifest records the request and the resolved fact side by side.
         spec = MODEL_REGISTRY["det"]
         with _stub_ultralytics(
             export_path=str(self.exported_onnx),
@@ -889,8 +907,45 @@ class TrainTests(_SandboxedTestCase):
         self.assertEqual(model.facts.dataset, str(self.cfg.data_yaml))
         self.assertEqual(model.facts.imgsz, 320)
         self.assertEqual(model.facts.batch, 8)
-        self.assertEqual(model.facts.seed, 7)
-        self.assertEqual(model.facts.device, "cpu")
+        # The trainer's argument set is the fact, even when the orchestrator
+        # never resolved the device itself: the framework echoes what it ran.
+        self.assertEqual(model.facts.device_resolved, "cpu")
+
+    def test_a_multi_gpu_request_is_kept_as_the_list_not_the_primary_device(self) -> None:
+        # ``trainer.device`` is a single ``torch.device`` (the primary one);
+        # the argument set preserves what the run was told. Recording only the
+        # primary device would let a ``0,1`` rerun look like a ``0`` run.
+        spec = MODEL_REGISTRY["det"]
+        with _stub_ultralytics(
+            export_path=str(self.exported_onnx),
+            trainer_args={"device": "0,1"},
+            trainer_device="cuda:0",
+        ):
+            backend = UltralyticsBackend()
+            backend.prepare(self.cfg)
+            model = self._train(backend, spec, self.cfg, lambda epoch, total: None)
+        self.assertEqual(model.facts.device_resolved, "cuda:0,cuda:1")
+
+    def test_the_trainer_device_is_the_fallback_when_the_arguments_lack_one(self) -> None:
+        spec = MODEL_REGISTRY["det"]
+        with _stub_ultralytics(
+            export_path=str(self.exported_onnx), trainer_device="cuda:0"
+        ):
+            backend = UltralyticsBackend()
+            backend.prepare(self.cfg)
+            model = self._train(backend, spec, self.cfg, lambda epoch, total: None)
+        self.assertEqual(model.facts.device_resolved, "cuda:0")
+
+    def test_an_unreported_device_falls_back_to_the_resolution(self) -> None:
+        # Neither the arguments nor the trainer can say: the recorder keeps
+        # the resolution the orchestrator made, rather than inventing one.
+        spec = MODEL_REGISTRY["det"]
+        self.cfg.device_resolved = "cpu"
+        with _stub_ultralytics(export_path=str(self.exported_onnx)):
+            backend = UltralyticsBackend()
+            backend.prepare(self.cfg)
+            model = self._train(backend, spec, self.cfg, lambda epoch, total: None)
+        self.assertEqual(model.facts.device_resolved, "cpu")
 
     def test_reports_no_epoch_count_when_the_framework_cannot_say(self) -> None:
         # "Cannot prove" stays absent: the recorder then keeps the request
@@ -905,16 +960,29 @@ class TrainTests(_SandboxedTestCase):
 
 
 class ExportTests(_SandboxedTestCase):
-    def test_requests_onnx_with_the_configured_opset(self) -> None:
+    def test_requests_the_recorded_export_options(self) -> None:
+        # The recorded request and the framework call are the same mapping:
+        # otherwise the manifest would describe an export nobody performed.
         self.cfg.opset = 17
         with _stub_ultralytics(export_path=str(self.exported_onnx)):
             backend = UltralyticsBackend()
             backend.prepare(self.cfg)
             trained = self._train(backend, MODEL_REGISTRY["det"], self.cfg, lambda epoch, total: None)
             produced = backend.export(trained, self.cfg)
+            expected = backend.export_args(self.cfg)
 
         assert _FakeYOLO.last is not None
-        self.assertEqual(_FakeYOLO.last.export_kwargs, {"format": "onnx", "opset": 17})
+        self.assertEqual(_FakeYOLO.last.export_kwargs, expected)
+        self.assertEqual(expected["format"], "onnx")
+        self.assertEqual(expected["opset"], 17)
+        self.assertEqual(expected["imgsz"], self.cfg.imgsz)
+        # The simplification flags are pinned, not inherited from a package
+        # default that can move between releases.
+        self.assertIs(expected["simplify"], True)
+        self.assertIs(expected["dynamic"], False)
+        self.assertIs(expected["half"], False)
+        self.assertIs(expected["int8"], False)
+        self.assertIs(expected["nms"], False)
         self.assertEqual(produced, self.exported_onnx)
 
 
@@ -928,27 +996,116 @@ class CheckDeviceTests(unittest.TestCase):
 
     def test_cuda_device_passes_when_torch_cuda_is_available(self) -> None:
         backend = UltralyticsBackend()
-        fake_torch = types.ModuleType("torch")
-        fake_torch.cuda = SimpleNamespace(is_available=lambda: True)  # type: ignore[attr-defined]
-        with mock.patch.dict("sys.modules", {"torch": fake_torch}):
+        with mock.patch.dict("sys.modules", {"torch": self._torch(cuda=True, count=1)}):
             ok, msg = backend.check_device(TrainConfig(device="cuda"))
             self.assertTrue(ok)
             self.assertEqual(msg, "device ok")
 
     def test_cuda_device_fails_when_torch_cuda_is_unavailable(self) -> None:
         backend = UltralyticsBackend()
-        fake_torch = types.ModuleType("torch")
-        fake_torch.cuda = SimpleNamespace(is_available=lambda: False)  # type: ignore[attr-defined]
-        with mock.patch.dict("sys.modules", {"torch": fake_torch}):
+        with mock.patch.dict("sys.modules", {"torch": self._torch(cuda=False, count=0)}):
             ok, msg = backend.check_device(TrainConfig(device="0"))
             self.assertFalse(ok)
             self.assertIn("CUDA is not available", msg)
 
     def test_cuda_device_passes_when_torch_is_not_installed(self) -> None:
+        # The dependency preflight owns "torch missing"; this check must not
+        # turn a missing package into a device verdict.
         backend = UltralyticsBackend()
         with mock.patch.dict("sys.modules", {"torch": None}):
             ok, _msg = backend.check_device(TrainConfig(device="0,1"))
             self.assertTrue(ok)
+
+    def test_an_index_beyond_the_visible_gpus_fails_preflight(self) -> None:
+        # The framework's own selector rejects it, so preflight must too —
+        # otherwise a GPU-less index is only discovered after the prompt, when
+        # the traceback has replaced the actionable message.
+        backend = UltralyticsBackend()
+        with mock.patch.dict("sys.modules", {"torch": self._torch(cuda=True, count=1)}):
+            ok, msg = backend.check_device(TrainConfig(device="5"))
+            self.assertFalse(ok)
+            self.assertIn("CUDA index 5", msg)
+            self.assertIn("1 device(s)", msg)
+
+    def test_a_multi_gpu_list_checks_every_index(self) -> None:
+        backend = UltralyticsBackend()
+        with mock.patch.dict("sys.modules", {"torch": self._torch(cuda=True, count=2)}):
+            self.assertEqual(backend.check_device(TrainConfig(device="0,1")), (True, "device ok"))
+            self.assertEqual(backend.check_device(TrainConfig(device="cuda:0")), (True, "device ok"))
+        with mock.patch.dict("sys.modules", {"torch": self._torch(cuda=True, count=1)}):
+            ok, msg = backend.check_device(TrainConfig(device="0,1"))
+            self.assertFalse(ok)
+            self.assertIn("CUDA index 1", msg)
+
+    def test_mixing_cuda_with_a_non_cuda_component_fails(self) -> None:
+        # ``0,cpu`` is not a device list the framework can honour; accepting
+        # it would defer a grammar error to the framework selector.
+        backend = UltralyticsBackend()
+        with mock.patch.dict("sys.modules", {"torch": self._torch(cuda=True, count=2)}):
+            ok, msg = backend.check_device(TrainConfig(device="0,cpu"))
+            self.assertFalse(ok)
+            self.assertIn("mixes CUDA and non-CUDA", msg)
+
+    def test_a_broken_torch_install_fails_instead_of_passing(self) -> None:
+        class _Broken:
+            @staticmethod
+            def is_available() -> bool:
+                raise OSError("DLL load failed")
+
+        backend = UltralyticsBackend()
+        fake_torch = types.ModuleType("torch")
+        fake_torch.cuda = _Broken()  # type: ignore[attr-defined]
+        with mock.patch.dict("sys.modules", {"torch": fake_torch}):
+            ok, msg = backend.check_device(TrainConfig(device="0"))
+            self.assertFalse(ok)
+            self.assertIn("cannot report CUDA availability", msg)
+
+    def test_an_unreadable_device_count_fails_preflight(self) -> None:
+        backend = UltralyticsBackend()
+        fake_torch = types.ModuleType("torch")
+        fake_torch.cuda = SimpleNamespace(  # type: ignore[attr-defined]
+            is_available=lambda: True,
+            device_count=lambda: (_ for _ in ()).throw(RuntimeError("no driver")),
+        )
+        with mock.patch.dict("sys.modules", {"torch": fake_torch}):
+            ok, msg = backend.check_device(TrainConfig(device="0"))
+            self.assertFalse(ok)
+            self.assertIn("cannot report the CUDA device count", msg)
+
+    def test_a_torch_import_that_raises_is_a_failed_preflight(self) -> None:
+        # A missing package is the dependency preflight's verdict, but a
+        # package that is present and cannot load its native DLL is a device
+        # failure: it must not escape this check as a traceback.
+        import builtins
+
+        backend = UltralyticsBackend()
+        real_import = builtins.__import__
+
+        def broken_import(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "torch":
+                raise OSError("DLL load failed")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=broken_import):
+            ok, msg = backend.check_device(TrainConfig(device="0"))
+        self.assertFalse(ok)
+        self.assertIn("torch could not be loaded", msg)
+
+    def test_an_invalid_cuda_index_spelling_fails_preflight(self) -> None:
+        # The CLI grammar rejects this first, but check_device is also a
+        # backend seam: it must fail closed on its own, not call int() and
+        # crash.
+        backend = UltralyticsBackend()
+        with mock.patch.dict("sys.modules", {"torch": self._torch(cuda=True, count=1)}):
+            ok, msg = backend.check_device(TrainConfig(device="cuda:abc"))
+        self.assertFalse(ok)
+        self.assertIn("invalid CUDA index", msg)
+
+    @staticmethod
+    def _torch(*, cuda: bool, count: int) -> types.ModuleType:
+        module = types.ModuleType("torch")
+        setattr(module, "cuda", SimpleNamespace(is_available=lambda: cuda, device_count=lambda: count))
+        return module
 
 
 

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import manifest as manifest_mod
-from .config import ModelSpec, TrainConfig
+from .config import AUTO_BATCH, ModelSpec, TrainConfig, canonical_device
 from .dataset import dataset_content_fingerprint
 from .errors import QualityGateError
 from .fsio import sha256_file
@@ -195,6 +195,7 @@ def already_current(
     manifest: manifest_mod.Manifest,
     backend_version: str,
     *,
+    export_args: dict[str, object],
     dataset: DatasetSnapshot | None = None,
 ) -> bool:
     """Whether the published ONNX already *is* the artifact this run would build.
@@ -206,7 +207,13 @@ def already_current(
     * every recorded hyper-parameter matches this invocation — ``epochs``,
       ``imgsz``, ``seed``, ``opset``, ``batch`` and ``workers``. Omitting
       ``batch``/``workers`` would let a differently-trained run hide behind an
-      identical file name;
+      identical file name. These fields are the **request**: the framework's
+      resolved batch or rounded image size is recorded separately and is not
+      what the next invocation asks for again (ADR 0015);
+    * the export request matches too (``export_args``). The same weights
+      exported with another opset, simplification or input size are another
+      artifact, so the exporter options are part of "what this run would
+      build". An entry that never recorded them is unprovable and retrained;
     * the dataset *definition* still hashes the same (``dataset_sha256``) and
       the ``device`` class matches — a re-pointed dataset or a CPU-vs-GPU run
       is a different artifact behind the same parameters. The dataset is
@@ -219,7 +226,15 @@ def already_current(
       the second, a GPU-trained artifact would pass for a CPU run whenever
       both were requested as ``auto``. Both sides must be known: an
       unresolved configuration is retrained too, because it cannot know what
-      it would build;
+      it would build. The comparison is made in the framework's spelling
+      (``0`` ≡ ``cuda:0``), so two names for one device are not two
+      experiments;
+    * the requested batch is not ``AUTO_BATCH``. The automatic batch is sized
+      by the framework from the machine's memory, so this run's batch is not
+      known before training — and comparing only the request (``-1`` on both
+      sides) would let a differently-sized run pass for the published one.
+      A batch the operator named is comparable; one the framework guesses is
+      not, so the model is retrained;
     * the dataset *content* still hashes the same
       (``dataset_content_sha256``). An entry without that digest is not
       comparable at all: "we did not record it" means "not vouchable", so the
@@ -242,6 +257,11 @@ def already_current(
     do not have cannot be assumed to match. An entry written before a factor
     was recorded fails the same way, for the same reason.
 
+    ``export_args`` is required and keyword-only: it is the backend's own
+    answer to "what would :meth:`TrainingBackend.export` be told?", and a
+    caller that cannot produce it cannot claim the published artifact is
+    current.
+
     ``dataset`` reuses a run-wide :func:`snapshot_dataset` result — a
     multi-model run then hashes the data once instead of once per model. When
     omitted, this call reads the dataset itself.
@@ -263,6 +283,13 @@ def already_current(
     # recorded value happens to agree, a non-resume run would not reproduce it,
     # so the artifact is not "what this invocation would build".
     if entry.get("resume_from"):
+        return False
+    # The automatic batch is a request the framework turns into a machine-sized
+    # answer during training. "Cannot know what this run would build" is
+    # retrained, exactly like an unresolved device.
+    if cfg.batch == AUTO_BATCH:
+        return False
+    if entry.get("export_args") != export_args:
         return False
     recorded = (
         entry.get("epochs"),
@@ -302,7 +329,11 @@ def already_current(
     # than the current path.)
     if cfg.device_resolved is None:
         return False
-    if entry.get("device_resolved") != cfg.device_resolved:
+    # Compare in the framework's spelling (``0`` ≡ ``cuda:0``,
+    # ``0,1`` ≡ ``cuda:0,cuda:1``). An entry written by an older build may
+    # carry the operator's spelling; it describes the same device, so the
+    # comparison must not turn syntax into a different experiment (ADR 0016).
+    if canonical_device(entry.get("device_resolved")) != canonical_device(cfg.device_resolved):
         return False
     # The dataset *path* is recorded as provenance but deliberately **not**
     # compared: a path is not a fact about the data, it is a fact about one

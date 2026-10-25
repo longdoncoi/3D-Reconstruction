@@ -26,10 +26,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
 from .checks import module_available
-from .config import ModelSpec, TrainConfig
+from .config import MAX_OPSET, ModelSpec, TrainConfig
 from .dataset import dataset_class_count
 from .errors import ExportContractError
-from .preflight import MAX_OPSET
 
 if TYPE_CHECKING:  # ``onnx`` is imported lazily in ``_load``: --help must not need it
     import onnx

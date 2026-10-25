@@ -1,10 +1,10 @@
 # AIComputerVision — Scorecard
 
 > Số đo được, mỗi số đều do một lệnh trong repo này tạo ra — không có gì ở
-> đây là ước lượng. **Đo lần cuối: 2026-10-24**, Windows, Python 3.11,
+> đây là ước lượng. **Đo lần cuối: 2026-10-25**, Windows, Python 3.11,
 > dependency theo `requirements-test.lock` (`ruff==0.16.0`, `mypy==2.4.0`,
 > `coverage==7.16.2`, `onnx==1.21.0`, `onnxruntime==1.20.1`, `numpy==1.26.4`),
-> GPU NVIDIA RTX 3050 (chỉ dùng cho lần retrain ở N1 — bốn cổng đầu chạy
+> GPU NVIDIA RTX 3050 (dùng cho các lần retrain N1/N17 — bốn cổng đầu chạy
 > offline, không cần GPU).
 >
 > Tài liệu này **không tuyên bố một điểm số**. Nó ghi những gì đo được, cách
@@ -15,18 +15,18 @@
 
 ## 1. Cổng chất lượng
 
-| Cổng | Lệnh | Đo được 2026-10-23 |
+| Cổng | Lệnh | Đo được 2026-10-25 |
 |------|------|---------------------|
 | Lint | `ruff check .` | 0 issue |
 | Kiểu | `python -m mypy` | 0 issue, 33 file (`disallow_untyped_defs`, `warn_return_any`, `strict_equality`…) |
 | Byte-compile | `python -m compileall -q cvtrain tests TrainModel.py scripts` | sạch |
-| Test | `python -m unittest discover -s tests` | **508 test, 0 fail** (499 trước ADR 0014) |
-| Coverage | `coverage run -m unittest discover -s tests && coverage report` | **100%** — 1 919 stmts / 490 branch, 0 miss, 0 partial (`fail_under = 100`) |
-| Mutation | `python scripts/mutation_check.py` | **107/107 killed**, 0 survived, 0 hung, 0 stale; `MIN_MUTANTS = 107` — xoá một mutant là gate đỏ |
+| Test | `python -m unittest discover -s tests` | **530 test, 0 fail** (516 trước ADR 0016, 508 trước ADR 0015) |
+| Coverage | `coverage run -m unittest discover -s tests && coverage report` | **100%** — 1 977 stmts / 518 branch, 0 miss, 0 partial (`fail_under = 100`) |
+| Mutation | `python scripts/mutation_check.py` | **126/126 killed**, 0 survived, 0 hung, 0 stale; `MIN_MUTANTS = 126` — xoá một mutant là gate đỏ |
 | Ranh giới kiến trúc | `python -m unittest discover -s tests -p "test_architecture.py"` | 13 test: đồ thị phụ thuộc một chiều, heavy dep lazy + một owner, `UltralyticsBackend` chỉ ở `cli.py`, Layout README ↔ package, cờ CLI ↔ README (hai chiều) |
 | Hợp đồng C++ | `python -m unittest discover -s tests -p "test_contract.py"` + `-p "test_qt_contract.py"` | 7 + 9 test: tên file ONNX, trần opset theo ORT được pin, schema tensor ↔ `AIYoloPostProcessor.h`, ngưỡng IoU ↔ `AIProcessor.cpp`, argv/nhãn/regex `pct=` ↔ `AITrainDockWidget.cpp` |
 | **Chuỗi công cụ** (ADR 0012) | `python -m unittest discover -s tests -p "test_toolchain_contract.py"` | 9 test: mọi requirement là pin chính xác (ngoại lệ `torch` có lý do), `onnxruntime` = `ONNXRUNTIME_VERSION`, lock mang digest cho từng gói, CI cài lock bằng `--require-hashes` |
-| **Hai nền tảng + resume hai tầng** (ADR 0012) | `python -m unittest discover -s tests -p "test_ci_contract.py"` | 10 test: cổng chạy trên `windows-latest`, mutation phụ thuộc nền tảng được quét lại trên Windows, job real-dependency còn huấn luyện → cắt → `--resume` và chạy cho pull request, và job thật thứ hai chạy trên Windows |
+| **Hai nền tảng + resume hai tầng** (ADR 0012) | `python -m unittest discover -s tests -p "test_ci_contract.py"` | 11 test: cổng chạy trên `windows-latest`, mutation phụ thuộc nền tảng được quét lại trên Windows, job real-dependency còn huấn luyện → cắt → `--resume` và chạy cho pull request, job thật thứ hai chạy trên Windows, và một lần chạy lại y hệt (default device) phải **skip** |
 | Verdict | `python TrainModel.py --verify-manifest` | exit 0; sha256 của cả 3 artifact khớp manifest |
 
 > **Cổng chất lượng được cài từ lock hash-pinned** (ADR 0012):
@@ -46,7 +46,7 @@
 > lọt vào nhánh huấn luyện sẽ **fail nhanh ở preflight** thay vì chạy thật
 > (xem ADR 0007).
 >
-> **Số mutant cũng là một gate.** `MIN_MUTANTS = 107` (cùng quy tắc với phía
+> **Số mutant cũng là một gate.** `MIN_MUTANTS = 126` (cùng quy tắc với phía
 > Python service, ADR 0032, và gate C++): xoá một mutant mà không có quyết
 > định thì suite vẫn xanh, coverage vẫn 100 %, và quyết định mà mutant đó ghim
 > lặng lẽ mất người bảo vệ. Gate kiểm tra floor **trước** khi chạy sandbox nên
@@ -65,10 +65,10 @@
 | # | Tiêu chí | Điều kiện kiểm tra | Trạng thái |
 |---|----------|--------------------|-----------|
 | **C1** | 5 cổng xanh | Lint + kiểu + test + coverage + mutation đều exit 0 | ✅ |
-| **C2** | Không dòng nào thoát khỏi phép đo | `fail_under = 100` (statement **và** branch) trong `pyproject.toml`; CI đỏ nếu dưới | ✅ 1 919/1 919 |
-| **C3** | Mọi quyết định trọng yếu đã được ghim | 107 mutant, 0 survived, 0 hung, 0 stale; **số mutant là một floor** (`MIN_MUTANTS = 107`) | ✅ 107/107 |
-| **C4** | Nợ đã đo và ghi | Bảng §3 — mỗi dòng có số đo, cách đóng và cơ chế ghim | ✅ **14 đóng / 0 đang mở** |
-| **C5** | Tài liệu khớp code | README ↔ CLI hai chiều, Layout ↔ package, ADR 0003/0008 ↔ manifest thật, hợp đồng C++ hai chiều | ✅ |
+| **C2** | Không dòng nào thoát khỏi phép đo | `fail_under = 100` (statement **và** branch) trong `pyproject.toml`; CI đỏ nếu dưới | ✅ 1 977/1 977 |
+| **C3** | Mọi quyết định trọng yếu đã được ghim | 126 mutant, 0 survived, 0 hung, 0 stale; **số mutant là một floor** (`MIN_MUTANTS = 126`) | ✅ 126/126 |
+| **C4** | Nợ đã đo và ghi | Bảng §3 — mỗi dòng có số đo, cách đóng và cơ chế ghim | ✅ **19 đóng / 0 đang mở** |
+| **C5** | Tài liệu khớp code | README ↔ CLI hai chiều, Layout ↔ package, ADR 0003/0008/0015/0016 ↔ manifest + device thật, hợp đồng C++ hai chiều | ✅ |
 
 Điểm khác biệt so với trước: **C3 trước đây chỉ phủ 8 quyết định**. Một mutant
 đảo chiều làm `exporter_identity()` ghi cứng `onnx=unknown` — tắt đúng cái bảo
@@ -104,6 +104,43 @@ phẩm ship Windows (kèm comment CI còn số cũ). Cả năm đóng bằng
 suite 499 → **508 test**, coverage vẫn 100 % (1 919/490), mutation set
 101 → **107**.
 
+Lần rà soát thứ hai ngày 2026-10-24 (sau khi N14 đóng) tìm **N15–N18**: cùng
+một lỗi *request bị ghi bằng fact* còn ở **device** (`RunFacts.device` lấy
+`trainer.args.device`, mà Ultralytics viết lại thành `"0"`/`"cpu"`), **batch**
+(`--batch -1` ghi batch đã phân giải) và **imgsz** (ghi size đã làm tròn) — cả
+ba đều là trường `gate` đem so với *yêu cầu* của lần sau, nên lần chạy lại y
+hệt **không bao giờ skip** (P1); **N16**: `imgsz` không bắt buộc bội số 32 nên
+`641` train xong mới fail ở export, và `onnx_contract` phải import
+`preflight` chỉ để lấy `MAX_OPSET` (đảo chiều phụ thuộc); **N17**: manifest đã
+ship vẫn mang định dạng cũ (4 trường identity, `device="auto"`, không
+`export_args`) và **không thể tái sinh trung thực** trên máy này ở thời điểm
+rà soát vì thiếu dataset — lần `--skip-unchanged` tới sẽ retrain cả ba, đúng
+fail-closed;
+**N18**: `--skip-unchanged` chưa từng được chứng minh với framework thật (mọi
+job CI đều truyền `--device cpu`, nên đúng cái đường `auto` bị lỗi không được
+chạy). N15/N16/N18 đóng bằng
+[ADR 0015](adr/0015-the-request-and-the-fact-have-separate-homes.md);
+suite 508 → **516 test**, coverage 100 % (1 934/494), mutation set
+107 → **116**. N17 ở lại bảng nợ với lệnh tái lập; nó **đóng ngày
+2026-10-25** — lần chạy đầu retrain cả ba, lần chạy lại in `already matches
+this invocation; skipping` cho cả ba và SHA-256 của ba file ONNX không đổi
+(xem §3).
+
+Lần rà soát thứ ba ngày 2026-10-25 (trong khi chạy lệnh tái lập N17) tìm
+**N19**: phép so sánh `device_resolved` vẫn so *hai không gian tên khác nhau*.
+Framework báo `cuda:0` cho `--device 0`, còn `resolve_device` trả lại `"0"`;
+`trainer.device` lại thu danh sách `0,1` về GPU chính. Vì vậy `--device 0` và
+`--device 0,1` **không bao giờ** skip, dù N15 đã đóng đường `auto`. Cùng lúc
+`check_device` chỉ hỏi CUDA có sẵn, nên `--device 5` trên máy một GPU lọt qua
+preflight và chỉ chết bên trong framework sau khi người vận hành đã xác nhận
+retrain. N19 đóng bằng
+[ADR 0016](adr/0016-the-device-fact-is-canonical-and-every-index-is-checked.md):
+`canonical_device()` là cách viết duy nhất của *sự thật*, fact đọc từ
+`trainer.args.device` trước (giữ multi-GPU), gate so sánh canonical cả hai phía,
+và `check_device` kiểm tra từng index + danh sách trộn + lỗi `torch`. Suite
+516 → **530 test**, coverage vẫn 100 % (1 977/518), mutation set 116 → **126**
+(hai anchor cũ được thay bằng ba, không xoá).
+
 ## 3. Bảng nợ
 
 Nguyên tắc (giống `Docs/ARCHITECTURE_SRC.md` phía C++): **nợ phải được đo và
@@ -129,6 +166,11 @@ ghi chú.
 | N13 | **Resume, provenance, liveness và metric mô tả lời gọi thay vì run.** (a) manifest ghi `cfg.*` của lần gọi dù resume dùng tham số checkpoint, và digest là của checkpoint gốc thay vì file run thực sự bắt đầu; (b) `--resume` fail-open: không có checkpoint thì bắt đầu run mới, checkpoint đã xong/không có `train_args` vẫn đưa cho framework, dataset khác byte bị bỏ qua; (c) lock/run chỉ dùng mtime 24 h: crash cùng máy phải chờ hết cửa sổ, còn run đang sống có thể bị prune giữa epoch; (d) metric nhận `bool`/`NaN`/`Infinity` và có thể crash `OverflowError`; (e) artifact của run `--resume` vẫn được `--skip-unchanged` bỏ qua | `cvtrain/backend.py`, `trainer.py`, `gate.py`, `fsio.py`, `manifest.py`; `Models/manifest.json` | **ADR 0013**: `TrainPlan` chốt file bắt đầu *trước* snapshot; resume fail-closed và so sánh dataset theo byte; `RunFacts` ghi budget/completed/`resume_from`, digest là của file thực sự bắt đầu; `resume_from` chặn skip; lock/run lease ghi host + PID, heartbeat 30 s, chủ chết → stale ngay, chủ sống → không steal, không biết → tuổi lease; metric predicate ở `metrics.py` + `allow_nan=False`; nightly dùng `ResumeRuns` riêng và assert effective facts. Ghim bằng 499 test, coverage 100 % (1 902/486), **101 mutant** (21 mutant mới cho N13) | ✅ Đóng (2026-10-23) |
 
 | N14 | **Năm claim an toàn còn đúng trong tài liệu nhưng sai trong code.** (a) Run `--resume` dùng lại thư mục run cũ nhưng `touch_run_marker` chỉ làm tươi mtime, không đổi owner — marker vẫn ghi PID đã chết, nên `--prune-runs` đọc run đang sống là "bỏ hoang" suốt epoch đầu (có thể xoá nó); (b) `exporter_identity` ghi `torch`/`onnx` nhưng bỏ sót `onnxslim` — simplifier mặc định của Ultralytics — nên đổi simplifier vẫn giữ nguyên `backend_version` và `--skip-unchanged` bỏ qua artifact không tái lập; (c) `check_importable` chỉ `import ultralytics`, còn `onnx`/`onnxruntime`/`onnxslim` chỉ được `find_spec` kiểm, nên một cài đặt có dist nhưng thiếu DLL qua preflight rồi chết ở export; (d) `_run_activity_mtime` trả `0.0` khi `stat` lỗi, tức "tuổi không rõ" bị xếp là già nhất và có thể bị xoá — ngược hướng an toàn của thao tác phá huỷ duy nhất; (e) job real-dependency chỉ chạy `ubuntu-latest` dù sản phẩm ship Windows, và comment CI còn ghi 443 test / 80 mutant / 11 mutant fsio | `cvtrain/fsio.py`, `cvtrain/backend.py`, `.github/workflows/*.yml` | **ADR 0014**: `claim_run_marker` ghi đè lease bằng PID hiện tại **trước** epoch đầu của run resume (trong khi `touch` vẫn không đổi chủ); identity ghi thêm `onnxslim`; `check_importable` import toàn bộ `required_modules` và biến cả `ImportError` lẫn lỗi nạp DLL thành verdict preflight; activity không đọc được ⇒ coi như vừa hoạt động (giữ); workflow có thêm job `windows-train-smoke` train + export + verify thật trên `windows-latest`; comment CI trỏ `Docs/SCORECARD.md` thay vì số cứng. Ghim bằng 508 test, coverage 100 % (1 919/490), **107 mutant** (+6 cho N14) và 1 phép đảo mới. **Hệ quả:** 3 artifact hiện có mang identity 4 trường; lần `--skip-unchanged` kế tiếp sẽ retrain chúng (fail-closed) — đúng giá của một trường provenance từng thiếu. | ✅ Đóng (2026-10-24) |
+| N15 | **Request bị ghi bằng fact ở đúng ba trường `gate` đem so sánh.** `_record_entry` ghi `device=effective("device", …)`, `batch=effective("batch", …)`, `imgsz=effective("imgsz", …)`; nhưng `effective` đọc `trainer.args`, nơi Ultralytics đã viết lại: `--device` mặc định → `args.device="0"` (GPU) / `"cpu"`, `--batch -1` → batch thật, `imgsz` → size đã làm tròn. Lần chạy sau so các giá trị đó với *yêu cầu* (`auto`, `-1`, `640`) nên **không bao giờ khớp** và retrain vô hạn. Đo thật với ultralytics 8.4.41 + torch 2.7.0+cu128 (RTX 3050): `None→"0"≠"auto"` ✗, `"0"→"0"` ✓, `"cuda:0"→"0"≠"cuda:0"` ✗, `"cpu"→"cpu"` ✓. Mutant `device=effective(...)` **sống** qua 508 test (đổi ở bản copy, repo không đổi). | `cvtrain/trainer.py`, `cvtrain/gate.py`, `Models/manifest.json` | **ADR 0015**: trường không hậu tố là **yêu cầu** (`device`, `batch`, `imgsz`, `seed`, `opset`, `workers`), trường `*_resolved` là **fact** (`device_resolved`, `batch_resolved`, `imgsz_resolved`); `gate` so nhóm yêu cầu dưới tên của chúng (và `device_resolved` vẫn được so như một fact vì `auto` không suy ra được CPU/GPU), `RunFacts` **không còn trường device** nào — argument thô của framework (`"0"`) không phải yêu cầu, cũng không phải sự thật về artifact, nên nó bị xoá thay vì đổi tên. Ghim bằng `test_the_default_device_is_skipped_on_an_identical_rerun`, `test_the_recorded_batch_is_the_request_not_the_resolution`, `test_the_recorded_image_size_is_the_request_not_the_rounding_fact` + **3 mutant** (`trainer.py`). | ✅ Đóng (2026-10-24) |
+| N16 | **`imgsz` không bị ràng buộc stride, và `onnx_contract` phụ thuộc `preflight`.** `--imgsz 641` qua preflight; framework làm tròn 672; export dùng `model.args["imgsz"]`; `onnx_contract` so shape tĩnh với `cfg.imgsz=641` ⇒ `ExportContractError` **sau khi train xong**. Đồng thời `onnx_contract` import `MAX_OPSET` từ `preflight` — module policy của bước trước — để lấy một hằng số runtime, tạo cạnh phụ thuộc ngược trong đồ thị một chiều. | `cvtrain/preflight.py`, `cvtrain/onnx_contract.py`, `cvtrain/config.py` | **ADR 0015**: `IMGSZ_STRIDE = 32` và `MAX_OPSET`/`AUTO_BATCH` về `config` (leaf); preflight từ chối size lệch lưới với thông điệp nêu `--imgsz`; `onnx_contract` đọc `MAX_OPSET` từ `config`; export nhận `imgsz` tường minh thay vì mượn args của run. Ghim bằng `test_an_image_size_off_the_stride_grid_is_rejected_before_training`, `test_requests_the_recorded_export_options` + **3 mutant** (`preflight.py` × 1, `backend.py` × 2) và bảng `ALLOWED_IMPORTS` đã bỏ cạnh `onnx_contract → preflight`. | ✅ Đóng (2026-10-24) |
+| N17 | **Manifest đã ship chưa được tái sinh bằng build hiện tại.** `Models/manifest.json` vẫn mang `backend_version` 4 trường (thiếu `onnxslim`), có cặp `device: "auto"`/`device_resolved: "cuda:0"` (từ ADR 0009) nhưng thiếu `epochs_completed`, `batch_resolved`, `imgsz_resolved` và `export_args`. Lần `--skip-unchanged` tới sẽ retrain **cả ba** vì hai trường *được so sánh* không khớp: `backend_version` (4 vs 5 trường) và `export_args` (vắng); các trường audit-only vắng mặt không tự nó chặn skip. Đúng luật fail-closed, nhưng tốn một lần train đầy đủ. Ở thời điểm rà soát không thể tái sinh trung thực trên máy này vì `Dataset/data.yaml` không có mặt, và manifest chỉ được ghi bởi run sinh ra artifact (ADR 0008), không được dựng lại sau. | `Models/manifest.json` | **Lệnh tái lập** (dataset thật + GPU/CPU đủ thời gian): `python -u TrainModel.py --yes --det --seg --track --skip-unchanged`. **Đo lại 2026-10-25:** lần đầu retrain cả ba (det 08:02, seg 08:08, track 09:11); manifest mang identity 5 trường (`cvtrain;ultralytics;torch;onnx;onnxslim`), `device: "auto"`/`device_resolved: "cuda:0"`, `epochs 5`/`epochs_completed 5`, `batch 16`/`batch_resolved 16`, `imgsz 640`/`imgsz_resolved 640`, `export_args`, `trained_at` và metric cho cả ba. Chạy lại **đúng lệnh đó** (09:15): cả ba in `already matches this invocation; skipping`, SHA-256 của ba file ONNX không đổi, manifest không bị ghi lại (mtime vẫn 09:11:37), và `--verify-manifest` exit 0. Không sửa tay manifest. | ✅ **Đóng** (2026-10-25) |
+| N18 | **`--skip-unchanged` chưa từng được chứng minh với framework thật.** Mọi job CI đều truyền `--device cpu` — đúng một trong bốn cách viết may mắn khớp — và không job nào chạy lại một lần y hệt để quan sát verdict skip. Vì vậy lỗi N15 sống qua toàn bộ suite offline lẫn nightly. | `.github/workflows/cvtrain-nightly.yml`, `tests/test_ci_contract.py` | **ADR 0015**: job Linux bỏ `--device cpu` ở lần train det (runner không GPU ⇒ `auto` phân giải `cpu`), rồi chạy **cùng lệnh** với `--skip-unchanged`; step grep log `already matches this invocation; skipping` và so `sha256sum` trước/sau để chứng minh artifact không bị ghi lại. Tripwire `test_an_identical_default_device_rerun_is_proven_to_skip` đòi dòng skip **không** được nêu `--device`, nên không thể lặng lẽ quay về đường may mắn. | ✅ Đóng cơ chế (2026-10-24; nightly xác nhận) |
+| N19 | **Device fact và device request vẫn ở hai không gian tên; index không được kiểm tra.** `resolve_device("0")` trả `"0"` trong khi framework báo `cuda:0`: `--device 0` retrain vô hạn. `trainer.device` thu `0,1` về `cuda:0`, nên multi-GPU không phân biệt được với single-GPU. `check_device` chỉ hỏi CUDA có sẵn; `--device 5` (một GPU) và `--device 0,cpu` lọt preflight, chết bên trong framework *sau* lời nhắc retrain. | Probe thật `select_device("0") → cuda:0`, `select_device("0,1")`; `TrainModel.py --check --device 5` → exit 2 (`torch sees 1 device(s)`), `--device 0,cpu` → exit 2; `tests/test_backend.py`, `tests/test_trainer.py` | **ADR 0016**: `canonical_device()` cho mọi sự thật (`0` ≡ `cuda:0`, `0,1` ≡ `cuda:0,cuda:1`); `resolve_device` canonical hóa request tường minh; `RunFacts` đọc `trainer.args.device` trước `trainer.device`; gate so canonical hai phía; `check_device` kiểm tra từng index so với `torch.cuda.device_count()`, từ chối list trộn, và biến lỗi `torch` thành preflight đỏ. Ghim bởi 14 test mới + **net +10 mutant** (config × 1, gate × 3 thay cho 2 cũ, backend × 8). | ✅ **Đóng** (2026-10-25) |
 
 ### 3.1 Phép đảo chiều của N10–N13 (bằng chứng "làm đỏ")
 
@@ -137,7 +179,7 @@ phải bằng mutant trong `cvtrain/` — cùng hình dạng với tripwire tr�
 (`test_contract.py`). N13 có cả hai loại: các quyết định trong `cvtrain/` được ghim
 bằng mutant, còn hai assertion mới của nightly job được ghim bằng tripwire + phép
 đảo. Cơ chế làm đỏ là **đảo chiều quyết định trong file** và bắt test sở hữu nó phải
-đỏ. Mười phép đảo đã chạy (bảy phép 2026-10-22, hai phép 2026-10-23, một phép
+đỏ. Mười một phép đảo đã chạy (bảy phép 2026-10-22, hai phép 2026-10-23, hai phép
 2026-10-24), mỗi phép khôi phục file byte-for-byte sau đó:
 
 | # | Quyết định bị đảo | Test phải đỏ | Kết quả |
@@ -152,6 +194,7 @@ bằng mutant, còn hai assertion mới của nightly job được ghim bằng t
 | 8 | Nightly: resume dùng `AIComputerVision/runs` thay vì `ResumeRuns` riêng | `test_the_resume_check_uses_its_own_runs_directory` | ✅ đỏ |
 | 9 | Nightly: bỏ assertion `epochs_completed == 5` | `test_the_resume_check_asserts_the_effective_facts` | ✅ đỏ |
 | 10 | Nightly: xoá job `windows-train-smoke` | `test_the_real_dependency_check_runs_on_the_product_platform` | ✅ đỏ |
+| 11 | Nightly: step skip dùng `--device cpu` (quay lại đường may mắn) | `test_an_identical_default_device_rerun_is_proven_to_skip` | ✅ đỏ |
 
 > Bốn phép đảo đầu tiên **đã làm lộ một lỗi trong chính guard**: ban đầu chúng
 > chỉ tìm chuỗi trong *cả file* (một dòng comment nhắc `--require-hashes` là đủ
@@ -173,10 +216,17 @@ cơ chế thì **không được viết** (ADR 0007, sửa đổi 2026-10-21).
 | Hợp đồng ONNX với runtime Qt (rank/dtype/output/opset) | `test_onnx_contract` + **9 mutant** trong `cvtrain/onnx_contract.py` |
 | Role lạ bị **từ chối**, không đoán bừa | `test_onnx_contract` + **1 mutant** (`onnx_contract.py`) |
 | Hợp đồng tên file / trần opset / schema / IoU với C++ | `test_contract`, `test_qt_contract` (+ presence guard chống rename âm thầm) |
-| Provenance fail-closed (thiếu dữ liệu ⇒ retrain) | `test_trainer.SkipUnchangedTests` + **5 mutant** trong `cvtrain/gate.py` |
-| **Fail-closed ở cả hai phía** của phép so sánh device | `test_trainer.DeviceResolutionTests` + **2 mutant** (`gate.py`) |
-| Yêu cầu device được **chuẩn hóa** (`"0, 1"` ≡ `"0,1"`, `""` ≡ `"auto"`) | `test_config` + **1 mutant** (`config.py`) |
+| Provenance fail-closed (thiếu dữ liệu ⇒ retrain) | `test_trainer.SkipUnchangedTests` + **7 mutant** trong `cvtrain/gate.py` |
+| **Fail-closed ở cả hai phía** của phép so sánh device | `test_trainer.DeviceResolutionTests` + **3 mutant** (`gate.py`) |
+| Yêu cầu device được **chuẩn hóa** (`"0, 1"` ≡ `"0,1"`, `""` ≡ `"auto"`) | `test_config` + **2 mutant** (`config.py`, gồm `canonical_device`) |
 | Device **đã phân giải** là cái được chuyển cho framework | `test_backend.DeviceResolutionTests` + **1 mutant** (`backend.py`) |
+| Device fact viết theo **cách của framework** (`0` ≡ `cuda:0`) và multi-GPU **không bị thu** về GPU chính | `test_config.TrainConfigTests.test_canonical_device_is_the_frameworks_spelling`, `test_backend.test_a_multi_gpu_request_is_kept_as_the_list_not_the_primary_device`, `test_trainer` (explicit `0`/`0,1` skip) + **3 mutant** (config × 1, backend × 2) |
+| Mọi CUDA index / list trộn / lỗi `torch` **fail-fast ở preflight** | `test_backend.CheckDeviceTests` + **6 mutant** (`backend.py`) |
+| Manifest ghi **request** cho `device`/`batch`/`imgsz`, fact ở `*_resolved` | `test_trainer` (`test_the_default_device_is_skipped_on_an_identical_rerun`, `test_the_recorded_batch_is_the_request_not_the_resolution`, `test_the_recorded_image_size_is_the_request_not_the_rounding_fact`) + **3 mutant** (`trainer.py`) |
+| `export_args` là một phần của danh tính artifact, và là request được framework nhận | `test_trainer` (`test_a_changed_export_request_is_trained`, `test_an_entry_without_an_export_request_is_trained`) + `test_backend.test_requests_the_recorded_export_options` + **4 mutant** (`gate.py`, `backend.py` × 2, `trainer.py`) |
+| `--batch -1` **không bao giờ** được skip | `test_trainer.test_an_automatic_batch_is_never_skipped` + **1 mutant** (`gate.py`) |
+| `imgsz` phải là bội số 32 (fail trước khi train, không phải sau export) | `test_preflight.test_an_image_size_off_the_stride_grid_is_rejected_before_training` + **1 mutant** (`preflight.py`) |
+| Đường skip **default device** được chứng minh với framework thật | `test_ci_contract.test_an_identical_default_device_rerun_is_proven_to_skip` (+ 1 phép đảo §3.1) |
 | Quality gate không bị bypass (kể cả khi skip) | `test_trainer` + **5 mutant** (3 `gate.py` + 2 `trainer.py`) |
 | Identity của exporter ghi đủ **5** dependency (`torch`, `onnx`, `onnxslim`, `ultralytics`, `cvtrain`) | `test_backend.test_the_identity_carries_the_actual_version_of_each_dependency` + `test_a_moved_simplifier_changes_the_exporter_identity` + **3 mutant** (`backend.py`) |
 | Chọn model: key lạ ⇒ lỗi, không lặng lẽ train mặc định | `test_config` + **3 mutant** (`config.py`) |
@@ -211,9 +261,9 @@ cơ chế thì **không được viết** (ADR 0007, sửa đổi 2026-10-21).
 | Hành vi `resume` của **framework thật** vẫn được kiểm chứng, với `ResumeRuns` riêng và effective facts, và cho pull request | `test_ci_contract.RealDependencyCheckTests` (+ 4 phép đảo) |
 | **Stack thật chạy trên nền tảng sản phẩm ship**: cài wheel native, train, export, verify manifest trên Windows | `cvtrain-nightly.yml` job `windows-train-smoke` + `test_ci_contract.test_the_real_dependency_check_runs_on_the_product_platform` (+ 1 phép đảo) |
 
-Tổng: **107 mutant** = `fsio.py` 21 · `backend.py` 20 · `gate.py` 11 ·
-`trainer.py` 10 · `manifest.py` 9 · `onnx_contract.py` 9 · `dataset.py` 6 ·
-`preflight.py` 6 · `cli.py` 4 · `config.py` 4 · `metrics.py` 3 ·
+Tổng: **126 mutant** = `fsio.py` 21 · `backend.py` 30 · `gate.py` 14 ·
+`trainer.py` 14 · `manifest.py` 9 · `onnx_contract.py` 9 · `dataset.py` 6 ·
+`preflight.py` 7 · `cli.py` 4 · `config.py` 5 · `metrics.py` 3 ·
 `errors.py` 2 · `progress.py` 2.
 
 > **Vì sao N10–N12 không có mutant.** Mutation set phủ các quyết định *bên
@@ -256,6 +306,7 @@ không phải là một verdict.
 
 Ngoài ra, `cvtrain-nightly.yml` chạy **real-dependency smoke test** mỗi đêm
 *và* cho mọi pull request đụng vào package: train + export thật (det + seg,
-CPU), một lần **gián đoạn có chủ đích** để lại checkpoint, rồi `--resume` nối
-tiếp run đó (xem N3) — đây là nơi duy nhất hành vi `resume` của framework thật
-được kiểm chứng.
+CPU), một lần chạy lại y hệt không `--device` phải **skip** (và không ghi lại
+artifact), một lần **gián đoạn có chủ đích** để lại checkpoint, rồi `--resume`
+nối tiếp run đó (xem N3/N18) — đây là nơi duy nhất hành vi `resume` và verdict
+skip của framework thật được kiểm chứng.

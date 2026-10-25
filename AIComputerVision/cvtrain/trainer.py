@@ -204,6 +204,7 @@ def _record_entry(
     model: TrainedModel[Any],
     backend_version: str,
     inputs: gate.InputSnapshot,
+    export_args: dict[str, object],
 ) -> None:
     """Append this model's provenance and flush the manifest immediately.
 
@@ -212,6 +213,12 @@ def _record_entry(
     after a multi-hour run would misattribute a dataset or checkpoint edited
     mid-run. Flushing per model (not at the end) means a crash during model 3 of
     3 still leaves a verified manifest for models 1 and 2.
+
+    The entry follows one rule: an unsuffixed field is the **request** the next
+    run will make again, and a ``*_resolved`` field is the **fact** the
+    framework reported. Only the request is compared by
+    :func:`cvtrain.gate.already_current` — the fact is there so an auditor can
+    tell what actually ran (ADR 0015).
     """
 
     trained_at = manifest_mod.now_utc_iso()
@@ -238,17 +245,29 @@ def _record_entry(
         # recorded separately (`epochs_completed`): early stopping can finish a
         # 100-epoch budget after 40 epochs.
         epochs=effective("epochs", cfg.epochs),
-        imgsz=effective("imgsz", cfg.imgsz),
-        seed=effective("seed", cfg.seed),
+        # Requests, not framework facts: the next invocation compares exactly
+        # these values. The framework may report the *rounded* image size and
+        # the *resolved* batch (``-1`` is a request, never a batch); recording
+        # those under the compared name made an identical re-run look
+        # different and retrain forever (P1, ADR 0015).
+        imgsz=cfg.imgsz,
+        seed=cfg.seed,
         opset=cfg.opset,
-        batch=effective("batch", cfg.batch),
+        batch=cfg.batch,
         workers=cfg.workers,
         backend_version=backend_version,
         # Normalised exactly the way ``gate.already_current`` compares it: "no
         # ``--device``" and "``--device auto``" are the same experiment, and
         # ``"0, 1"`` and ``"0,1"`` are the same too (see ``device_class``).
-        device=effective("device", cfg.device_class),
+        # The framework's own argument is often a bare index ("0"), which is
+        # why it must never be recorded here: it is not the request.
+        device=cfg.device_class,
         device_resolved=effective("device_resolved", cfg.device_resolved),
+        imgsz_resolved=effective("imgsz", cfg.imgsz),
+        batch_resolved=effective("batch", cfg.batch),
+        # The export request, not its result: the next run can only reproduce
+        # this artifact if it would ask the exporter for the same options.
+        export_args=dict(export_args),
         trained_at=trained_at,
         dataset=effective("dataset", str(cfg.data_yaml)),
         run_dir=str(model.run_dir),
@@ -302,10 +321,14 @@ def _train_all(
     # the whole dataset is minutes of work on a large one, and a bar that
     # stands still for minutes looks like a hang.
     dataset_snapshot = gate.snapshot_dataset(cfg, on_file=reporter.dataset)
+    # The export request is pure and per-invocation: computing it once means
+    # the skip verdict, the exporter call and the recorded entry cannot
+    # disagree about what would be built.
+    export_args = backend.export_args(cfg)
     for index, key in enumerate(cfg.models):
         spec = MODEL_REGISTRY[key]
         if cfg.skip_unchanged and gate.already_current(
-            spec, cfg, manifest, backend.version, dataset=dataset_snapshot
+            spec, cfg, manifest, backend.version, dataset=dataset_snapshot, export_args=export_args
         ):
             LOG.info("[%d/%d] %s already matches this invocation; skipping", index + 1, total, spec.output)
             kept = (manifest.get("entries") or {}).get(spec.output) or {}
@@ -329,7 +352,7 @@ def _train_all(
         model = backend.train(spec, cfg, _epoch_reporter(reporter, index, spec.key, heartbeat), plan)
         gate.enforce_quality_gate(cfg, spec, model.metrics)
         target = _export_one(spec, cfg, reporter, index, model, backend)
-        _record_entry(manifest, spec, cfg, target, model, backend.version, inputs)
+        _record_entry(manifest, spec, cfg, target, model, backend.version, inputs, export_args)
     return [MODEL_REGISTRY[key].output for key in cfg.models]
 
 

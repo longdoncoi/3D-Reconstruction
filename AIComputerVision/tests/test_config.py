@@ -13,6 +13,7 @@ from cvtrain.config import (
     ModelRegistry,
     ModelSpec,
     TrainConfig,
+    canonical_device,
     register_model_spec,
     resolve_models,
 )
@@ -73,6 +74,22 @@ class TrainConfigTests(unittest.TestCase):
         self.assertEqual(TrainConfig(device="0, 1").device_class, "0,1")
         self.assertEqual(TrainConfig(device="CPU").device_class, "cpu")
         self.assertEqual(TrainConfig(device="cuda:0").device_class, "cuda:0")
+
+    def test_canonical_device_is_the_frameworks_spelling(self) -> None:
+        # The request keeps its own spelling; the resolution (and the fact the
+        # framework reports) must have one spelling, or an identical
+        # ``--device 0`` re-run is never skipped (ADR 0016).
+        self.assertEqual(canonical_device(None), "auto")
+        self.assertEqual(canonical_device("   "), "auto")
+        self.assertEqual(canonical_device("AUTO"), "auto")
+        self.assertEqual(canonical_device("cpu"), "cpu")
+        self.assertEqual(canonical_device("0"), "cuda:0")
+        self.assertEqual(canonical_device(" 0, 1 "), "cuda:0,cuda:1")
+        self.assertEqual(canonical_device("cuda"), "cuda:0")
+        self.assertEqual(canonical_device("cuda:00"), "cuda:0")
+        self.assertEqual(canonical_device("0,,1"), "cuda:0,cuda:1")
+        self.assertEqual(canonical_device("0,cuda:1"), "cuda:0,cuda:1")
+        self.assertEqual(canonical_device("mps"), "mps")
 
     def test_the_quality_gate_is_opt_in(self) -> None:
         # No threshold by default: behaviour for every existing caller (the Qt

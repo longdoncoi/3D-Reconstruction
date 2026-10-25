@@ -3,6 +3,10 @@
 - Status: Accepted
 - Date: 2026-10-21
 - Supersedes: none
+- Amended by: ADR 0015 (the request must be read from `TrainConfig`, never
+  from the framework's rewritten argument), ADR 0016 (the resolution is
+  written in the framework's canonical spelling and every CUDA index is
+  validated before the prompt)
 
 ## Context
 
@@ -26,10 +30,10 @@ the framework.
 
 - **`TrainingBackend.resolve_device(cfg)` answers with a concrete device.**
   The policy is explicit and simple: an explicit request is its own answer
-  (`0,1` stays `0,1`), and `auto` becomes the first CUDA device when the
-  runtime has one, `cpu` otherwise. The policy lives in the adapter, the one
-  module that owns the heavy imports (ADR 0001), so `torch` never reaches the
-  rest of the package.
+  (`cuda:0` for `0`, `cuda:0,cuda:1` for `0,1`; ADR 0016), and `auto` becomes
+  the first CUDA device when the runtime has one, `cpu` otherwise. The policy
+  lives in the adapter, the one module that owns the heavy imports (ADR 0001),
+  so `torch` never reaches the rest of the package.
 - **No silent fallback.** "The GPU looked busy, so CPU it is" would make the
   provenance a lie: the run would record a device it did not use. There is no
   such fallback — a failed GPU run fails, and the operator picks another

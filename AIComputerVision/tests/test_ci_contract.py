@@ -54,6 +54,17 @@ RESUME_ASSERTIONS = (
     "e['resume_from'].endswith('last.pt')",
 )
 
+#: The assertions the default-device skip check has to keep making. The P1
+#: defect only appears against the real framework (Ultralytics rewrites the
+#: device argument during training), so the fake-backend suite cannot be the
+#: only witness: the workflow has to run the same invocation twice, observe the
+#: skip verdict and prove the artifact was not rewritten (ADR 0015).
+SKIP_ASSERTIONS = (
+    "--skip-unchanged",
+    "already matches this invocation; skipping",
+    'test "$BEFORE" = "$AFTER"',
+)
+
 
 def _job_block(text: str, job: str) -> str:
     """The body of one job of a workflow file.
@@ -156,6 +167,25 @@ class RealDependencyCheckTests(unittest.TestCase):
         text = NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("kill -9", text, "the real-dependency job no longer interrupts a run")
         self.assertIn("last.pt", text, "the real-dependency job no longer looks for the checkpoint the framework wrote")
+
+    def test_an_identical_default_device_rerun_is_proven_to_skip(self) -> None:
+        # The P1 seam: the request is "auto" and the framework records "cpu"
+        # (or "0"). A skip that compares the framework's argument retrains
+        # forever, and only the real stack shows it. The check must run the
+        # same invocation twice and prove the published bytes did not move.
+        text = NIGHTLY_WORKFLOW.read_text(encoding="utf-8")
+        for assertion in SKIP_ASSERTIONS:
+            self.assertIn(assertion, text, f"the real-dependency job no longer asserts {assertion!r}")
+        skip_line = next(
+            line
+            for line in text.splitlines()
+            if "TrainModel.py" in line and "--skip-unchanged" in line
+        )
+        self.assertNotIn(
+            "--device",
+            skip_line,
+            "the skip check names a device, so it no longer exercises the default-device path",
+        )
 
     def test_the_real_dependency_check_runs_on_the_product_platform(self) -> None:
         # The export stack is native code (torch / ONNX Runtime / onnxslim's

@@ -8,7 +8,9 @@
   the *configuration* side as well as the entry side)
 - Amended by: [ADR 0013](0013-resume-is-provenance-effective-facts-and-a-lease-is-evidence-of-life.md)
   (the epoch decision, split into effective budget vs. completed count, and the
-  mutation-set count, now 101)
+  mutation-set count, now 101), [ADR 0016](0016-the-device-fact-is-canonical-and-every-index-is-checked.md)
+  (the device comparison is canonical on both sides, and every CUDA index is
+  validated before the prompt)
 
 ## Context
 

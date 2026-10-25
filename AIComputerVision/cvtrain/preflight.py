@@ -24,9 +24,12 @@ from collections.abc import Sequence
 
 from .checks import Check, PreflightReport, module_available
 from .config import (
+    AUTO_BATCH,
     BASE_DIR,
+    IMGSZ_STRIDE,
     MAX_EPOCHS,
     MAX_IMGSZ,
+    MAX_OPSET,
     MAX_WORKERS,
     MODEL_REGISTRY,
     SUPPORTED_ROLES,
@@ -35,10 +38,8 @@ from .config import (
 from .dataset import check_data_yaml
 
 __all__ = [
-    "AUTO_BATCH",
     "MAX_EPOCHS",
     "MAX_IMGSZ",
-    "MAX_OPSET",
     "MAX_WORKERS",
     "MIN_IMGSZ",
     "MIN_OPSET",
@@ -56,23 +57,17 @@ __all__ = [
 
 MIN_PYTHON = (3, 11)
 
-MIN_IMGSZ = 32
-"""Smallest image size YOLO can consume (its coarsest stride is 32)."""
+MIN_IMGSZ = IMGSZ_STRIDE
+"""Smallest image size YOLO can consume — its coarsest stride."""
 
 MIN_OPSET = 11
-MAX_OPSET = 21
-"""ONNX opset window the export is allowed to request.
+"""Oldest opset this pipeline will request.
 
-The ceiling is the important one: ONNX Runtime 1.20 implements **opset 21**
-(its published compatibility table), and ``ONNXRUNTIME_VERSION`` in the
-repository ``CMakeLists.txt`` pins 1.20.1 — an artifact stamped higher than
-that would fail only when someone loads it in the Qt app, long after a run
-that produced it looked successful. The floor is this pipeline's policy: the
-shipped models were exported at opset 12 (see ``Models/manifest.json``), and
-asking for something far older produces a graph nobody has validated."""
-
-AUTO_BATCH = -1
-"""Ultralytics' "size the batch automatically" sentinel for ``--batch``."""
+The floor is policy rather than a runtime limit: the shipped models were
+exported at opset 12 (see ``Models/manifest.json``), and asking for something
+far older produces a graph nobody has validated. The ceiling
+(:data:`cvtrain.config.MAX_OPSET`) is the runtime contract.
+"""
 
 _DEVICE_TOKEN = re.compile(r"^(?:cpu|mps|metal|cuda(?::\d+)?|\d+)$")
 """One acceptable comma-separated component of ``--device``."""
@@ -156,8 +151,8 @@ def check_hyperparameters(cfg: TrainConfig) -> list[Check]:
         ),
         Check(
             "param.imgsz",
-            MIN_IMGSZ <= cfg.imgsz <= MAX_IMGSZ,
-            f"{cfg.imgsz} (must be {MIN_IMGSZ}..{MAX_IMGSZ}; pass --imgsz N)",
+            MIN_IMGSZ <= cfg.imgsz <= MAX_IMGSZ and cfg.imgsz % IMGSZ_STRIDE == 0,
+            f"{cfg.imgsz} (must be {MIN_IMGSZ}..{MAX_IMGSZ} in steps of {IMGSZ_STRIDE}; pass --imgsz N)",
         ),
         Check(
             "param.batch",
