@@ -66,6 +66,7 @@ private slots:
     void videoTrackerReportsAnUnreadableVideo();
     void videoTrackerStopsCleanly();
     void videoTrackerContainsAThrowingInference();
+    void videoTrackerReportsAFailedInference();
 };
 
 void TestPluginWidgets::chatImageViewerShowsASealedAttachment()
@@ -179,6 +180,39 @@ void TestPluginWidgets::videoTrackerContainsAThrowingInference()
                  qPrintable(QStringLiteral("finishedTracking was not emitted "
                                            "(%1 error(s) reported)")
                                 .arg(errors.count())));
+
+    QVERIFY(thread.stopAndWait(5000));
+}
+
+void TestPluginWidgets::videoTrackerReportsAFailedInference()
+{
+    // The PRODUCTION failure shape. AIService contains the inference exception
+    // (ai::runInferenceGuarded) and reports it as an EMPTY image — nothing is
+    // thrown, so the thread's own barrier never fires. Before the loop checked
+    // this, every frame was forwarded as if it had been tracked: the view kept
+    // the last picture, the UI stayed in Tracking mode and the session ended
+    // with the "finished" message. A silent no-op that looked like success.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString clip = dir.filePath(QStringLiteral("clip.avi"));
+    if (!writeSyntheticClip(clip) || !clipIsReadable(clip)) {
+        QSKIP("this OpenCV build has no usable video backend — the clip cannot be written");
+    }
+
+    // The base mock returns an EMPTY image from runTracking().
+    PluginMock::AIService aiService;
+    VideoTrackerThread thread(&aiService, clip);
+
+    QSignalSpy errors(&thread, &VideoTrackerThread::errorOccurred);
+    QSignalSpy finished(&thread, &VideoTrackerThread::finishedTracking);
+    thread.start();
+
+    QVERIFY2(errors.wait(15000), "the failed inference was never reported");
+    const QString message = errors.first().first().toString();
+    QVERIFY2(message.contains(QStringLiteral("no result")),
+             qPrintable(QStringLiteral("unexpected error message: %1").arg(message)));
+    // The session still ends, so the shell can leave Tracking mode.
+    QTRY_VERIFY2(finished.count() > 0, "the session never ended");
 
     QVERIFY(thread.stopAndWait(5000));
 }

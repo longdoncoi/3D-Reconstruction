@@ -52,6 +52,7 @@ private slots:
     void onPauseResumeTracking();
     void onStopTracking();
     void onTrackingFrameReceived(const cv::Mat& frame);
+    void onTrackingError(const QString& message);
     void onTrackingFinished();
     void onViewCharts();
     void updateActions();
@@ -111,6 +112,9 @@ private:
 
     VideoTrackerThread* m_trackerThread = nullptr;
     bool m_trackingPaused = false;
+    /// Set by onTrackingError() so onTrackingFinished() does not report a
+    /// failed run as a completed one (the thread emits both, in order).
+    bool m_trackingFailed = false;
     QString m_agentVideoPath;
 
     /// The async inference state. `m_inferenceRunning` is set and cleared on

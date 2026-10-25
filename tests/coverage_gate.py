@@ -202,11 +202,11 @@ FLOORS: dict[str, float] = {
     # The exception guard of the AI inference path: one place where an
     # ONNX/OpenCV exception is contained, so it can never leave a Qt slot
     # or a thread entry point (and abort the application).
-    "src/services/ai/aiinferenceguard.cpp": 71,  # measured 71.4
-    "src/services/ai/aiservice.cpp": 64,           # measured 64.1
+    "src/services/ai/aiinferenceguard.cpp": 75,  # measured 75.0 (30/40)
+    "src/services/ai/aiservice.cpp": 83,           # measured 83.3 (40/48)
     "src/services/ai/aiprocessor.cpp": 17,         # measured 17.7
     "src/services/mail/mailmimeparser.cpp": 67,     # measured 67.1
-    "src/services/mail/mailservice.cpp": 27,       # measured 27.0
+    "src/services/mail/mailservice.cpp": 32,       # measured 32.2 (78/242)
     "src/services/mail/smtpoutbox.cpp": 87,        # measured 87.5
     "src/services/mail/smtpmailer.cpp": 21,        # measured 21.6 (28/142)
     "src/services/reconstruction/cameraparamsparser.cpp": 97,  # measured 97.6
@@ -223,13 +223,13 @@ FLOORS: dict[str, float] = {
     "src/services/reconstruction/sfmstage.cpp": 100,  # measured 100
     "src/services/reconstruction/tracksfm.cpp": 96,   # measured 96.6
     "src/services/reconstruction/triangulator.cpp": 100,  # measured 100
-    "src/services/scene/crosshairgeometry.cpp": 92,  # measured 92.9
+    "src/services/scene/crosshairgeometry.cpp": 93,  # measured 93.2 (41/44)
     "src/services/scene/crosshairmanager.cpp": 56,   # measured 56.1 (120/214)
     "src/services/scene/sceneservice.cpp": 4,        # measured 4.9
     "src/services/settings/settingsservice.cpp": 100,  # measured 100
     "src/services/shell/shellservice.cpp": 98,    # measured 98.2 (one closing brace)
     "src/services/viewer/dicomloader.cpp": 1,      # measured 1.5
-    "src/services/viewer/image2dloader.cpp": 95,    # measured 95.8 (68/71)
+    "src/services/viewer/image2dloader.cpp": 98,    # measured 98.7 (75/76)
     "src/services/viewer/model3dloader.cpp": 46,    # measured 46.9 (30/64)
     "src/services/viewer/viewerservice.cpp": 13,   # measured 13.6
     # Shared utility layer — the helpers every plugin links against.
@@ -259,11 +259,11 @@ FLOORS: dict[str, float] = {
     "src/modules/userauthplugin/changepassworddialog.cpp": 54,       # measured 54.9
     "src/modules/userauthplugin/avatarcropperdialog.cpp": 42,        # measured 42.8
     "src/modules/userauthplugin/adminusermanagerdialog.cpp": 40,     # measured 40.8
-    "src/modules/sendmailplugin/maildockwidget.cpp": 45,            # measured 46.0
+    "src/modules/sendmailplugin/maildockwidget.cpp": 60,            # measured 61.0 (208/341)
     "src/modules/viewerplugin/viewerplugin.cpp": 51,                # measured 51.4
     "src/modules/sendmailplugin/sendmailplugin.cpp": 47,            # measured 47.7
     "src/modules/aiprocessorplugin/aitraindockwidget.cpp": 38,       # measured 39.0
-    "src/modules/aiprocessorplugin/aiprocessorplugin.cpp": 44,       # measured 44.1
+    "src/modules/aiprocessorplugin/aiprocessorplugin.cpp": 45,       # measured 45.7 (204/446)
     "src/modules/reconstructionplugin/reconstructionplugin.cpp": 21, # measured 21.3
     "src/modules/aiassistantplugin/aiassistantplugin.cpp": 18,       # measured 18.3
     "src/modules/viewerplugin/viewerlistui.cpp": 7,                 # measured 7.0
@@ -279,7 +279,7 @@ FLOORS: dict[str, float] = {
     "src/modules/sendmailplugin/mailsettingsdialog.cpp": 65,           # measured 65.6
     "src/modules/viewerplugin/viewerviewmodel.cpp": 8,                 # measured 9.0 (6/67)
     "src/modules/aiassistantplugin/chatimageviewer.cpp": 100,       # measured 100
-    "src/modules/aiprocessorplugin/videotrackerthread.cpp": 73,     # measured 73.1
+    "src/modules/aiprocessorplugin/videotrackerthread.cpp": 77,     # measured 77.1 (54/70)
 }
 
 _TOOL_CANDIDATES = (

@@ -1,10 +1,13 @@
 #include <QtTest>
 
 #include <QDialog>
+#include <QDateTime>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QListWidget>
+#include <QPointer>
 #include <QPushButton>
+#include <QTabWidget>
 #include <QTextBrowser>
 #include <QTimer>
 #include <QToolButton>
@@ -18,6 +21,7 @@
 #include "AITrainDockWidget.h"
 #include "ChatMessageRenderer.h"
 #include "IMailService.h"
+#include "MailDockWidget.h"
 #include "MailFilterDialog.h"
 #include "MailSettingsDialog.h"
 #include "SendMailRibbonUI.h"
@@ -43,12 +47,15 @@ private slots:
     void viewerRibbonIsBuilt();
     void mailFilterDialogCanBeDismissed();
     void mailSettingsDialogCanBeDismissed();
+    void mailDockShowsTheInboxAndRetranslates();
     void viewerViewModelIgnoresEmptyPaths();
     void trainingDockIsBuiltAndRetranslated();
     void detectionInferenceRunsOffTheGuiThread();
     void segmentationInferenceRunsOffTheGuiThread();
     void oneInferenceAtATime();
     void aThrowingInferenceIsReportedOnce();
+    void anEmptyInferenceResultIsReportedOnce();
+    void aTrackingFailureIsNotReportedAsSuccess();
     void chatHistoryRendersTheMessages();
     void theAgentTraceRendersItsSteps();
     void theThinkingIndicatorFollowsTheInsertIndex();
@@ -72,6 +79,10 @@ public:
         m_timer.setInterval(50);
         connect(&m_timer, &QTimer::timeout, this, [this] {
             if (auto *modal = QApplication::activeModalWidget()) {
+                if (modal != m_last) {
+                    m_last = modal;
+                    ++m_seen;
+                }
                 if (auto *dialog = qobject_cast<QDialog *>(modal)) {
                     dialog->reject();
                 } else {
@@ -84,8 +95,16 @@ public:
     void start() { m_timer.start(); }
     void stop() { m_timer.stop(); }
 
+    /// How many DISTINCT modal dialogs the guard has seen. A message box runs
+    /// `exec()`, so it stays up until this timer dismisses it — every box that
+    /// was actually shown is counted exactly once. That turns "does the UI
+    /// report this as a success?" into an assertion instead of a guess.
+    int seenDialogs() const { return m_seen; }
+
 private:
     QTimer m_timer;
+    QPointer<QWidget> m_last;
+    int m_seen = 0;
 };
 
 /// A small image on disk: the inference task reads the path the viewer reports
@@ -184,6 +203,56 @@ void TestPluginUi::mailSettingsDialogCanBeDismissed()
     guard.stop();
 
     QVERIFY(true); // reaching this point means the modal dialog was dismissed
+}
+
+void TestPluginUi::mailDockShowsTheInboxAndRetranslates()
+{
+    // The mail dock is the only UI that renders the inbox: it owns the fetch
+    // (on a worker thread — the mail stack is blocking), the list and the
+    // preview. A defect here is invisible to the compiler: the dock still
+    // builds, it just never fills or never retranslates.
+    PluginMock::AppContext context(QDir::tempPath());
+
+    MailMessage message;
+    message.uid = QStringLiteral("42");
+    message.from = QStringLiteral("alice@example.com");
+    message.to = QStringLiteral("bot@example.com");
+    message.subject = QStringLiteral("Quarterly report");
+    message.date = QDateTime(QDate(2026, 1, 2), QTime(3, 4));
+    message.htmlBody = QStringLiteral("<p>the numbers are in</p>");
+    context.mailService().inbox = {message};
+
+    MailDockWidget dock(&context);
+    QVERIFY(dock.dockWidget() != nullptr);
+
+    // A language change re-labels the dock itself, not only its pages: the
+    // dock is created once and survives every language switch.
+    dock.retranslate();
+    QCOMPARE(dock.dockWidget()->windowTitle(), context.translate("mail.dock_title"));
+
+    auto *tabs = dock.dockWidget()->findChild<QTabWidget *>(QStringLiteral("mailTabs"));
+    QVERIFY(tabs != nullptr);
+    dock.showCompose();
+    QCOMPARE(tabs->currentIndex(), 1);
+    dock.showInbox();
+    QCOMPARE(tabs->currentIndex(), 0);
+
+    // The fetch is a blocking::run task, so the list fills asynchronously.
+    auto *inbox = tabs->widget(0)->findChild<QListWidget *>();
+    QVERIFY(inbox != nullptr);
+    QTRY_VERIFY_WITH_TIMEOUT(inbox->count() == 1, 10000);
+    QCOMPARE(context.mailService().inboxCalls, 1);
+
+    auto *preview = tabs->widget(0)->findChild<QTextBrowser *>();
+    QVERIFY(preview != nullptr);
+    inbox->setCurrentRow(0);
+    QVERIFY2(preview->toPlainText().contains(QStringLiteral("Quarterly report")),
+             qPrintable(preview->toPlainText()));
+
+    // A second visit reuses the fetched list: showing the inbox again must not
+    // hit the server (the refresh button is the explicit way to do that).
+    dock.showInbox();
+    QCOMPARE(context.mailService().inboxCalls, 1);
 }
 
 void TestPluginUi::viewerViewModelIgnoresEmptyPaths()
@@ -306,6 +375,61 @@ void TestPluginUi::oneInferenceAtATime()
     QVERIFY(QMetaObject::invokeMethod(&instance.plugin, "onObjectDetection"));
     QVERIFY2(finished.wait(5000), "the second detection result never arrived");
     QCOMPARE(context.ai().detectionCalls, 2);
+}
+
+void TestPluginUi::anEmptyInferenceResultIsReportedOnce()
+{
+    // The PRODUCTION failure shape: AIService contains the exception itself
+    // (ai::runInferenceGuarded) and returns an EMPTY image — the task does not
+    // throw, so blocking::run() has nothing to catch. Before the service
+    // returned the INPUT on failure, this path rendered the untouched frame
+    // and reported success; the plugin could not tell the two apart.
+    PluginMock::AppContext context(QDir::tempPath());
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString imagePath = writeTestImage(dir);
+    QVERIFY(!imagePath.isEmpty());
+
+    context.viewerService().setCurrent2DImagePath(imagePath);
+    context.ai().detectionReady = true;
+    context.ai().returnEmpty = true;
+
+    RunningAIProcessorPlugin instance(context);
+    QVERIFY(instance.initialized);
+
+    ModalDialogGuard guard;
+    guard.start();
+    QSignalSpy finished(context.signalBus(), &SignalBus::aiInferenceFinished);
+    QVERIFY(QMetaObject::invokeMethod(&instance.plugin, "onObjectDetection"));
+    QVERIFY2(finished.wait(5000), "the failure was never reported");
+    guard.stop();
+
+    // One completion, the inference really ran, and no stale AI mode: an empty
+    // result is a failure, not a frame to render.
+    QCOMPARE(finished.count(), 1);
+    QCOMPARE(context.ai().detectionCalls, 1);
+    QCOMPARE(context.viewerService().getCurrentAIMode(), AIMode::None);
+}
+
+void TestPluginUi::aTrackingFailureIsNotReportedAsSuccess()
+{
+    // VideoTrackerThread emits errorOccurred() and then finishedTracking() —
+    // in that order, always. Without the failure flag the second signal shows
+    // the "tracking finished" message box, so a session that never tracked a
+    // frame ends with a success box on top of the error: the user is told both
+    // things at once. Exactly ONE dialog (the error) is the contract.
+    PluginMock::AppContext context(QDir::tempPath());
+    RunningAIProcessorPlugin instance(context);
+    QVERIFY(instance.initialized);
+
+    ModalDialogGuard guard;
+    guard.start();
+    QVERIFY(QMetaObject::invokeMethod(&instance.plugin, "onTrackingError",
+                                      Q_ARG(QString, QStringLiteral("the inference failed"))));
+    QVERIFY(QMetaObject::invokeMethod(&instance.plugin, "onTrackingFinished"));
+    guard.stop();
+
+    QCOMPARE(guard.seenDialogs(), 1);
 }
 
 void TestPluginUi::aThrowingInferenceIsReportedOnce()

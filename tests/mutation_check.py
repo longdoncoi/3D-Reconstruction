@@ -189,7 +189,7 @@ MUTANTS: tuple[Mutant, ...] = (
     #    plugins (leaked half-initialized plugins on abort)
     Mutant(
         "src/core/PluginHost.cpp",
-        "for (auto it = m_initialized.rbegin(); it != m_initialized.rend(); ++it) {\n                (*it)->cleanup();\n            }",
+        "for (auto it = m_initialized.rbegin(); it != m_initialized.rend(); ++it) {\n                cleanupPlugin(*it);\n            }",
         "for (auto it = m_initialized.rbegin(); it != m_initialized.rend(); ++it) {\n                (void)it;\n            }",
         "TestPluginHost",
         "TestPluginHost",
@@ -834,20 +834,104 @@ MUTANTS: tuple[Mutant, ...] = (
         "TestArchitectureBoundaries",
         "planted: an AI inference call bypasses the exception guard",
     ),
+    # ── AIInferenceGuard: the guard hands the INPUT back on failure so a naive
+    #    renderer cannot paint a blank frame. The SERVICE boundary must consume
+    #    that flag, because the plugin reports a failure only for an EMPTY
+    #    image — without this a failed inference looked exactly like a
+    #    successful one that changed nothing.
+    Mutant(
+        "src/services/ai/AIInferenceGuard.cpp",
+        "    if (!outcome.ok)\n        return {};",
+        "    if (false) // mutant: a failed inference is rendered as the input\n"
+        "        return {};",
+        "TestAIService",
+        "TestAIService",
+        "AIService: a failed inference is rendered as the input frame",
+    ),
+    # ── AIService: a model that was never loaded cannot infer. AIProcessor
+    #    returns the INPUT unchanged, which reads as "detected nothing"; the
+    #    service must refuse instead (IAIService.h documents "empty on error").
+    Mutant(
+        "src/services/ai/AIService.cpp",
+        "    if (!m_processor->isDetectionModelLoaded()) {",
+        "    if (false) { // mutant: detection runs without a loaded model",
+        "TestAIService",
+        "TestAIService",
+        "AIService: detection without a model is reported as success",
+    ),
+    # ── PluginHost: a plugin is third-party code, so initialize() may throw.
+    #    Without the barrier the exception aborts the process before the
+    #    rollback (the whole point of a failed init) can run.
+    Mutant(
+        "src/core/PluginHost.cpp",
+        "        qWarning() << \"Plugin\" << plugin->pluginName()\n"
+        "                   << \"threw an unknown exception during initialize()\";\n"
+        "    }\n"
+        "    return false;\n"
+        "}",
+        "        qWarning() << \"Plugin\" << plugin->pluginName()\n"
+        "                   << \"threw an unknown exception during initialize()\";\n"
+        "    }\n"
+        "    return true; // mutant: a throwing plugin is reported as initialized\n"
+        "}",
+        "TestPluginHost",
+        "TestPluginHost",
+        "PluginHost: a plugin that throws in initialize() is reported as started",
+    ),
+    # ── AIPredictionLogService: a QRunnable runs inside QThread::run(), so an
+    #    exception that leaves it reaches std::terminate(). cv::imwrite throws
+    #    on a failed encode, and a diagnostic write must never kill the process
+    #    it is describing.
+    Mutant(
+        "src/services/ai/AIPredictionLogService.cpp",
+        "        } catch (const std::exception &e) {\n"
+        "            qWarning() << \"[AIPredictionLog] writing\" << logPath << \"failed:\" << e.what();",
+        "        } catch (const std::exception &e) {\n"
+        "            (void)e;\n"
+        "            throw; // mutant: the encoder exception escapes the pool thread",
+        "TestPluginHelpers",
+        "TestPluginHelpers",
+        "AIPredictionLogService: an encoder exception escapes the pool thread",
+    ),
+    # ── VideoTrackerThread: the service reports a failed inference as an EMPTY
+    #    image (nothing is thrown). Forwarding that frame keeps the view frozen
+    #    on the last picture and the UI in Tracking mode: a silent no-op that
+    #    ends with the success message.
+    Mutant(
+        "src/modules/AIProcessorPlugin/VideoTrackerThread.cpp",
+        "            if (trackedFrame.empty()) {",
+        "            if (false) { // mutant: an empty result is forwarded as a frame",
+        "TestPluginWidgets",
+        "TestPluginWidgets",
+        "VideoTrackerThread: a failed inference is forwarded as a tracked frame",
+    ),
+    # ── AIProcessorPlugin: errorOccurred() is followed by finishedTracking(),
+    #    so a failed run would end with the "tracking finished" box on top of
+    #    the error — the failure is reported as a success too.
+    Mutant(
+        "src/modules/AIProcessorPlugin/AIProcessorPlugin.cpp",
+        "    if (!m_trackingFailed) {",
+        "    if (true) { // mutant: a failed run ends with the success box",
+        "TestPluginUi",
+        "TestPluginUi",
+        "AIProcessorPlugin: a failed tracking run also reports success",
+    ),
 )
 
 # Deleting a mutant is a decision, not an accident: the floor turns a shrinking
 # gate into a failing one. It is not lowered to make a run pass — a mutant that
 # no longer applies is replaced, not removed.
 #
-# 63 is the number of load-bearing decisions the guard layer pins today
+# 71 is the number of load-bearing decisions the guard layer pins today
 # (PluginHost, ServiceRegistry, SecretVault, CryptoUtils, UserManager,
 # LicenseKeyLedger, OtpStore, UserSettingsStore, ReconstructionService,
 # ReconstructionPostProcessor, AIModelLoadService, AIServerProcessController,
 # IPlugin ABI fingerprint, AppShell service registration, ChatMessage roles,
 # AIProcessor model loading, AIProcessor inference dispatch,
-# BlockingCall, AIInferenceGuard, VideoTrackerThread, architecture guard).
-MIN_MUTANTS = 63
+# BlockingCall, AIInferenceGuard, VideoTrackerThread, architecture guard,
+# AIService failure semantics, AIPredictionLogService pool barrier,
+# VideoTrackerThread failed-inference stop, AIProcessorPlugin false success).
+MIN_MUTANTS = 71
 
 
 #: Header-only files on the plugin-facing surface carry load-bearing decisions
@@ -861,6 +945,7 @@ MIN_MUTANTS = 63
 PINNED_HEADERS: tuple[str, ...] = (
     "src/include/IPlugin.h",
     "src/include/ServiceRegistry.h",
+    "src/include/ChatMessage.h",
     "src/services/mail/MailThreadGuard.h",
     "src/utils/BlockingCall.h",
 )
@@ -1044,7 +1129,11 @@ class MutationCheck:
             sys.exit(
                 f"pre-flight failed: '{test}' does not pass on the unmutated "
                 "tree — fix the environment (Qt/vcpkg DLLs on PATH) before "
-                "trusting any mutation result."
+                "trusting any mutation result.\n"
+                "A previous run killed mid-way restores the SOURCES but not "
+                "the BINARIES: build/ can still hold a target compiled with a "
+                "mutant, which looks exactly like a broken environment. "
+                "Rebuild first: cmake --build build --config Release."
             )
         print("Pre-flight OK\n")
 

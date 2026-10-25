@@ -569,9 +569,11 @@ void AIProcessorPlugin::onObjectTracking() {
 
     m_trackerThread = new VideoTrackerThread(m_aiSvc, videoPath, this);
     connect(m_trackerThread, &VideoTrackerThread::frameProcessed, this, &AIProcessorPlugin::onTrackingFrameReceived);
+    connect(m_trackerThread, &VideoTrackerThread::errorOccurred, this, &AIProcessorPlugin::onTrackingError);
     connect(m_trackerThread, &VideoTrackerThread::finishedTracking, this, &AIProcessorPlugin::onTrackingFinished);
-    
+
     m_trackingPaused = false;
+    m_trackingFailed = false;
     m_trackerThread->start();
 
     updateActions();
@@ -603,9 +605,21 @@ void AIProcessorPlugin::onStopTracking() {
 }
 
 void AIProcessorPlugin::onTrackingFrameReceived(const cv::Mat& frame) {
+    // A failed inference arrives as an empty image; rendering it would blank
+    // the view and keep the UI looking like tracking is progressing.
+    if (frame.empty()) return;
     if (m_ctx->viewer()->getCurrentAIMode() != AIMode::Tracking) return;
     m_ctx->scene()->showImage(frame);
     m_ctx->scene()->render();
+}
+
+void AIProcessorPlugin::onTrackingError(const QString& message) {
+    // Before this slot existed the thread's errorOccurred signal had no
+    // receiver at all: a missing/invalid video or a failed inference produced
+    // no message and the run "finished" normally.
+    m_trackingFailed = true;
+    ModernMessageBox::warning(m_ctx->shell()->dialogParent(),
+                              m_ctx->translate("common.error"), message);
 }
 
 void AIProcessorPlugin::onTrackingFinished() {
@@ -615,7 +629,12 @@ void AIProcessorPlugin::onTrackingFinished() {
         m_trackerThread = nullptr;
     }
     m_ctx->viewer()->setAIMode(AIMode::None);
-    ModernMessageBox::information(m_ctx->shell()->dialogParent(), m_ctx->translate("aiproc.track_finished"), m_ctx->translate("aiproc.track_finished_msg"));
+    // A failed run has already reported its reason through errorOccurred();
+    // following it with "tracking finished" reads as success.
+    if (!m_trackingFailed) {
+        ModernMessageBox::information(m_ctx->shell()->dialogParent(), m_ctx->translate("aiproc.track_finished"), m_ctx->translate("aiproc.track_finished_msg"));
+    }
+    m_trackingFailed = false;
     updateActions();
 }
 

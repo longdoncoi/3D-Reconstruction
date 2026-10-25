@@ -28,6 +28,7 @@ private slots:
     void noCredentialsWithoutLogin();
     void credentialsCachedForCurrentUser();
     void credentialsInvalidatedOnLogout();
+    void sendingWithoutAnAccountIsRefused();
     void signatureIsStoredPerUser();
     void blockingMailGuardWarnsOnGuiThread();
 };
@@ -63,7 +64,8 @@ void TestMailCredentialLifecycle::noCredentialsWithoutLogin()
     UserManager::instance()->loadConfig(dir.path() + "/users.ini");
     UserManager::instance()->logout();
 
-    MailService svc(UserManager::instance());
+    MailService svc(UserManager::instance(), UserManager::instance(),
+                       UserManager::instance());
     QVERIFY(!svc.hasCredentials());
     QVERIFY(svc.senderEmail().isEmpty());
 }
@@ -77,7 +79,8 @@ void TestMailCredentialLifecycle::credentialsCachedForCurrentUser()
     QString err;
     QVERIFY(UserManager::instance()->login("admin", "1", err));
 
-    MailService svc(UserManager::instance());
+    MailService svc(UserManager::instance(), UserManager::instance(),
+                       UserManager::instance());
     QVERIFY(!svc.hasCredentials());
 
     svc.setCredentials("bot@example.com", "s3cret", "Bot");
@@ -86,7 +89,8 @@ void TestMailCredentialLifecycle::credentialsCachedForCurrentUser()
 
     // A fresh instance must see the same account — the cache is derived from
     // persisted user state, not from in-memory leftovers.
-    MailService fresh(UserManager::instance());
+    MailService fresh(UserManager::instance(), UserManager::instance(),
+                       UserManager::instance());
     QVERIFY(fresh.hasCredentials());
     QCOMPARE(fresh.senderEmail(), QString("bot@example.com"));
 
@@ -102,7 +106,8 @@ void TestMailCredentialLifecycle::credentialsInvalidatedOnLogout()
     QString err;
     QVERIFY(UserManager::instance()->login("admin", "1", err));
 
-    MailService svc(UserManager::instance());
+    MailService svc(UserManager::instance(), UserManager::instance(),
+                       UserManager::instance());
     svc.setCredentials("bot@example.com", "s3cret", "Bot");
     QVERIFY(svc.hasCredentials());
 
@@ -111,6 +116,30 @@ void TestMailCredentialLifecycle::credentialsInvalidatedOnLogout()
     // P0 regression: stale credentials must NOT survive a logout.
     QVERIFY(!svc.hasCredentials());
     QVERIFY(svc.senderEmail().isEmpty());
+}
+
+void TestMailCredentialLifecycle::sendingWithoutAnAccountIsRefused()
+{
+    // sendMail() is what the compose button calls. With no account configured
+    // it must refuse with a concrete error BEFORE an SMTP session exists —
+    // an empty error would leave the dock reporting a send that never
+    // happened.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    UserManager::instance()->loadConfig(dir.path() + "/users.ini");
+    UserManager::instance()->logout();
+
+    MailService svc(UserManager::instance(), UserManager::instance(),
+                    UserManager::instance());
+
+    MailMessage message;
+    message.to = QStringLiteral("someone@example.com");
+    message.subject = QStringLiteral("hello");
+    message.htmlBody = QStringLiteral("<p>body</p>");
+
+    QString error;
+    QVERIFY(!svc.sendMail(message, error));
+    QCOMPARE(error, QStringLiteral("Mail account is not configured."));
 }
 
 QTEST_GUILESS_MAIN(TestMailCredentialLifecycle)
@@ -125,7 +154,8 @@ void TestMailCredentialLifecycle::signatureIsStoredPerUser()
     QString err;
     QVERIFY(UserManager::instance()->login("admin", "1", err));
 
-    MailService svc(UserManager::instance());
+    MailService svc(UserManager::instance(), UserManager::instance(),
+                       UserManager::instance());
     // With no stored preference the signature is derived from the display
     // name — never empty for a logged-in account.
     QVERIFY(!svc.signature().isEmpty());
@@ -136,13 +166,15 @@ void TestMailCredentialLifecycle::signatureIsStoredPerUser()
 
     // A fresh instance reads the persisted value back — the signature is
     // account state, not in-memory leftovers.
-    MailService fresh(UserManager::instance());
+    MailService fresh(UserManager::instance(), UserManager::instance(),
+                       UserManager::instance());
     QCOMPARE(fresh.signature(), signature);
     QCOMPARE(fresh.displayName(), svc.displayName());
 
     // Logging out drops it with the rest of the account state: a stale
     // signature must never be attached to the next user's mail.
     UserManager::instance()->logout();
-    MailService afterLogout(UserManager::instance());
+    MailService afterLogout(UserManager::instance(), UserManager::instance(),
+                       UserManager::instance());
     QVERIFY(afterLogout.signature().isEmpty());
 }

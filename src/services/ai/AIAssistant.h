@@ -17,15 +17,17 @@
 #include "AIServerProcessController.h"
 
 class ILanguageService;
-class IUserManager;
+class IAuthService;
+class IUserPreferences;
 class IAppPaths;
 
 class APP_EXPORT AIAssistant : public IAIAssistantService {
     Q_OBJECT
 public:
-    explicit AIAssistant(ILanguageService* lang, IUserManager* users,
-                         IAppPaths* paths, QString pythonInterpreter,
-                         int serverPort, QObject *parent = nullptr,
+    explicit AIAssistant(ILanguageService* lang, IAuthService* auth,
+                         IUserPreferences* prefs, IAppPaths* paths,
+                         QString pythonInterpreter, int serverPort,
+                         QObject *parent = nullptr,
                          QNetworkAccessManager* networkManager = nullptr);
     ~AIAssistant();
 
@@ -80,7 +82,8 @@ private slots:
 
 private:
     ILanguageService* m_lang = nullptr;  ///< injected, never null in practice
-    IUserManager* m_users = nullptr;     ///< injected, never null in practice
+    IAuthService* m_auth = nullptr;      ///< injected, never null in practice
+    IUserPreferences* m_prefs = nullptr; ///< per-user settings (temperature)
     IAppPaths* m_paths = nullptr;        ///< injected by AppShell (composition root)
     QString m_pythonInterpreter;         ///< injected by AppShell (config, default "python")
     int m_serverPort = 8080;             ///< injected by AppShell (config, default 8080)

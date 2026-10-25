@@ -7,11 +7,18 @@
 #include <QString>
 #include <shared_mutex>
 
-class IUserManager;
+class IAuthService;
+class IUserPreferences;
+class IUserProfileService;
 
 class APP_EXPORT MailService : public IMailService {
 public:
-    explicit MailService(IUserManager* users);
+    /// Three narrow contracts instead of the aggregate IUserManager: the mail
+    /// stack needs "who am I", "my profile" and "my preferences" — it must not
+    /// be able to reach the admin surface just because it happens to hold the
+    /// same object.
+    MailService(IAuthService* auth, IUserProfileService* profile,
+                IUserPreferences* prefs);
 
     bool sendMail(const MailMessage& message, QString& errorMsg) override;
     QList<MailMessage> fetchInbox(int limit, QString& errorMsg) override;
@@ -29,10 +36,12 @@ public:
     void setSignature(const QString &signature);
 
 private:
-    IUserManager* m_users;  ///< injected by AppShell (composition root)
-    /// Refreshes the cached account state from IUserManager. Declared const
-    /// because the cache is a pure derived value of user state — const
-    /// getters call it without const_cast (members below are mutable).
+    IAuthService* m_auth;            ///< injected by AppShell (composition root)
+    IUserProfileService* m_profile;  ///< injected, same instance
+    IUserPreferences* m_prefs;       ///< injected, same instance
+    /// Refreshes the cached account state from the injected user services.
+    /// Declared const because the cache is a pure derived value of user state
+    /// — const getters call it without const_cast (members below are mutable).
     void loadFromCurrentUser() const;
     QString currentUsername() const;
     QString imapHost() const;

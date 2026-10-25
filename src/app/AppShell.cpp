@@ -1,6 +1,9 @@
 #include "AppShell.h"
 #include "ISceneService.h"
 #include "IUserManager.h"
+#include "IAuthService.h"
+#include "IUserProfileService.h"
+#include "ISmtpCredentialService.h"
 #include "IUserPreferences.h"
 #include "ILicenseService.h"
 #include "IViewerService.h"
@@ -76,7 +79,8 @@ AppShell::AppShell(QMainWindow*           mainWindow,
     // Outgoing-mail seam: UserManager (core) notifies users by email but must
     // never link the SMTP transport in services/mail directly — the adapter is
     // wired here, at the composition root.
-    m_outbox = std::make_unique<SmtpOutbox>(UserManager::instance());
+    m_outbox = std::make_unique<SmtpOutbox>(
+        m_registry->getRequired<ISmtpCredentialService>());
     UserManager::instance()->setOutgoingMail(m_outbox.get());
 }
 
@@ -139,15 +143,20 @@ void AppShell::initializeDeferredServices() {
     // ChatSessionStore — see src/services/ai)
     m_aiAssistant  = std::make_unique<AIAssistant>(
         m_registry->getRequired<ILanguageService>(),
-        m_registry->getRequired<IUserManager>(),
+        m_registry->getRequired<IAuthService>(),
+        m_registry->getRequired<IUserPreferences>(),
         m_registry->getRequired<IAppPaths>(),
         AppConfig::bootstrap().pythonInterpreter(),
         AppConfig::bootstrap().aiServerPort(),
         this);
     m_registry->registerService<IAIAssistantService>(m_aiAssistant.get());
 
-    // Mail module
-    m_mailService  = std::make_unique<MailService>(m_registry->getRequired<IUserManager>());
+    // Mail module: three narrow contracts, not the aggregate — the mail stack
+    // needs "who am I", "my profile" and "my preferences", nothing else.
+    m_mailService  = std::make_unique<MailService>(
+        m_registry->getRequired<IAuthService>(),
+        m_registry->getRequired<IUserProfileService>(),
+        m_registry->getRequired<IUserPreferences>());
     m_registry->registerService<IMailService>(m_mailService.get());
 }
 

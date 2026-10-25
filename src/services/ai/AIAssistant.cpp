@@ -2,19 +2,21 @@
 #include "AgentActionManifest.h"
 #include "AppConstants.h"
 #include "IAppPaths.h"
-#include "IUserManager.h"
+#include "IAuthService.h"
+#include "IUserPreferences.h"
 #include "ILanguageService.h"
 #include <QDebug>
 #include <QJsonDocument>
 #include <QDateTime>
 
-AIAssistant::AIAssistant(ILanguageService* lang, IUserManager* users,
-                         IAppPaths* paths, QString pythonInterpreter,
-                         int serverPort, QObject *parent,
-                         QNetworkAccessManager* injectedNetwork)
+AIAssistant::AIAssistant(ILanguageService* lang, IAuthService* auth,
+                         IUserPreferences* prefs, IAppPaths* paths,
+                         QString pythonInterpreter, int serverPort,
+                         QObject *parent, QNetworkAccessManager* injectedNetwork)
     : IAIAssistantService(parent),
       m_lang(lang),
-      m_users(users),
+      m_auth(auth),
+      m_prefs(prefs),
       m_paths(paths),
       m_pythonInterpreter(pythonInterpreter.isEmpty() ? QStringLiteral("python")
                                                       : pythonInterpreter),
@@ -269,8 +271,8 @@ QJsonObject AIAssistant::buildCompletionPayload(const QList<ChatMessage> &messag
     QJsonObject js;
     js["messages"]    = msgs;
 
-    auto *userManager = m_users;
-    double temp = userManager ? userManager->getUserPref(userManager->currentUsername(), "ai_temperature", QString::number(AppConstants::AIServer::DEFAULT_TEMPERATURE)).toDouble() : AppConstants::AIServer::DEFAULT_TEMPERATURE;
+    const QString username = m_auth ? m_auth->currentUsername() : QString();
+    double temp = m_prefs ? m_prefs->getUserPref(username, "ai_temperature", QString::number(AppConstants::AIServer::DEFAULT_TEMPERATURE)).toDouble() : AppConstants::AIServer::DEFAULT_TEMPERATURE;
     js["temperature"] = temp;
     js["max_tokens"]  = AppConstants::AIServer::DEFAULT_MAX_TOKENS;
     js["language"] = m_lang->currentLanguage();
@@ -296,9 +298,9 @@ QJsonObject AIAssistant::buildAgentPayload(const QList<ChatMessage> &messages, c
         history.append(item);
     }
 
-    auto *userManager = m_users;
-    const double temperature = userManager
-        ? userManager->getUserPref(userManager->currentUsername(), "ai_temperature", "0.3").toDouble()
+    const QString username = m_auth ? m_auth->currentUsername() : QString();
+    const double temperature = m_prefs
+        ? m_prefs->getUserPref(username, "ai_temperature", "0.3").toDouble()
         : 0.3;
     QJsonObject payload;
     payload["task"] = task;
@@ -811,12 +813,12 @@ void AIAssistant::onReplyFinished(QNetworkReply* reply) {
 // ── Persistence ───────────────────────────────────────────────────────────────
 
 void AIAssistant::saveAllSessions() {
-    m_sessions.save(m_users ? m_users->currentUsername() : QString(),
+    m_sessions.save(m_auth ? m_auth->currentUsername() : QString(),
                     m_paths ? m_paths->configPath() : QString());
 }
 
 void AIAssistant::loadAllSessions() {
-    m_sessions.load(m_users ? m_users->currentUsername() : QString(),
+    m_sessions.load(m_auth ? m_auth->currentUsername() : QString(),
                     m_paths ? m_paths->configPath() : QString());
     // Older histories stored titleIsDefault=true even after the prompt had
     // replaced the title, so the sidebar kept rendering the placeholder.

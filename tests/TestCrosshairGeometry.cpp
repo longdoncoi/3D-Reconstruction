@@ -30,6 +30,7 @@ private slots:
     void axialRoundTripIsStable();
     void axialFlipsYAxis();
     void sagittalMapsYZLinearly();
+    void coronalMapsXZLinearly();
 };
 
 void TestCrosshairGeometry::accessorsAreValidForAllOrientations()
@@ -91,6 +92,29 @@ void TestCrosshairGeometry::sagittalMapsYZLinearly()
     QVERIFY(closeTo(back[0], 42.0));
     QVERIFY(closeTo(back[1], 25.0));
     QVERIFY(closeTo(back[2], 750.0));
+}
+
+void TestCrosshairGeometry::coronalMapsXZLinearly()
+{
+    // Coronal keeps the slice's Y (anterior/posterior) and maps the two
+    // in-plane axes: X from the first coordinate and Z from the second. The
+    // axial branch is the one that flips Y, so the coronal mapping must NOT
+    // inherit that flip — a copy/paste of the axial branch puts the crosshair
+    // on the wrong world position.
+    const double bounds[6] = {0.0, 10.0, -100.0, 100.0, 0.0, 1000.0};
+    const double world[3] = {5.0, 42.0, 250.0}; // Y ignored for coronal
+
+    double nx = 0, ny = 0;
+    CrosshairGeometry::worldToNormalized(ORI_CORONAL, world, bounds, nx, ny);
+    QVERIFY(closeTo(nx, 0.5));  // X: 5/10
+    QVERIFY(closeTo(ny, 0.25)); // Z: 250/1000
+
+    double back[3] = {0, 0, 0};
+    const double oldWorld[3] = {0, 42.0, 0}; // coronal keeps old Y
+    CrosshairGeometry::normalizedToWorld(ORI_CORONAL, nx, ny, bounds, oldWorld, back);
+    QVERIFY(closeTo(back[0], 5.0));
+    QVERIFY(closeTo(back[1], 42.0));
+    QVERIFY(closeTo(back[2], 250.0));
 }
 
 QTEST_GUILESS_MAIN(TestCrosshairGeometry)

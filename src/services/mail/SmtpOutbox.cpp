@@ -1,9 +1,9 @@
 #include "SmtpOutbox.h"
-#include "IUserManager.h"
+#include "ISmtpCredentialService.h"
 #include "SmtpMailer.h"
 
-SmtpOutbox::SmtpOutbox(IUserManager *users)
-    : m_users(users)
+SmtpOutbox::SmtpOutbox(ISmtpCredentialService *credentials)
+    : m_credentials(credentials)
 {
 }
 
@@ -13,13 +13,13 @@ bool SmtpOutbox::send(const QString &from,
                       const QString &htmlBody,
                       QString &errorMsg)
 {
-    if (!m_users) {
+    if (!m_credentials) {
         errorMsg = QStringLiteral("No user manager available for mail credentials.");
         return false;
     }
 
-    const QString senderEmail = m_users->smtpSenderEmail();
-    const QString senderPass  = m_users->smtpSenderPassword();
+    const QString senderEmail = m_credentials->smtpSenderEmail();
+    const QString senderPass  = m_credentials->smtpSenderPassword();
     if (senderEmail.trimmed().isEmpty()) {
         errorMsg = QStringLiteral("Chưa cấu hình email gửi. Vui lòng liên hệ Admin.");
         return false;

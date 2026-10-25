@@ -5,6 +5,8 @@
 #include <QMap>
 #include <QTemporaryDir>
 
+#include <stdexcept>
+
 #include "IPlugin.h"
 #include "PluginHost.h"
 
@@ -18,9 +20,19 @@ public:
     QString pluginName() const override { return m_name; }
     bool initialize(IAppContext * /*context*/) override {
         m_log->append("init:" + m_name);
+        if (initializeThrowsUnknown)
+            throw 42;   // a non-std type: only catch (...) can contain it
+        if (initializeThrows)
+            throw std::runtime_error("the plugin exploded during initialize");
         return initializeSucceeds;
     }
-    void cleanup() override { m_log->append("cleanup:" + m_name); }
+    void cleanup() override {
+        m_log->append("cleanup:" + m_name);
+        if (cleanupThrowsUnknown)
+            throw 42;   // a non-std type reaches catch (...) only
+        if (cleanupThrows)
+            throw std::runtime_error("the plugin exploded during cleanup");
+    }
     int loadOrder() const override { return order; }
     int apiVersion() const override { return version; }
     quint64 abiFingerprint() const override { return abi; }
@@ -28,6 +40,10 @@ public:
     QString loadPhase() const override { return phase; }
 
     bool initializeSucceeds = true;
+    bool initializeThrows = false;
+    bool initializeThrowsUnknown = false;
+    bool cleanupThrows = false;
+    bool cleanupThrowsUnknown = false;
     int order = 100;
     int version = IPlugin::kApiVersion;
     quint64 abi = IPlugin::kAbiFingerprint;
@@ -56,6 +72,9 @@ private slots:
     void resolveOrderHonoursDependenciesAndPhases();
     void resolutionFailureDropsAllPlugins();
     void initializeFailureRollsBackEarlierPlugins();
+    void initializeExceptionRollsBackInsteadOfAborting();
+    void aNonStandardExceptionIsContainedToo();
+    void cleanupExceptionDoesNotStopTheRemainingCleanups();
     void shutdownCleansUpInReverseInitOrder();
     void missingDirectoryIsReported();
     void apiVersionMismatchIsRejected();
@@ -216,6 +235,123 @@ void TestPluginHost::initializeFailureRollsBackEarlierPlugins()
     // shutdown() after a failed init must not clean anything up again.
     host.shutdown();
     QCOMPARE(log, QStringList({"init:alpha", "init:beta", "cleanup:beta", "cleanup:alpha"}));
+}
+
+void TestPluginHost::initializeExceptionRollsBackInsteadOfAborting()
+{
+    // A plugin is third-party code: initialize() may throw. Before the barrier
+    // the exception escaped into the event loop and ABORTED THE PROCESS, so the
+    // rollback — the whole point of a failed init — never ran.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QDir pluginsDir(dir.filePath("plugins"));
+    QVERIFY(QDir().mkpath(pluginsDir.path()));
+
+    QStringList log;
+    FakePlugin alpha("alpha", &log);
+    alpha.order = 10;
+    FakePlugin beta("beta", &log);
+    beta.order = 20;
+    beta.deps = {"alpha"};
+    beta.initializeThrows = true;
+    const QMap<QString, FakePlugin *> byFile{{"APlugin.dll", &alpha},
+                                             {"BPlugin.dll", &beta}};
+    QVERIFY(writeFile(pluginsDir.filePath("APlugin.dll")));
+    QVERIFY(writeFile(pluginsDir.filePath("BPlugin.dll")));
+
+    PluginHost host([&byFile](const QString &path, QString *) -> IPlugin * {
+        return byFile.value(QFileInfo(path).fileName());
+    });
+
+    QCOMPARE(host.discover(pluginsDir.path()), 2);
+    QVERIFY(host.resolveOrder());
+
+    // A throwing plugin is a FAILED plugin, not a crash: the failing one is
+    // cleaned up (it may have installed widgets before throwing) and the
+    // already-initialized ones are rolled back in LIFO order.
+    QVERIFY(!host.initializeAll(nullptr));
+    QCOMPARE(log, QStringList({"init:alpha", "init:beta", "cleanup:beta", "cleanup:alpha"}));
+    QVERIFY(host.isEmpty());
+    QVERIFY(host.errors().last().contains(QStringLiteral("failed to initialize")));
+}
+
+void TestPluginHost::aNonStandardExceptionIsContainedToo()
+{
+    // `catch (const std::exception&)` is not enough: a plugin built without
+    // /EHsc, or one wrapping an SDK that throws an int/HRESULT, throws a type
+    // that only `catch (...)` sees. Without that clause the exception leaves
+    // the barrier and kills the process anyway.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QDir pluginsDir(dir.filePath("plugins"));
+    QVERIFY(QDir().mkpath(pluginsDir.path()));
+
+    QStringList log;
+    FakePlugin alpha("alpha", &log);
+    alpha.order = 10;
+    FakePlugin beta("beta", &log);
+    beta.order = 20;
+    beta.deps = {"alpha"};
+    beta.initializeThrowsUnknown = true;
+    beta.cleanupThrowsUnknown = true;   // the rollback cleanup throws too
+    const QMap<QString, FakePlugin *> byFile{{"APlugin.dll", &alpha},
+                                             {"BPlugin.dll", &beta}};
+    QVERIFY(writeFile(pluginsDir.filePath("APlugin.dll")));
+    QVERIFY(writeFile(pluginsDir.filePath("BPlugin.dll")));
+
+    PluginHost host([&byFile](const QString &path, QString *) -> IPlugin * {
+        return byFile.value(QFileInfo(path).fileName());
+    });
+
+    QCOMPARE(host.discover(pluginsDir.path()), 2);
+    QVERIFY(host.resolveOrder());
+
+    // Both barriers contain the non-std throw: the run fails as a rejected
+    // load, not as a crash, and the earlier plugin is still rolled back.
+    QVERIFY(!host.initializeAll(nullptr));
+    QCOMPARE(log, QStringList({"init:alpha", "init:beta", "cleanup:beta", "cleanup:alpha"}));
+    QVERIFY(host.isEmpty());
+}
+
+void TestPluginHost::cleanupExceptionDoesNotStopTheRemainingCleanups()
+{
+    // cleanup() releases widgets the shell owns. A plugin that throws halfway
+    // leaves stale UI behind (its own bug), but the process must survive and
+    // every other plugin must still be cleaned up.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QDir pluginsDir(dir.filePath("plugins"));
+    QVERIFY(QDir().mkpath(pluginsDir.path()));
+
+    QStringList log;
+    FakePlugin alpha("alpha", &log);
+    alpha.order = 10;
+    FakePlugin beta("beta", &log);
+    beta.order = 20;
+    beta.deps = {"alpha"};
+    beta.cleanupThrows = true;
+    FakePlugin gamma("gamma", &log);
+    gamma.order = 30;
+    gamma.deps = {"beta"};
+    const QMap<QString, FakePlugin *> byFile{{"APlugin.dll", &alpha},
+                                             {"BPlugin.dll", &beta},
+                                             {"CPlugin.dll", &gamma}};
+    QVERIFY(writeFile(pluginsDir.filePath("APlugin.dll")));
+    QVERIFY(writeFile(pluginsDir.filePath("BPlugin.dll")));
+    QVERIFY(writeFile(pluginsDir.filePath("CPlugin.dll")));
+
+    PluginHost host([&byFile](const QString &path, QString *) -> IPlugin * {
+        return byFile.value(QFileInfo(path).fileName());
+    });
+
+    QCOMPARE(host.discover(pluginsDir.path()), 3);
+    QVERIFY(host.resolveOrder());
+    QVERIFY(host.initializeAll(nullptr));
+
+    host.shutdown();
+    QCOMPARE(log, QStringList({"init:alpha", "init:beta", "init:gamma",
+                               "cleanup:gamma", "cleanup:beta", "cleanup:alpha"}));
+    QVERIFY(host.isEmpty());
 }
 
 void TestPluginHost::shutdownCleansUpInReverseInitOrder()

@@ -1,6 +1,7 @@
 #include <QtTest>
 
 #include <QDir>
+#include <QDirIterator>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -13,6 +14,8 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
+
+#include <stdexcept>
 
 #include "AIPredictionLogService.h"
 #include "AIAttachmentPreviewFactory.h"
@@ -51,6 +54,7 @@ private slots:
     // ── AIPredictionLogService ──────────────────────────────────────────────
     void predictionLoggerIgnoresANullPathProvider();
     void predictionLoggerWritesTheResultImage();
+    void predictionLoggerContainsAThrowingWriter();
     void predictionLoggerReportsAnUnwritableDirectory();
 };
 
@@ -251,6 +255,72 @@ void TestPluginHelpers::predictionLoggerWritesTheResultImage()
     const cv::Mat written = cv::imread(found.filePath(files.first()).toStdString());
     QCOMPARE(written.cols, 8);
     QCOMPARE(written.rows, 8);
+}
+
+void TestPluginHelpers::predictionLoggerContainsAThrowingWriter()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    StubAppPaths paths(root.path());
+    const cv::Mat image(4, 4, CV_8UC3, cv::Scalar(1, 2, 3));
+
+    // 1. An encoder that throws a STANDARD exception. cv::imwrite does exactly
+    //    this on a failed encode / unwritable destination.
+    int calls = 0;
+    {
+        AIPredictionLogService service(&paths);
+        service.setWriterForTesting([&calls](const QString &, const cv::Mat &) -> bool {
+            ++calls;
+            throw std::runtime_error("the encoder exploded");
+        });
+        service.logPrediction(QStringLiteral("detection"), QStringLiteral("frame.png"), image);
+    }   // the destructor joins the pool: the task cannot outlive the service
+    QCOMPARE(calls, 1);
+
+    // 2. A non-standard throw reaches catch (...) — without it the exception
+    //    would escape the QRunnable into QThread::run() and abort the process.
+    int unknownCalls = 0;
+    {
+        AIPredictionLogService service(&paths);
+        service.setWriterForTesting([&unknownCalls](const QString &, const cv::Mat &) -> bool {
+            ++unknownCalls;
+            throw 42;
+        });
+        service.logPrediction(QStringLiteral("segmentation"), QStringLiteral("frame.png"), image);
+    }
+    QCOMPARE(unknownCalls, 1);
+
+    // 3. A writer that reports failure by return value instead of throwing.
+    int refusedCalls = 0;
+    {
+        AIPredictionLogService service(&paths);
+        service.setWriterForTesting([&refusedCalls](const QString &, const cv::Mat &) -> bool {
+            ++refusedCalls;
+            return false;
+        });
+        service.logPrediction(QStringLiteral("detection"), QStringLiteral("frame.png"), image);
+    }
+    QCOMPARE(refusedCalls, 1);
+
+    // 4. A null writer restores the platform encoder: the seam must not be
+    //    able to leave the service with no writer at all.
+    {
+        AIPredictionLogService service(&paths);
+        service.setWriterForTesting([](const QString &, const cv::Mat &) { return true; });
+        service.setWriterForTesting(nullptr);
+        service.logPrediction(QStringLiteral("detection"), QStringLiteral("frame.png"), image);
+    }   // the destructor joins the pool: the default writer has finished here
+
+    bool wroteWithTheDefaultWriter = false;
+    QDirIterator it(root.path() + QStringLiteral("/detection"),
+                    {QStringLiteral("*.png")}, QDir::Files,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        wroteWithTheDefaultWriter = true;
+        it.next();
+    }
+    QVERIFY2(wroteWithTheDefaultWriter,
+             "setWriterForTesting(nullptr) must fall back to cv::imwrite");
 }
 
 QTEST_MAIN(TestPluginHelpers)

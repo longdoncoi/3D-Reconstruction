@@ -116,9 +116,9 @@ concrete singletons or exe classes. Conventions:
   instead of crashing.
 - The ABI gate has a **second, automatic** dimension: `IPlugin::kAbiFingerprint`
   mixes the toolchain fingerprint with the **content hash of the plugin-facing
-  interface surface** (the transitive quoted-include closure of `src/core/I*.h`,
-  the allow-listed core glue, the shared utility layer and
-  `AgentActionManifest.h`). CMake generates that hash into
+  interface surface** (the transitive quoted-include closure of every header in
+  `src/include/` — the `I*.h` interfaces, the DTOs they expose, the
+  allow-listed core glue — and `src/utils/`). CMake generates that hash into
   `InterfaceAbiHash.h` (`cmake/InterfaceAbi.cmake`, `cmake/PluginInterface.cmake`)
   whenever one of those files changes, so **changing a plugin-facing header
   without bumping `kApiVersion` can no longer silently load an incompatible

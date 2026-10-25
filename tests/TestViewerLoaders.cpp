@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QImage>
 #include <QTemporaryDir>
 
@@ -31,6 +32,7 @@ private slots:
     void imageLoaderRejectsEmptyAndMissingFiles();
     void imageLoaderBuildsATexturedPlane();
     void imageLoaderAcceptsOpenCvMatrices();
+    void imageLoaderFallsBackToAnExplicitReader();
     void modelLoaderRejectsMissingAndUnsupportedFiles();
     void modelLoaderBuildsAnActorFromAnObjFile();
 };
@@ -98,6 +100,30 @@ void TestViewerLoaders::imageLoaderAcceptsOpenCvMatrices()
     cv::Mat rgba(20, 40, CV_8UC4, cv::Scalar(10, 20, 30, 40));
     const auto actorRgba = Image2DLoader::loadFromMat(rgba);
     QVERIFY(actorRgba != nullptr);
+
+    // A single-channel frame (a mask, a DICOM slice) has no colour order to
+    // convert: it must be cloned as-is, not pushed through a colour cvtColor
+    // that assumes three channels.
+    cv::Mat gray(20, 40, CV_8UC1, cv::Scalar(128));
+    const auto actorGray = Image2DLoader::loadFromMat(gray);
+    QVERIFY(actorGray != nullptr);
+    QVERIFY(actorGray->GetMapper() != nullptr);
+    QVERIFY(actorGray->GetTexture() != nullptr);
+}
+
+void TestViewerLoaders::imageLoaderFallsBackToAnExplicitReader()
+{
+    // vtkImageReader2Factory owns a table of extensions; it returns a null
+    // reader for anything outside it. The loader must then pick a reader
+    // itself — a null dereference here is a crash, not a viewer glitch. An
+    // unknown extension is treated as JPEG, PNG/BMP are matched first (and
+    // case-insensitively, like the factory itself).
+    QVERIFY(Image2DLoader::createFallbackReader(QStringLiteral("scan.PNG"))
+                ->IsA("vtkPNGReader"));
+    QVERIFY(Image2DLoader::createFallbackReader(QStringLiteral("scan.Bmp"))
+                ->IsA("vtkBMPReader"));
+    QVERIFY(Image2DLoader::createFallbackReader(QStringLiteral("scan.weird"))
+                ->IsA("vtkJPEGReader"));
 }
 
 void TestViewerLoaders::modelLoaderRejectsMissingAndUnsupportedFiles()

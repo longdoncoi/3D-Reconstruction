@@ -7,6 +7,8 @@
 #include <QObject>
 #include <QThreadPool>
 
+#include <functional>
+
 class IAppPaths;
 
 /**
@@ -26,9 +28,23 @@ public:
     void logPrediction(const QString &mode, const QString &sourceImagePath,
                        const cv::Mat &resultImage) override;
 
+    /// The platform writer: returns false when the image could not be encoded.
+    using Writer = std::function<bool(const QString &path, const cv::Mat &image)>;
+
+    /**
+     * @brief Test seam for the writer.
+     *
+     * The worker path is the one that must be proven to CONTAIN a throwing
+     * encoder (`cv::imwrite` raises `cv::Exception` on a full disk, a path
+     * OpenCV cannot encode, ...). Without a seam the only way to exercise it
+     * would be to depend on the host filesystem's failure modes.
+     */
+    void setWriterForTesting(Writer writer);
+
 private:
     IAppPaths *m_paths = nullptr; ///< injected, not owned
     QThreadPool m_pool;           ///< owned; joined in the destructor
+    Writer m_writer;              ///< defaults to cv::imwrite
 };
 
 #endif // AIPREDICTIONLOGSERVICE_H

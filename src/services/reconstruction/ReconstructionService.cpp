@@ -24,7 +24,11 @@ ReconstructionService::~ReconstructionService()
             // Fallback cuối: chỉ khi pipeline mắc kẹt trong thư viện ngoài
             // (Poisson/PCL...) — app đang thoát nên rủi ro giới hạn.
             m_thread->terminate();
-            m_thread->wait();
+            // The argument-less wait() blocks for Qt's 30 s default (it does
+            // not wait forever, but it is the longest wait in the whole
+            // teardown path). terminate() has already been requested; waiting
+            // longer than the termination itself cannot help.
+            m_thread->wait(2000);
         }
     }
 
@@ -161,6 +165,13 @@ void ReconstructionService::finishRun(bool ok) {
     // The wait is BOUNDED: this runs on the GUI thread, and a pipeline stuck
     // in an external library (PCL/FLANN) would otherwise freeze the window
     // forever. The fallback is the same one the destructor uses.
+    //
+    // The terminate() below is reachable only in the pathological case: this
+    // slot runs on the service's thread AFTER the worker emitted finished(),
+    // i.e. after runPipeline() returned and released m_mutex — a normal run
+    // never gets here. It stays bounded because the pipeline lock may have
+    // been abandoned mid-run by an external library, and waiting on it is
+    // exactly what would freeze the GUI.
     if (m_thread) {
         if (!m_thread->wait(15000)) {
             qWarning() << "Reconstruction: the worker did not stop in time; terminating it.";

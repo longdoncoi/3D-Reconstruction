@@ -37,6 +37,8 @@ private slots:
     void anInferenceExceptionIsContained();
     void aDetectionExceptionIsContained();
     void anOpenCvExceptionIsContained();
+    void anInferenceWithoutAModelReturnsEmpty();
+    void aFailedOutcomeBecomesAnEmptyImage();
 
 private:
     /// The coverage exporter cannot host a real ONNX session: its
@@ -207,6 +209,44 @@ void TestAIService::anOpenCvExceptionIsContained()
     QVERIFY(!outcome.ok);
     QVERIFY(outcome.error.contains(QStringLiteral("boom")));
     QCOMPARE(outcome.image.size(), frame.size());
+}
+
+void TestAIService::anInferenceWithoutAModelReturnsEmpty()
+{
+    // The plugin-facing contract (IAIService.h) is "the rendered image, or
+    // empty on error". AIProcessor returns the INPUT when no model is loaded,
+    // which reads exactly like a successful run that detected nothing — so the
+    // service has to refuse instead of passing it through. Without this, the
+    // plugin renders the untouched frame and reports success.
+    AIService service;
+    const cv::Mat frame = syntheticFrame();
+
+    QVERIFY2(service.runDetection(frame).empty(),
+             "detection without a model must be an error, not the input frame");
+    QVERIFY2(service.runSegmentation(frame).empty(),
+             "segmentation without a model must be an error, not the input frame");
+    QVERIFY2(service.runTracking(frame).empty(),
+             "tracking without a model must be an error, not the input frame");
+}
+
+void TestAIService::aFailedOutcomeBecomesAnEmptyImage()
+{
+    // runInferenceGuarded() returns the INPUT on failure (a renderer that
+    // ignores the flag must not paint a black frame). The service boundary is
+    // where that becomes the empty image the plugin reads as a failure.
+    const cv::Mat frame = syntheticFrame();
+
+    ai::InferenceOutcome failed;
+    failed.ok = false;
+    failed.error = QStringLiteral("boom");
+    failed.image = frame;   // the guard hands the input back
+    QVERIFY2(ai::imageOrEmpty(failed).empty(),
+             "a failed outcome must not be rendered as the input frame");
+
+    ai::InferenceOutcome succeeded;
+    succeeded.ok = true;
+    succeeded.image = frame.clone();
+    QCOMPARE(ai::imageOrEmpty(succeeded).size(), frame.size());
 }
 
 QTEST_GUILESS_MAIN(TestAIService)

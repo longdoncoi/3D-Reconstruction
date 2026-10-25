@@ -11,6 +11,53 @@
 #include <QPluginLoader>
 #include <QStringList>
 
+#include <exception>
+
+namespace {
+
+/// Runs a plugin hook with an exception barrier.
+///
+/// A plugin is third-party code. `initialize()` and `cleanup()` execute ONCE
+/// each, and an exception escaping them reaches the Qt event loop (or
+/// `std::terminate()` when it happens on a bare thread) and ABORTS THE WHOLE
+/// APPLICATION — before the rollback below, whose entire purpose is to survive
+/// a plugin that cannot start, has had a chance to run.
+///
+/// The barrier turns "the plugin is broken" into "the plugin failed", which is
+/// the outcome the rollback already handles: the remaining plugins are cleaned
+/// up in reverse order and loading is refused.
+bool initializePlugin(IPlugin *plugin, IAppContext *context)
+{
+    try {
+        return plugin->initialize(context);
+    } catch (const std::exception &e) {
+        qWarning() << "Plugin" << plugin->pluginName()
+                   << "threw during initialize():" << e.what();
+    } catch (...) {
+        qWarning() << "Plugin" << plugin->pluginName()
+                   << "threw an unknown exception during initialize()";
+    }
+    return false;
+}
+
+/// The cleanup half of the same barrier. A plugin that throws while releasing
+/// its widgets has already broken the ownership contract; the process still
+/// must not die, and the next plugin's cleanup must still run.
+void cleanupPlugin(IPlugin *plugin)
+{
+    try {
+        plugin->cleanup();
+    } catch (const std::exception &e) {
+        qWarning() << "Plugin" << plugin->pluginName()
+                   << "threw during cleanup():" << e.what();
+    } catch (...) {
+        qWarning() << "Plugin" << plugin->pluginName()
+                   << "threw an unknown exception during cleanup()";
+    }
+}
+
+} // namespace
+
 PluginHost::PluginHost() = default;
 
 PluginHost::PluginHost(Loader loader) : m_loader(std::move(loader)) {}
@@ -97,15 +144,15 @@ bool PluginHost::resolveOrder() {
 
 bool PluginHost::initializeAll(IAppContext *context) {
     for (IPlugin *plugin : m_plugins) {
-        if (!plugin->initialize(context)) {
+        if (!initializePlugin(plugin, context)) {
             m_errors << QStringLiteral("Plugin %1 failed to initialize; aborting plugin loading.")
                             .arg(plugin->pluginName());
             // The failing plugin is cleaned up as well: it may already have
             // installed widgets into the shell, and its DLL is released right
             // after the rollback below.
-            plugin->cleanup();
+            cleanupPlugin(plugin);
             for (auto it = m_initialized.rbegin(); it != m_initialized.rend(); ++it) {
-                (*it)->cleanup();
+                cleanupPlugin(*it);
             }
             m_initialized.clear();
             m_plugins.clear();
@@ -120,7 +167,7 @@ bool PluginHost::initializeAll(IAppContext *context) {
 void PluginHost::shutdown() {
     for (auto it = m_initialized.rbegin(); it != m_initialized.rend(); ++it) {
         qDebug() << "Cleaning up plugin:" << (*it)->pluginName();
-        (*it)->cleanup();
+        cleanupPlugin(*it);
     }
     m_initialized.clear();
     m_plugins.clear();

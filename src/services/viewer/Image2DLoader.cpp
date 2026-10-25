@@ -23,9 +23,7 @@ vtkSmartPointer<vtkActor> Image2DLoader::load(const QString& fileName) {
     
     if (!reader) {
         // Fallback or manual check if factory fails
-        if (fileName.endsWith(".png", Qt::CaseInsensitive)) reader = vtkSmartPointer<vtkPNGReader>::New();
-        else if (fileName.endsWith(".bmp", Qt::CaseInsensitive)) reader = vtkSmartPointer<vtkBMPReader>::New();
-        else reader = vtkSmartPointer<vtkJPEGReader>::New();
+        reader = createFallbackReader(fileName);
     }
 
     reader->SetFileName(fileName.toStdString().c_str());
@@ -62,6 +60,13 @@ vtkSmartPointer<vtkActor> Image2DLoader::load(const QString& fileName) {
     texturePlaneActor->GetProperty()->SetLighting(false);
 
     return texturePlaneActor;
+}
+
+vtkSmartPointer<vtkImageReader2> Image2DLoader::createFallbackReader(const QString& fileName)
+{
+    if (fileName.endsWith(".png", Qt::CaseInsensitive)) return vtkSmartPointer<vtkPNGReader>::New();
+    if (fileName.endsWith(".bmp", Qt::CaseInsensitive)) return vtkSmartPointer<vtkBMPReader>::New();
+    return vtkSmartPointer<vtkJPEGReader>::New();
 }
 
 vtkSmartPointer<vtkActor> Image2DLoader::loadFromMat(const cv::Mat& image) {

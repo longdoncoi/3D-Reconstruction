@@ -98,7 +98,16 @@ void VideoTrackerThread::run() {
 
             // Run tracking
             cv::Mat trackedFrame = m_aiService->runTracking(frame);
-            
+            if (trackedFrame.empty()) {
+                // The service reports a FAILED inference as an empty image (the
+                // exception is contained there, nothing is thrown here). Sending
+                // it on would paint a blank frame and leave the UI convinced
+                // that tracking is running: a silent no-op instead of an error.
+                emit errorOccurred(QStringLiteral(
+                    "Tracking failed: the inference returned no result."));
+                break;
+            }
+
             emit frameProcessed(trackedFrame.clone());
 
             // Sleep to match FPS

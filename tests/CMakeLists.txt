@@ -560,6 +560,9 @@ set_target_properties(TestUserAuthDialogs PROPERTIES UNITY_BUILD OFF)
 qt_add_executable(TestPluginUi
     TestPluginUi.cpp
     ../src/modules/SendMailPlugin/SendMailRibbonUI.cpp
+    ../src/modules/SendMailPlugin/MailDockWidget.cpp
+    ../src/modules/SendMailPlugin/MailMessageFormatter.cpp
+    ../src/modules/SendMailPlugin/MailInboxItemFactory.cpp
     ../src/modules/SendMailPlugin/MailFilterDialog.cpp
     ../src/modules/SendMailPlugin/MailSettingsDialog.cpp
     ../src/modules/AIAssistantPlugin/AIAssistantRibbonUI.cpp

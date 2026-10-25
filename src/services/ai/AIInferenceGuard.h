@@ -61,6 +61,25 @@ APP_EXPORT DetectionOutcome runDetectionGuarded(const char* stage,
                                                 const std::function<std::vector<AIDetectionResult>(const cv::Mat&)>& call,
                                                 const cv::Mat& input);
 
+/**
+ * @brief Translates a guarded outcome into the image the SERVICE returns.
+ *
+ * `runInferenceGuarded()` hands the INPUT back on failure: that is right for a
+ * renderer that would otherwise paint a blank frame, and it keeps the guard's
+ * own contract simple. But the plugin-facing `IAIService` contract is the
+ * opposite one — "the rendered image, or EMPTY on error" — and the consumer
+ * reads it literally: `AIProcessorPlugin::finishInference()` reports
+ * `aiproc.inference_failed` only when the image is empty. Returning the input
+ * on failure therefore made a failed inference indistinguishable from a
+ * successful one that changed nothing: the user got the untouched frame with
+ * no error at all.
+ *
+ * This is the ONE place where the two contracts are reconciled, so no entry
+ * point can forget it: a failed outcome becomes an empty image and a
+ * successful one is passed through unchanged.
+ */
+APP_EXPORT cv::Mat imageOrEmpty(const InferenceOutcome& outcome);
+
 } // namespace ai
 
 #endif // AIINFERENCEGUARD_H

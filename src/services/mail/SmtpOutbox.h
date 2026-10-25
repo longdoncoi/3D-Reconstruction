@@ -4,18 +4,18 @@
 #include "IOutgoingMail.h"
 #include "Global.h"
 
-class IUserManager;
+class ISmtpCredentialService;
 
 /**
  * @brief IOutgoingMail adapter over SmtpMailer, backed by the credentials
- *        stored in IUserManager (composition-root injected).
+ *        stored behind ISmtpCredentialService (composition-root injected).
  *
  * Lives in services/mail so that core code never links against the SMTP
  * transport directly.
  */
 class APP_EXPORT SmtpOutbox final : public IOutgoingMail {
 public:
-    explicit SmtpOutbox(IUserManager *users);
+    explicit SmtpOutbox(ISmtpCredentialService *credentials);
 
     bool send(const QString &from,
               const QString &to,
@@ -24,7 +24,7 @@ public:
               QString &errorMsg) override;
 
 private:
-    IUserManager *m_users; ///< not owned; must outlive this adapter
+    ISmtpCredentialService *m_credentials; ///< not owned; must outlive this adapter
 };
 
 #endif // SMTPOUTBOX_H

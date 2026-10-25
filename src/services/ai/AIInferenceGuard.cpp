@@ -66,4 +66,13 @@ DetectionOutcome runDetectionGuarded(const char* stage,
     return outcome;
 }
 
+cv::Mat imageOrEmpty(const InferenceOutcome& outcome)
+{
+    // Empty on failure — see the header: this is what turns a contained
+    // exception into the `aiproc.inference_failed` the user is shown.
+    if (!outcome.ok)
+        return {};
+    return outcome.image;
+}
+
 } // namespace ai

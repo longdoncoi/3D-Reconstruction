@@ -389,6 +389,10 @@ public:
     bool segmentationReady = false;
     bool trackingReady = false;
     bool throwOnInference = false;
+    /// The production failure shape: AIService contains the exception and
+    /// returns an EMPTY image (never throws). The plugin must treat that as a
+    /// failure, not as "detected nothing".
+    bool returnEmpty = false;
     int inferenceDelayMs = 0;
     int detectionCalls = 0;
     int segmentationCalls = 0;
@@ -406,6 +410,7 @@ public:
         if (inferenceDelayMs > 0) QThread::msleep(static_cast<unsigned long>(inferenceDelayMs));
         if (throwOnInference) throw std::runtime_error("the inference backend failed");
         ++detectionCalls;
+        if (returnEmpty) return {};
         return cv::Mat(8, 8, CV_8UC3, cv::Scalar(0, 255, 0));
     }
     cv::Mat runSegmentation(const cv::Mat &) override {
@@ -413,6 +418,7 @@ public:
         if (inferenceDelayMs > 0) QThread::msleep(static_cast<unsigned long>(inferenceDelayMs));
         if (throwOnInference) throw std::runtime_error("the inference backend failed");
         ++segmentationCalls;
+        if (returnEmpty) return {};
         return cv::Mat(8, 8, CV_8UC3, cv::Scalar(255, 0, 0));
     }
     cv::Mat runTracking(const cv::Mat &) override { return {}; }
@@ -457,8 +463,9 @@ public:
         return false;
     }
     QList<MailMessage> fetchInbox(int, QString &errorMsg) override {
-        errorMsg = QStringLiteral("stub");
-        return {};
+        ++inboxCalls;
+        errorMsg = inboxError;
+        return inbox;
     }
     bool markRead(const QString &, QString &errorMsg) override {
         errorMsg = QStringLiteral("stub");
@@ -475,6 +482,12 @@ public:
     }
     bool hasCredentials() const override { return false; }
     QString senderEmail() const override { return {}; }
+
+    /// What the next fetchInbox() returns. A dock that renders the inbox can
+    /// be driven to both outcomes without a socket.
+    QList<MailMessage> inbox;
+    QString inboxError;
+    int inboxCalls = 0;
 };
 
 // ── Scene / viewer / settings ────────────────────────────────────────────────
@@ -568,6 +581,7 @@ public:
     ShellService &shellService() { return m_shell; }
     AIService &ai() { return m_ai; }
     ViewerService &viewerService() { return m_viewer; }
+    MailService &mailService() { return m_mail; }
 
 private:
     ServiceRegistry m_registry;

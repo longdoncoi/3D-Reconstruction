@@ -8,7 +8,7 @@ after the build step. The reference run recorded here is
 | # | Gate | Command | What it proves |
 |---|------|---------|----------------|
 | 1 | Architecture boundaries | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | Layering invariants (heavy/light PCH split, plugin includes, plugin **include path**, blocking-I/O waits, singleton confinement, event-filter ownership, shell-window lookup …). Runs in CTest as `TestArchitectureBoundaries`. |
-| 2 | Unit + integration suite | `ctest --test-dir build -C Release --output-on-failure` | 42 tests: kernel units, plugin host/resolver with an injected loader, real-plugin smoke, `TestAppShell` composition-root wiring, `TestAIAssistant` request state machine (injected transport), AppCore-owned model-load lifetime (`TestAIModelLoadService`), the non-blocking server-process teardown (`TestAIServerProcessController`, which re-runs the test executable as a stand-in for the Python wrapper), the interface ABI guard (`TestInterfaceAbi`), the AI service against the REAL ONNX models (`TestAIService` — needs `git lfs pull`), the at-rest cipher shared with the Python service (`TestAtRestCipher`), the at-rest confidentiality of the user INI (`TestSecretProtection`), the shared utility layer (`TestUtilsLayer`), the scene/viewer layers, the reconstruction service boundary (`TestReconstructionService` — the UI-facing queries and mutators must not wait for the worker, and the published result must be complete), plus `TestReconstructionFinalize` and `TestReconstructionService` (both labelled `slow` — they need a completed reconstruction). |
+| 2 | Unit + integration suite | `ctest --test-dir build -C Release --output-on-failure` | 44 CTest entries (40 test executables + 4 CMake-script tests): kernel units, plugin host/resolver with an injected loader, real-plugin smoke, `TestAppShell` composition-root wiring, `TestAIAssistant` request state machine (injected transport), AppCore-owned model-load lifetime (`TestAIModelLoadService`), the non-blocking server-process teardown (`TestAIServerProcessController`, which re-runs the test executable as a stand-in for the Python wrapper), the interface ABI guard (`TestInterfaceAbi`), the AI service against the REAL ONNX models (`TestAIService` — needs `git lfs pull`), the at-rest cipher shared with the Python service (`TestAtRestCipher`), the at-rest confidentiality of the user INI (`TestSecretProtection`), the shared utility layer (`TestUtilsLayer`), the scene/viewer layers, the reconstruction service boundary (`TestReconstructionService` — the UI-facing queries and mutators must not wait for the worker, and the published result must be complete), plus `TestReconstructionFinalize` and `TestReconstructionService` (both labelled `slow` — they need a completed reconstruction). |
 | 3 | Coverage gate | `python tests/coverage_gate.py` | Measured line coverage of the kernel/guard, composition, service and utility files, with per-file floors, a completeness check (no translation unit may escape the measurement), a **ratchet** (a floor may never be lowered) and a printed debt list; runs OpenCppCoverage over the owning tests. |
 | 4 | Mutation check | `python tests/mutation_check.py` | Every load-bearing guard decision is *pinned*: one inverted decision per mutant, rebuilt and re-run; the owning test must fail. |
 
@@ -172,7 +172,7 @@ reporting a gap.
 | `src/core/usermanager.cpp` | 100.0 % (351/351) | 100 |
 | `src/core/usersettingsstore.cpp` | 100.0 % (106/106) | 100 |
 | `src/core/appconfig.cpp` | 98.8 % (79/80) | 98 |
-| `src/core/pluginhost.cpp` | 97.2 % (106/109) | 97 |
+| `src/core/pluginhost.cpp` | 97.6 % (123/126) | 97 |
 | `src/core/languagemanager.cpp` | 96.5 % (55/57) | 96 |
 | `src/core/secretvault.cpp` | 94.6 % (53/56) | 94 |
 | `src/core/plugindependencyresolver.cpp` | 93.3 % (84/90) | 93 |
@@ -182,17 +182,17 @@ reporting a gap.
 | file | measured | floor |
 |------|----------|-------|
 | `src/services/ai/aimodelloadservice.cpp` | 100.0 % (51/51) | 100 |
-| `src/services/ai/aipredictionlogservice.cpp` | 100.0 % (19/19) | 100 |
+| `src/services/ai/aipredictionlogservice.cpp` | 100.0 % (35/35) | 100 |
 | `src/services/ai/airequestqueue.cpp` | 100.0 % (62/62) | 100 |
 | `src/services/ai/aiyolopostprocessor.cpp` | 100.0 % (51/51) | 100 |
-| `src/services/ai/chatsessionmanager.cpp` | 100.0 % (55/55) | 100 |
+| `src/services/ai/chatsessionmanager.cpp` | 100.0 % (78/78) | 100 |
 | `src/services/ai/chatsessionstore.cpp` | 100.0 % (62/62) | 100 |
 | `src/services/ai/chatmessage.cpp` | 88.6 % (39/44) | 88 |
 | `src/services/ai/agentactionmanifest.cpp` | 45.7 % (32/70) | 45 |
-| `src/services/ai/aiassistant.cpp` | 42.0 % (226/538) | 42 |
+| `src/services/ai/aiassistant.cpp` | 55.7 % (306/549) | 42 |
 | `src/services/ai/aiserverprocesscontroller.cpp` | 94.7 % (107/113) | 94 |
-| `src/services/ai/aiinferenceguard.cpp` | 71.4 % (25/35) | 71 |
-| `src/services/ai/aiservice.cpp` | 64.1 % (25/39) | 64 |
+| `src/services/ai/aiinferenceguard.cpp` | 75.0 % (30/40) | 75 |
+| `src/services/ai/aiservice.cpp` | 83.3 % (40/48) | 83 |
 | `src/services/ai/aiprocessor.cpp` | 17.7 % (53/299) | 17 |
 
 `aiserverprocesscontroller.cpp` was measured at 34.6 % before the non-blocking
@@ -213,7 +213,7 @@ references a vertex the trim removed.
 |------|----------|-------|
 | `src/services/mail/smtpoutbox.cpp` | 87.5 % (14/16) | 87 |
 | `src/services/mail/mailmimeparser.cpp` | 67.1 % (155/231) | 67 |
-| `src/services/mail/mailservice.cpp` | 27.0 % (66/244) | 27 |
+| `src/services/mail/mailservice.cpp` | 32.2 % (78/242) | 32 |
 | `src/services/mail/smtpmailer.cpp` | 21.6 % (37/171) | 21 |
 
 **service: reconstruction**
@@ -228,18 +228,18 @@ references a vertex the trim removed.
 | `src/services/reconstruction/featurematcher.cpp` | 97.7 % (42/43) | 97 |
 | `src/services/reconstruction/cameraparamsparser.cpp` | 97.6 % (41/42) | 97 |
 | `src/services/reconstruction/pointcloudfilter.cpp` | 97.2 % (104/107) | 97 |
-| `src/services/reconstruction/tracksfm.cpp` | 96.6 % (57/59) | 96 |
-| `src/services/reconstruction/incrementalsfm.cpp` | 79.4 % (201/253) | 79 |
-| `src/services/reconstruction/poseestimator.cpp` | 61.9 % (13/21) | 61 |
-| `src/services/reconstruction/reconstructionservice.cpp` | 73.8 % (118/160) | 73 |
-| `src/services/reconstruction/reconstructionpipeline.cpp` | 52.5 % (105/200) | 52 |
+| `src/services/reconstruction/tracksfm.cpp` | 96.8 % (61/63) | 96 |
+| `src/services/reconstruction/incrementalsfm.cpp` | 80.2 % (198/247) | 79 |
+| `src/services/reconstruction/poseestimator.cpp` | 100.0 % (21/21) | 61 |
+| `src/services/reconstruction/reconstructionservice.cpp` | 85.6 % (137/160) | 73 |
+| `src/services/reconstruction/reconstructionpipeline.cpp` | 59.5 % (119/200) | 52 |
 | `src/services/reconstruction/reconstructionpostprocessor.cpp` | 96.3 % (183/190) | 96 |
 
 **service: scene**
 
 | file | measured | floor |
 |------|----------|-------|
-| `src/services/scene/crosshairgeometry.cpp` | 92.9 % (39/42) | 92 |
+| `src/services/scene/crosshairgeometry.cpp` | 93.2 % (41/44) | 93 |
 | `src/services/scene/crosshairmanager.cpp` | 56.1 % (120/214) | 56 |
 | `src/services/scene/sceneservice.cpp` | 4.9 % (13/264) | 4 |
 
@@ -247,7 +247,7 @@ references a vertex the trim removed.
 
 | file | measured | floor |
 |------|----------|-------|
-| `src/services/viewer/image2dloader.cpp` | 95.8 % (68/71) | 95 |
+| `src/services/viewer/image2dloader.cpp` | 98.7 % (75/76) | 98 |
 | `src/services/viewer/model3dloader.cpp` | 46.9 % (30/64) | 46 |
 | `src/services/viewer/viewerservice.cpp` | 13.6 % (8/59) | 13 |
 | `src/services/viewer/dicomloader.cpp` | 1.5 % (2/135) | 1 |
@@ -286,7 +286,7 @@ references a vertex the trim removed.
 | `src/modules/aiassistantplugin/aiattachmentpreviewfactory.cpp` | 100.0 % (13/13) | 100 |
 | `src/modules/aiassistantplugin/chatimageviewer.cpp` | 100.0 % (35/35) | 100 |
 | `src/modules/aiassistantplugin/chatbotdockwidget.cpp` | 96.4 % (135/140) | 96 |
-| `src/modules/aiassistantplugin/aiassistantplugin.cpp` | 18.3 % (73/399) | 18 |
+| `src/modules/aiassistantplugin/aiassistantplugin.cpp` | 18.2 % (73/400) | 18 |
 | `src/modules/aiassistantplugin/chatmessagerenderer.cpp` | 39.0 % (83/213) | 38 |
 
 **plugin: AI processor**
@@ -294,9 +294,9 @@ references a vertex the trim removed.
 | file | measured | floor |
 |------|----------|-------|
 | `src/modules/aiprocessorplugin/aiprocessorribbonui.cpp` | 100.0 % (17/17) | 100 |
-| `src/modules/aiprocessorplugin/videotrackerthread.cpp` | 73.1 % (49/67) | 73 |
+| `src/modules/aiprocessorplugin/videotrackerthread.cpp` | 77.1 % (54/70) | 77 |
 | `src/modules/aiprocessorplugin/aitraindockwidget.cpp` | 39.0 % (60/154) | 38 |
-| `src/modules/aiprocessorplugin/aiprocessorplugin.cpp` | 44.1 % (193/438) | 44 |
+| `src/modules/aiprocessorplugin/aiprocessorplugin.cpp` | 45.7 % (204/446) | 45 |
 
 **plugin: reconstruction**
 
@@ -315,7 +315,7 @@ references a vertex the trim removed.
 | `src/modules/sendmailplugin/mailfilterdialog.cpp` | 81.8 % (36/44) | 81 |
 | `src/modules/sendmailplugin/mailsettingsdialog.cpp` | 65.6 % (42/64) | 65 |
 | `src/modules/sendmailplugin/sendmailplugin.cpp` | 47.7 % (21/44) | 47 |
-| `src/modules/sendmailplugin/maildockwidget.cpp` | 46.0 % (148/322) | 45 |
+| `src/modules/sendmailplugin/maildockwidget.cpp` | 61.0 % (208/341) | 60 |
 
 **plugin: user auth**
 
@@ -341,7 +341,7 @@ references a vertex the trim removed.
 | `src/modules/viewerplugin/viewernavigatorui.cpp` | 94.7 % (36/38) | 94 |
 | `src/modules/viewerplugin/viewerplugin.cpp` | 51.4 % (74/144) | 51 |
 | `src/modules/viewerplugin/viewerviewmodel.cpp` | 9.0 % (6/67) | 8 |
-| `src/modules/viewerplugin/viewerlistui.cpp` | 7.0 % (4/57) | 7 |
+| `src/modules/viewerplugin/viewerlistui.cpp` | 10.2 % (6/59) | 7 |
 
 Rules for the table:
 
@@ -408,7 +408,7 @@ ribbon panels, dock widgets) and their interactive paths need a human. The
 plugin-contract test exists now (`TestPluginSmoke` drives
 `initialize()`/`cleanup()` against a mocked `IAppContext`/`IShellService`, and
 `TestPluginUi` / `TestUserAuthDialogs` cover the plugin UI), which lifted the
-layer from 18.6 % to 54.6 %.
+layer from 18.6 % to 54.6 % at the time (56.0 % after the §4.13 round).
 
 **The widget-ownership contract is measured, not assumed.** After `cleanup()`
 the shell's widget tree must hold no object the plugin installed, and the
@@ -619,10 +619,19 @@ Discipline (mirrors `AIAssistant/scripts/mutation_check.py`):
   `TIMEOUT 900` because its completed-run case reconstructs the scene); the
   mutant's own budget only bounds how long it may take to fail, not how long
   the green case may take to finish;
+* **a run killed mid-way restores the sources, not the binaries.** The
+  `finally` that rebuilds the touched targets does not execute when the
+  process itself is terminated, so `build/` can still hold a target compiled
+  with a mutant. The next run then fails its pre-flight and reports an
+  environment problem, which is the wrong diagnosis: rebuild
+  (`cmake --build build --config Release`) before retrying. This is exactly
+  what happened here — `TestAppShell.exe` still contained the mutant that
+  comments out `registerService<IAuthService>`, and the pre-flight blamed
+  `PATH`;
 * the same build directory must not be shared with an IDE build. A
   concurrent build can overwrite a mutated binary — making the verdict
   meaningless — or lock an object file during the restore. Close Qt Creator's
   build (or run the gate in CI) while it runs;
 * `--only SUBSTR` runs a subset by label.
 
-Reference result: **63/63 killed, 0 survived, 0 stale, 0 invalid**.
+Reference result: **71/71 killed, 0 survived, 0 stale, 0 invalid**.

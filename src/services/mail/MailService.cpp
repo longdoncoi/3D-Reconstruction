@@ -3,7 +3,9 @@
 #include "MailMimeParser.h"
 #include "MailThreadGuard.h"
 #include "SmtpMailer.h"
-#include "IUserManager.h"
+#include "IAuthService.h"
+#include "IUserPreferences.h"
+#include "IUserProfileService.h"
 
 #include <QHostAddress>
 #include <QHostInfo>
@@ -37,24 +39,25 @@ QString imapLoginCommand(const QString &email, const QString &password)
 }
 } // namespace
 
-MailService::MailService(IUserManager* users)
-    : m_users(users)
+MailService::MailService(IAuthService* auth, IUserProfileService* profile,
+                         IUserPreferences* prefs)
+    : m_auth(auth)
+    , m_profile(profile)
+    , m_prefs(prefs)
 {
     loadFromCurrentUser();
 }
 
 QString MailService::currentUsername() const
 {
-    auto *um = m_users;
-    return um ? um->currentUsername() : QString();
+    return m_auth ? m_auth->currentUsername() : QString();
 }
 
 void MailService::loadFromCurrentUser() const
 {
-    auto *um = m_users;
     const QString username = currentUsername();
 
-    if (!um || username.isEmpty()) {
+    if (!m_auth || !m_profile || !m_prefs || username.isEmpty()) {
         // Logout / not logged in: drop the cached credentials so a previous
         // session's account is never reused after the user changes state.
         std::unique_lock lock(m_mutex);
@@ -65,13 +68,13 @@ void MailService::loadFromCurrentUser() const
         return;
     }
 
-    // Read through IUserManager before taking our own lock — its getters take
-    // the UserManager lock internally; keeping the two lock domains
-    // non-overlapping avoids any lock-order coupling.
-    const QString email = um->getUserPref(username, "mail_email", um->currentUser().email);
-    const QString password = um->getUserSecret(username, "mail_password");
-    const QString displayName = um->getUserPref(username, "mail_display_name", username);
-    const QString signature = um->getUserPref(
+    // Read through the user services before taking our own lock — their
+    // getters take the UserManager lock internally; keeping the two lock
+    // domains non-overlapping avoids any lock-order coupling.
+    const QString email = m_prefs->getUserPref(username, "mail_email", m_profile->currentUser().email);
+    const QString password = m_prefs->getUserSecret(username, "mail_password");
+    const QString displayName = m_prefs->getUserPref(username, "mail_display_name", username);
+    const QString signature = m_prefs->getUserPref(
         username, "mail_signature",
         QString("<b>%1</b><br>3D-Reconstruction").arg(displayName));
 
@@ -95,15 +98,14 @@ void MailService::setCredentials(const QString& email,
         m_displayName = trimmedName;
     }
 
-    // Persist outside the lock — calling into IUserManager while holding
+    // Persist outside the lock — calling into the user services while holding
     // m_mutex would invert the natural lock order and is unnecessary here.
-    auto *um = m_users;
     const QString username = currentUsername();
-    if (!um || username.isEmpty()) return;
+    if (!m_prefs || username.isEmpty()) return;
 
-    um->setUserPref(username, "mail_email", trimmedEmail);
-    um->setUserSecret(username, "mail_password", password);
-    um->setUserPref(username, "mail_display_name", trimmedName);
+    m_prefs->setUserPref(username, "mail_email", trimmedEmail);
+    m_prefs->setUserSecret(username, "mail_password", password);
+    m_prefs->setUserPref(username, "mail_display_name", trimmedName);
 }
 
 QString MailService::signature() const
@@ -124,10 +126,9 @@ void MailService::setSignature(const QString &signature)
         std::unique_lock lock(m_mutex);
         m_signature = signature;
     }
-    auto *um = m_users;
     const QString username = currentUsername();
-    if (um && !username.isEmpty()) {
-        um->setUserPref(username, "mail_signature", signature);
+    if (m_prefs && !username.isEmpty()) {
+        m_prefs->setUserPref(username, "mail_signature", signature);
     }
 }
 

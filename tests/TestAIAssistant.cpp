@@ -166,7 +166,7 @@ struct Fixture {
     {
         Q_ASSERT(dir.isValid());
         assistant = std::make_unique<TestableAIAssistant>(
-            &language, nullptr, &paths, QStringLiteral("python"), kTestPort,
+            &language, nullptr, nullptr, &paths, QStringLiteral("python"), kTestPort,
             nullptr, &network);
     }
 };
@@ -402,7 +402,7 @@ void TestAIAssistant::sessionsPersistAcrossInstances()
 
     QString firstId;
     {
-        TestableAIAssistant first(&language, nullptr, &paths,
+        TestableAIAssistant first(&language, nullptr, nullptr, &paths,
                                   QStringLiteral("python"), kTestPort,
                                   nullptr, &network);
         firstId = first.getSessions().first().id;
@@ -412,7 +412,7 @@ void TestAIAssistant::sessionsPersistAcrossInstances()
     }
 
     FakeNetworkManager network2;
-    TestableAIAssistant second(&language, nullptr, &paths,
+    TestableAIAssistant second(&language, nullptr, nullptr, &paths,
                                QStringLiteral("python"), kTestPort,
                                nullptr, &network2);
     QCOMPARE(second.getSessions().size(), 2);
