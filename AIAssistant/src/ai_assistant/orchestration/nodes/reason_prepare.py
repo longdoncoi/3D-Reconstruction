@@ -276,7 +276,7 @@ def _aggregate_step_answers(state: AgentState, steps: list[Step], messages: list
 
 
 def _directive_message(current_plan_step: str | None, step_contract: dict[str, Any],
-                       state: AgentState) -> dict[str, str] | None:
+                       state: AgentState, steps: list[Step], done_count: int) -> dict[str, str] | None:
     """Stage 4 — the last-in-context directive naming the current step."""
     if not current_plan_step:
         return None
@@ -284,7 +284,15 @@ def _directive_message(current_plan_step: str | None, step_contract: dict[str, A
     if step_contract["mode"] == "direct_answer":
         directive += " Đây là kiến thức chung: trả lời bằng step_answer, không gọi tool."
     elif step_contract["mode"] == "rag_search":
-        directive += " Đây là thông nội bộ: phải dùng rag_search trước khi trả lời."
+        # Evidence already fetched for this exact step (a parallel batch can
+        # have fetched the neighbours in the same fan-out, ADR 0044): asking
+        # for another search would both duplicate the work and contradict the
+        # synthesis request the tool node just appended.
+        if has_rag_evidence_for_step(steps, done_count):
+            directive += (" Bằng chứng cho bước này đã có trong hội thoại:"
+                          " trả lời bằng step_answer, KHÔNG gọi lại rag_search.")
+        else:
+            directive += " Đây là thông nội bộ: phải dùng rag_search trước khi trả lời."
     elif step_contract["mode"] == "application_action":
         directive += f" Phải gọi application_action với action '{step_contract['action']}'."
     if state.get("enforce_coding_workflow") or state.get("required_ui_actions"):
@@ -366,7 +374,9 @@ def prepare_reasoning(
     if early is not None:
         return early
 
-    directive = _directive_message(selection.current_plan_step, step_contract, state)
+    directive = _directive_message(
+        selection.current_plan_step, step_contract, state, steps, done_count,
+    )
     if directive is not None:
         messages = [*messages, directive]
 

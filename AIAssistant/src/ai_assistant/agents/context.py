@@ -26,6 +26,7 @@ from typing import Any
 
 from ..application.coordination import TaskCoordinator
 from ..domain.errors import ModelNotLoadedError
+from ..domain.parallel import PARALLEL_MAX_DEFAULT
 from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
 from ..llm.inference import backend_mode, openai_compatible_completion
 from ..observability import (
@@ -189,6 +190,11 @@ class AgentRunContext:
     langsmith_trace_fn: Callable[..., Any] = langsmith_trace
     span_fn: Callable[..., Any] = span
 
+    #: Fan-out width for one parallel tool group (ADR 0044), clamped by the
+    #: settings parser on the way in. The default keeps an unconfigured
+    #: context bounded instead of unbounded.
+    parallel_max: int = PARALLEL_MAX_DEFAULT
+
     def save_pending(self) -> None:
         """Persist the pending-action store (wired as the runner's save hook)."""
         self.pending_actions.save()
@@ -222,6 +228,7 @@ class AgentRunContext:
         request_started: float,
         initial_messages: list[dict[str, str]] | None = None,
         initial_steps: list[Step] | None = None,
+        prior_plan: list[str] | None = None,
         initial_iteration: int = 0,
         resume_with_reflection: bool = False,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -269,6 +276,7 @@ class AgentRunContext:
             checkpointer=self.checkpointer,
             llm_n_ctx=LLM_N_CTX,
             chars_per_token=CHARS_PER_TOKEN,
+            parallel_max=self.parallel_max,
             save_pending_fn=self.save_pending,
         )
         return run_langgraph_agent(
@@ -281,6 +289,7 @@ class AgentRunContext:
             request_started=request_started,
             initial_messages=initial_messages,
             initial_steps=initial_steps,
+            prior_plan=prior_plan,
             initial_iteration=initial_iteration,
             resume_with_reflection=resume_with_reflection,
             event_sink=event_sink,
@@ -320,6 +329,7 @@ class ContextService:
         task_coordinator: TaskCoordinator | None = None,
         delegate_fn: Callable[..., Any] | None = None,
         authorise_delegation_fn: Callable[..., tuple[bool, str | None]] | None = None,
+        parallel_max: int = PARALLEL_MAX_DEFAULT,
     ) -> None:
         supervisor_policy: dict[str, Any] = {}
         if authorise_delegation_fn is not None:
@@ -333,6 +343,7 @@ class ContextService:
             checkpointer=checkpointer,
             task_coordinator=TaskCoordinator() if task_coordinator is None else task_coordinator,
             delegate_fn=delegate if delegate_fn is None else delegate_fn,
+            parallel_max=parallel_max,
             **supervisor_policy,
         )
 

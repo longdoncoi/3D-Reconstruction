@@ -93,6 +93,33 @@ class EarlyFinalExitTests(unittest.TestCase):
         self.assertTrue(prepared.early_final["done"])
 
 
+class RagDirectiveTests(unittest.TestCase):
+    """The directive must agree with the evidence already in the transcript."""
+
+    def _prepared(self, steps):
+        plan = ["Thong tin DevManager trong du an"]
+        spec = {"steps": plan, "step_kinds": ["rag_search"], "parallel_groups": []}
+        return prepare_reasoning(
+            _state(plan=plan, plan_spec=spec), steps=steps, plan=plan,
+            iteration=1, tool_call_count=0, done_count=0,
+        )
+
+    def test_without_evidence_the_step_demands_a_search(self):
+        prepared = self._prepared([])
+        self.assertIn("phải dùng rag_search", prepared.messages[-1]["content"])
+
+    def test_with_evidence_the_step_demands_the_answer_instead(self):
+        """A parallel batch may have fetched this step's evidence already
+        (ADR 0044): asking for another search would duplicate it and
+        contradict the synthesis request the tool node just appended."""
+        evidence = {"type": "tool_result", "tool": "rag_search",
+                    "result": {"documents": ["d"]}, "plan_step_index": 0}
+        prepared = self._prepared([evidence])
+        content = prepared.messages[-1]["content"]
+        self.assertIn("Bằng chứng cho bước này đã có", content)
+        self.assertNotIn("phải dùng rag_search", content)
+
+
 class PreCallCompactTests(unittest.TestCase):
     def test_a_prompt_within_budget_passes_through_untouched(self):
         messages = [{"role": "user", "content": "hi"}]

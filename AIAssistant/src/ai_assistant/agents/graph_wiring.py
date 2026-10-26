@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -213,6 +214,10 @@ def build_run_graph(
         )
 
     _delegation_cache: dict[str, Any] = {}
+    # Parallel branches (ADR 0044 §6) reach this cache concurrently: without
+    # the lock, two branches of one group can both miss, both pay for the same
+    # classification and overwrite each other's entry.
+    _delegation_lock = threading.Lock()
 
     def _delegation_for(tool_name: str, params: dict[str, Any]) -> Any:
         """One supervisor classification per distinct call (review finding 14).
@@ -223,12 +228,23 @@ def build_run_graph(
         heuristic on every step of that pipeline."""
         key = json.dumps({"tool": tool_name, "params": params},
                          ensure_ascii=False, sort_keys=True, default=str)
-        cached = _delegation_cache.get(key)
-        if cached is None:
-            cached = deps.delegate_fn(task, session_id, tool_name, params,
-                                      prefer_code=deps.is_coding_task_fn(task))
-            _delegation_cache[key] = cached
+        with _delegation_lock:
+            cached = _delegation_cache.get(key)
+            if cached is None:
+                cached = deps.delegate_fn(task, session_id, tool_name, params,
+                                          prefer_code=deps.is_coding_task_fn(task))
+                _delegation_cache[key] = cached
         return cached
+
+    def warm_delegations(calls: list[tuple[str, dict[str, Any]]]) -> None:
+        """Classify a whole batch before it fans out (ADR 0044 §6).
+
+        Branches then only read a warm entry; the sequential precompute also
+        keeps the cost model of a group identical to the sequential path it
+        replaces.
+        """
+        for tool_name, params in calls:
+            _delegation_for(tool_name, params)
 
     def select_specialist(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
         if tool_name == "_validation_error":
@@ -265,6 +281,9 @@ def build_run_graph(
         execute=execute,
         needs_approval=lambda tn: tn in tools_requiring_approval,
         max_iterations=_AGENT_MAX_ITERATIONS,
+        max_parallel=deps.parallel_max,
+        requires_approval=frozenset(tools_requiring_approval),
+        warm_delegations=warm_delegations,
         emit=event_sink,
         select_specialist=select_specialist,
         approval_covers=_approval_cover_probe(deps.tool_gateway, approval_token),

@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -34,6 +35,9 @@ def _run(code: str, *, timeout: int = 180) -> subprocess.CompletedProcess[str]:
 
     The suite mutates ``os.environ`` globally, so the subprocess must see the
     deployment defaults and not the residue of the test that launched it.
+    ``APP_DATA_DIR`` points at a temp directory: ``compose()`` builds the
+    long-term memory store eagerly (ADR 0043), and a subprocess pointed at the
+    checkout would leave a real ``memory.sqlite`` beside the sources.
     """
     keep = ("SYSTEMROOT", "PATH", "PATHEXT", "TEMP", "TMP", "COMSPEC",
             "USERPROFILE", "HOME")
@@ -41,14 +45,16 @@ def _run(code: str, *, timeout: int = 180) -> subprocess.CompletedProcess[str]:
     env["PYTHONPATH"] = str(_SRC)
     env["AI_STORAGE_KEY"] = "hex:" + "11" * 32
     env["AI_ENABLE_RAG"] = "0"
-    return subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=timeout,
-        cwd=str(_ROOT),
-    )
+    with tempfile.TemporaryDirectory() as data_root:
+        env["APP_DATA_DIR"] = data_root
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout,
+            cwd=str(_ROOT),
+        )
 
 
 class RealChatSurfaceTests(unittest.TestCase):

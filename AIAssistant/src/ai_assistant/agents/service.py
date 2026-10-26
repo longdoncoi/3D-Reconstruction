@@ -22,7 +22,11 @@ from contextlib import contextmanager
 from typing import Any
 
 from ..application.coordination import TaskCoordinator
+from ..application.memory import MemoryService
 from ..domain.errors import ModelNotLoadedError, NotFoundError, ServiceUnavailableError
+from ..domain.memory import conversation_turns, format_memory_block, merge_history
+from ..domain.parallel import PARALLEL_MAX_DEFAULT
+from ..domain.steps import Step, has_step_type
 from ..orchestration.specialists.code import (
     CodingTaskContext,
     is_coding_task,
@@ -30,7 +34,7 @@ from ..orchestration.specialists.code import (
 from ..orchestration.specialists.code import (
     instruction as coding_instruction,
 )
-from ..ports import LLMRuntime, PendingActionPort, ToolGateway
+from ..ports import LLMRuntime, PendingActionPort, ShortTermMemoryPort, ToolGateway
 from ..tools.factory import create_tool_registry
 from ..tools.registry import ToolRegistry
 from .approval_service import ApprovalService
@@ -49,6 +53,24 @@ from .ui_action_service import UIActionService
 logger = logging.getLogger("ai_assistant.agents.service")
 
 
+def _latest_final_answer(steps: object) -> str:
+    """The run's last non-empty ``final_answer``, or ``""`` when it has none.
+
+    The completed response does not ship the message list (payload size), so
+    the short-term buffer rebuilds its assistant turn from the step log the
+    response *does* carry. A parked run ends in ``pending_approval``/
+    ``pending_ui_action`` and therefore records no answer.
+    """
+    if not isinstance(steps, list):
+        return ""
+    for step in reversed(steps):
+        if isinstance(step, dict) and has_step_type(step, "final_answer"):
+            content = step.get("content")
+            if isinstance(content, str) and content.strip():
+                return content
+    return ""
+
+
 class AgentService:
     """Domain service for full Agent execution lifecycle.
 
@@ -65,7 +87,10 @@ class AgentService:
                  task_coordinator: TaskCoordinator | None = None,
                  max_concurrent_runs: int = 0,
                  delegate_fn: Callable[..., Any] | None = None,
-                 authorise_delegation_fn: Callable[..., tuple[bool, str | None]] | None = None) -> None:
+                 authorise_delegation_fn: Callable[..., tuple[bool, str | None]] | None = None,
+                 short_term_memory: ShortTermMemoryPort | None = None,
+                 memory_service: MemoryService | None = None,
+                 parallel_max: int = PARALLEL_MAX_DEFAULT) -> None:
         self.llm_runtime = llm_runtime
         # Durability is injected (ADR 0003): the composition root wires the
         # file-backed store; a bare facade (tests, embeds) keeps approvals in
@@ -97,6 +122,13 @@ class AgentService:
         # without them (stateless graphs, local-only dispatch).
         self._checkpointer = checkpointer
         self._a2a_router = a2a_router
+        # Short-term memory (ADR 0043): ``None`` is the off switch — a bare
+        # facade and ``AGENT_MEMORY_ENABLED=0`` both keep the old "client
+        # ships everything" behaviour with no server-side state at all.
+        self._short_term = short_term_memory
+        # Long-term memory (ADR 0043): the service already fails closed on a
+        # missing store, so ``None`` here is simply the off switch.
+        self._memory = memory_service
         # Durability (ADR 0003): rehydrate approvals/desktop acks persisted by a
         # previous process so cross-restart A2A continuation still resolves.
         self.pending_actions.load()
@@ -114,6 +146,9 @@ class AgentService:
             "tool_registry": self.tool_registry,
             "checkpointer": self._checkpointer,
             "task_coordinator": self.task_coordinator,
+            # ADR 0044: the same fan-out bound applies to the approve/resume
+            # paths, which build their own context from this block.
+            "parallel_max": parallel_max,
         }
         if delegate_fn is not None:
             # The composition root injects a delegate bound to its A2A
@@ -252,10 +287,37 @@ class AgentService:
             if role in {"user", "assistant"} and isinstance(content_msg, str) and content_msg.strip():
                 history_messages.append({"role": role, "content": content_msg[:32000]})
 
+        # Short-term memory tops the shipped history up from the buffer: the
+        # client's turns are kept as sent, the buffer only adds what the
+        # client no longer holds (ADR 0043). Off when nothing is injected.
+        short_term = self._short_term
+        if short_term is not None:
+            history_messages = merge_history(short_term.recent(session_id), history_messages)
+
         task_with_attachments = task
         if request.attachments:
             names = [os.path.basename(path) for path in request.attachments]
             task_with_attachments += "\n\n[Attached files: " + ", ".join(names) + "]"
+
+        # Long-term memory recall (ADR 0043 §3): the block is appended to the
+        # system prompt and the recall is announced on the step log, so a run
+        # that was shaped by remembered context is observable. The service
+        # fails closed on every path — no store, a throwing store, an
+        # unknown kind — so this can only ever add context, never delay or
+        # change the outcome of a run.
+        memory = self._memory
+        initial_steps: list[Step] | None = None
+        prior_plan: list[str] | None = None
+        if memory is not None and memory.enabled:
+            recalled = memory.recall(task_with_attachments)
+            memory_block = format_memory_block(recalled)
+            if memory_block:
+                system_prompt = f"{system_prompt}\n\n{memory_block}"
+                initial_steps = [{"type": "memory_recall", "count": len(recalled)}]
+            # The procedural half (ADR 0043 §7): an exact-signature plan
+            # lookup, independent of the keyword recall above — a task can
+            # have a remembered recipe without any matching fact.
+            prior_plan = memory.procedural_plan(task_with_attachments)
 
         initial_msgs = [
             {"role": "system", "content": system_prompt},
@@ -273,10 +335,34 @@ class AgentService:
             language=request.language,
             request_started=req_start,
             initial_messages=initial_msgs,
+            initial_steps=initial_steps,
+            prior_plan=prior_plan,
             event_sink=event_sink,
         )
         if retry_idx is not None:
             result["retry_message_index"] = retry_idx
+        # Remember what this run saw — the merged history it started from plus
+        # the turn it just produced — so the next request with a shorter
+        # transcript still has its context (ADR 0043). The completed response
+        # deliberately does not ship the full message list (payload size), so
+        # the turns are rebuilt here from what this service already holds; a
+        # run that parked or produced no final answer records no answer.
+        if short_term is not None:
+            turns = list(history_messages)
+            turns.append({"role": "user", "content": task_with_attachments})
+            answer = _latest_final_answer(result.get("steps"))
+            if answer:
+                turns.append({"role": "assistant", "content": answer})
+            short_term.record(session_id, conversation_turns(turns))
+        # Consolidate into long-term memory on success only (ADR 0043 §4): a
+        # parked or cancelled run is not worth remembering, and the service
+        # contains its own failures — a store problem is logged, never
+        # raised back into the response of a run that already succeeded.
+        if memory is not None and memory.enabled:
+            if result.get("status") == "completed":
+                memory.consolidate_run(
+                    task_with_attachments, session_id, result.get("steps") or [],
+                )
         return result
 
     def cancel(self, request: AgentCancelRequest) -> dict[str, Any]:

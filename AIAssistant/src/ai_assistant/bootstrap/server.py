@@ -211,6 +211,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.warning("MCP SDK is not installed; MCP endpoint is unavailable")
             yield
     finally:
+        # Close the long-term memory store before the task store: the memory
+        # file is smaller and its WAL flush is the cheaper of the two, and a
+        # shutdown must not leave either handle open (ADR 0043).
+        if memory_store is not None:
+            memory_store.close()
         platform.tasks.close()
         logger.info("Server shutdown after %.1fs", time.monotonic() - _SERVER_START_TIME)
 
@@ -312,6 +317,9 @@ agent_service: AgentService
 mcp_server: McpToolServer
 app: FastAPI
 transport_policy: TransportPolicy
+#: The sealed long-term memory store (ADR 0043); compose assigns ``None``
+#: when memory is disabled, and the lifespan closes it on shutdown.
+memory_store: Any
 
 _COMPOSED = False
 _COMPOSE_LOCK = threading.RLock()
@@ -324,7 +332,7 @@ _COMPOSED_NAMES = frozenset({
     "FALLBACK_TEXT_MODEL", "MODEL_IDX", "active_model_desc", "_rag_settings",
     "EMBED_MODEL_NAME", "USE_VISION_LLM", "runtime_modules",
     "_tool_registry", "platform", "agent_service", "mcp_server",
-    "app", "transport_policy",
+    "app", "transport_policy", "memory_store",
 })
 
 
@@ -340,6 +348,19 @@ def _pending_actions_path() -> str:
     paths = get_paths()
     data_root = paths.data_dir if paths.data_dir.name == "AIAssistant" else paths.data_dir / "AIAssistant"
     return str(data_root / "pending_agent_actions.json")
+
+
+def _memory_store_path() -> str:
+    """Canonical on-disk location of the long-term memory store (ADR 0043).
+
+    Same rule as the pending-action file: the path is a composition-root
+    decision, the agent layer only ever sees the injected port.
+    """
+    from ai_assistant.config.paths import get_paths
+
+    paths = get_paths()
+    data_root = paths.data_dir if paths.data_dir.name == "AIAssistant" else paths.data_dir / "AIAssistant"
+    return str(data_root / "memory.sqlite")
 
 
 def compose() -> None:
@@ -364,7 +385,7 @@ def _compose_once() -> None:
     global FALLBACK_TEXT_MODEL, MODEL_IDX, active_model_desc, _rag_settings
     global EMBED_MODEL_NAME, USE_VISION_LLM
     global _tool_registry, platform, agent_service, mcp_server
-    global runtime_modules, app, transport_policy
+    global runtime_modules, app, transport_policy, memory_store
     with _COMPOSE_LOCK:
         if _COMPOSED:
             return
@@ -523,6 +544,27 @@ def _compose_once() -> None:
             )
             if plugin_tools else None
         )
+        from ai_assistant.adapters.persistence.memory_store import MemoryStore
+        from ai_assistant.agents.short_term_memory import BoundedShortTermMemory
+        from ai_assistant.application.memory import MemoryService
+
+        # Short-term memory (ADR 0043): the composition root is the only place
+        # that decides whether the buffer exists — ``AGENT_MEMORY_ENABLED=0``
+        # leaves the facade with ``None``, i.e. the original "client ships
+        # everything" behaviour.
+        runtime_settings = load_agent_runtime_settings()
+        # Long-term memory (ADR 0043): same switch, same owner. The sealed
+        # store is built here (never in the agent layer), pruned of expired
+        # rows once at startup, and closed by the lifespan on shutdown.
+        memory_store = (
+            MemoryStore(_memory_store_path(), cipher=platform.storage_cipher)
+            if runtime_settings.memory_enabled else None
+        )
+        if memory_store is not None:
+            memory_store.prune(
+                runtime_settings.memory_retention_days,
+                max_bytes=runtime_settings.memory_retention_max_mb * 1024 * 1024,
+            )
         agent_service = AgentService(
             tool_gateway=platform.gateway,
             llm_runtime=runtime_modules.llm,
@@ -533,7 +575,15 @@ def _compose_once() -> None:
             pending_actions=PendingActionStore(
                 _pending_actions_path(), cipher=platform.storage_cipher,
             ),
-            max_concurrent_runs=load_agent_runtime_settings().max_concurrent_runs,
+            max_concurrent_runs=runtime_settings.max_concurrent_runs,
+            short_term_memory=(
+                BoundedShortTermMemory(max_messages=runtime_settings.memory_stm_max_messages)
+                if runtime_settings.memory_enabled else None
+            ),
+            memory_service=MemoryService(
+                memory_store, top_k=runtime_settings.memory_ltm_top_k,
+            ),
+            parallel_max=runtime_settings.parallel_max,
             delegate_fn=delegate_fn,
             authorise_delegation_fn=authorise_fn,
         )

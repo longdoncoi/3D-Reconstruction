@@ -30,6 +30,16 @@ PLANNER_JSON_SCHEMA = {
         "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
         "verification_commands": {"type": "array", "items": {"type": "string"}},
         "steps": {"type": "array", "items": {"type": "string"}},
+        # The prompt has always asked for per-step execution kinds; the schema
+        # used to omit them, so the local grammar could never emit one and the
+        # parser silently fell back to keyword heuristics. ``parallel_groups``
+        # is the other half of that contract (ADR 0044 §2).
+        "step_kinds": {"type": "array", "items": {
+            "type": "string", "enum": ["rag_search", "direct", "application_action"],
+        }},
+        "parallel_groups": {"type": "array", "items": {
+            "type": "array", "items": {"type": "integer"},
+        }},
         "plan": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["requires_plan", "steps"],

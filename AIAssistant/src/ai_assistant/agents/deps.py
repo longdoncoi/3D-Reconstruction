@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from ..domain.parallel import PARALLEL_MAX_DEFAULT
 from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
 from ..ports import LLMRuntime, PendingActionPort, ToolExecutionGateway
 from ..tools.registry import ToolRegistry
@@ -70,6 +71,10 @@ class RunDeps:
     # ── Token budget ──────────────────────────────────────────────────────
     llm_n_ctx: int = LLM_N_CTX
     chars_per_token: float = CHARS_PER_TOKEN
+    #: Fan-out width for one parallel tool group (ADR 0044). The composition
+    #: root supplies the clamped setting; the default keeps a bare bundle
+    #: bounded without a settings import.
+    parallel_max: int = PARALLEL_MAX_DEFAULT
 
     # ── Persistence hooks ─────────────────────────────────────────────────
     save_pending_fn: Callable[[], None] | None = None

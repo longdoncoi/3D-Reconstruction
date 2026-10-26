@@ -33,6 +33,7 @@ StepType = Literal[
     "delegation",
     "error",
     "final_answer",
+    "memory_recall",
     "pending_approval",
     "plan",
     "plan_incomplete",
@@ -82,6 +83,15 @@ class Step(_StepTyped, total=False):
     request_id: str
     idempotency_key: str
     remote_endpoint: str | None
+    #: Payload of a ``memory_recall`` step: how many long-term records were
+    #: injected into the system prompt of this run (ADR 0043).
+    count: int
+    #: Parallel-batch labels (ADR 0044): the group a ``tool_call``/
+    #: ``tool_result`` pair belongs to and the branch that produced it. Both
+    #: are additive — a sequential call keeps them absent, so the client and
+    #: the checkpointer see the same shape they always did.
+    batch_id: str
+    branch_index: int
 
 
 def has_step_type(step: Mapping[str, Any], expected: StepType) -> bool:

@@ -37,6 +37,10 @@ class AgentState(TypedDict):
     plan_verified:    bool                     # current plan passed Plan Reflect
     plan_attempts:    int                      # number of Planner iterations
     plan_feedback:   str                       # last feedback to Planner
+    #: Procedural memory (ADR 0043 §7): the plan written under this task's
+    #: exact signature, offered by the service layer so ``plan_node`` can
+    #: reuse it instead of calling the planner. ``None`` = no recipe.
+    prior_plan:      list[str] | None
     enforce_plan_completion: bool              # coding tasks must complete plan steps
     enforce_coding_workflow: bool              # coding tasks need observable evidence
 
@@ -81,8 +85,11 @@ SEMANTIC_REFLECTION_TOOLS = {
     "run_command", "write_file", "patch_file", "replace_file_content",
     "multi_replace_file_content", "create_directory", "application_action",
 }
-OBSERVATION_SUMMARY_THRESHOLD = 4   # summarise observations after N tool calls
-OBSERVATION_KEEP_LAST = 10          # keep last N tool-result messages
-CONTEXT_SYSTEM_LIMIT  = 3500        # reason node adds ~1k REASONER_PROMPT on top
-CONTEXT_MESSAGE_LIMIT = 4000        # user + evidence must both fit
-CONTEXT_TOTAL_LIMIT   = 11000       # hard compaction limit before calling LLM
+# The short-term context budgets are domain policy (ADR 0043): one owner in
+# ``ai_assistant.domain.memory`` decides them, re-exported here because this
+# package is the historical import path of the constants.
+from ai_assistant.domain.memory import CONTEXT_MESSAGE_LIMIT as CONTEXT_MESSAGE_LIMIT
+from ai_assistant.domain.memory import CONTEXT_SYSTEM_LIMIT as CONTEXT_SYSTEM_LIMIT
+from ai_assistant.domain.memory import CONTEXT_TOTAL_LIMIT as CONTEXT_TOTAL_LIMIT
+from ai_assistant.domain.memory import OBSERVATION_KEEP_LAST as OBSERVATION_KEEP_LAST
+from ai_assistant.domain.memory import OBSERVATION_SUMMARY_THRESHOLD as OBSERVATION_SUMMARY_THRESHOLD

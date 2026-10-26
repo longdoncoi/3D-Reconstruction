@@ -14,6 +14,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, cast
 
+from ai_assistant.domain.parallel import PARALLEL_MAX_DEFAULT
 from ai_assistant.internal.langgraph_engine import (
     END,
     START,
@@ -75,6 +76,12 @@ class LocalAgentGraph:
         reflect_complete: Completion | None = None,
         plan_reflect_complete: Completion | None = None,
         cancel_checker: Callable[[], bool] | None = None,
+        # Parallel tool batches (ADR 0044): the width, the group-wide approval
+        # refusal set and the sequential delegation precompute. Defaulted so a
+        # bare graph (tests, embeds) simply never fans out.
+        max_parallel: int = PARALLEL_MAX_DEFAULT,
+        requires_approval: frozenset[str] = frozenset(),
+        warm_delegations: Callable[[list[tuple[str, dict[str, Any]]]], None] | None = None,
         # Persistence is an adapter concern: the composition root injects the
         # checkpointer (see bootstrap). ``None`` runs stateless, which is what
         # tests and single-shot runs want.
@@ -94,6 +101,9 @@ class LocalAgentGraph:
         self._reflect_complete = reflect_complete or complete
         self._plan_reflect_complete = plan_reflect_complete
         self._cancel_checker = cancel_checker or (lambda: False)
+        self._max_parallel = max_parallel
+        self._requires_approval = requires_approval
+        self._warm_delegations = warm_delegations
         self._emitted_steps = 0
 
         # Build the graph through the engine wrapper (no direct LangGraph
@@ -195,6 +205,7 @@ class LocalAgentGraph:
         approval_granted: bool = False,
         approval_scope: str = "",
         granted_fingerprint: str = "",
+        prior_plan: list[str] | None = None,
     ) -> AgentState:
         self._emitted_steps = len(steps or [])
         restored_plan = next(
@@ -229,6 +240,9 @@ class LocalAgentGraph:
             "plan_verified": bool(prior_plan_review and prior_plan_review.get("passed") is True),
             "plan_attempts": sum(1 for step in (steps or []) if has_step_type(step, "plan")),
             "plan_feedback": "",
+            # Procedural memory seed (ADR 0043 §7): always present so the
+            # schema channel is filled; ``None`` means "no remembered recipe".
+            "prior_plan": prior_plan,
             # The route is a constant: no caller ever passed one (review 21).
             "routing_plan": "supervisor",
             "enforce_plan_completion": enforce_plan_completion,
@@ -295,6 +309,9 @@ class LocalAgentGraph:
             execute=self._execute,
             verify_result=self._verify_result,
             cancel_checker=self._cancel_checker,
+            requires_approval=self._requires_approval,
+            warm_delegations=self._warm_delegations,
+            max_parallel=self._max_parallel,
         )
         return tool_node(state, ctx)
 

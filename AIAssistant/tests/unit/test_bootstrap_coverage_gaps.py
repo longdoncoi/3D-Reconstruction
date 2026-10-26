@@ -18,7 +18,13 @@ class BootstrapServerCoverageGaps(unittest.TestCase):
         """
         from ai_assistant.bootstrap import server as s
 
-        models = s.MODELS
+        # ``MODELS`` is a composed name: reading it triggers ``compose()``
+        # (PEP 562), and compose builds the memory store eagerly (ADR 0043).
+        # Point the data root at a temp directory first so this test never
+        # writes into the checkout.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data_root, \
+                patch.dict("os.environ", {"APP_DATA_DIR": data_root}):
+            models = s.MODELS
         cases = {
             ("server.py", "-1"): 0,
             ("server.py", "99999"): 0,
@@ -344,7 +350,14 @@ class BootstrapStabilizer(unittest.TestCase):
     """Stabilize mock-path state leakage across integration tests."""
 
     def tearDown(self) -> None:
-        from ai_assistant.bootstrap.server import runtime_modules
+        # Read the already-composed runtime if there is one. A plain
+        # ``from ... import runtime_modules`` would *compose* the graph here
+        # (PEP 562), and ``compose()`` builds the memory store eagerly
+        # (ADR 0043) — a stabilizer must not create the state it stabilises.
+        server = sys.modules.get("ai_assistant.bootstrap.server")
+        runtime_modules = vars(server).get("runtime_modules") if server else None
+        if runtime_modules is None:
+            return
         runtime_modules.llm.llm = None
         runtime_modules.llm.is_vision_model = False
         runtime_modules.llm.active_model_desc = ""

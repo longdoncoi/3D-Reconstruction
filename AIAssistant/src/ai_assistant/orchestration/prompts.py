@@ -35,6 +35,13 @@ LƯU Ý QUAN TRỌNG VỀ YÊU CẦU PHỨC HỢP (KẾT HỢP NHIỀU Ý):
   step_kinds=["rag_search", "direct", "application_action"].
 - CHỈ đặt requires_plan=true khi thực sự có NHIỀU bước; một yêu cầu duy nhất về dự án thì
   requires_plan=false, steps rỗng, step_kinds có đúng 1 phần tử "rag_search".
+NHÓM CHẠY SONG SONG ("parallel_groups", tùy chọn — mặc định bỏ trống):
+- Chỉ khai báo khi có từ 2 bước LIÊN TIẾP, ĐỘC LẬP với nhau và TẤT CẢ đều là
+  "rag_search" (ví dụ: hỏi thông tin của hai nhân sự khác nhau trong dự án).
+- Mỗi nhóm là danh sách chỉ số bước (bắt đầu từ 0), tăng dần, tối thiểu 2 phần tử:
+  steps có 3 bước rag_search độc lập -> "parallel_groups": [[0, 1, 2]].
+- TUYỆT ĐỐI KHÔNG đưa bước "direct" hay "application_action" vào nhóm: các bước đó
+  cần model trả lời hoặc cần người dùng duyệt nên phải chạy tuần tự.
 Với yêu cầu có nhiều hành động liên tiếp, BẮT BUỘC phải tách MỖI hành động thành một bước ĐỘC LẬP.
 MỖI bước (step) PHẢI tương ứng với đúng 1 lần gọi công cụ (tool calling) duy nhất. 
 TUYỆT ĐỐI KHÔNG dùng các từ "và", "rồi", "sau đó" để gộp hành động trong cùng một bước.

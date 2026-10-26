@@ -9,13 +9,37 @@ win32 platform shims and the A2A task executor.
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, patch
 
 from ai_assistant.adapters.http.security import GuardedMountedApp, TransportPolicy
 from ai_assistant.bootstrap import server
+
+# These tests read composed names (``server.runtime_modules``, ``server.app``),
+# which composes the graph via PEP 562. Compose builds the long-term memory
+# store eagerly (ADR 0043), so the first access has to happen against a
+# temporary data root or a standalone run of this module leaves a real
+# ``memory.sqlite`` in the checkout. In the full suite the graph is already
+# composed by ``test_composition_root_bootstrap``; this block is then a no-op
+# and the directory is simply dropped.
+_DATA_ROOT = tempfile.mkdtemp(prefix="aiassistant-server-tests-")
+_OWNS_GRAPH = "memory_store" not in vars(server)
+if _OWNS_GRAPH:
+    with patch.dict(os.environ, {"APP_DATA_DIR": _DATA_ROOT}):
+        server.compose()
+
+
+def tearDownModule() -> None:
+    if _OWNS_GRAPH:
+        store = getattr(server, "memory_store", None)
+        if store is not None:
+            store.close()
+    shutil.rmtree(_DATA_ROOT, ignore_errors=True)
 
 
 class _AsyncCM:
@@ -274,6 +298,30 @@ class LifespanTests(unittest.TestCase):
         self.assertTrue(cm.entered)
         self.assertTrue(cm.exited)
         tasks.close.assert_called_once()
+
+    def test_lifespan_closes_the_memory_store_when_one_is_composed(self) -> None:
+        """The lifespan owns the store's close: a composed store must be
+        released before the task store on shutdown (ADR 0043)."""
+        store = MagicMock()
+        with patch.object(server, "memory_store", store):
+            result = self._run_lifespan(
+                SimpleNamespace(settings=SimpleNamespace(enable_mcp=False),
+                                tasks=MagicMock()),
+                MagicMock(available=False),
+            )
+        self.assertEqual(result, "yielded")
+        store.close.assert_called_once()
+
+    def test_lifespan_skips_the_memory_store_close_when_disabled(self) -> None:
+        """``AGENT_MEMORY_ENABLED=0`` composes no store; shutdown must not
+        trip over the missing one."""
+        with patch.object(server, "memory_store", None):
+            result = self._run_lifespan(
+                SimpleNamespace(settings=SimpleNamespace(enable_mcp=False),
+                                tasks=MagicMock()),
+                MagicMock(available=False),
+            )
+        self.assertEqual(result, "yielded")
 
     def test_lifespan_logs_a_pruning_failure_without_blocking_startup(self) -> None:
         tasks = MagicMock()

@@ -159,5 +159,30 @@ class CheckpointRestoreTests(unittest.TestCase):
         self.assertEqual(fake.invoked_state["required_ui_actions"], [])
 
 
+class PriorPlanThreadingTests(unittest.TestCase):
+    """The procedural-memory seed must reach the state schema (ADR 0043 §7)."""
+
+    def _run(self, **over):
+        fake = _FakeCompiledGraph()
+        graph = _graph()
+        graph._graph = fake
+        graph.run(
+            [{"role": "user", "content": "hi"}],
+            session_id="sess-3",
+            temperature=0.2,
+            **over,
+        )
+        return fake.invoked_state
+
+    def test_a_remembered_plan_reaches_the_invoked_state(self):
+        invoked = self._run(prior_plan=["Buoc mot", "Buoc hai"])
+        self.assertEqual(invoked["prior_plan"], ["Buoc mot", "Buoc hai"])
+
+    def test_a_run_without_a_remembered_plan_sends_none(self):
+        """The channel is always filled — ``None`` means "no recipe"."""
+        invoked = self._run()
+        self.assertIsNone(invoked["prior_plan"])
+
+
 if __name__ == "__main__":
     unittest.main()

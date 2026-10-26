@@ -16,13 +16,47 @@ and the document scan are replaced with doubles.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from ai_assistant.bootstrap.server import runtime_modules
+# Accessing a composed name on ``bootstrap.server`` composes the object graph
+# (PEP 562 ``__getattr__``), and ``compose()`` builds the long-term memory
+# store eagerly (ADR 0043). The import below therefore has to happen against a
+# temporary data root, or the suite leaves a real ``memory.sqlite`` in the
+# checkout; module teardown closes the store and removes the directory.
+_COMPOSE_DATA_ROOT = tempfile.mkdtemp(prefix="aiassistant-compose-")
+with patch.dict(os.environ, {"APP_DATA_DIR": _COMPOSE_DATA_ROOT}):
+    from ai_assistant.bootstrap.server import runtime_modules
+
+
+def _run_composed(code: str, **extra_env: str) -> subprocess.CompletedProcess[str]:
+    """Run *code* in a fresh interpreter whose data root is a temp directory.
+
+    ``compose()`` builds the long-term memory store eagerly (ADR 0043), so a
+    subprocess pointed at the checkout would leave a real ``memory.sqlite``
+    beside the sources. ``APP_DATA_DIR`` redirects every data artifact (memory
+    store, logs, checkpoints) to a directory the test owns and removes.
+    """
+    keep = ("SYSTEMROOT", "PATH", "PATHEXT", "TEMP", "TMP", "COMSPEC",
+            "USERPROFILE", "HOME")
+    env = {key: os.environ[key] for key in keep if key in os.environ}
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
+    env["AI_STORAGE_KEY"] = "hex:" + "11" * 32
+    env.update(extra_env)
+    with tempfile.TemporaryDirectory() as data_root:
+        env["APP_DATA_DIR"] = data_root
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+        )
 
 
 class CompositionRootImportTests(unittest.TestCase):
@@ -226,18 +260,7 @@ class LazyCompositionTests(unittest.TestCase):
         )
         # Minimal environment: the suite mutates os.environ globally, and the
         # subprocess must see only the deployment defaults, not test residue.
-        keep = ("SYSTEMROOT", "PATH", "PATHEXT", "TEMP", "TMP", "COMSPEC",
-                "USERPROFILE", "HOME")
-        env = {k: os.environ[k] for k in keep if k in os.environ}
-        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
-        env["AI_STORAGE_KEY"] = "hex:" + "11" * 32
-        proc = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=120,
-        )
+        proc = _run_composed(code)
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
 
     def test_a_failed_build_rolls_the_flag_back_and_the_next_access_retries(self) -> None:
@@ -257,19 +280,61 @@ class LazyCompositionTests(unittest.TestCase):
             "assert s._COMPOSED is True, 'a successful retry must mark the graph composed'\n"
             "assert s.app is not None, 'the retry must build the app'\n"
         )
-        keep = ("SYSTEMROOT", "PATH", "PATHEXT", "TEMP", "TMP", "COMSPEC",
-                "USERPROFILE", "HOME")
-        env = {k: os.environ[k] for k in keep if k in os.environ}
-        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
-        env["AI_STORAGE_KEY"] = "hex:" + "11" * 32
-        proc = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=120,
-        )
+        proc = _run_composed(code)
         self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+
+    def test_memory_disabled_composes_no_store_and_an_inert_service(self) -> None:
+        """``AGENT_MEMORY_ENABLED=0``: no store is built, the injected memory
+        service is inert (fail-closed), and shutdown skips the close (ADR 0043)."""
+        code = (
+            "import ai_assistant.bootstrap.server as s\n"
+            "s.compose()\n"
+            "assert s.memory_store is None, 'memory disabled must build no store'\n"
+            "memory = s.agent_service._memory\n"
+            "assert memory is not None, 'the service is always injected'\n"
+            "assert memory.enabled is False, 'a None store must stay inert'\n"
+            "assert memory.recall('anything') == []\n"
+            "assert s.agent_service._short_term is None\n"
+        )
+        proc = _run_composed(code, AGENT_MEMORY_ENABLED="0")
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+
+    def test_memory_disabled_composes_no_store_in_process(self) -> None:
+        """The disabled half of the memory switch, measured in-process (the
+        subprocess variant above pins the contract; only an in-process compose
+        exercises the branch the coverage gate sees): no store is built, prune
+        is skipped, and the injected service is inert (ADR 0043)."""
+        from ai_assistant.bootstrap import server as server_module
+
+        original_flag = server_module._COMPOSED
+        # Both composes below must run against a temporary data root: the
+        # restoring compose re-enables memory, and a compose that is pointed at
+        # the checkout would leave a real ``memory.sqlite`` (and its key file)
+        # in the working tree. The compose also opens a log file under that
+        # root, so the cleanup is best-effort on Windows.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data_root, \
+                patch.dict(os.environ, {"APP_DATA_DIR": data_root}):
+            try:
+                with patch.dict(os.environ, {"AGENT_MEMORY_ENABLED": "0"}):
+                    server_module._COMPOSED = False
+                    server_module.compose()
+                    self.assertIsNone(server_module.memory_store)
+                    memory = server_module.agent_service._memory
+                    self.assertIsNotNone(memory)
+                    self.assertFalse(memory.enabled)
+                    self.assertEqual(memory.recall("anything"), [])
+                    self.assertIsNone(server_module.agent_service._short_term)
+            finally:
+                # Leave the module composed the way the rest of the suite found
+                # it: memory enabled again, so a later test that patches globals
+                # sees the same graph shape it would in production.
+                server_module._COMPOSED = False
+                server_module.compose()
+                if original_flag:
+                    server_module._COMPOSED = original_flag
+                # Close the temporary store so its file is not held open past
+                # this test (the temp root is removed on a best-effort basis).
+                server_module.memory_store.close()
 
     def test_an_in_process_failure_resets_the_flag(self) -> None:
         from unittest.mock import patch
@@ -291,7 +356,11 @@ class LazyCompositionTests(unittest.TestCase):
 
         from ai_assistant.bootstrap import server as server_module
 
-        with patch.dict("os.environ", {"AI_STORAGE_KEY": "hex:" + "11" * 32}):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data_root, \
+                patch.dict("os.environ", {
+                    "AI_STORAGE_KEY": "hex:" + "11" * 32,
+                    "APP_DATA_DIR": data_root,
+                }):
             server_module.compose()
         with self.assertRaises(AttributeError):
             getattr(server_module, "_no_such_attribute_xyz")
@@ -368,6 +437,15 @@ def tearDownModule() -> None:
         if str(getattr(handler, "baseFilename", "")).startswith(logs_dir):
             root.removeHandler(handler)
             handler.close()
+
+    # The import-time compose built its memory store under a temporary data
+    # root; close it and drop the directory. Best-effort: a log handler may
+    # still hold a file open on Windows.
+    server_module = sys.modules.get("ai_assistant.bootstrap.server")
+    store = getattr(server_module, "memory_store", None) if server_module else None
+    if store is not None:
+        store.close()
+    shutil.rmtree(_COMPOSE_DATA_ROOT, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -44,6 +44,7 @@ def _run_graph(
     messages: list[dict[str, Any]],
     temperature: float,
     initial_steps: list[Step] | None,
+    prior_plan: list[str] | None,
     initial_iteration: int,
     resume_with_reflection: bool,
     approval_granted: bool,
@@ -64,6 +65,7 @@ def _run_graph(
             resume_with_reflection=resume_with_reflection,
             required_ui_actions=[],
             enforce_plan_completion=True,
+            prior_plan=prior_plan,
             approval_granted=approval_granted or bool(
                 (initial_steps or []) and
                 any(has_step_type(step, "approval_granted") for step in (initial_steps or []))
@@ -96,6 +98,7 @@ def run_langgraph_agent(
     # Optional state for resume
     initial_messages: list[dict[str, str]] | None = None,
     initial_steps: list[Step] | None = None,
+    prior_plan: list[str] | None = None,
     initial_iteration: int = 0,
     resume_with_reflection: bool = False,
     event_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -142,7 +145,7 @@ def run_langgraph_agent(
     ]
     state = _run_graph(
         graph, deps=deps, session_id=session_id, messages=messages, temperature=temperature,
-        initial_steps=initial_steps, initial_iteration=initial_iteration,
+        initial_steps=initial_steps, prior_plan=prior_plan, initial_iteration=initial_iteration,
         resume_with_reflection=resume_with_reflection, approval_granted=approval_granted,
         approval_scope=approval_scope, granted_fingerprint=granted_fingerprint,
         ls_ctx=_ls_ctx, ls_ctx_mgr=_ls_ctx_mgr,

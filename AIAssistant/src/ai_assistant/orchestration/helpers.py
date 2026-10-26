@@ -44,6 +44,33 @@ def completed_plan_steps(steps: list[Step], plan: list[str] | None) -> int:
     return completed
 
 
+def valid_parallel_group(raw: object, plan_len: int) -> list[int] | None:
+    """Validate one planner-declared parallel group (ADR 0044 §2).
+
+    A group is a list of at least two plan-step indexes, strictly increasing
+    and inside the plan. Anything else returns ``None`` and the caller drops
+    the group entirely instead of repairing it: a broken planner must not be
+    able to turn on behaviour its own contract does not describe. The same
+    function re-checks a group restored from a checkpoint, where the data was
+    written by another process and the compiler cannot vouch for its shape.
+    """
+    if not isinstance(raw, list):
+        return None
+    if len(raw) < 2:
+        return None
+    indexes: list[int] = []
+    for item in raw:
+        # ``bool`` is an ``int`` in Python; a JSON ``true`` is not an index.
+        if not isinstance(item, int) or isinstance(item, bool):
+            return None
+        indexes.append(item)
+    if any(index < 0 or index >= plan_len for index in indexes):
+        return None
+    if indexes != sorted(set(indexes)):
+        return None
+    return indexes
+
+
 def normalise_plan_payload(payload: dict[str, Any]) -> tuple[list[str] | None, dict[str, Any]]:
     """Accept the current structured planner contract and older 'plan' JSON."""
     requires_plan = bool(payload.get("requires_plan"))
@@ -62,6 +89,16 @@ def normalise_plan_payload(payload: dict[str, Any]) -> tuple[list[str] | None, d
         step_kinds = (step_kinds + ["model_selected"] * len(plan))[: len(plan)]
     elif not plan and not step_kinds:
         step_kinds = []
+    # Parallel groups (ADR 0044 §2): the planner may declare that consecutive
+    # steps run together. Validation is fail-closed per group; an unreadable
+    # payload means "no groups", i.e. the sequential path that shipped before.
+    parallel_groups: list[list[int]] = []
+    raw_groups = payload.get("parallel_groups")
+    if isinstance(raw_groups, list):
+        for raw_group in raw_groups:
+            group = valid_parallel_group(raw_group, len(plan))
+            if group is not None:
+                parallel_groups.append(group)
     spec = {
         "requires_plan": requires_plan,
         "goal": str(payload.get("goal", "")).strip(),
@@ -73,6 +110,7 @@ def normalise_plan_payload(payload: dict[str, Any]) -> tuple[list[str] | None, d
                                   if str(item).strip()] if isinstance(payload.get("verification_commands", []), list) else [],
         "steps": plan,
         "step_kinds": step_kinds,
+        "parallel_groups": parallel_groups,
     }
     return (plan or None) if requires_plan else None, spec
 

@@ -386,6 +386,8 @@ với các specialist logic**. Cách này giữownership rõ ràng và các bư�
 | Phản biện (reflection) | Một người phản biện tất định, độc lập, rà mọi kết quả công cụ hoàn tất và nạp lỗi vào lượt suy luận kế tiếp. | `orchestration/nodes/reflect.py`, bước `reflection`, sự kiện audit `tool_reflected` |
 | Dùng công cụ | Validate Pydantic/JSON-Schema, constrained decoding, sandbox và MCP — một hợp đồng chung. | `tools/validation.py`, `agents/completion.py`, `tools/sandbox.py`, `adapters/mcp.py` |
 | Lập kế hoạch | Yêu cầu dài (không phải lệnh UI ngắn) nhận một kế hoạch JSON cô đọng trước khi thực thi; lệnh UI ngắn bỏ qua bước này. | `orchestration/nodes/plan.py` |
+| Bộ nhớ | Buffer short-term theo session (bounded, merge với history client gửi lên) và long-term SQLite (semantic/episodic/procedural) recall bằng keyword + recency; chỉ ghi sau một run `completed`. | `domain/memory.py`, `application/memory.py`, `agents/short_term_memory.py`, `adapters/persistence/memory_store.py` (ADR 0043) |
+| Song song trong workflow | Planner khai báo `parallel_groups`; node tool fan-out các bước `rag_search` độc lập **bên trong node** (không đổi topology), merge thành cặp call/result có `batch_id`/`branch_index`; mọi nhóm không chứng minh được hợp lệ rơi về tuần tự. | `orchestration/nodes/tool.py`, `orchestration/helpers.py`, `domain/parallel.py` (ADR 0044) |
 | Đa agent | Supervisor gán một specialist logic, phát ra bàn giao, và verification độc lập với execution. | `orchestration/supervisor.py`, `orchestration/specialists/`, `domain/specialists.py` |
 | Sẵn sàng sản xuất | Timeout/giới hạn vòng lặp, cổng phê duyệt, log audit, tracing/Prometheus tuỳ chọn, endpoint health, backend checkpoint, lint CI và eval tất định. | `observability/*`, `adapters/persistence/checkpointing.py`, `.github/workflows/*` |
 
@@ -413,6 +415,17 @@ với các specialist logic**. Cách này giữownership rõ ràng và các bư�
   quy trình chỉnh quota/backup/rollback).
 * Người phản biện là tất định **bằng thiết kế**: không tốn một lời gọi mô hình
   thêm nào, và ngăn một kết quả công cụ thất bại bị âm thầm coi là sự thật.
+* **Bộ nhớ (ADR 0043).** `AGENT_MEMORY_ENABLED=0` tắt cả hai nửa (buffer
+  short-term và long-term store); `AGENT_MEMORY_STM_MAX_MESSAGES` (40) và
+  `AGENT_MEMORY_LTM_TOP_K` (5) chỉnh cửa sổ buffer và số record recall;
+  `AGENT_MEMORY_RETENTION_DAYS` (90) / `AGENT_MEMORY_RETENTION_MAX_MB` (64) là
+  hạn mức prune của store SQLite. Secret vẫn đi qua vault: một record còn chứa
+  dữ liệu nhạy cảm bị **loại** trước khi ghi, không được che.
+* **Song song trong workflow (ADR 0044).** `AGENT_PARALLEL_MAX` (mặc định 4,
+  clamp cứng `[1, 8]`) là độ rộng fan-out của **một** nhóm bước. Chỉ nhóm
+  `rag_search` không cần approval mới chạy song song; nhóm chứa `direct`,
+  `application_action`, `model_selected` hoặc một tool cần grant giữ nguyên
+  đường tuần tự — fail-closed theo nhóm, không "nhánh nào tự quyết".
 
 ## Các quyết định & phân rã trọng yếu
 

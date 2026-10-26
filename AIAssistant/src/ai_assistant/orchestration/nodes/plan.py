@@ -46,6 +46,29 @@ def _reuse_prior_plan(state: AgentState) -> dict[str, Any] | None:
     # Skip planning nếu đang ở giữa task (đã có tool_call từ vòng lặp trước)
     if any(has_step_type(step, "tool_call") for step in state.get("steps", [])) and previous_review is None:
         return {"plan": None}
+
+    # Procedural memory (ADR 0043 §7): the service layer offers the plan that
+    # was written under this task's exact signature. Reuse it the way an
+    # in-run verified plan is reused — the critic already passed it when it
+    # was written — so the planner (and its critic) only runs when there is
+    # no remembered recipe. Only the step texts survive consolidation, so the
+    # spec carries them and ``step_kinds`` falls back to the deterministic
+    # keyword contract in ``plan_step_execution_contract``.
+    remembered = state.get("prior_plan")
+    if remembered:
+        plan = [str(item) for item in remembered]
+        plan_spec: dict[str, Any] = {"steps": plan}
+        steps = list(state["steps"])
+        steps.append({"type": "plan", "steps": plan, "spec": plan_spec})
+        logger.info("[NODE: plan] Dùng kế hoạch từ bộ nhớ dài hạn: %s", plan)
+        return {
+            "plan": plan,
+            "plan_spec": plan_spec,
+            "plan_verified": True,
+            "steps": steps,
+            "plan_attempts": state.get("plan_attempts", 0) + 1,
+            "plan_feedback": "",
+        }
     return None
 
 

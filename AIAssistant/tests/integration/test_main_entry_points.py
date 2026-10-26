@@ -18,6 +18,7 @@ import ctypes
 import io
 import os
 import sys
+import tempfile
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
@@ -28,6 +29,21 @@ from ai_assistant.bootstrap import server_manager as manager_module
 
 class ServerMainEntryTests(unittest.TestCase):
     """``server.main()`` warms the runtime first and never swallows a serve failure."""
+
+    def setUp(self) -> None:
+        # ``main()`` reads composed names (``app``, ``runtime_modules``), which
+        # composes the graph via PEP 562; compose builds the long-term memory
+        # store eagerly (ADR 0043), so the data root has to be a temp dir.
+        self._data_root = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self._env = patch.dict(os.environ, {"APP_DATA_DIR": self._data_root.name})
+        self._env.start()
+
+    def tearDown(self) -> None:
+        self._env.stop()
+        store = getattr(server_module, "memory_store", None)
+        if store is not None:
+            store.close()
+        self._data_root.cleanup()
 
     def test_warms_up_then_serves_the_app(self) -> None:
         fake_server = MagicMock()

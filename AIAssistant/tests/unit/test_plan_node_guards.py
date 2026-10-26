@@ -85,6 +85,56 @@ class PlanReuseTests(unittest.TestCase):
         planner.assert_not_called()
 
 
+class ProceduralReuseTests(unittest.TestCase):
+    """A remembered recipe short-circuits the planner (ADR 0043 §7).
+
+    The staircase's new rung sits *below* every in-run reuse branch: an
+    existing plan still wins, a mid-task loop still skips planning, and only
+    an ordinary fresh request with no recipe in memory reaches the planner.
+    """
+
+    def test_a_remembered_plan_is_verified_without_calling_the_planner(self):
+        planner = MagicMock()
+        state = _state(prior_plan=["Buoc mot", "Buoc hai"])
+        outcome = plan_node(state, planner)
+        planner.assert_not_called()
+        self.assertEqual(outcome["plan"], ["Buoc mot", "Buoc hai"])
+        self.assertEqual(outcome["plan_spec"], {"steps": ["Buoc mot", "Buoc hai"]})
+        self.assertTrue(outcome["plan_verified"])
+        self.assertEqual(outcome["plan_attempts"], 1)
+        # The reuse is observable: the plan step lands on the step log.
+        self.assertEqual(outcome["steps"][-1]["type"], "plan")
+        self.assertEqual(outcome["steps"][-1]["steps"], ["Buoc mot", "Buoc hai"])
+
+    def test_an_existing_plan_still_beats_the_remembered_one(self):
+        """Branch order is a contract: the in-run plan is fresher evidence."""
+        planner = MagicMock()
+        state = _state(
+            prior_plan=["Bo qua"],
+            steps=[{"type": "plan", "steps": ["Buoc cu"], "spec": {"goal": "g"}}],
+        )
+        outcome = plan_node(state, planner)
+        planner.assert_not_called()
+        self.assertEqual(outcome["plan"], ["Buoc cu"])
+        self.assertNotIn("plan_verified", outcome)
+        self.assertEqual(len(outcome.get("steps", state["steps"])), 1)
+
+    def test_a_mid_task_loop_still_skips_before_the_remembered_plan(self):
+        planner = MagicMock()
+        state = _state(
+            prior_plan=["Bo qua"],
+            steps=[{"type": "tool_call", "tool": "read_file", "params": {}}],
+        )
+        self.assertEqual(plan_node(state, planner), {"plan": None})
+        planner.assert_not_called()
+
+    def test_an_empty_remembered_plan_falls_through_to_the_planner(self):
+        planner = MagicMock(return_value="just prose, no JSON")
+        outcome = plan_node(_state(prior_plan=[]), planner)
+        planner.assert_called_once()
+        self.assertIsNone(outcome["plan"])
+
+
 class PlannerCallTests(unittest.TestCase):
     def test_a_request_without_a_user_message_still_reaches_the_planner(self):
         """The user-message scan finds nobody, but planning proceeds anyway."""

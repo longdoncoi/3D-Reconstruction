@@ -218,6 +218,13 @@ class AgentRuntimeSettingsTests(unittest.TestCase):
         # keeps working without a database (ADR 0023).
         self.assertFalse(settings.checkpoint_required)
         self.assertEqual(settings.max_concurrent_runs, 0)
+        self.assertEqual(settings.parallel_max, 4)
+
+    def test_the_parallel_width_is_clamped_on_the_way_in(self):
+        """ADR 0044 §4: an operator can lower the fan-out, never exceed the cap."""
+        self.assertEqual(load_agent_runtime_settings({"AGENT_PARALLEL_MAX": "0"}).parallel_max, 1)
+        self.assertEqual(load_agent_runtime_settings({"AGENT_PARALLEL_MAX": "99"}).parallel_max, 8)
+        self.assertEqual(load_agent_runtime_settings({"AGENT_PARALLEL_MAX": "3"}).parallel_max, 3)
 
     def test_the_sandbox_gate_can_be_switched_off_explicitly(self):
         """The opt-out is a decision, not a default: it has to be written down."""

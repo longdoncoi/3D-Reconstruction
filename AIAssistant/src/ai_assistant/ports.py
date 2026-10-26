@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from typing import Any, Protocol
 
+from .domain.memory import MemoryRecord as MemoryRecord
 from .domain.security import Principal
 from .domain.tasks import AgentTask, TaskStatus
 from .domain.tools import ToolRequest, ToolResult, ToolSpec
@@ -301,6 +302,42 @@ class PendingActionPort(Protocol):
     def load(self) -> None: ...
     def save(self) -> None: ...
     def cleanup(self, cutoff: float) -> bool: ...
+
+
+class ShortTermMemoryPort(Protocol):
+    """Bounded per-session conversation buffer (ADR 0043).
+
+    The client ships the history it still holds on every request; when that
+    history is shorter than what the server already saw, this buffer fills the
+    gap so a run does not lose its context. The buffer is bounded — a
+    long-lived session must not grow without limit — and the eviction rule
+    belongs to the implementation (``TaskCoordinator``-style), not to the
+    caller. In-process by default; a durable implementation would satisfy the
+    same contract without the agent layer noticing.
+    """
+
+    def record(self, session_id: str, messages: Sequence[Mapping[str, str]]) -> None: ...
+    def recent(self, session_id: str) -> list[dict[str, str]]: ...
+    def forget(self, session_id: str) -> None: ...
+    def cleanup(self, cutoff: float) -> int: ...
+
+
+class LongTermMemoryPort(Protocol):
+    """Durable long-term memory store (ADR 0043).
+
+    The store is dumb on purpose: it persists already-validated
+    :class:`~ai_assistant.domain.memory.MemoryRecord` rows and hands candidate
+    sets back. Ranking (keyword + recency), the redaction gate and the
+    sealed-at-rest encoding are decisions the owner layers make — the adapter
+    only ever sees records the service approved, sealed by the composition
+    root's cipher. ``kinds`` is a plain ``frozenset`` because rehydrated rows
+    cross a trust boundary: the caller filters with ``is_memory_kind`` first.
+    """
+
+    def add(self, record: MemoryRecord) -> None: ...
+    def candidates(self, owner: str, kinds: frozenset[str], *, limit: int = 200) -> list[MemoryRecord]: ...
+    def prune(self, retention_days: int) -> int: ...
+    def close(self) -> None: ...
 
 
 class StorageCryptoError(RuntimeError):

@@ -103,6 +103,8 @@ class AgentRunContextWiringTests(unittest.TestCase):
             AgentRunContext().run(
                 system_prompt="sys", task="do", session_id="sess", temperature=0.1,
                 language="en", request_started=1.5, initial_messages=[{"role": "user", "content": "x"}],
+                initial_steps=[{"type": "memory_recall", "count": 1}],
+                prior_plan=["Buoc mot"],
                 approval_granted=True, approval_token="tok", granted_fingerprint="fp",
                 prior_step_count=4,
             )
@@ -114,6 +116,8 @@ class AgentRunContextWiringTests(unittest.TestCase):
         self.assertEqual(seen["language"], "en")
         self.assertEqual(seen["request_started"], 1.5)
         self.assertEqual(seen["initial_messages"], [{"role": "user", "content": "x"}])
+        self.assertEqual(seen["initial_steps"], [{"type": "memory_recall", "count": 1}])
+        self.assertEqual(seen["prior_plan"], ["Buoc mot"])
         self.assertTrue(seen["approval_granted"])
         self.assertEqual(seen["approval_token"], "tok")
         self.assertEqual(seen["granted_fingerprint"], "fp")

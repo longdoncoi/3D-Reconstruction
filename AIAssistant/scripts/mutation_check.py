@@ -94,7 +94,35 @@ class Mutant:
 #: the startup caller), the fail-closed scope map, the missing-policy and
 #: missing-catalogue bootstrap refusals, the graceful stop (event, watcher and
 #: admin route) and the public RAG surface (property and health read).
-MIN_MUTANTS = 160
+#: ADR 0043 adds four more: the no-overlap recall drop, the memory-kind runtime
+#: gate, the bounded trim window and the over-budget compaction shrink.
+#: The short-term buffer adds seven more: the window rule, the merge that keeps
+#: the remembered context, the empty-record no-op, the session-map eviction,
+#: the facade's read (merge), its write (record) and the answer turn it skips
+#: when the run never concluded.
+#: The long-term memory loop adds fifteen more (ADR 0043 §3-§5): the recall's
+#: fail-closed read (a throwing store), the kind re-check at the trust crossing,
+#: the redaction gate that drops a still-sensitive record, the contained write,
+#: the inert-without-store ``enabled``; the store's required key, its unknown-
+#: kind refusal on the way in, the sealed-identity re-check on the way out and
+#: the byte/age retention rules; the per-run semantic cap and the plan-only
+#: procedural record; and the facade's three wiring decisions (recall before a
+#: run, consolidate a completed run only, never announce an empty recall).
+#: The procedural seed adds thirteen more (ADR 0043 §7): the lookup's own
+#: fail-closed half (off switch, throwing store, wrong kind, wrong signature,
+#: non-mapping metadata, non-string text, text with no steps), the seed's
+#: decisions in the plan node (reuse instead of planning, mark it verified,
+#: count the attempt) and the four hops that carry ``prior_plan`` from the
+#: facade to the state (service, context, runner, graph.run).
+#: The parallel tool batch adds twenty-two more (ADR 0044): the group
+#: eligibility rules (approval-free, rag-only head and members, width), the
+#: parser's four fail-closed group checks and the checkpoint re-check, the
+#: fan-out itself (the per-branch cancel gate, the join, the delegation
+#: precompute and its cache lock), the merge (ordered pairs, the head's
+#: position, the sibling evidence, the group-wide call budget), the error
+#: streak reset, the fan-out bounds, the evidence-aware step directive and the
+#: planner schema that now declares the contract the prompt asks for.
+MIN_MUTANTS = 221
 
 MUTANTS: tuple[Mutant, ...] = (
     # ── Sandbox allow-list (ADR 0011) ────────────────────────────────────────
@@ -1522,6 +1550,552 @@ MUTANTS: tuple[Mutant, ...] = (
         "            \"reranker\": False,",
         ("tests.unit.test_http_health_routes",),
         "/health never reports an active reranker",
+    ),
+    # ── Memory: short/long-term policy (ADR 0043) ─────────────────────────────
+    Mutant(
+        "src/ai_assistant/domain/memory.py",
+        "        if query_tokens and overlap == 0.0:\n"
+        "            continue",
+        "        if False:\n"
+        "            continue",
+        ("tests.unit.test_memory_domain",),
+        "a record with no keyword overlap is recalled anyway (unrelated "
+        "\"memories\" are injected into the prompt as noise)",
+    ),
+    Mutant(
+        "src/ai_assistant/domain/memory.py",
+        "    return isinstance(value, str) and value in MEMORY_KINDS",
+        "    return isinstance(value, str)",
+        ("tests.unit.test_memory_domain",),
+        "an unknown rehydrated kind is accepted by the runtime gate (a kind "
+        "with no policy reaches the recall path)",
+    ),
+    Mutant(
+        "src/ai_assistant/domain/memory.py",
+        "    while total > max_tokens and len(trimmed) > 1:",
+        "    while total > max_tokens:",
+        ("tests.unit.test_memory_domain",),
+        "the drop-oldest window may trim the history down to nothing (the "
+        "next model call loses every turn)",
+    ),
+    Mutant(
+        "src/ai_assistant/domain/memory.py",
+        "    if total > CONTEXT_TOTAL_LIMIT:\n"
+        "        for index in range(1, len(result)):",
+        "    if False:\n"
+        "        for index in range(1, len(result)):",
+        ("tests.unit.test_summarize_guards", "tests.unit.test_memory_domain"),
+        "an over-budget compacted history is handed to the model unchanged "
+        "(the context window overruns)",
+    ),
+    Mutant(
+        "src/ai_assistant/domain/memory.py",
+        "    return h >= n and any(haystack[i:i + n] == list(needle) for i in range(h - n + 1))",
+        "    return False",
+        ("tests.unit.test_memory_domain",),
+        "the window rule never matches (a client that ships no history gets "
+        "no context back — the buffer exists but never answers)",
+    ),
+    Mutant(
+        "src/ai_assistant/domain/memory.py",
+        "    return [dict(m) for m in buffered] + [dict(m) for m in incoming[overlap:]]",
+        "    return [dict(m) for m in incoming[overlap:]]",
+        ("tests.unit.test_memory_domain",),
+        "the merge drops the remembered context and keeps only what the client "
+        "shipped (the short-term buffer never contributes)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/short_term_memory.py",
+        "        if not turns:",
+        "        if False:",
+        ("tests.unit.test_short_term_memory",),
+        "recording an empty message list erases the window the buffer exists "
+        "to keep",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/short_term_memory.py",
+        "        while len(self._sessions) > self._max_sessions:",
+        "        while False:",
+        ("tests.unit.test_short_term_memory",),
+        "the session map never evicts (a client inventing session ids leaks "
+        "the buffer without bound)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/service.py",
+        "        if short_term is not None:\n"
+        "            history_messages = merge_history(short_term.recent(session_id), history_messages)",
+        "        if False:\n"
+        "            history_messages = merge_history(short_term.recent(session_id), history_messages)",
+        ("tests.unit.test_short_term_memory",),
+        "the shipped history is never topped up from the buffer (short-term "
+        "memory is written but never read)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/service.py",
+        "        if short_term is not None:\n"
+        "            turns = list(history_messages)",
+        "        if False:\n"
+        "            turns = list(history_messages)",
+        ("tests.unit.test_short_term_memory",),
+        "the run's turns are never recorded back (the buffer only ever holds "
+        "what a test put there)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/service.py",
+        "            if answer:",
+        "            if False:",
+        ("tests.unit.test_short_term_memory",),
+        "the assistant turn is recorded even when the run never concluded "
+        "(a parked run invents an answer in the remembered context)",
+    ),
+    # ── Long-term memory loop (ADR 0043 §3-§5) ────────────────────────────────
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        '            logger.warning("Long-term memory recall failed: %s", error)\n'
+        "            return []",
+        '            logger.warning("Long-term memory recall failed: %s", error)\n'
+        "            raise",
+        ("tests.unit.test_memory_service",),
+        "recall re-raises a store failure (a memory problem can fail a run)",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        '        trusted = [record for record in candidates if is_memory_kind(record.get("kind"))]',
+        "        trusted = list(candidates)",
+        ("tests.unit.test_memory_service",),
+        "an unknown-kind candidate is not re-checked at the trust crossing "
+        "(a kind with no policy reaches the prompt)",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        "            if not isinstance(safe_text, str) or has_sensitive_content(safe_text):",
+        "            if False:",
+        ("tests.unit.test_memory_service",),
+        "the redaction gate never drops a still-sensitive record (a token "
+        "shape that survived redaction is persisted and recalled later)",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        '                logger.warning("Long-term memory write failed for %s: %s",\n'
+        '                               record["id"], error)\n'
+        "                continue",
+        '                logger.warning("Long-term memory write failed for %s: %s",\n'
+        '                               record["id"], error)\n'
+        "                raise",
+        ("tests.unit.test_memory_service",),
+        "a failing store write is not contained (consolidation fails the "
+        "run that already succeeded)",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        "        return self._store is not None and self._top_k > 0",
+        "        return self._store is not None",
+        ("tests.unit.test_memory_service",),
+        "a zero top_k still reports memory as enabled (the off switch is ignored)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/memory_store.py",
+        "        if cipher is None:",
+        "        if False:",
+        ("tests.unit.test_memory_store",),
+        "a store without a key is built anyway (user facts at rest in plaintext)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/memory_store.py",
+        "        if not is_memory_kind(kind):",
+        "        if False:",
+        ("tests.unit.test_memory_store",),
+        "an unknown memory kind is accepted on the way in (the closed "
+        "vocabulary is open from the write side)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/memory_store.py",
+        '        if not is_memory_kind(sealed_kind) or sealed_kind != kind or data.get("owner") != owner:',
+        "        if False:",
+        ("tests.unit.test_memory_store",),
+        "a sealed identity that disagrees with the plain-text columns is "
+        "served (the columns stop being a filter hint)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/memory_store.py",
+        "            if max_bytes > 0:",
+        "            if True:",
+        ("tests.unit.test_memory_store",),
+        "prune without a byte cap shrinks the store to zero bytes",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/memory_store.py",
+        "        cutoff = time.time() - max(1, int(retention_days)) * 86400.0",
+        "        cutoff = time.time() - int(retention_days) * 86400.0",
+        ("tests.unit.test_memory_store",),
+        "a non-positive retention wipes the store (every row is already past "
+        "the cutoff)",
+    ),
+    Mutant(
+        "src/ai_assistant/domain/memory.py",
+        "    return facts[:MAX_SEMANTIC_PER_RUN]",
+        "    return facts",
+        ("tests.unit.test_memory_domain",),
+        "the semantic per-run cap is removed (one run can flood the store "
+        "with facts)",
+    ),
+    Mutant(
+        "src/ai_assistant/domain/memory.py",
+        "    if plan_items:",
+        "    if True:",
+        ("tests.unit.test_memory_domain",),
+        "a run without a plan gets a procedural record anyway (an empty "
+        "recipe keyed by the task signature overwrites the real one)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/service.py",
+        "        if memory is not None and memory.enabled:\n"
+        "            recalled = memory.recall(task_with_attachments)",
+        "        if False:\n"
+        "            recalled = memory.recall(task_with_attachments)",
+        ("tests.unit.test_memory_service",),
+        "long-term recall is never applied before a run (memory is written "
+        "but never read)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/service.py",
+        "        if memory is not None and memory.enabled:\n"
+        '            if result.get("status") == "completed":',
+        "        if memory is not None and memory.enabled:\n"
+        "            if True:",
+        ("tests.unit.test_memory_service",),
+        "a parked or failed run is consolidated into long-term memory",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/service.py",
+        "            if memory_block:",
+        "            if True:",
+        ("tests.unit.test_memory_service",),
+        "an empty recall still appends a memory block and announces a "
+        "memory_recall step (the model is told there is memory when there "
+        "is none)",
+    ),
+    # ── Procedural memory seed (ADR 0043 §7) ──────────────────────────────────
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        "        if self._store is None or self._top_k <= 0:\n"
+        "            return None\n"
+        "        signature = task_signature(task)",
+        "        if self._store is None:\n"
+        "            return None\n"
+        "        signature = task_signature(task)",
+        ("tests.unit.test_memory_service",),
+        "the top_k off switch does not disable the procedural lookup "
+        "(AGENT_MEMORY_LTM_TOP_K=0 turns off only half of memory)",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        '            logger.warning("Procedural memory lookup failed: %s", error)\n'
+        "            return None",
+        '            logger.warning("Procedural memory lookup failed: %s", error)\n'
+        "            raise",
+        ("tests.unit.test_memory_service",),
+        "a store failure propagates out of the procedural lookup (a memory "
+        "problem fails the run before it starts)",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        "            if record.get(\"kind\") != \"procedural\":\n"
+        "                continue",
+        "            if False:\n"
+        "                continue",
+        ("tests.unit.test_memory_service",),
+        "any kind's record is used as a remembered plan (a semantic fact "
+        "whose metadata matches becomes a recipe)",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        "            if not isinstance(metadata, Mapping) or metadata.get(\"task_signature\") != signature:",
+        "            if not isinstance(metadata, Mapping):",
+        ("tests.unit.test_memory_service",),
+        "a remembered plan is reused for a different task (the signature "
+        "comparison is gone, so any procedural row answers any query)",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        "            if not isinstance(text, str):\n"
+        "                continue",
+        "            if False:\n"
+        "                continue",
+        ("tests.unit.test_memory_service",),
+        "non-string plan text is split anyway (the lookup crashes on data "
+        "the sealed payload should never have produced)",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        "            if steps:\n"
+        "                return steps",
+        "            if True:\n"
+        "                return steps",
+        ("tests.unit.test_memory_service",),
+        "text that splits into nothing returns an empty plan instead of "
+        "None (the caller cannot tell 'no recipe' from 'empty recipe')",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/plan.py",
+        "    remembered = state.get(\"prior_plan\")\n"
+        "    if remembered:",
+        "    remembered = state.get(\"prior_plan\")\n"
+        "    if False:",
+        ("tests.unit.test_plan_node_guards",),
+        "a remembered plan is never reused (the planner and its critic run "
+        "again for a task that already has a passing recipe)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/plan.py",
+        "            \"plan_verified\": True,\n"
+        "            \"steps\": steps,",
+        "            \"plan_verified\": False,\n"
+        "            \"steps\": steps,",
+        ("tests.unit.test_plan_node_guards",),
+        "a remembered plan is not marked verified (the critic re-runs on "
+        "every reuse, which is the cost the seed exists to avoid)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/plan.py",
+        "            \"plan_attempts\": state.get(\"plan_attempts\", 0) + 1,\n"
+        "            \"plan_feedback\": \"\",",
+        "            \"plan_attempts\": state.get(\"plan_attempts\", 0),\n"
+        "            \"plan_feedback\": \"\",",
+        ("tests.unit.test_plan_node_guards",),
+        "a memory seed does not count as a plan attempt (the in-run counter "
+        "and the resume recount of plan steps disagree)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/service.py",
+        "            prior_plan = memory.procedural_plan(task_with_attachments)",
+        "            prior_plan = None",
+        ("tests.unit.test_memory_service",),
+        "the facade never looks up a remembered plan (procedural memory is "
+        "written but never read)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/context.py",
+        "            prior_plan=prior_plan,\n"
+        "            initial_iteration=initial_iteration,",
+        "            prior_plan=None,\n"
+        "            initial_iteration=initial_iteration,",
+        ("tests.unit.test_agent_run_context",),
+        "the context drops prior_plan on its way to the runner",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/runner.py",
+        "            enforce_plan_completion=True,\n"
+        "            prior_plan=prior_plan,",
+        "            enforce_plan_completion=True,\n"
+        "            prior_plan=None,",
+        ("tests.unit.test_runner",),
+        "the runner does not forward prior_plan to graph.run",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/graph.py",
+        "            \"prior_plan\": prior_plan,",
+        "            \"prior_plan\": None,",
+        ("tests.unit.test_graph_run_guards",),
+        "graph.run never puts the remembered plan into the state (the seed "
+        "has nothing to read)",
+    ),
+    # ── Parallel tool batches: eligibility, fan-out, merge (ADR 0044) ────────
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/tool.py",
+        '    if "rag_search" in ctx.requires_approval:\n'
+        "        return None",
+        "    if False:\n"
+        "        return None",
+        ("tests.unit.test_parallel_batch",),
+        "an approval-gated group fans out (a branch spends the grant the user "
+        "gave for one visible invocation, and the steps skip the order)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/tool.py",
+        "    if ctx.max_parallel <= 1:\n"
+        "        return None",
+        "    if False:\n"
+        "        return None",
+        ("tests.unit.test_parallel_batch",),
+        "a single-threaded deployment still batches (the width setting is "
+        "ignored)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/tool.py",
+        "                if ctx.cancel_checker():\n"
+        "                    cancelled = True\n"
+        '                    results[index] = {"error": "Tool batch branch cancelled."}\n'
+        "                    continue",
+        "                if False:\n"
+        "                    cancelled = True\n"
+        '                    results[index] = {"error": "Tool batch branch cancelled."}\n'
+        "                    continue",
+        ("tests.unit.test_parallel_batch",),
+        "a cancelled run keeps starting the remaining branches (the cancel "
+        "gate is checked once, before the fan-out)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/tool.py",
+        "            for index, future in futures.items():\n"
+        "                results[index] = future.result()",
+        "            pass",
+        ("tests.unit.test_parallel_batch",),
+        "the batch returns before its branches are joined (the state update "
+        "races every worker it started)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/tool.py",
+        '    return state.get("error_count", 0) + failures if failures else 0',
+        '    return state.get("error_count", 0) + failures',
+        ("tests.unit.test_parallel_batch",),
+        "a clean group never resets the error streak (an old failure still "
+        "trips the circuit breaker)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/tool.py",
+        "                                batch_evidence=siblings)",
+        "                                batch_evidence=None)",
+        ("tests.unit.test_parallel_batch",),
+        "the siblings' evidence is dropped from the synthesis turn (the model "
+        "must search again for steps it already fetched)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/tool.py",
+        "calls=len(batch.calls),",
+        "calls=1,",
+        ("tests.unit.test_parallel_batch",),
+        "a whole group is charged as one tool call (the per-call budget the "
+        "circuit breaker and the UI rely on no longer matches the log)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/tool.py",
+        '    steps[batch.head_index] = {**batch.head_step, "batch_id": batch.batch_id,',
+        '    steps[0] = {**batch.head_step, "batch_id": batch.batch_id,',
+        ("tests.unit.test_parallel_batch",),
+        "the batch label lands on the first step of the log instead of the "
+        "head (an earlier, already-answered call is rewritten)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/tool.py",
+        '        if kinds[index] != "rag_search":\n'
+        "            return None",
+        "        if False:\n"
+        "            return None",
+        ("tests.unit.test_parallel_batch",),
+        "a direct/application member is batched (the model owes that step its "
+        "answer or its approval, and a worker thread cannot provide either)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/tool.py",
+        '    if tool_name != "rag_search":\n'
+        "        return None\n"
+        '    if "rag_search" in ctx.requires_approval:',
+        "    if False:\n"
+        "        return None\n"
+        '    if "rag_search" in ctx.requires_approval:',
+        ("tests.unit.test_parallel_batch",),
+        "a non-RAG head starts a RAG group (the pending call and the group "
+        "describe different tools)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/tool.py",
+        "        if group is not None and group[0] == head:",
+        "        if group is not None and True:",
+        ("tests.unit.test_parallel_batch",),
+        "a restored group is adopted by a step that does not head it (the "
+        "checkpoint's group indexes are trusted blindly)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/graph_wiring.py",
+        "        with _delegation_lock:",
+        "        if True:",
+        ("tests.unit.test_graph_wiring_delegations",),
+        "the delegation cache is read-modified-written without its lock (two "
+        "branches of one group pay twice for the same classification)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/graph_wiring.py",
+        "        for tool_name, params in calls:\n"
+        "            _delegation_for(tool_name, params)",
+        "        return",
+        ("tests.unit.test_graph_wiring_delegations",),
+        "the batch is never classified before it fans out (a branch pays for "
+        "the classification inside the worker instead)",
+    ),
+    Mutant(
+        "src/ai_assistant/domain/parallel.py",
+        "    return max(1, min(PARALLEL_MAX_HARD_CAP, raw))",
+        "    return max(0, min(PARALLEL_MAX_HARD_CAP, raw))",
+        ("tests.unit.test_plan_parallel_groups",),
+        "the fan-out floor drops to zero (a configured 0 disables the batch "
+        "instead of collapsing to one worker)",
+    ),
+    Mutant(
+        "src/ai_assistant/domain/parallel.py",
+        "    return max(1, min(PARALLEL_MAX_HARD_CAP, raw))",
+        "    return max(1, raw)",
+        ("tests.unit.test_plan_parallel_groups",),
+        "the hard ceiling is not applied (a deployment can start as many "
+        "branches as it configures)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/helpers.py",
+        "    if len(raw) < 2:\n"
+        "        return None",
+        "    if False:\n"
+        "        return None",
+        ("tests.unit.test_plan_parallel_groups",),
+        "a one-step group is accepted (a 'parallel' batch with no sibling)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/helpers.py",
+        "    if indexes != sorted(set(indexes)):",
+        "    if False:",
+        ("tests.unit.test_plan_parallel_groups",),
+        "a group's order is not checked (duplicates or a descending list run "
+        "as a group and the merge order becomes ambiguous)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/helpers.py",
+        "    if any(index < 0 or index >= plan_len for index in indexes):",
+        "    if False:",
+        ("tests.unit.test_plan_parallel_groups",),
+        "a group may point outside the plan (the batch indexes a step that "
+        "does not exist)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/helpers.py",
+        "    if not isinstance(raw, list):",
+        "    if False:",
+        ("tests.unit.test_plan_parallel_groups",),
+        "a non-list group is accepted (a tuple or a string reaches the batch "
+        "as if the planner had declared indexes)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/helpers.py",
+        "        if not isinstance(item, int) or isinstance(item, bool):",
+        "        if not isinstance(item, int):",
+        ("tests.unit.test_plan_parallel_groups",),
+        "a JSON true passes as an index (bool is an int in Python, and it "
+        "aliases step 1)",
+    ),
+    Mutant(
+        "src/ai_assistant/orchestration/nodes/reason_prepare.py",
+        "        if has_rag_evidence_for_step(steps, done_count):",
+        "        if False:",
+        ("tests.unit.test_reason_prepare_guards",),
+        "the step directive demands a search even when the batch already "
+        "fetched the evidence (the model re-searches and contradicts the "
+        "synthesis request the tool node appended)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/completion.py",
+        '        "step_kinds": {"type": "array", "items": {',
+        '        "step_kindz": {"type": "array", "items": {',
+        ("tests.unit.test_completion_guard_paths",),
+        "the planner grammar drops step_kinds again (the constrained decoder "
+        "cannot emit the classification the prompt asks for)",
     ),
 )
 

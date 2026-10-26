@@ -1,7 +1,7 @@
 # AIAssistant Scorecard
 
 > Measured signals, each produced by a command in this repository — nothing
-> here is an estimate. **Last measured: 2026-10-24**, Windows, Python 3.11,
+> here is an estimate. **Last measured: 2026-10-26**, Windows, Python 3.11,
 > dependencies per `requirements-test.lock` (hash-pinned: `faiss-cpu`, `rank-bm25`, `mcp`).
 > A stripped environment measures less: the optional-dependency branches flip
 > with it (ADR 0014).
@@ -12,17 +12,17 @@
 
 ## Quality gates
 
-| Gate | Command | Measured 2026-10-24 |
+| Gate | Command | Measured 2026-10-26 |
 |------|---------|---------------------|
 | Lint | `python -m ruff check .` | 0 issues |
-| Types | `python -m mypy src/ai_assistant` | 0 issues, 142 files, `strict = true` (3 SDK-boundary modules relax 2 flags, ADR 0022) |
+| Types | `python -m mypy src/ai_assistant` | 0 issues, 147 files, `strict = true` (3 SDK-boundary modules relax 2 flags, ADR 0022) |
 | Layer contracts | `PYTHONPATH=src lint-imports --no-logo` | 9/9 contracts kept (ADR 0032: the application layer may no longer import the plugin package — the catalogue is a port) |
 | Byte-compile | `python -m compileall -q evals src` | clean |
-| Tests | `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"` | 2 214 tests, 0 failures, 6 skipped |
-| Coverage | `PYTHONPATH=src python -m coverage run … && python -m coverage report` | **100.00%** — 9 662 statements, 2 604 branches, 0 missed, 0 partial |
-| Mutation | `PYTHONPATH=src python scripts/mutation_check.py` | **160/160 killed** (ADR 0042 added ten: the owner-enforced reload window and its startup caller, the fail-closed scope map, the missing-policy and missing-catalogue bootstrap refusals, the graceful stop (event, watcher, route) and the public RAG surface (property, health read); ADR 0041 added nine: the single model owner and its real release, the two health/model-list truths and the admission gate — submit, resume, worker slot, HTTP 429 and JSON-RPC backpressure; ADR 0032 added 7: the policy-tree write deny and its prefix match, the OpenAPI surface, the log redaction, the compare-and-set, the checkpoint seal, the adapter's CAS guard and the volatile-key rule; ADR 0033 added one: the write target is resolved, so a symlink into a policy tree is matched on the file it points at; ADR 0034 added five: the secret-file read guard, the PATH scan that never consults the current directory, the case-insensitive write deny, the sealed-regime read refusal and the value-shaped egress check; ADR 0035 added six: the path-shaped program name, the case-insensitive blocked-directory rule, the path confinement itself, the LSP server resolution, the fail-closed git resolution and the attachment gate, and one more: the registered-but-not-enabled declaration, plus the two halves of the path confinement — the spelling half and the resolved half, which are different rules; ADR 0036 replaced the implicit-migration mutant with the two guards that replaced it: a plaintext task store and a plaintext pending file are both refused; ADR 0037 added seventeen: the leading-option allow-list, the git destination confinement, the attached git config spelling, the pytest plugin options, the ctest option allow-list, the two write deny-tree guards, the classification comparison, the clearance derivation, the unknown classification label, the isolation gate's default, the row-bound associated data, the identity verification, the refusal of a pre-row-bound state, the success rule, the cursor detection, the cursor use and the regular-file gate on the attachment; ADR 0038 added seven: the corpus link rule, the secret names, the shared blocked directories, the one-walk-one-owner rule, the cache hash coverage, the refusal to re-seal an already-sealed state and the confined path positionals; ADR 0039 replaced the stale registered-but-not-enabled mutant with the unknown-tool fail-closed policy guard and added twenty-two: the alias execution refusal, the builtin merge guard, the plugin route, the dynamic authorise row, the builtin allow-list, plugin provenance, mutating-plugin approval, the session-lock release, the session-id bound, the MCP approval and alias filters, the cloud-policy AND/gate/response bound, the unpinned-pin, case-folded hash, pinned-reuse, post-download mismatch and mmproj revision rules, and the checkpointer/config/get_state forwarding; ADR 0040 added four: the model lease on execute, approve, the desktop ack and the chat route; the 2026-10-23 follow-up added three: the two resume budget sites and the shared release), 0 survived, 0 stale |
-| Mutation floor | `scripts/mutation_check.py` | `MIN_MUTANTS = 160` — deleting a mutant now fails the gate (ADR 0032) |
-| Policy evals | `python evals/run_tool_eval.py`, `python evals/run_agentic_eval.py` | exit 0; tool: 16/16 (adversarial included); agentic: 124 cases / 25 scenarios, 0 failed, **0 skipped** (ADR 0025) |
+| Tests | `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"` | 2 400 tests, 0 failures, 6 skipped |
+| Coverage | `PYTHONPATH=src python -m coverage run … && python -m coverage report` | **100.00%** — 10 217 statements, 2 792 branches, 0 missed, 0 partial |
+| Mutation | `PYTHONPATH=src python scripts/mutation_check.py` | **221/221 killed** (ADR 0044 added 22 and ADR 0043 added 39; ADR 0042 added ten: the owner-enforced reload window and its startup caller, the fail-closed scope map, the missing-policy and missing-catalogue bootstrap refusals, the graceful stop (event, watcher, route) and the public RAG surface (property, health read); ADR 0041 added nine: the single model owner and its real release, the two health/model-list truths and the admission gate — submit, resume, worker slot, HTTP 429 and JSON-RPC backpressure; ADR 0032 added 7: the policy-tree write deny and its prefix match, the OpenAPI surface, the log redaction, the compare-and-set, the checkpoint seal, the adapter's CAS guard and the volatile-key rule; ADR 0033 added one: the write target is resolved, so a symlink into a policy tree is matched on the file it points at; ADR 0034 added five: the secret-file read guard, the PATH scan that never consults the current directory, the case-insensitive write deny, the sealed-regime read refusal and the value-shaped egress check; ADR 0035 added six: the path-shaped program name, the case-insensitive blocked-directory rule, the path confinement itself, the LSP server resolution, the fail-closed git resolution and the attachment gate, and one more: the registered-but-not-enabled declaration, plus the two halves of the path confinement — the spelling half and the resolved half, which are different rules; ADR 0036 replaced the implicit-migration mutant with the two guards that replaced it: a plaintext task store and a plaintext pending file are both refused; ADR 0037 added seventeen: the leading-option allow-list, the git destination confinement, the attached git config spelling, the pytest plugin options, the ctest option allow-list, the two write deny-tree guards, the classification comparison, the clearance derivation, the unknown classification label, the isolation gate's default, the row-bound associated data, the identity verification, the refusal of a pre-row-bound state, the success rule, the cursor detection, the cursor use and the regular-file gate on the attachment; ADR 0038 added seven: the corpus link rule, the secret names, the shared blocked directories, the one-walk-one-owner rule, the cache hash coverage, the refusal to re-seal an already-sealed state and the confined path positionals; ADR 0039 replaced the stale registered-but-not-enabled mutant with the unknown-tool fail-closed policy guard and added twenty-two: the alias execution refusal, the builtin merge guard, the plugin route, the dynamic authorise row, the builtin allow-list, plugin provenance, mutating-plugin approval, the session-lock release, the session-id bound, the MCP approval and alias filters, the cloud-policy AND/gate/response bound, the unpinned-pin, case-folded hash, pinned-reuse, post-download mismatch and mmproj revision rules, and the checkpointer/config/get_state forwarding; ADR 0040 added four: the model lease on execute, approve, the desktop ack and the chat route; the 2026-10-23 follow-up added three: the two resume budget sites and the shared release), 0 survived, 0 stale |
+| Mutation floor | `scripts/mutation_check.py` | `MIN_MUTANTS = 221` — deleting a mutant now fails the gate (ADR 0032) |
+| Policy evals | `python evals/run_tool_eval.py`, `python evals/run_agentic_eval.py` | exit 0; tool: 16/16 (adversarial included); agentic: 132 cases / 27 scenarios, 0 failed, **0 skipped** (ADR 0025; ADR 0043/0044 added the `memory-policy` and `parallel-policy` scenarios) |
 | Model pins | `python scripts/verify_models.py` | 5 artifact local khớp pin, 1 chưa tải, **0 mismatched** (ADR 0023) |
 | Supply chain | `python scripts/generate_sbom.py` | CycloneDX 1.5: 171 distribution (kèm **3 941 SHA-256**) + 6 artifact GGUF kèm commit/SHA-256 (ADR 0023) |
 | Lock verify | `pip install --require-hashes --dry-run -r requirements.lock` + `pip download --require-hashes -r requirements-test.lock` | runtime lock: exit 0, 0 ERROR; test lock: **83/83 artifact tải về, SHA-256 khớp** (CI job `test` cài đúng lock này bằng `--require-hashes`); runtime mẫu 6/6 (ADR 0023) |
@@ -30,9 +30,48 @@
 | Container lock | `pip install --require-hashes --dry-run -r requirements-docker.lock` | exit 0; CPU-only (`faiss-cpu`, **không** `faiss-gpu`/CUDA) — ADR 0032 |
 | Cross-language contract | `PYTHONPATH=src python -m unittest tests.unit.test_at_rest_cipher_contract` | 6 case OK: hằng số format đọc từ `src/core/AtRestCipher.cpp` và vector đọc từ `tests/TestAtRestCipher.cpp` phải khớp bên Python — ADR 0032 |
 
-The 2026-10-24 pass re-ran lint, types, layer contracts, byte-compile, tests,
-coverage and mutation. The eval, model-pin, SBOM and lock rows above show their
-last measurement (2026-10-23); they were not re-run in that pass.
+The 2026-10-26 pass re-ran lint, types, layer contracts, byte-compile, tests,
+coverage, mutation and the agentic eval. The model-pin, SBOM and lock rows
+above show their last measurement (2026-10-23); they were not re-run in that
+pass.
+
+## Agentic capabilities (2026-10-26): memory and parallel tool batches (ADR 0043/0044)
+
+The audit that opened this round asked seven questions of the service. Five
+already had an answer with a gate behind it: multi-step plans run through
+LangGraph, checkpoints are durable and resumable (ADR 0023/0027), HITL is a
+single-use grant (ADR 0009), LangSmith + OpenTelemetry spans exist, and the
+supervisor routes to specialists / A2A peers (ADR 0005/0039). Two did not:
+
+| Gap | What was actually missing | Why no gate caught it |
+|---|---|---|
+| Memory | Nothing carried a session's context between calls beyond the request's own history, and nothing learned from a completed run. The service had retrieval *over the project corpus* (RAG), not memory *about the interaction* | Every existing test sent a self-contained request; "the second turn remembers the first" was not a question any suite asked |
+| Parallel sub-tasks | Concurrency existed **between** tasks (`TaskService` threads, `agent_max_concurrent_runs`, session locks) but a workflow's own steps ran strictly one per reason→tool→reflect lap | No plan ever declared two independent steps, so the sequential path was always right |
+
+ADR 0043 adds the memory subsystem (bounded short-term buffer per session,
+SQLite long-term store with sealed payloads, keyword+recency recall, writes
+only for a completed run, procedural plan seed). ADR 0044 adds the parallel
+tool batch: a planner-declared group of `rag_search` steps fans out inside the
+tool node (bounded by `AGENT_PARALLEL_MAX`, default 4, hard cap 8), merges as
+the same ordered `tool_call`/`tool_result` pairs a sequential run produces,
+and falls back to the sequential path for every group that is not provably
+eligible (approval-gated, non-RAG member, restored from a checkpoint with a
+stale spec).
+
+Measured on 2026-10-26:
+
+- **39 mutants for ADR 0043 and 22 for ADR 0044**, all killed:
+  `MIN_MUTANTS` 160 → 199 → 221.
+- **100.00 % coverage** over 10 217 statements / 2 792 branches, including
+  every new refusal arm (a group that cannot be proven eligible never runs
+  in parallel), the per-branch exception barrier, the mid-batch cancel and
+  the delegation cache lock.
+- New tests: `test_plan_parallel_groups.py`, `test_parallel_batch.py`,
+  `test_graph_wiring_delegations.py`, `test_short_term_memory.py`,
+  `test_memory_service.py`, `test_memory_store.py`, `test_memory_domain.py`,
+  plus the procedural-seed and directive cases in the existing suites.
+- `evals/run_agentic_eval.py` gained the `memory-policy` and `parallel-policy`
+  scenarios (8 cases), measured **132/132 passed, 0 skipped**.
 
 
 `python evals/run_model_in_loop_eval.py` chạy tay với backend thật (fallback 3B

@@ -245,6 +245,20 @@ class CompletionTests(unittest.TestCase):
         self.assertIn("type", CRITIC_JSON_SCHEMA)
         self.assertEqual(CRITIC_JSON_SCHEMA["type"], "object")
 
+    def test_planner_json_schema_declares_the_execution_contract(self) -> None:
+        """The prompt asks for step kinds and parallel groups, so the grammar
+        the constrained decoder compiles must admit them. It used to omit
+        ``step_kinds`` entirely: the model's classification was discarded by
+        the decoder and the parser fell back to keyword heuristics."""
+        properties = PLANNER_JSON_SCHEMA["properties"]
+        self.assertEqual(
+            properties["step_kinds"]["items"]["enum"],
+            ["rag_search", "direct", "application_action"],
+        )
+        self.assertEqual(
+            properties["parallel_groups"]["items"]["items"], {"type": "integer"},
+        )
+
 
 class HybridPolicyGateTests(unittest.TestCase):
     """ADR 0018: the remote branch refuses under the default ``local_only``.

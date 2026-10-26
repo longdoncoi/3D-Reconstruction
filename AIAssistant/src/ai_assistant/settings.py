@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .domain.parallel import PARALLEL_MAX_DEFAULT, clamp_parallel_max
+
 # ── Canonical local bind address (single source of truth, ADR 0001) ─────────
 # The server binds loopback only; every default URL and the transport policy's
 # implicit loopback origins derive from these two values instead of repeating
@@ -157,6 +159,15 @@ class AgentRuntimeSettings:
     checkpoint_url: str
     checkpoint_path: str
     native_tool_calls: bool
+    #: Memory subsystem (ADR 0043). ``memory_enabled`` gates both halves:
+    #: the bounded short-term buffer and the long-term store. The retention
+    #: knobs are read by the persistence adapter's cleanup (``prune``), which
+    #: mirrors the checkpoint retention rules.
+    memory_enabled: bool = True
+    memory_stm_max_messages: int = 40
+    memory_ltm_top_k: int = 5
+    memory_retention_days: int = 90
+    memory_retention_max_mb: int = 64
     #: Production gates (ADR 0023): refuse non-isolated command execution and
     #: refuse to run on a non-durable checkpoint backend instead of silently
     #: degrading. The checkpoint gate stays off by default so the Qt desktop
@@ -172,6 +183,10 @@ class AgentRuntimeSettings:
     #: Global agent-run budget (0 = unlimited). One run per session is
     #: already enforced by the service; this caps total concurrent runs.
     max_concurrent_runs: int = 0
+    #: Fan-out width for one parallel tool group (ADR 0044). Clamped on the way
+    #: in: a batch with no width is not a batch, and no deployment may exceed
+    #: the hard ceiling (``domain.parallel`` owns both bounds).
+    parallel_max: int = PARALLEL_MAX_DEFAULT
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "AgentRuntimeSettings":
@@ -185,9 +200,17 @@ class AgentRuntimeSettings:
             checkpoint_url=values.get("AGENT_CHECKPOINT_URL", ""),
             checkpoint_path=values.get("AGENT_CHECKPOINT_PATH", "AIAssistant/Cache/checkpoints.sqlite"),
             native_tool_calls=values.get("AGENT_NATIVE_TOOL_CALLS", "0") == "1",
+            memory_enabled=values.get("AGENT_MEMORY_ENABLED", "1") == "1",
+            memory_stm_max_messages=max(1, int(values.get("AGENT_MEMORY_STM_MAX_MESSAGES", "40"))),
+            memory_ltm_top_k=max(0, int(values.get("AGENT_MEMORY_LTM_TOP_K", "5"))),
+            memory_retention_days=max(1, int(values.get("AGENT_MEMORY_RETENTION_DAYS", "90"))),
+            memory_retention_max_mb=max(1, int(values.get("AGENT_MEMORY_RETENTION_MAX_MB", "64"))),
             sandbox_require_isolation=values.get("AGENT_SANDBOX_REQUIRE_ISOLATION", "1") == "1",
             checkpoint_required=values.get("AGENT_CHECKPOINT_REQUIRED", "0") == "1",
             max_concurrent_runs=int(values.get("AGENT_MAX_CONCURRENT_RUNS", "0")),
+            parallel_max=clamp_parallel_max(
+                int(values.get("AGENT_PARALLEL_MAX", str(PARALLEL_MAX_DEFAULT)))
+            ),
         )
 
 

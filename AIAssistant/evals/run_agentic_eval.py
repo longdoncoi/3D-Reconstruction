@@ -23,8 +23,11 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from ai_assistant.application.approvals import InMemoryApprovalGrantStore
 from ai_assistant.application.tools import ToolExecutionService
+from ai_assistant.domain.memory import format_memory_block, recall_rank
+from ai_assistant.domain.parallel import clamp_parallel_max
 from ai_assistant.domain.security import DataClassification, Principal, principal_for
 from ai_assistant.domain.tools import EVIDENCE_FIELDS, SideEffect, ToolSpec
+from ai_assistant.orchestration.helpers import normalise_plan_payload, valid_parallel_group
 from ai_assistant.orchestration.supervisor import (
     CODE_TOOLS,
     RESEARCH_TOOLS,
@@ -530,6 +533,71 @@ def _eval_langsmith_fallback() -> list[EvalResult]:
     return results
 
 
+def _eval_memory_and_parallel_policy() -> list[EvalResult]:
+    """ADR 0043/0044: the memory block and the parallel-group contract."""
+    results: list[EvalResult] = []
+    now = 1_800_000_000.0
+    records = [
+        {"id": "old", "kind": "semantic", "text": "vai tro project manager",
+         "created_at": now - 90 * 86400, "salience": 0.1},
+        {"id": "new", "kind": "episodic", "text": "vai tro cua ky su A",
+         "created_at": now - 1 * 86400, "salience": 0.1},
+        {"id": "noise", "kind": "semantic", "text": "mau sac giao dien",
+         "created_at": now, "salience": 5.0},
+    ]
+    ranked = [record["id"] for record in recall_rank(records, "vai tro", 5, now=now)]
+    results.append(EvalResult(
+        tool="(memory)", scenario="memory-policy",
+        passed=ranked == ["new", "old"], specialist="n/a",
+        detail="" if ranked == ["new", "old"]
+        else f"recall ranked {ranked} (zero-overlap noise must be dropped, newer wins)",
+    ))
+    results.append(EvalResult(
+        tool="(memory)", scenario="memory-policy",
+        passed=format_memory_block([]) == "", specialist="n/a",
+        detail="an empty recall must not emit a [Long-term memory] header",
+    ))
+    rendered = format_memory_block([{"kind": "semantic", "text": "du an X"}])
+    results.append(EvalResult(
+        tool="(memory)", scenario="memory-policy",
+        passed="[Long-term memory]" in rendered and "- [semantic] du an X" in rendered,
+        specialist="n/a",
+        detail="" if rendered else "a non-empty recall rendered nothing",
+    ))
+    results.append(EvalResult(
+        tool="(memory)", scenario="memory-policy",
+        passed=recall_rank(records, "vai tro", 0, now=now) == [], specialist="n/a",
+        detail="top_k <= 0 must return no records",
+    ))
+
+    results.append(EvalResult(
+        tool="(parallel)", scenario="parallel-policy",
+        passed=valid_parallel_group([0, 2], 3) == [0, 2], specialist="n/a",
+        detail="a strictly increasing in-plan group must be accepted",
+    ))
+    results.append(EvalResult(
+        tool="(parallel)", scenario="parallel-policy",
+        passed=valid_parallel_group([0, True], 3) is None, specialist="n/a",
+        detail="a JSON true is not a step index",
+    ))
+    _plan, spec = normalise_plan_payload({
+        "requires_plan": True, "steps": ["a", "b"],
+        "parallel_groups": [[0, 2]],
+    })
+    results.append(EvalResult(
+        tool="(parallel)", scenario="parallel-policy",
+        passed=spec["parallel_groups"] == [], specialist="n/a",
+        detail="a group pointing past the plan must be dropped entirely",
+    ))
+    results.append(EvalResult(
+        tool="(parallel)", scenario="parallel-policy",
+        passed=clamp_parallel_max(0) == 1 and clamp_parallel_max(99) == 8,
+        specialist="n/a",
+        detail="the fan-out width must clamp to [1, 8]",
+    ))
+    return results
+
+
 _ALL_SCENARIOS = [
     _eval_routing,
     _eval_unknown_tool_fallback,
@@ -542,6 +610,7 @@ _ALL_SCENARIOS = [
     _eval_a2a_agent_cards,
     _eval_a2a_unavailable,
     _eval_langsmith_fallback,
+    _eval_memory_and_parallel_policy,
 ]
 
 

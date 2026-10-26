@@ -8,6 +8,13 @@ import unicodedata
 from collections.abc import Callable
 from typing import Any
 
+# The short-term history policy (drop-oldest window, token estimation) is a
+# domain decision and lives in ``ai_assistant.domain.memory`` (ADR 0043); the
+# names stay re-exported here because this module is their historical import
+# path (the ADR 0019 ``Step`` precedent).
+from ai_assistant.domain.memory import estimate_tokens as estimate_tokens
+from ai_assistant.domain.memory import trim_history as trim_history
+
 logger = logging.getLogger("ai_assistant.llm.prompts")
 
 RAG_SYSTEM_PROMPT = """Bạn là trợ lý AI chuyên nghiệp cho dự án 3D-Reconstruction.
@@ -41,19 +48,6 @@ PROJECT_CHARACTER_NAMES = (
     "snow",
     "lavrov",
 )
-
-def estimate_tokens(text: str, chars_per_token: float = 2.2) -> int:
-    return int(len(text) / chars_per_token)
-
-def trim_history(messages: list[dict[str, Any]], max_tokens: int = 2000, chars_per_token: float = 2.2) -> list[dict[str, Any]]:
-    messages = list(messages)
-    total = sum(estimate_tokens(m.get("content", ""), chars_per_token) for m in messages if isinstance(m.get("content"), str))
-    while total > max_tokens and len(messages) > 1:
-        removed = messages.pop(0)
-        content = removed.get("content", "")
-        if isinstance(content, str):
-            total -= estimate_tokens(content, chars_per_token)
-    return messages
 
 def _normalize_for_intent(text: str) -> str:
     text = (text or "").casefold().replace("đ", "d")

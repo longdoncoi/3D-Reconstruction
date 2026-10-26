@@ -192,6 +192,15 @@ class RunLanggraphAgentTests(unittest.TestCase):
         self.assertEqual(result["steps"][-1]["type"], "final_answer")
         self.assertIn("chưa có kết luận", result["steps"][-1]["content"])
 
+    def test_prior_plan_reaches_the_graph(self):
+        """The procedural-memory seed is a per-invocation argument the runner
+        must forward to ``graph.run`` unchanged — or not at all (ADR 0043 §7)."""
+        self._run(prior_plan=["Buoc mot", "Buoc hai"])
+        self.assertEqual(_FakeGraph._last.run_kwargs["prior_plan"],
+                         ["Buoc mot", "Buoc hai"])
+        self._run()
+        self.assertIsNone(_FakeGraph._last.run_kwargs["prior_plan"])
+
     def test_cancelled_run(self):
         _FakeGraph.state = {
             "steps": [],
