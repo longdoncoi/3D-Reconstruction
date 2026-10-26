@@ -273,7 +273,11 @@ void TestUserAuthDialogs::avatarCropperDialogIsBuilt()
 void TestUserAuthDialogs::userAuthPluginLifecycle()
 {
     UserAuthPlugin plugin;
-    QCOMPARE(plugin.pluginName(), QStringLiteral("User Authentication"));
+    // The name is the resolver's dependency key: compare against the ONE
+    // definition (AppConstants::PluginNames) instead of a copied literal, so
+    // a rename cannot leave the test asserting a name the plugin never had.
+    QCOMPARE(plugin.pluginName(),
+             QString::fromLatin1(AppConstants::PluginNames::UserAuthentication));
     QCOMPARE(plugin.loadOrder(), 5);
     m_context->users().signIn(QStringLiteral("tester"));
     QVERIFY(plugin.initialize(m_context));
