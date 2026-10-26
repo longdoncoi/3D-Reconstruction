@@ -11,6 +11,7 @@
 
 #include "Image2DLoader.h"
 #include "Model3DLoader.h"
+#include "DicomLoader.h"
 
 #include <vtkActor.h>
 #include <vtkPolyDataMapper.h>
@@ -18,7 +19,7 @@
 #include <vtkTexture.h>
 
 /**
- * @brief Contract of the viewer loaders (Image2DLoader, Model3DLoader).
+ * @brief Contract of the viewer loaders (Image2DLoader, Model3DLoader, DicomLoader).
  *
  * Both turn a file into VTK actors for the scene.  They were the only
  * service translation units with no test at all, so a broken loader (a wrong
@@ -38,6 +39,7 @@ private slots:
     void modelLoaderReadsEverySupportedFormat();
     void modelLoaderImportsAnObjWithItsMaterial();
     void modelLoaderRejectsAnEmptyMesh();
+    void dicomLoaderHandlesInvalidAndEmptySeries();
 };
 
 namespace {
@@ -279,6 +281,29 @@ void TestViewerLoaders::modelLoaderRejectsAnEmptyMesh()
     QVERIFY(writeText(empty, "solid empty\nendsolid empty\n"));
 
     QVERIFY(Model3DLoader::load(empty, QString()).empty());
+}
+
+void TestViewerLoaders::dicomLoaderHandlesInvalidAndEmptySeries()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    // Empty directory returns nullptr
+    auto volume = DicomLoader::loadSeries(dir.path());
+    QVERIFY(!volume);
+    // Non-existent directory returns nullptr
+    auto missing = DicomLoader::loadSeries(dir.filePath(QStringLiteral("nonexistent")));
+    QVERIFY(!missing);
+
+    // Valid dummy image data exercises createSlice and createVolume
+    vtkNew<vtkImageData> dummyData;
+    dummyData->SetDimensions(4, 4, 4);
+    dummyData->AllocateScalars(VTK_UNSIGNED_CHAR, 1);
+    double range[2] = {0.0, 255.0};
+
+    auto slice = DicomLoader::createSlice(dummyData, 0, 100.0, 50.0);
+    QVERIFY(slice != nullptr);
+    auto vol = DicomLoader::createVolume(dummyData, range);
+    QVERIFY(vol != nullptr);
 }
 
 QTEST_GUILESS_MAIN(TestViewerLoaders)

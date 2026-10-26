@@ -139,6 +139,10 @@ void TestCrosshairManager::draggingStartsOnlyNearTheAnchor()
     QVERIFY(manager.isDragging(ORI_AXIAL));
     QVERIFY(manager.anyDragging());
 
+    manager.onMouseMove(ORI_AXIAL, 160, 160);
+    manager.onMouseMove(ORI_SAGITTAL, 160, 160);
+    manager.onMouseMove(ORI_CORONAL, 160, 160);
+
     manager.onLeftButtonUp(ORI_AXIAL);
     QVERIFY(!manager.isDragging(ORI_AXIAL));
     QVERIFY(!manager.anyDragging());

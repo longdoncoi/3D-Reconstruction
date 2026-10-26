@@ -357,6 +357,36 @@ class DocumentLoaderRegistryTests(unittest.TestCase):
         registry = DocumentLoaderRegistry().register(BoomLoader())
         self.assertEqual(registry.load_file("a.txt", "."), [])
 
+    def test_load_file_skips_empty_file_value_error(self):
+        class EmptyFileError(ValueError):
+            def __str__(self) -> str:
+                return "File rỗng: empty.txt"
+
+        class EmptyFileLoader(BaseDocumentLoader):
+            def can_handle(self, filepath: str) -> bool:
+                return True
+
+            def load(self, filepath: str, project_dir: str):
+                raise EmptyFileError
+
+        registry = DocumentLoaderRegistry().register(EmptyFileLoader())
+        self.assertEqual(registry.load_file("empty.txt", "."), [])
+
+    def test_load_file_handles_generic_value_error(self):
+        class CorruptHeaderError(ValueError):
+            def __str__(self) -> str:
+                return "corrupt header"
+
+        class ValueBoomLoader(BaseDocumentLoader):
+            def can_handle(self, filepath: str) -> bool:
+                return True
+
+            def load(self, filepath: str, project_dir: str):
+                raise CorruptHeaderError
+
+        registry = DocumentLoaderRegistry().register(ValueBoomLoader())
+        self.assertEqual(registry.load_file("bad.txt", "."), [])
+
     def test_create_default_registers_standard_loaders(self):
         registry = DocumentLoaderRegistry.create_default()
         self.assertIsInstance(registry.get_loader("a.txt"), TxtLoader)

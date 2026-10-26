@@ -20,6 +20,7 @@
 #include "SettingsDialog.h"
 #include "ThemeSelectionDialog.h"
 #include "OverlayResizer.h"
+#include "UserAuthPlugin.h"
 #include "mock/PluginContextMock.h"
 
 /**
@@ -52,6 +53,7 @@ private slots:
     void settingsDialogIsBuilt();
     void adminUserManagerDialogIsBuilt();
     void avatarCropperDialogIsBuilt();
+    void userAuthPluginLifecycle();
 
 private:
     QTemporaryDir m_root;
@@ -234,6 +236,22 @@ void TestUserAuthDialogs::settingsDialogIsBuilt()
     QVERIFY(!dialog.findChildren<QListWidget *>().isEmpty());
     QVERIFY(!dialog.findChildren<QStackedWidget *>().isEmpty());
     QVERIFY(!dialog.findChildren<QToolButton *>().isEmpty());
+
+    auto *navList = dialog.findChild<QListWidget *>(QStringLiteral("settingsNavList"));
+    if (navList) {
+        for (int i = 0; i < navList->count(); ++i) {
+            emit navList->itemClicked(navList->item(i));
+        }
+    }
+
+    const auto buttons = dialog.findChildren<QPushButton *>();
+    for (auto *btn : buttons) {
+        if (btn->objectName() == QStringLiteral("primary") ||
+            btn->text() == UserAuthPlugin::translate("common.apply")) {
+            btn->click();
+            break;
+        }
+    }
 }
 
 void TestUserAuthDialogs::adminUserManagerDialogIsBuilt()
@@ -250,6 +268,21 @@ void TestUserAuthDialogs::avatarCropperDialogIsBuilt()
     AvatarCropperDialog dialog(QStringLiteral("tester"), &m_context->paths(),
                               &m_context->users(), nullptr);
     QVERIFY(dialog.findChildren<QPushButton *>().size() >= 1);
+}
+
+void TestUserAuthDialogs::userAuthPluginLifecycle()
+{
+    UserAuthPlugin plugin;
+    QCOMPARE(plugin.pluginName(), QStringLiteral("User Authentication"));
+    QCOMPARE(plugin.loadOrder(), 5);
+    m_context->users().signIn(QStringLiteral("tester"));
+    QVERIFY(plugin.initialize(m_context));
+    emit m_context->signalBus()->agentUiActionRequested(
+        QStringLiteral("language.change"),
+        QVariantMap{{QStringLiteral("language"), QStringLiteral("en")},
+                    {QStringLiteral("request_id"), QStringLiteral("req-1")}});
+    emit m_context->signalBus()->languageChanged(QStringLiteral("en"));
+    plugin.cleanup();
 }
 
 QTEST_MAIN(TestUserAuthDialogs)

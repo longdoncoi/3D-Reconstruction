@@ -593,7 +593,11 @@ void TestUtilsLayer::loggerWritesMessagesToTheConfiguredDirectory()
     QTemporaryDir tmp;
     QVERIFY(tmp.isValid());
     Logger::setLogsDir(tmp.path());
+    Logger::initialize();
 
+    Logger::customMessageHandler(QtDebugMsg, QMessageLogContext(), QStringLiteral("debug-probe"));
+    Logger::customMessageHandler(QtWarningMsg, QMessageLogContext(), QStringLiteral("warn-probe"));
+    Logger::customMessageHandler(QtCriticalMsg, QMessageLogContext(), QStringLiteral("crit-probe"));
     Logger::customMessageHandler(QtInfoMsg, QMessageLogContext(), QStringLiteral("utils-layer-probe"));
     Logger::shutdown();
 

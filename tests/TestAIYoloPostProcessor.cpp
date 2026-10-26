@@ -100,6 +100,40 @@ private slots:
     std::vector<int> keep = AIYoloPostProcessor::applyNms(boxes, confs, 0.5f);
     QVERIFY(keep.empty());
   }
+
+  void testModelInputSizeEmptyAndInvalidRank() {
+    std::vector<int64_t> emptyShape{};
+    cv::Size sz = AIYoloPostProcessor::modelInputSize(emptyShape);
+    QCOMPARE(sz.width, AIYoloPostProcessor::kDefaultModelInputSize);
+    std::vector<int64_t> rank2{640, 640};
+    sz = AIYoloPostProcessor::modelInputSize(rank2);
+    QCOMPARE(sz.width, AIYoloPostProcessor::kDefaultModelInputSize);
+    std::vector<int64_t> negativeDim{-1, 3, 640, -1};
+    sz = AIYoloPostProcessor::modelInputSize(negativeDim);
+    QCOMPARE(sz.width, AIYoloPostProcessor::kDefaultModelInputSize);
+  }
+
+  void testApplyNmsCandidateAlreadySuppressedAndZeroArea() {
+    std::vector<cv::Rect> boxes;
+    std::vector<float> confs;
+    // Box 0 (high conf) overlaps Box 2
+    boxes.push_back(cv::Rect(0, 0, 10, 10));
+    confs.push_back(0.9f);
+    // Box 1 (med conf) does not overlap Box 0
+    boxes.push_back(cv::Rect(100, 100, 10, 10));
+    confs.push_back(0.8f);
+    // Box 2 (low conf) overlaps Box 0, so Box 0 suppresses it first
+    boxes.push_back(cv::Rect(1, 1, 10, 10));
+    confs.push_back(0.7f);
+    // Box 3 with zero area
+    boxes.push_back(cv::Rect(200, 200, 0, 0));
+    confs.push_back(0.1f);
+    boxes.push_back(cv::Rect(200, 200, 0, 0));
+    confs.push_back(0.05f);
+
+    std::vector<int> keep = AIYoloPostProcessor::applyNms(boxes, confs, 0.5f);
+    QVERIFY(!keep.empty());
+  }
 };
 
 QTEST_GUILESS_MAIN(TestAIYoloPostProcessor)

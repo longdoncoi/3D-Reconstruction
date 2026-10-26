@@ -51,6 +51,7 @@ private slots:
     void aiProcessorRibbonIsBuilt();
     void viewerRibbonIsBuilt();
     void mailFilterDialogCanBeDismissed();
+    void mailFilterDialogCanRemoveKeywordsAndAccept();
     void mailSettingsDialogCanBeDismissed();
     void mailDockShowsTheInboxAndRetranslates();
     void viewerViewModelIgnoresEmptyPaths();
@@ -201,6 +202,34 @@ void TestPluginUi::mailFilterDialogCanBeDismissed()
     QVERIFY(!accepted);
     // The keywords must survive the cancelled edit untouched.
     QCOMPARE(keywords, QStringList{QStringLiteral("keep")});
+}
+
+void TestPluginUi::mailFilterDialogCanRemoveKeywordsAndAccept()
+{
+    PluginMock::AppContext context(QDir::tempPath());
+    QStringList keywords{QStringLiteral("remove_me"), QStringLiteral("keep_me")};
+
+    QTimer::singleShot(50, [&]() {
+        QWidget *modal = QApplication::activeModalWidget();
+        if (auto *dlg = qobject_cast<QDialog *>(modal)) {
+            auto *list = dlg->findChild<QListWidget *>();
+            if (list && list->count() > 0) {
+                list->setCurrentRow(0);
+                const auto buttons = dlg->findChildren<QPushButton *>();
+                for (auto *btn : buttons) {
+                    if (btn->text() == context.translate("mail.remove_filter")) {
+                        btn->click();
+                        break;
+                    }
+                }
+            }
+            dlg->accept();
+        }
+    });
+
+    const bool accepted = MailFilterDialog::edit(nullptr, &context, keywords);
+    QVERIFY(accepted);
+    QCOMPARE(keywords, QStringList{QStringLiteral("keep_me")});
 }
 
 void TestPluginUi::mailSettingsDialogCanBeDismissed()
