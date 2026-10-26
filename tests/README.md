@@ -8,8 +8,8 @@ after the build step. The reference run recorded here is
 | # | Gate | Command | What it proves |
 |---|------|---------|----------------|
 | 1 | Architecture boundaries | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | Layering invariants (heavy/light PCH split, plugin includes, plugin **include path**, blocking-I/O waits, singleton confinement, event-filter ownership, shell-window lookup …). Runs in CTest as `TestArchitectureBoundaries`. |
-| 2 | Unit + integration suite | `ctest --test-dir build -C Release --output-on-failure` | 48 CTest entries (42 test executables + 6 CMake-script tests): kernel units, plugin host/resolver with an injected loader, real-plugin smoke, `TestAppShell` composition-root wiring, `TestMainWindow` (the tab-panel contract a plugin resolves by tab id), `TestAIAssistant` request state machine (injected transport), AppCore-owned model-load lifetime (`TestAIModelLoadService`), the non-blocking server-process teardown (`TestAIServerProcessController`, which re-runs the test executable as a stand-in for the Python wrapper), the interface ABI guard (`TestInterfaceAbi`), the AI service against the REAL ONNX models (`TestAIService` — needs `git lfs pull`), the at-rest cipher shared with the Python service (`TestAtRestCipher`), the at-rest confidentiality of the user INI (`TestSecretProtection`), the shared utility layer (`TestUtilsLayer`), the scene/viewer layers, the reconstruction service boundary (`TestReconstructionService` — the UI-facing queries and mutators must not wait for the worker, and the published result must be complete), plus `TestReconstructionFinalize` and `TestReconstructionService` (both labelled `slow` — they need a completed reconstruction). |
-| 3 | Coverage gate | `python tests/coverage_gate.py` | Measured line coverage of the kernel/guard, composition, service and utility files, with per-file floors, a completeness check (no translation unit may escape the measurement), a **ratchet** (a floor may never be lowered) and a printed debt list; runs OpenCppCoverage over the owning tests. |
+| 2 | Unit + integration suite | `ctest --test-dir build -C Release --output-on-failure` | 49 CTest entries (43 test executables + 6 CMake-script tests): kernel units, plugin host/resolver with an injected loader, real-plugin smoke, `TestAppShell` composition-root wiring, `TestMainWindow` (the tab-panel contract a plugin resolves by tab id), `TestAIAssistant` request state machine (injected transport), AppCore-owned model-load lifetime (`TestAIModelLoadService`), the non-blocking server-process teardown (`TestAIServerProcessController`, which re-runs the test executable as a stand-in for the Python wrapper), the interface ABI guard (`TestInterfaceAbi`), the AI service against the REAL ONNX models (`TestAIService` — needs `git lfs pull`), the at-rest cipher shared with the Python service (`TestAtRestCipher`), the at-rest confidentiality of the user INI (`TestSecretProtection`), the shared utility layer (`TestUtilsLayer`), the scene/viewer layers, the reconstruction service boundary (`TestReconstructionService` — the UI-facing queries and mutators must not wait for the worker, and the published result must be complete), plus `TestReconstructionFinalize` and `TestReconstructionService` (both labelled `slow` — they need a completed reconstruction). |
+| 3 | Coverage gate | `python tests/coverage_gate.py` | Measured line coverage of the kernel/guard, composition, service and utility files, with per-file floors, a completeness check (no translation unit may escape the measurement), a **ratchet in both directions** (a floor may never be lowered, and it must follow the measurement upward), and a printed debt list; runs OpenCppCoverage over the owning tests. |
 | 4 | Mutation check | `python tests/mutation_check.py` | Every load-bearing guard decision is *pinned*: one inverted decision per mutant, rebuilt and re-run; the owning test must fail. |
 
 Run them from the repository root with Qt and the vcpkg `bin` directory on
@@ -26,23 +26,27 @@ python tests/mutation_check.py
 
 `IPlugin::kApiVersion` is a number somebody has to remember to bump when a
 plugin-facing header changes. `IPlugin::kAbiFingerprint` closes that hole
-automatically: it mixes the toolchain fingerprint with the **content hash of
-the plugin-facing interface surface**, so a plugin built against different
-headers is rejected by `PluginHost` instead of being loaded against a stale
-ABI.
+automatically: it mixes the toolchain fingerprint, the **SDK-version
+fingerprint** (VTK / OpenCV / ONNX Runtime — the libraries whose types cross
+the boundary) and the **content hash of the plugin-facing interface surface**,
+so a plugin built against different headers or a different SDK is rejected by
+`PluginHost` instead of being loaded against a stale ABI.
 
 | Piece | Where | What it does |
 |-------|-------|--------------|
 | the surface (one definition) | `cmake/PluginInterface.cmake` | every `src/include/*.h` (the `I*.h` interfaces, the allow-listed core glue and the DTOs they expose) + `src/utils/*.h`; `src/core` and `src/services/**` are PRIVATE on AppCore |
-| the hash | `cmake/InterfaceAbi.cmake` | stable over file **name + content** (not the absolute path, so the value is the same on every machine) |
+| the hash | `cmake/InterfaceAbi.cmake` | stable over file **name + content** (not the absolute path, so the value is the same on every machine); follows both `"..."` and `<...>` includes when the target is inside the surface |
+| the SDK fingerprint | `cmake/InterfaceAbi.cmake` (`compute_sdk_fingerprint`) | SHA-256 of `VTK_VERSION\|OpenCV_VERSION\|ONNXRUNTIME_VERSION`; a stamp file in the custom command's `DEPENDS` regenerates the header when a dependency is bumped |
 | the generator | `cmake/GenerateInterfaceAbi.cmake` | writes `InterfaceAbiHash.h`; the custom command depends on **every** file of the surface, so the hash can never go stale |
-| the guard | `tests/CheckInterfaceAbi.cmake` (`TestInterfaceAbi`) | **freshness** (the generated hash equals a fresh computation) + **sensitivity** (changing any interface header changes the hash) |
-| the consumer | `src/core/IPlugin.h` | `kInterfaceHash` → `kAbiFingerprint`; `TestPluginHost` pins that the fingerprint really carries it |
+| the guard | `tests/CheckInterfaceAbi.cmake` (`TestInterfaceAbi`) | **freshness** (the generated hash equals a fresh computation) + **sensitivity** (changing any interface header changes the hash) + the same two properties for the SDK half |
+| the consumer | `src/include/IPlugin.h` | `kInterfaceHash` + `kSdkFingerprint` → `kAbiFingerprint`; `TestPluginHost` pins that the fingerprint really carries both |
 
-The surface is the **transitive** quoted-include closure, not just the `I*.h`
+The surface is the **transitive** `#include` closure, not just the `I*.h`
 files: a plugin sees `IReconstructionService.h` *and* the DTO it includes
 (`PointCloudData.h`), so hashing only the interface files would miss a change
-to that DTO.
+to that DTO. Angle-bracket spellings are part of the closure too — `src/include`
+is on the include path, so `<PointCloudData.h>` compiles and a one-character
+edit must not drop the DTO out of the hash.
 
 `TestPluginSmoke` is the end-to-end proof: it loads the **real** plugin DLLs
 through the ABI gate, so a hash that differs between `AppCore` and a plugin
@@ -52,7 +56,7 @@ turns the test red.
 
 `tests/coverage_gate.py` runs the owning tests under OpenCppCoverage, merges
 the per-test cobertura reports (a line counts as covered when *any* test
-executes it) and enforces three things:
+executes it) and enforces five things:
 
 1. **Per-file floors** — the ratchet in `FLOORS`.
 2. **Completeness** — every translation unit of `src/` that a test can reach
@@ -68,7 +72,11 @@ executes it) and enforces three things:
    regression has to be fixed in the code, not in the number) and when a floor
    has no baseline entry. Raising a floor and the baseline happen in the same
    commit: `python tests/coverage_gate.py --update-baseline`.
-4. **Debt visibility** — the files with 0 % are printed on every run with
+4. **Floors follow the measurement** — a file that reaches the next whole
+   percent fails the gate until its floor is raised in the same commit. The
+   comparison uses the raw rate, so a file displayed as "61.0 %" (208/341 =
+   60.997 %) keeps the floor 60.
+5. **Debt visibility** — the files with 0 % are printed on every run with
    their line count, so the remaining work is named instead of implied.
 
 Scope: the kernel/guard layer, the composition root, the **service layer**,
@@ -157,7 +165,7 @@ reporting a gap.
 
 | file | measured | floor |
 |------|----------|-------|
-| `src/app/appshell.cpp` | 100.0 % (69/69) | 100 |
+| `src/app/appshell.cpp` | 100.0 % (72/72) | 100 |
 | `src/app/mainwindow.cpp` | 70.7 % (123/174) | 70 |
 
 **kernel + guard**
@@ -190,10 +198,10 @@ reporting a gap.
 | `src/services/ai/chatsessionstore.cpp` | 100.0 % (62/62) | 100 |
 | `src/services/ai/chatmessage.cpp` | 88.6 % (39/44) | 88 |
 | `src/services/ai/agentactionmanifest.cpp` | 100.0 % (70/70) | 100 |
-| `src/services/ai/aiassistant.cpp` | 55.7 % (306/549) | 42 |
+| `src/services/ai/aiassistant.cpp` | 55.7 % (306/549) | 55 |
 | `src/services/ai/aiserverprocesscontroller.cpp` | 94.7 % (107/113) | 94 |
 | `src/services/ai/aiinferenceguard.cpp` | 75.0 % (30/40) | 75 |
-| `src/services/ai/aiservice.cpp` | 83.3 % (40/48) | 83 |
+| `src/services/ai/aiservice.cpp` | 86.5 % (45/52) | 86 |
 | `src/services/ai/aiprocessor.cpp` | 17.7 % (53/299) | 17 |
 
 `aiserverprocesscontroller.cpp` was measured at 34.6 % before the non-blocking
@@ -230,10 +238,10 @@ references a vertex the trim removed.
 | `src/services/reconstruction/cameraparamsparser.cpp` | 97.6 % (41/42) | 97 |
 | `src/services/reconstruction/pointcloudfilter.cpp` | 97.2 % (104/107) | 97 |
 | `src/services/reconstruction/tracksfm.cpp` | 96.8 % (61/63) | 96 |
-| `src/services/reconstruction/incrementalsfm.cpp` | 80.2 % (198/247) | 79 |
-| `src/services/reconstruction/poseestimator.cpp` | 100.0 % (21/21) | 61 |
-| `src/services/reconstruction/reconstructionservice.cpp` | 85.6 % (137/160) | 73 |
-| `src/services/reconstruction/reconstructionpipeline.cpp` | 59.5 % (119/200) | 52 |
+| `src/services/reconstruction/incrementalsfm.cpp` | 80.2 % (198/247) | 80 |
+| `src/services/reconstruction/poseestimator.cpp` | 100.0 % (21/21) | 100 |
+| `src/services/reconstruction/reconstructionservice.cpp` | 89.1 % (155/174) | 89 |
+| `src/services/reconstruction/reconstructionpipeline.cpp` | 59.5 % (119/200) | 59 |
 | `src/services/reconstruction/reconstructionpostprocessor.cpp` | 96.3 % (183/190) | 96 |
 
 **service: scene**
@@ -241,8 +249,8 @@ references a vertex the trim removed.
 | file | measured | floor |
 |------|----------|-------|
 | `src/services/scene/crosshairgeometry.cpp` | 93.2 % (41/44) | 93 |
-| `src/services/scene/crosshairmanager.cpp` | 56.1 % (120/214) | 56 |
-| `src/services/scene/sceneservice.cpp` | 4.9 % (13/264) | 4 |
+| `src/services/scene/crosshairmanager.cpp` | 58.4 % (125/214) | 58 |
+| `src/services/scene/sceneservice.cpp` | 5.1 % (14/276) | 5 |
 
 **service: viewer**
 
@@ -251,7 +259,7 @@ references a vertex the trim removed.
 | `src/services/viewer/image2dloader.cpp` | 98.7 % (75/76) | 98 |
 | `src/services/viewer/model3dloader.cpp` | 100.0 % (64/64) | 100 |
 | `src/services/viewer/viewerservice.cpp` | 13.6 % (8/59) | 13 |
-| `src/services/viewer/dicomloader.cpp` | 1.5 % (2/135) | 1 |
+| `src/services/viewer/dicomloader.cpp` | 50.4 % (68/135) | 50 |
 
 **service: settings**
 
@@ -270,13 +278,13 @@ references a vertex the trim removed.
 | file | measured | floor |
 |------|----------|-------|
 | `src/utils/abstractribbonpanel.cpp` | 100.0 % (42/42) | 100 |
-| `src/utils/fileutilities.cpp` | 100.0 % (63/63) | 100 |
+| `src/utils/fileutilities.cpp` | 100.0 % (70/70) | 100 |
 | `src/utils/iconfactory.cpp` | 100.0 % (19/19) | 100 |
 | `src/utils/htmlutilities.cpp` | 95.3 % (41/43) | 95 |
 | `src/utils/customprogressdialog.cpp` | 95.2 % (59/62) | 95 |
 | `src/utils/stylemanager.cpp` | 90.2 % (46/51) | 90 |
 | `src/utils/moderndialog.cpp` | 78.6 % (55/70) | 78 |
-| `src/utils/logger.cpp` | 70.5 % (43/61) | 70 |
+| `src/utils/logger.cpp` | 88.5 % (54/61) | 88 |
 | `src/utils/modernmessagebox.cpp` | 46.8 % (22/47) | 46 |
 
 **plugin: AI assistant**
@@ -288,16 +296,16 @@ references a vertex the trim removed.
 | `src/modules/aiassistantplugin/chatimageviewer.cpp` | 100.0 % (35/35) | 100 |
 | `src/modules/aiassistantplugin/chatbotdockwidget.cpp` | 96.4 % (135/140) | 96 |
 | `src/modules/aiassistantplugin/aiassistantplugin.cpp` | 18.2 % (73/400) | 18 |
-| `src/modules/aiassistantplugin/chatmessagerenderer.cpp` | 100.0 % (213/213) | 100 |
+| `src/modules/aiassistantplugin/chatmessagerenderer.cpp` | 100.0 % (217/217) | 100 |
 
 **plugin: AI processor**
 
 | file | measured | floor |
 |------|----------|-------|
 | `src/modules/aiprocessorplugin/aiprocessorribbonui.cpp` | 100.0 % (17/17) | 100 |
-| `src/modules/aiprocessorplugin/videotrackerthread.cpp` | 77.1 % (54/70) | 77 |
+| `src/modules/aiprocessorplugin/videotrackerthread.cpp` | 82.9 % (58/70) | 82 |
 | `src/modules/aiprocessorplugin/aitraindockwidget.cpp` | 39.0 % (60/154) | 38 |
-| `src/modules/aiprocessorplugin/aiprocessorplugin.cpp` | 45.7 % (204/446) | 45 |
+| `src/modules/aiprocessorplugin/aiprocessorplugin.cpp` | 46.0 % (209/454) | 46 |
 
 **plugin: reconstruction**
 
@@ -324,15 +332,15 @@ references a vertex the trim removed.
 |------|----------|-------|
 | `src/modules/userauthplugin/overlayresizer.cpp` | 100.0 % (42/42) | 100 |
 | `src/modules/userauthplugin/settingsdialog.cpp` | 91.0 % (294/323) | 91 |
-| `src/modules/userauthplugin/themeselectiondialog.cpp` | 90.5 % (143/158) | 90 |
-| `src/modules/userauthplugin/aboutdialog.cpp` | 75.9 % (63/83) | 75 |
-| `src/modules/userauthplugin/logindialog.cpp` | 68.6 % (70/102) | 68 |
-| `src/modules/userauthplugin/licenseactivationdialog.cpp` | 68.5 % (63/92) | 68 |
-| `src/modules/userauthplugin/forgotpassworddialog.cpp` | 65.4 % (85/130) | 65 |
-| `src/modules/userauthplugin/userauthplugin.cpp` | 63.8 % (171/268) | 63 |
-| `src/modules/userauthplugin/changepassworddialog.cpp` | 54.9 % (50/91) | 54 |
+| `src/modules/userauthplugin/themeselectiondialog.cpp` | 90.6 % (144/159) | 90 |
+| `src/modules/userauthplugin/aboutdialog.cpp` | 76.2 % (64/84) | 76 |
+| `src/modules/userauthplugin/logindialog.cpp` | 68.9 % (71/103) | 68 |
+| `src/modules/userauthplugin/licenseactivationdialog.cpp` | 68.8 % (64/93) | 68 |
+| `src/modules/userauthplugin/forgotpassworddialog.cpp` | 65.6 % (86/131) | 65 |
+| `src/modules/userauthplugin/userauthplugin.cpp` | 74.3 % (197/265) | 74 |
+| `src/modules/userauthplugin/changepassworddialog.cpp` | 55.4 % (51/92) | 55 |
 | `src/modules/userauthplugin/avatarcropperdialog.cpp` | 42.2 % (95/225) | 42 |
-| `src/modules/userauthplugin/adminusermanagerdialog.cpp` | 40.3 % (100/248) | 40 |
+| `src/modules/userauthplugin/adminusermanagerdialog.cpp` | 40.6 % (101/249) | 40 |
 
 **plugin: viewer**
 
@@ -347,7 +355,8 @@ references a vertex the trim removed.
 Rules for the table:
 
 * Floors are a ratchet — raise one when its file reaches the next integer,
-  never lower one to make a change pass.
+  never lower one to make a change pass. The gate enforces the raise: a file
+  measured at the next whole percent fails until its floor moves with it.
 * The remaining uncovered lines fall into documented classes:
   * **lines without executable code** — closing braces that MSVC attributes as
     lines (`ShellService` 56/57), `continue` statements
@@ -513,8 +522,9 @@ guards that coverage can only say are *executed*:
 * `ServiceRegistry` **a duplicate registration is refused** (mutation: the
   second one silently takes the service over),
 * `IPlugin` **the ABI fingerprint carries the content hash of the
-  plugin-facing interface surface** (mutation: the fingerprint ignores the
-  interfaces, so a plugin built against different headers would load),
+  plugin-facing interface surface AND the VTK/OpenCV/ONNX versions** (mutants:
+  the fingerprint ignores the interfaces, or ignores the SDK, so a plugin
+  built against different headers/SDK would load),
 * `ReconstructionService` **the published image list is read through its own
   lock** (mutation: it waits on the pipeline lock the worker holds for the
   whole run — the UI freezes),
@@ -536,6 +546,10 @@ guards that coverage can only say are *executed*:
 * `AIInferenceGuard` **an inference exception is contained** (mutation: an
   ONNX/OpenCV exception leaves the Qt slot or the worker thread and kills the
   application),
+* `AIService` **a detection call cannot run without a loaded model, on either
+  API** (mutants: `runDetection()` renders the input frame as the result, and
+  `detectObjects()` reports `ok == true` with zero objects — "detected
+  nothing" instead of "never ran"),
 * `VideoTrackerThread` **the tracking loop contains its exceptions** (mutation:
   the thread entry point lets them escape),
 * `AIProcessorPlugin` **the inference leaves the GUI thread** (mutation:
@@ -635,4 +649,4 @@ Discipline (mirrors `AIAssistant/scripts/mutation_check.py`):
   build (or run the gate in CI) while it runs;
 * `--only SUBSTR` runs a subset by label.
 
-Reference result: **78/78 killed, 0 survived, 0 stale, 0 invalid**.
+Reference result: **82/82 killed, 0 survived, 0 stale, 0 invalid**.

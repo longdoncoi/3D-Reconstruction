@@ -193,12 +193,25 @@ MUTANTS: tuple[Mutant, ...] = (
     Mutant(
         "src/include/IPlugin.h",
         "    static constexpr quint64 kAbiFingerprint =\n"
-        "        kToolchainFingerprint ^ (kInterfaceHash * 0x9E3779B97F4A7C15ULL);",
+        "        (kToolchainFingerprint ^ kSdkFingerprint)\n"
+        "        ^ (kInterfaceHash * 0x9E3779B97F4A7C15ULL);",
         "    static constexpr quint64 kAbiFingerprint =\n"
-        "        kToolchainFingerprint;",
+        "        kToolchainFingerprint ^ kSdkFingerprint;",
         "TestPluginHost",
         "TestPluginHost",
         "the ABI fingerprint ignores the plugin-facing interface hash",
+    ),
+    # ── IPlugin: the SDK versions are part of the ABI too. VTK / OpenCV /
+    #    ONNX Runtime types cross the boundary (ISceneService, IAIService), so
+    #    a fingerprint that dropped the SDK half would accept a plugin built
+    #    against a different layout.
+    Mutant(
+        "src/include/IPlugin.h",
+        "    static constexpr quint64 kSdkFingerprint = APP_TOOLCHAIN_SDK_FINGERPRINT;",
+        "    static constexpr quint64 kSdkFingerprint = 0; // mutant: the SDK versions are ignored",
+        "TestPluginHost",
+        "TestPluginHost",
+        "the ABI fingerprint ignores the VTK/OpenCV/ONNX versions",
     ),
     # ── PluginHost: discovery must not probe non-libraries / non-plugin files
     Mutant(
@@ -607,8 +620,18 @@ MUTANTS: tuple[Mutant, ...] = (
     #    ONNX session is shared, and two results race for the same viewer.
     Mutant(
         "src/modules/AIProcessorPlugin/AIProcessorPlugin.cpp",
-        "    if (m_inferenceRunning) return;",
-        "    if (false) return;",
+        "    if (m_cleanedUp) return;\n"
+        "    // One inference at a time: the ONNX session is shared, and two results\n"
+        "    // racing for the same viewer would show the older one.\n"
+        "    if (m_inferenceRunning) return;\n"
+        "    if (m_ctx->viewer()->getCurrentAIMode() == AIMode::Tracking) return;\n"
+        "    m_inferenceRunning = true;",
+        "    if (m_cleanedUp) return;\n"
+        "    // One inference at a time: the ONNX session is shared, and two results\n"
+        "    // racing for the same viewer would show the older one.\n"
+        "    if (false) return; // mutant: a second inference races the first\n"
+        "    if (m_ctx->viewer()->getCurrentAIMode() == AIMode::Tracking) return;\n"
+        "    m_inferenceRunning = true;",
         "TestPluginUi",
         "TestPluginUi",
         "AIProcessorPlugin: a second inference races the first (a stale result can win)",
@@ -907,6 +930,36 @@ MUTANTS: tuple[Mutant, ...] = (
         "ReconstructionService: setImages() waits for the running pipeline (UI freeze)",
         600,
     ),
+    # ── ReconstructionService: publishing the result IS part of the run. If
+    #    the snapshot cannot be built (the allocator/OpenCV throw), the user
+    #    has nothing to show, so the run must be reported as FAILED — not
+    #    "succeeded with an empty result".
+    Mutant(
+        "src/services/reconstruction/ReconstructionService.cpp",
+        "        if (!publishResult())\n"
+        "            ok = false;",
+        "        publishResult(); // mutant: a failed publication is ignored",
+        "TestReconstructionService",
+        "TestReconstructionService",
+        "ReconstructionService: a failed publication is reported as a successful run",
+        600,
+    ),
+    # ── ReconstructionService: the publication barrier must also CONTAIN a
+    #    non-std exception. Anything other than catch(...) would let it escape
+    #    the worker thread (QThread::run → std::terminate) or a GUI slot.
+    Mutant(
+        "src/services/reconstruction/ReconstructionService.cpp",
+        "    } catch (...) {\n"
+        "        ok = false;\n"
+        "        m_lastError = QStringLiteral(\"Failed to publish the reconstruction result: unknown error.\");",
+        "    } catch (...) {\n"
+        "        ok = true; // mutant: an unknown publication failure is reported as success\n"
+        "        m_lastError = QStringLiteral(\"Failed to publish the reconstruction result: unknown error.\");",
+        "TestReconstructionService",
+        "TestReconstructionService",
+        "ReconstructionService: an unknown publication failure is reported as success",
+        600,
+    ),
     # ── Architecture guard itself: an inference entry point that bypasses the
     #    exception guard must be rejected — the guard exists so an ONNX/OpenCV
     #    exception can never leave a Qt slot or a thread entry point.
@@ -937,13 +990,43 @@ MUTANTS: tuple[Mutant, ...] = (
     # ── AIService: a model that was never loaded cannot infer. AIProcessor
     #    returns the INPUT unchanged, which reads as "detected nothing"; the
     #    service must refuse instead (IAIService.h documents "empty on error").
+    #    The anchor spans the whole guard: the sibling detectObjects() carries
+    #    the same readiness check, so the bare `if` is no longer unique.
     Mutant(
         "src/services/ai/AIService.cpp",
-        "    if (!m_processor->isDetectionModelLoaded()) {",
-        "    if (false) { // mutant: detection runs without a loaded model",
+        "    if (!m_processor->isDetectionModelLoaded()) {\n"
+        "        qWarning() << \"[AI] detection requested before the model was loaded\";\n"
+        "        return {};\n"
+        "    }\n"
+        "    return ai::imageOrEmpty(ai::runInferenceGuarded(",
+        "    if (false) { // mutant: detection runs without a loaded model\n"
+        "        qWarning() << \"[AI] detection requested before the model was loaded\";\n"
+        "        return {};\n"
+        "    }\n"
+        "    return ai::imageOrEmpty(ai::runInferenceGuarded(",
         "TestAIService",
         "TestAIService",
         "AIService: detection without a model is reported as success",
+    ),
+    # ── AIService: the same readiness decision on the BOX API. The outcome
+    #    flag is the whole point of AIDetectionOutcome: if the guard is skipped,
+    #    the processor returns an empty vector and the caller is told the
+    #    inference succeeded with zero objects.
+    Mutant(
+        "src/services/ai/AIService.cpp",
+        "    if (!m_processor->isDetectionModelLoaded()) {\n"
+        "        qWarning() << \"[AI] detection requested before the model was loaded\";\n"
+        "        return {};\n"
+        "    }\n"
+        "    const ai::DetectionOutcome outcome = ai::runDetectionGuarded(",
+        "    if (false) { // mutant: detectObjects() runs without a loaded model\n"
+        "        qWarning() << \"[AI] detection requested before the model was loaded\";\n"
+        "        return {};\n"
+        "    }\n"
+        "    const ai::DetectionOutcome outcome = ai::runDetectionGuarded(",
+        "TestAIService",
+        "TestAIService",
+        "AIService: detectObjects() without a model is reported as success",
     ),
     # ── PluginHost: a plugin is third-party code, so initialize() may throw.
     #    Without the barrier the exception aborts the process before the
@@ -1008,19 +1091,20 @@ MUTANTS: tuple[Mutant, ...] = (
 # gate into a failing one. It is not lowered to make a run pass — a mutant that
 # no longer applies is replaced, not removed.
 #
-# 78 is the number of load-bearing decisions the guard layer pins today
+# 82 is the number of load-bearing decisions the guard layer pins today
 # (PluginHost, ServiceRegistry, SecretVault, CryptoUtils, UserManager,
-# LicenseKeyLedger, OtpStore, UserSettingsStore, ReconstructionService,
-# ReconstructionPostProcessor, AIModelLoadService, AIServerProcessController,
-# IPlugin ABI fingerprint, AppShell service registration, ChatMessage roles,
-# AIProcessor model loading, AIProcessor inference dispatch,
-# BlockingCall, AIInferenceGuard, VideoTrackerThread, architecture guard,
-# AIService failure semantics, AIPredictionLogService pool barrier,
+# LicenseKeyLedger, OtpStore, UserSettingsStore, ReconstructionService
+# (published state + publication barrier), ReconstructionPostProcessor,
+# AIModelLoadService, AIServerProcessController, IPlugin ABI fingerprint
+# (interface hash + SDK versions), AppShell service registration,
+# ChatMessage roles, AIProcessor model loading, AIProcessor inference
+# dispatch, BlockingCall, AIInferenceGuard, VideoTrackerThread, architecture
+# guard, AIService failure semantics, AIPredictionLogService pool barrier,
 # VideoTrackerThread failed-inference stop, AIProcessorPlugin false success,
 # ServiceRegistry read-only surface, GuardedApplication barrier, IAIService
 # loader seam, VideoTrackerThread terminate fallback, teardown rule,
 # MainWindow tab contract).
-MIN_MUTANTS = 78
+MIN_MUTANTS = 82
 
 
 #: Header-only files on the plugin-facing surface carry load-bearing decisions

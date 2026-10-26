@@ -9,8 +9,12 @@
 #   * the plugin-facing ABI surface count (the SAME closure definition the
 #     hash uses — cmake/PluginInterface.cmake + cmake/InterfaceAbi.cmake);
 #   * the PINNED_HEADERS list vs tests/mutation_check.py;
-#   * MIN_MUTANTS vs the number of mutants actually defined;
-#   * the CTest count vs the number of add_test() registrations;
+#   * MIN_MUTANTS vs the number of mutants actually defined (and the §1 /
+#     README statements of that number);
+#   * the architecture-guard rule count vs the rule headers in
+#     tests/CheckArchitectureBoundaries.cmake;
+#   * the CTest count vs the number of add_test() registrations, and the
+#     executable/CMake-script split (a script test passes `-P`);
 #   * the coverage snapshot: coverage_floors.json ↔ tests/README.md table ↔
 #     the "tổng" row in Docs/ARCHITECTURE_SRC.md (file count, covered/total
 #     lines and percentage).
@@ -126,6 +130,45 @@ else()
         _problem("Docs/ARCHITECTURE_SRC.md does not state the current mutation"
                  "result (\"${_min_mutants}/${_min_mutants} killed\")")
     endif()
+    if(NOT _arch_flat MATCHES "\\(([0-9]+) mutant\\)")
+        _problem("Docs/ARCHITECTURE_SRC.md §1 no longer states the mutant count"
+                 "(\"(N mutant)\") — the gate cannot verify it")
+    elseif(NOT CMAKE_MATCH_1 EQUAL _min_mutants)
+        _problem("Docs/ARCHITECTURE_SRC.md §1 says ${CMAKE_MATCH_1} mutant(s);"
+                 "MIN_MUTANTS is ${_min_mutants}")
+    endif()
+    if(NOT _readme_text MATCHES "\\*\\*${_min_mutants}/${_min_mutants} killed")
+        _problem("tests/README.md does not state the current mutation reference"
+                 "result (\"${_min_mutants}/${_min_mutants} killed\")")
+    endif()
+endif()
+
+# ── 3b. Architecture-guard rule count ────────────────────────────────────────
+# The rule number is the contract: the docs name how many groups of guards
+# run, and a new rule that the prose does not mention is a guard nobody
+# reviews. Rule "3b" is a sub-case of rule 3, so only distinct NUMBERS count.
+set(_guard "${SOURCE_DIR}/tests/CheckArchitectureBoundaries.cmake")
+if(NOT EXISTS "${_guard}")
+    _problem("tests/CheckArchitectureBoundaries.cmake is missing")
+else()
+    file(READ "${_guard}" _guard_text)
+    string(REGEX MATCHALL "\n# ── [0-9]+[a-z]?\\." _rule_headers "${_guard_text}")
+    set(_rules "")
+    foreach(_header IN LISTS _rule_headers)
+        if(_header MATCHES "([0-9]+)[a-z]?\\.")
+            list(APPEND _rules "${CMAKE_MATCH_1}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _rules)
+    list(LENGTH _rules _rule_count)
+    if(NOT _arch_flat MATCHES "([0-9]+) nhóm luật")
+        _problem("Docs/ARCHITECTURE_SRC.md no longer states the architecture-guard"
+                 "rule count (\"N nhóm luật\")")
+    elseif(NOT CMAKE_MATCH_1 EQUAL _rule_count)
+        _problem("Docs/ARCHITECTURE_SRC.md says the architecture guard has"
+                 "${CMAKE_MATCH_1} rule group(s); tests/CheckArchitectureBoundaries.cmake"
+                 "defines ${_rule_count}")
+    endif()
 endif()
 
 # ── 4. CTest count vs add_test() registrations ────────────────────────────────
@@ -135,6 +178,26 @@ if(NOT _arch_flat MATCHES "\\| ${_test_count}/${_test_count} \\|")
     _problem("Docs/ARCHITECTURE_SRC.md does not state the current CTest count"
              "(${_test_count}/${_test_count}); tests/CMakeLists.txt registers"
              "${_test_count} test(s)")
+endif()
+
+# The suite is two kinds of test: an executable and a CMake script (-P). The
+# docs state the split, so a script test that silently became an executable
+# (or the reverse) is visible in the prose instead of hiding behind the total.
+string(REGEX MATCHALL "-P \"\\$\\{CMAKE_CURRENT_SOURCE_DIR\\}/" _script_calls
+       "${_tests_cmake_text}")
+list(LENGTH _script_calls _script_count)
+math(EXPR _exe_count "${_test_count} - ${_script_count}")
+if(NOT _arch_flat MATCHES
+       "\\(${_test_count} CTest entry: ${_exe_count} executable \\+ ${_script_count} CMake-script test\\)")
+    _problem("Docs/ARCHITECTURE_SRC.md does not state the current CTest split"
+             "(\"${_test_count} CTest entry: ${_exe_count} executable +"
+             "${_script_count} CMake-script test\")")
+endif()
+if(NOT _readme_text MATCHES
+       "${_test_count} CTest entries \\(${_exe_count} test executables \\+ ${_script_count} CMake-script tests\\)")
+    _problem("tests/README.md does not state the current CTest split"
+             "(\"${_test_count} CTest entries (${_exe_count} test executables +"
+             "${_script_count} CMake-script tests)\")")
 endif()
 
 # ── 5. Coverage snapshot: JSON ↔ README table ↔ the "tổng" row ────────────────

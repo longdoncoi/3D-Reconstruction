@@ -13,10 +13,10 @@
 
 | # | Gate | Lệnh | Chứng minh điều gì |
 |---|------|------|-------------------|
-| 1 | Ranh giới kiến trúc | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | 12 nhóm luật: plugin↔service, service↔app, confinement của singleton, khớp heavy/light PCH, `src/utils` không heavy SDK, `waitForFinished()` phải có timeout, event filter phải gỡ được, không dò cửa sổ shell, blocking I/O không qua thread pool, include path của plugin không chứa `src/core`, **mỗi lời gọi inference phải đi qua exception guard** |
-| 2 | Bộ test | `ctest --test-dir build -C Release --output-on-failure` | Hành vi quan sát được của toàn bộ hợp đồng đã test (49 CTest entry: 45 executable + 4 CMake-script test) |
-| 3 | Coverage gate | `python tests/coverage_gate.py` | Mọi TU đo được có floor riêng; không TU nào "thoát" khỏi phép đo; **floor không được hạ** |
-| 4 | Mutation check | `python tests/mutation_check.py` | Mọi quyết định bảo vệ (guard) đã được *ghim*: đảo quyết định → test phải đỏ (71 mutant) |
+| 1 | Ranh giới kiến trúc | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | 14 nhóm luật: plugin↔service, service↔app, confinement của singleton, khớp heavy/light PCH, `src/utils` không heavy SDK, teardown có biên (không `waitForFinished()` trần), event filter phải gỡ được, không dò cửa sổ shell, blocking I/O không qua pool không sở hữu, include path của plugin không chứa `src/core`, **mỗi lời gọi inference phải đi qua exception guard**, plugin không ghi vào `ServiceRegistry`, `IAIService` không phơi loader đồng bộ |
+| 2 | Bộ test | `ctest --test-dir build -C Release --output-on-failure` | Hành vi quan sát được của toàn bộ hợp đồng đã test (49 CTest entry: 43 executable + 6 CMake-script test) |
+| 3 | Coverage gate | `python tests/coverage_gate.py` | Mọi TU đo được có floor riêng; không TU nào "thoát" khỏi phép đo; **floor không được hạ** và **phải bám theo số đo** (file đạt mốc nguyên tiếp theo → floor tăng trong cùng commit) |
+| 4 | Mutation check | `python tests/mutation_check.py` | Mọi quyết định bảo vệ (guard) đã được *ghim*: đảo quyết định → test phải đỏ (82 mutant) |
 
 **Tiền kiểm của gate 4 (đóng 2026-10-22).** Gate 4 từng **chết âm thầm**: một mutant trỏ vào `src/core/ServiceRegistry.h` sau khi file đã chuyển sang `src/include/`, nên script abort bằng `FileNotFoundError` *sau* khi pre-flight đã xanh — trông như gate đã chạy và không báo gì. Ba commit mang theo mutant hỏng, và tuyên bố "52/52 mutant ✅" chưa từng được kiểm chứng.
 
@@ -77,11 +77,11 @@ còn lại** — không phải một mutant đại diện.
 | lớp | file .cpp | dòng đo được | tỉ lệ |
 |-----|-----------|----------------|--------|
 | `src/core` (kernel + guard) | 13 | 1 258 / 1 273 | 98,8 % |
-| `src/app` (composition root) | 2 | 192 / 243 | 79,0 % |
-| `src/services` | 40 | 2 678 / 4 273 | 62,7 % |
-| `src/utils` (tiện ích dùng chung) | 9 | 390 / 458 | 85,2 % |
-| `src/modules` (lớp plugin) | 35 | 2 725 / 4 432 | 61,5 % |
-| **tổng** | **99** | **7 243 / 10 679** | **67,8 %** |
+| `src/app` (composition root) | 2 | 195 / 246 | 79,3 % |
+| `src/services` | 40 | 2 773 / 4 303 | 64,4 % |
+| `src/utils` (tiện ích dùng chung) | 9 | 408 / 465 | 87,7 % |
+| `src/modules` (lớp plugin) | 35 | 2 771 / 4 448 | 62,3 % |
+| **tổng** | **99** | **7 405 / 10 735** | **69,0 %** |
 
 `src/services` có 41 translation unit **nguồn** nhưng 40 file **đo được**:
 `PanStyle.cpp` chỉ là VTK boilerplate (`vtkStandardNewMacro`), nằm trong
@@ -121,7 +121,7 @@ inference dựng và đóng **hộp thoại cảnh báo thật**, kéo `src/util
 commit.
 
 Đợt §4.13 (đóng lớp "inference thất bại bị báo thành công") đo lại toàn bộ
-`src/`: **99 file đo được, 7 243 / 10 679 dòng = 67,8 %** (`MainWindow.cpp` gia
+`src/`: **99 file đo được, 7 405 / 10 735 dòng = 69,0 %** (`MainWindow.cpp` gia
 nhập phép đo cùng `TestMainWindow`). Các file có quyết định mới
 đều **tăng**, vì test mới đi qua đúng nhánh vừa được thêm:
 
@@ -325,13 +325,24 @@ bị báo nhầm là crash, timer kill không được bật.
 `I*.h` mà quên bump ⇒ host vẫn nạp plugin cũ với ABI khác, và lỗi hiện ra
 ở chỗ không liên quan (crash, đọc sai vùng nhớ) thay vì lúc nạp.
 
-Đã đóng: `IPlugin::kAbiFingerprint` nay **trộn** fingerprint toolchain với
-**hash nội dung của bề mặt interface plugin-facing** — không phải danh sách
-`I*.h` mà là *bao đóng* include giao diện (transitive quoted-include closure)
-của **mọi** header trong `src/include/` (interface `I*.h`, DTO chúng expose và
+Đã đóng: `IPlugin::kAbiFingerprint` nay **trộn** fingerprint toolchain,
+**fingerprint SDK** (VTK / OpenCV / ONNX Runtime — những kiểu *vượt* biên
+plugin) và **hash nội dung của bề mặt interface plugin-facing** — không phải
+danh sách `I*.h` mà là *bao đóng* include giao diện (transitive `#include`
+closure, cả dạng `"..."` lẫn `<...>` khi file đích nằm trong bề mặt) của
+**mọi** header trong `src/include/` (interface `I*.h`, DTO chúng expose và
 core glue được allow-list) và `src/utils/`. Bao đóng là cần thiết: plugin thấy
 `IReconstructionService.h` **và** DTO nó include (`PointCloudData.h`) — hash
 chỉ `I*.h` sẽ bỏ sót thay đổi của DTO đó.
+
+Vì sao cần fingerprint SDK: `ISceneService` trao `vtkSmartPointer`/`vtkRenderer`,
+`IAIService` nhận `cv::Mat`, và ABI ONNX Runtime nằm sau cả hai. Một bản VTK/
+OpenCV/ONNX mới đổi layout struct và inline implementation **mà không** đổi Qt
+hay compiler — fingerprint toolchain một mình sẽ chấp nhận nhầm plugin build
+với SDK khác. `compute_sdk_fingerprint` (`cmake/InterfaceAbi.cmake`) băm
+`VTK_VERSION|OpenCV_VERSION|ONNXRUNTIME_VERSION`; một stamp file ghi giá trị
+đó vào `DEPENDS` của custom command, nên nâng dependency (CMake chạy lại,
+stamp đổi) sẽ sinh lại header thay vì để giá trị cũ nằm lại.
 
 `src/services/ai/AgentActionManifest.h` **không** nằm trong bề mặt: nó là
 header PRIVATE của AppCore và không root nào include nó. Plugin không link tới
@@ -350,10 +361,14 @@ Cơ chế:
   của bề mặt ⇒ hash **không bao giờ cũ**.
 * `TestInterfaceAbi` (CTest) ghim hai tính chất: **freshness** (hash sinh ra
   phải bằng hash tính lại từ file hiện tại) và **sensitivity** (đổi nội dung
-  bất kỳ header nào ⇒ hash phải đổi).
+  bất kỳ header nào ⇒ hash phải đổi). Nó cũng ghim **nửa SDK**: giá trị sinh
+  ra phải khớp fingerprint của lần configure này, và generator phải thật sự
+  phát giá trị nó được truyền (một header luôn ghi `0` sẽ làm bump VTK/OpenCV
+  vô hình).
 * `TestPluginHost::abiFingerprintCarriesTheInterfaceHash` ghim phần còn lại:
-  fingerprint thật sự chứa hash đó; mutant "the ABI fingerprint ignores the
-  plugin-facing interface hash" phải làm đỏ.
+  fingerprint thật sự chứa hash đó **và** SDK fingerprint khác `0`; hai mutant
+  ("the ABI fingerprint ignores the plugin-facing interface hash", "the ABI
+  fingerprint ignores the VTK/OpenCV/ONNX versions") phải làm đỏ.
 
 Bằng chứng đầu-cuối: `TestPluginSmoke` nạp **DLL plugin thật** — nó đi qua
 cổng ABI với hash sinh ra ở AppCore, nên nếu hash lệch giữa AppCore và
@@ -691,19 +706,24 @@ chuyển "outcome" thành "ảnh hoặc rỗng", đúng như `IAIService.h` đã
 ("empty nếu lỗi"). Kèm theo:
 
 * `AIService` từ chối chạy khi model chưa load (processor sẽ trả input, đọc
-  như "không phát hiện gì");
+  như "không phát hiện gì"), trên **cả hai** API;
+* `AIService::detectObjects()` trả `AIDetectionOutcome { ok, objects }` thay
+  vì một `std::vector` trần: `ok == false` là "model chưa load / inference
+  lỗi", `ok == true` + danh sách rỗng là "đã chạy, không có vật thể" — hai
+  câu trả lời từng bị gộp làm một;
 * `VideoTrackerThread::run()` dừng và phát `errorOccurred` khi frame rỗng;
 * `AIProcessorPlugin::onTrackingError` được **connect**, và
   `onTrackingFinished()` không hiện hộp "đã xong" sau một lần lỗi.
 
-Ghim: **6 mutant** (`imageOrEmpty` đảo điều kiện, bỏ readiness check, plugin
-ném trong `initialize()`, encoder ném trên pool thread, thread tracking coi
-frame rỗng là frame đã track, và hộp "đã xong" hiện sau một lần lỗi) + 5 test
-mới:
+Ghim: **7 mutant** (`imageOrEmpty` đảo điều kiện, bỏ readiness check ở
+`runDetection` **và** ở `detectObjects`, plugin ném trong `initialize()`,
+encoder ném trên pool thread, thread tracking coi frame rỗng là frame đã
+track, và hộp "đã xong" hiện sau một lần lỗi) + 5 test mới:
 
 | test | ghim điều gì |
 |------|--------------|
 | `TestAIService::anInferenceWithoutAModelReturnsEmpty` | model chưa load ⇒ **rỗng**, không phải ảnh input |
+| `TestAIService::aMissingModelIsRefused` | model chưa load ⇒ `detectObjects().ok == false`, không phải "0 vật thể" |
 | `TestAIService::aFailedOutcomeBecomesAnEmptyImage` | `ok = false` ⇒ **rỗng** (kể cả khi guard trả lại input) |
 | `TestPluginUi::anEmptyInferenceResultIsReportedOnce` | ảnh rỗng ⇒ báo lỗi một lần, không render |
 | `TestPluginWidgets::videoTrackerReportsAFailedInference` | clip đọc được + backend trả rỗng ⇒ dừng vòng lặp + `errorOccurred` |
@@ -841,7 +861,7 @@ Bốn gate đều chạy offline (không tải ONNX Runtime 323 MB, không cài 
 | 1 | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | exit 0 | một luật ranh giới bị vi phạm |
 | 2 | `ctest --test-dir build -C Release --output-on-failure` | 49/49 | một hợp đồng quan sát được bị phá |
 | 3 | `python tests/coverage_gate.py` | "99 file(s) at or above their floors" | một file đã **thoát** khỏi phép đo, hoặc coverage **tụt** dưới floor |
-| 4 | `python tests/mutation_check.py` | "78/78 killed, 0 survived, 0 stale, 0 invalid" | một quyết định bảo vệ **không còn được ghim** |
+| 4 | `python tests/mutation_check.py` | "82/82 killed, 0 survived, 0 stale, 0 invalid" | một quyết định bảo vệ **không còn được ghim** |
 
 Bước 4 **tự kiểm mục tiêu của mình trước khi rebuild** (file tồn tại, anchor
 đúng một lần, header đã ghim) — nên nó đỏ **ngay** với danh sách mutant hỏng,

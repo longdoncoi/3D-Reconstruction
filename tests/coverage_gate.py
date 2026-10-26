@@ -27,6 +27,11 @@ Two gates beyond the per-file floors:
 2. **Debt visibility** — the files with 0 % are listed on every run with
    their line count, so the remaining work is named, not implied.
 
+The floors are also **checked against the measurement**: a file that reaches
+the next whole percent fails the gate until its floor is raised in the same
+commit.  A floor that nobody moves when the code improves stops meaning
+anything, so the ratchet is enforced in both directions.
+
 Header only templates (``ServiceRegistry.h``, ``MailThreadGuard.h``,
 ``BlockingCall.h``) compile inline into their callers under ``/O2 /Ob2`` and
 cannot be mapped line-by-line by the tool, so they are pinned by
@@ -201,13 +206,13 @@ FLOORS: dict[str, float] = {
     "src/services/ai/aimodelloadservice.cpp": 100,  # measured 100
     "src/services/ai/aiyolopostprocessor.cpp": 100,  # measured 100
     "src/services/ai/agentactionmanifest.cpp": 100, # measured 100 (70/70)
-    "src/services/ai/aiassistant.cpp": 42,          # measured 42.0
+    "src/services/ai/aiassistant.cpp": 55,          # measured 55.7 (306/549)
     "src/services/ai/aiserverprocesscontroller.cpp": 94,  # measured 94.7
     # The exception guard of the AI inference path: one place where an
     # ONNX/OpenCV exception is contained, so it can never leave a Qt slot
     # or a thread entry point (and abort the application).
     "src/services/ai/aiinferenceguard.cpp": 75,  # measured 75.0 (30/40)
-    "src/services/ai/aiservice.cpp": 83,           # measured 83.3 (40/48)
+    "src/services/ai/aiservice.cpp": 86,           # measured 86.5 (45/52)
     "src/services/ai/aiprocessor.cpp": 17,         # measured 17.7
     "src/services/mail/mailmimeparser.cpp": 67,     # measured 67.1
     "src/services/mail/mailservice.cpp": 32,       # measured 32.2 (78/242)
@@ -216,23 +221,23 @@ FLOORS: dict[str, float] = {
     "src/services/reconstruction/cameraparamsparser.cpp": 97,  # measured 97.6
     "src/services/reconstruction/featureextractor.cpp": 100,   # measured 100
     "src/services/reconstruction/featurematcher.cpp": 97,      # measured 97.7
-    "src/services/reconstruction/incrementalsfm.cpp": 79,      # measured 79.0
+    "src/services/reconstruction/incrementalsfm.cpp": 80,      # measured 80.2
     "src/services/reconstruction/multiviewtriangulator.cpp": 100,  # measured 100
     "src/services/reconstruction/pointcloudfilter.cpp": 97,   # measured 97.2
-    "src/services/reconstruction/poseestimator.cpp": 61,      # measured 61.9
-    "src/services/reconstruction/reconstructionpipeline.cpp": 52,  # measured 52.5
+    "src/services/reconstruction/poseestimator.cpp": 100,     # measured 100.0 (21/21)
+    "src/services/reconstruction/reconstructionpipeline.cpp": 59,  # measured 59.5
     "src/services/reconstruction/reconstructionpostprocessor.cpp": 96,  # measured 96.3
-    "src/services/reconstruction/reconstructionservice.cpp": 73,  # measured 73.8
+    "src/services/reconstruction/reconstructionservice.cpp": 89,  # measured 89.1 (155/174)
     "src/services/reconstruction/reconstructionworker.cpp": 100,  # measured 100
     "src/services/reconstruction/sfmstage.cpp": 100,  # measured 100
     "src/services/reconstruction/tracksfm.cpp": 96,   # measured 96.6
     "src/services/reconstruction/triangulator.cpp": 100,  # measured 100
     "src/services/scene/crosshairgeometry.cpp": 93,  # measured 93.2 (41/44)
-    "src/services/scene/crosshairmanager.cpp": 56,   # measured 56.1 (120/214)
-    "src/services/scene/sceneservice.cpp": 4,        # measured 4.9
+    "src/services/scene/crosshairmanager.cpp": 58,   # measured 58.4 (125/214)
+    "src/services/scene/sceneservice.cpp": 5,        # measured 5.1 (14/276)
     "src/services/settings/settingsservice.cpp": 100,  # measured 100
     "src/services/shell/shellservice.cpp": 98,    # measured 98.2 (one closing brace)
-    "src/services/viewer/dicomloader.cpp": 1,      # measured 1.5
+    "src/services/viewer/dicomloader.cpp": 50,     # measured 50.4 (68/135)
     "src/services/viewer/image2dloader.cpp": 98,    # measured 98.7 (75/76)
     "src/services/viewer/model3dloader.cpp": 100,   # measured 100 (64/64)
     "src/services/viewer/viewerservice.cpp": 13,   # measured 13.6
@@ -242,7 +247,7 @@ FLOORS: dict[str, float] = {
     "src/utils/fileutilities.cpp": 100,           # measured 100 (54/54)
     "src/utils/htmlutilities.cpp": 95,            # measured 95.3
     "src/utils/iconfactory.cpp": 100,             # measured 100
-    "src/utils/logger.cpp": 70,                   # measured 70.5
+    "src/utils/logger.cpp": 88,                   # measured 88.5 (54/61)
     "src/utils/moderndialog.cpp": 78,             # measured 78.6
     "src/utils/modernmessagebox.cpp": 46,         # measured 46.8
     "src/utils/stylemanager.cpp": 90,             # measured 90.2
@@ -252,22 +257,22 @@ FLOORS: dict[str, float] = {
     "src/modules/aiassistantplugin/chatbotdockwidget.cpp": 96,      # measured 96.4
     "src/modules/viewerplugin/viewernavigatorui.cpp": 94,           # measured 94.7
     "src/modules/reconstructionplugin/reconstructionribbonui.cpp": 100,  # measured 100.0
-    "src/modules/userauthplugin/userauthplugin.cpp": 63,            # measured 63.8
+    "src/modules/userauthplugin/userauthplugin.cpp": 74,            # measured 74.3 (197/265)
     "src/modules/userauthplugin/settingsdialog.cpp": 91,             # measured 91.0
-    "src/modules/userauthplugin/aboutdialog.cpp": 75,               # measured 75.9
+    "src/modules/userauthplugin/aboutdialog.cpp": 76,               # measured 76.2 (64/84)
     "src/modules/userauthplugin/logindialog.cpp": 68,               # measured 68.6
     "src/modules/userauthplugin/licenseactivationdialog.cpp": 68,   # measured 68.5
     "src/modules/userauthplugin/themeselectiondialog.cpp": 90,      # measured 90.5
     "src/modules/userauthplugin/overlayresizer.cpp": 100,          # measured 100
     "src/modules/userauthplugin/forgotpassworddialog.cpp": 65,      # measured 65.3
-    "src/modules/userauthplugin/changepassworddialog.cpp": 54,       # measured 54.9
+    "src/modules/userauthplugin/changepassworddialog.cpp": 55,       # measured 55.4 (51/92)
     "src/modules/userauthplugin/avatarcropperdialog.cpp": 42,        # measured 42.8
     "src/modules/userauthplugin/adminusermanagerdialog.cpp": 40,     # measured 40.8
     "src/modules/sendmailplugin/maildockwidget.cpp": 60,            # measured 61.0 (208/341)
     "src/modules/viewerplugin/viewerplugin.cpp": 51,                # measured 51.4
     "src/modules/sendmailplugin/sendmailplugin.cpp": 47,            # measured 47.7
     "src/modules/aiprocessorplugin/aitraindockwidget.cpp": 38,       # measured 39.0
-    "src/modules/aiprocessorplugin/aiprocessorplugin.cpp": 45,       # measured 45.7 (204/446)
+    "src/modules/aiprocessorplugin/aiprocessorplugin.cpp": 46,       # measured 46.0 (209/454)
     "src/modules/reconstructionplugin/reconstructionplugin.cpp": 21, # measured 21.3
     "src/modules/aiassistantplugin/aiassistantplugin.cpp": 18,       # measured 18.3
     "src/modules/viewerplugin/viewerlistui.cpp": 100,               # measured 100 (59/59)
@@ -283,7 +288,7 @@ FLOORS: dict[str, float] = {
     "src/modules/sendmailplugin/mailsettingsdialog.cpp": 65,           # measured 65.6
     "src/modules/viewerplugin/viewerviewmodel.cpp": 98,                # measured 98.5 (66/67)
     "src/modules/aiassistantplugin/chatimageviewer.cpp": 100,       # measured 100
-    "src/modules/aiprocessorplugin/videotrackerthread.cpp": 77,     # measured 77.1 (54/70)
+    "src/modules/aiprocessorplugin/videotrackerthread.cpp": 82,     # measured 82.9 (58/70)
 }
 
 _TOOL_CANDIDATES = (
@@ -574,6 +579,23 @@ def enforce(merged: dict[str, FileCoverage]) -> int:
             failures.append(
                 f"{path}: {entry.percent:.1f}% < floor {floor:.1f}% "
                 f"({entry.covered}/{entry.valid} lines)")
+
+    # A floor must FOLLOW the measurement: when a file reaches the next whole
+    # percent, the floor moves with it in the same commit. Without this check a
+    # file measured at 100 % could keep the floor it had at 61 % forever — the
+    # ratchet would be a comment, not a mechanism.  The comparison uses the
+    # same raw rate as the floor check above, which is why a file displayed as
+    # "61.0 %" (208/341 = 60.997 %) keeps the floor 60.
+    for path, floor in sorted(FLOORS.items()):
+        entry = merged.get(path)
+        if entry is None or entry.valid == 0:
+            continue  # already reported as missing data above
+        reached = int(entry.percent + 1e-9)
+        if reached > floor:
+            failures.append(
+                f"{path}: measured {entry.percent:.1f}% "
+                f"({entry.covered}/{entry.valid} lines) but the floor is "
+                f"{floor:g} — raise it to {reached} in the same commit")
 
     # The ratchet is a one-way street: a floor that is lowered instead of the
     # code being fixed is a silent decision to stop measuring.
