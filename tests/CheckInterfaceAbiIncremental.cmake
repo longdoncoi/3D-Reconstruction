@@ -18,9 +18,11 @@
 #   cmake -DSOURCE_DIR=<repo> -DWORK_DIR=<scratch dir>
 #         -P tests/CheckInterfaceAbiIncremental.cmake
 
-if(NOT DEFINED SOURCE_DIR OR NOT DEFINED WORK_DIR)
+if(NOT DEFINED SOURCE_DIR OR NOT DEFINED WORK_DIR
+   OR NOT DEFINED APP_SDK_FINGERPRINT)
     message(FATAL_ERROR
-        "CheckInterfaceAbiIncremental.cmake needs SOURCE_DIR and WORK_DIR")
+        "CheckInterfaceAbiIncremental.cmake needs SOURCE_DIR, WORK_DIR and "
+        "APP_SDK_FINGERPRINT")
 endif()
 
 set(APP_REPO_ROOT "${SOURCE_DIR}")
@@ -36,6 +38,7 @@ function(run_generator)
         COMMAND "${CMAKE_COMMAND}"
                 "-DAPP_INTERFACE_ROOTS=${APP_INTERFACE_ROOTS}"
                 "-DAPP_INTERFACE_SEARCH_DIRS=${APP_INTERFACE_SEARCH_DIRS}"
+                "-DAPP_SDK_FINGERPRINT=${APP_SDK_FINGERPRINT}"
                 "-DOUTPUT=${_header}"
                 -P "${_generator}"
         RESULT_VARIABLE _rc

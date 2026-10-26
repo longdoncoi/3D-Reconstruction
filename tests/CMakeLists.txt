@@ -37,6 +37,7 @@ add_test(NAME TestInterfaceAbi
          COMMAND ${CMAKE_COMMAND}
                  "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
                  "-DINTERFACE_ABI_HEADER=${APP_INTERFACE_ABI_HEADER}"
+                 "-DAPP_SDK_FINGERPRINT=${APP_SDK_FINGERPRINT}"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckInterfaceAbi.cmake")
 set_tests_properties(TestInterfaceAbi PROPERTIES
                      REQUIRED_FILES "${APP_INTERFACE_ABI_HEADER}")
@@ -48,6 +49,7 @@ add_test(NAME TestInterfaceAbiIncremental
          COMMAND ${CMAKE_COMMAND}
                  "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
                  "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/interface_abi_incremental"
+                 "-DAPP_SDK_FINGERPRINT=${APP_SDK_FINGERPRINT}"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckInterfaceAbiIncremental.cmake")
 
 # Documentation-consistency guard — every machine-checkable number in the

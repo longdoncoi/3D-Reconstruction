@@ -115,13 +115,16 @@ concrete singletons or exe classes. Conventions:
   ABI gate — a plugin built against a different contract version is rejected
   instead of crashing.
 - The ABI gate has a **second, automatic** dimension: `IPlugin::kAbiFingerprint`
-  mixes the toolchain fingerprint with the **content hash of the plugin-facing
-  interface surface** (the transitive quoted-include closure of every header in
-  `src/include/` — the `I*.h` interfaces, the DTOs they expose, the
-  allow-listed core glue — and `src/utils/`). CMake generates that hash into
-  `InterfaceAbiHash.h` (`cmake/InterfaceAbi.cmake`, `cmake/PluginInterface.cmake`)
-  whenever one of those files changes, so **changing a plugin-facing header
-  without bumping `kApiVersion` can no longer silently load an incompatible
+  mixes the toolchain fingerprint, the **SDK fingerprint** (the resolved
+  VTK/OpenCV/ONNX Runtime versions — their types cross the boundary, so a bump
+  is an ABI bump even with the same compiler) and the **content hash of the
+  plugin-facing interface surface** (the transitive `#include` closure — quoted
+  or angle-bracket — of every header in `src/include/` — the `I*.h` interfaces,
+  the DTOs they expose, the allow-listed core glue — and `src/utils/`). CMake
+  generates that hash into `InterfaceAbiHash.h` (`cmake/InterfaceAbi.cmake`,
+  `cmake/PluginInterface.cmake`) whenever one of those files changes, so
+  **changing a plugin-facing header without bumping `kApiVersion` can no longer
+  silently load an incompatible
   plugin** — the host rejects it. `TestInterfaceAbi` (CTest) guards the hash
   itself: it must be fresh and must react to a change of any interface header.
   `tests/TestPluginHost.cpp` covers the contract with an injected loader;

@@ -448,15 +448,46 @@ target_link_libraries(SharedPCHLight
 # against a stale ABI.
 set(APP_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PluginInterface.cmake")
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/InterfaceAbi.cmake")
+
+# The SDK versions whose TYPES cross the plugin boundary: vtkSmartPointer /
+# vtkRenderer (ISceneService), cv::Mat (IAIService) and the ONNX Runtime ABI
+# behind both. A bump here changes struct layouts without changing Qt or the
+# compiler, so it is part of the ABI fingerprint.
+compute_sdk_fingerprint(APP_SDK_FINGERPRINT
+    "VTK=${VTK_VERSION}"
+    "OpenCV=${OpenCV_VERSION}"
+    "ONNXRuntime=${ONNXRUNTIME_VERSION}")
+message(STATUS "SDK ABI fingerprint: ${APP_SDK_FINGERPRINT} "
+               "(VTK ${VTK_VERSION}, OpenCV ${OpenCV_VERSION}, "
+               "ONNX Runtime ${ONNXRUNTIME_VERSION})")
+
+# The generated header depends on the fingerprint VALUE, not only on the
+# interface headers: a stamp file records the value, so a dependency bump
+# (CMake re-runs, the stamp changes) regenerates the header instead of leaving
+# a stale value behind.
+set(APP_SDK_STAMP "${CMAKE_CURRENT_BINARY_DIR}/generated/SdkFingerprint.txt")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(_sdk_stamp_content "${APP_SDK_FINGERPRINT}\n")
+set(_sdk_stamp_existing "")
+if(EXISTS "${APP_SDK_STAMP}")
+    file(READ "${APP_SDK_STAMP}" _sdk_stamp_existing)
+endif()
+if(NOT _sdk_stamp_existing STREQUAL _sdk_stamp_content)
+    file(WRITE "${APP_SDK_STAMP}" "${_sdk_stamp_content}")
+endif()
+
 set(APP_INTERFACE_ABI_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/InterfaceAbiHash.h")
 add_custom_command(
     OUTPUT "${APP_INTERFACE_ABI_HEADER}"
     COMMAND ${CMAKE_COMMAND}
             "-DAPP_INTERFACE_ROOTS=${APP_INTERFACE_ROOTS}"
             "-DAPP_INTERFACE_SEARCH_DIRS=${APP_INTERFACE_SEARCH_DIRS}"
+            "-DAPP_SDK_FINGERPRINT=${APP_SDK_FINGERPRINT}"
             "-DOUTPUT=${APP_INTERFACE_ABI_HEADER}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateInterfaceAbi.cmake"
     DEPENDS ${APP_INTERFACE_ROOTS}
+            "${APP_SDK_STAMP}"
             "${CMAKE_CURRENT_SOURCE_DIR}/cmake/InterfaceAbi.cmake"
             "${CMAKE_CURRENT_SOURCE_DIR}/cmake/PluginInterface.cmake"
             "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateInterfaceAbi.cmake"

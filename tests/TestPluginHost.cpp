@@ -470,12 +470,21 @@ void TestPluginHost::abiFingerprintCarriesTheInterfaceHash()
     // kApiVersion. TestInterfaceAbi guards the other half of the contract
     // (the hash is derived from the CURRENT headers and reacts to a change).
     QVERIFY(IPlugin::kInterfaceHash != 0);
+    QVERIFY2(IPlugin::kSdkFingerprint != 0,
+             "the SDK fingerprint is empty — a VTK/OpenCV/ONNX bump would be "
+             "invisible to the ABI gate");
     QCOMPARE(IPlugin::kAbiFingerprint,
-             IPlugin::kToolchainFingerprint
+             (IPlugin::kToolchainFingerprint ^ IPlugin::kSdkFingerprint)
                  ^ (IPlugin::kInterfaceHash * 0x9E3779B97F4A7C15ULL));
     // A different interface surface must produce a different fingerprint.
-    QVERIFY((IPlugin::kToolchainFingerprint
+    QVERIFY((IPlugin::kToolchainFingerprint ^ IPlugin::kSdkFingerprint
              ^ ((IPlugin::kInterfaceHash ^ 0x1ULL) * 0x9E3779B97F4A7C15ULL))
+            != IPlugin::kAbiFingerprint);
+    // A different SDK build must produce a different fingerprint too: VTK /
+    // OpenCV / ONNX Runtime types cross the plugin boundary (ISceneService,
+    // IAIService), so a SDK bump that changes their layout is an ABI bump.
+    QVERIFY((IPlugin::kToolchainFingerprint ^ (IPlugin::kSdkFingerprint ^ 0x1ULL)
+             ^ (IPlugin::kInterfaceHash * 0x9E3779B97F4A7C15ULL))
             != IPlugin::kAbiFingerprint);
 }
 

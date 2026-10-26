@@ -6,26 +6,35 @@
 # plugin built against different interfaces instead of loading it against a
 # stale ABI.
 #
-# "The plugin-facing surface" is the transitive closure of the quoted
-# #include graph of the roots defined in cmake/PluginInterface.cmake. The
-# closure matters: a plugin sees IReconstructionService.h AND the DTO it
-# includes (PointCloudData.h) — hashing only the I*.h files would miss a
-# change to that DTO.
+# "The plugin-facing surface" is the transitive closure of the #include graph
+# of the roots defined in cmake/PluginInterface.cmake. The closure matters: a
+# plugin sees IReconstructionService.h AND the DTO it includes
+# (PointCloudData.h) — hashing only the I*.h files would miss a change to that
+# DTO.
 
-# Resolves the quoted #include graph of one header to files that exist.
-# Angle-bracket includes (Qt, the STL) are not part of the surface.
+# Resolves the #include graph of one header to files that exist.
+#
+# Both spellings are part of the surface: a surface header can be included as
+# "PointCloudData.h" OR <PointCloudData.h> (src/include is on the include
+# path, so both compile). Resolving only the quoted form would let a
+# one-character edit drop a DTO out of the hash — the plugin would then be
+# built against a different struct with an unchanged fingerprint.
+#
+# An angle-bracket include is only resolved when it names a file INSIDE the
+# surface search dirs; Qt/STL/system headers (<QString>, <vector>, <windows.h>)
+# live elsewhere and are therefore not part of the surface.
 #
 # NOTE on the CMake calling convention: inside a function, ARGV0 is the NAME of
 # the output variable, so the header is ARGV1 and ARGN still contains it.
-function(resolve_quoted_includes OUT_VAR)
+function(resolve_interface_includes OUT_VAR)
     set(_header "${ARGV1}")
     set(_search_dirs ${ARGN})
     list(REMOVE_AT _search_dirs 0)   # drop the header itself
     file(READ "${_header}" _content)
-    string(REGEX MATCHALL "#[ \t]*include[ \t]*\"([^\"]+)\"" _matches "${_content}")
+    string(REGEX MATCHALL "#[ \t]*include[ \t]*[\"<]([^\">]+)[\">]" _matches "${_content}")
     set(_resolved "")
     foreach(_match IN LISTS _matches)
-        string(REGEX REPLACE "^[^\"]*\"([^\"]+)\".*$" "\\1" _include "${_match}")
+        string(REGEX REPLACE "^[^\"]*[\"<]([^\">]+)[\">].*$" "\\1" _include "${_match}")
         foreach(_dir IN LISTS _search_dirs)
             if(EXISTS "${_dir}/${_include}")
                 list(APPEND _resolved "${_dir}/${_include}")
@@ -55,7 +64,7 @@ function(collect_interface_surface OUT_VAR ROOTS_VAR SEARCH_DIRS_VAR)
     set(_queue ${_roots})
     while(_queue)
         list(POP_FRONT _queue _head)
-        resolve_quoted_includes(_children "${_head}" ${_search_dirs})
+        resolve_interface_includes(_children "${_head}" ${_search_dirs})
         foreach(_child IN LISTS _children)
             string(TOLOWER "${_child}" _key)
             if(NOT _key IN_LIST _seen)
@@ -80,6 +89,19 @@ function(compute_interface_abi_hash OUT_VAR)
         string(APPEND _input "${_name}:${_content_hash}\n")
     endforeach()
     string(SHA256 _hash "${_input}")
+    string(SUBSTRING "${_hash}" 0 16 _hash)
+    set(${OUT_VAR} "0x${_hash}" PARENT_SCOPE)
+endfunction()
+
+# The SDK fingerprint: the versions of the libraries whose TYPES cross the
+# plugin boundary (vtkSmartPointer/vtkRenderer in ISceneService, cv::Mat in
+# IAIService, the ONNX Runtime ABI behind both). Bumping one of them changes
+# struct layouts and inline implementations WITHOUT changing Qt or the
+# compiler, so the toolchain fingerprint alone would accept a plugin built
+# against a different SDK. Same 64-bit truncation as the interface hash.
+function(compute_sdk_fingerprint OUT_VAR)
+    string(JOIN "|" _versions ${ARGN})
+    string(SHA256 _hash "${_versions}")
     string(SUBSTRING "${_hash}" 0 16 _hash)
     set(${OUT_VAR} "0x${_hash}" PARENT_SCOPE)
 endfunction()
