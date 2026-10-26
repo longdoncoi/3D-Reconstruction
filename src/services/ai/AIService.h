@@ -31,7 +31,7 @@ public:
     bool isSegmentationReady() const override;
     bool isTrackingReady() const override;
     
-    std::vector<AIDetectionResult> detectObjects(const cv::Mat& inputImage) override;
+    AIDetectionOutcome detectObjects(const cv::Mat& inputImage) override;
     cv::Mat runDetection(const cv::Mat& inputImage) override;
     cv::Mat runSegmentation(const cv::Mat& inputImage) override;
     cv::Mat runTracking(const cv::Mat& inputImage) override;

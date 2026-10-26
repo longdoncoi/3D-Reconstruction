@@ -86,6 +86,10 @@ void TestAIService::aMissingModelIsRefused()
     QVERIFY(!service.isSegmentationReady());
     QVERIFY(!service.loadTrackingModel(QStringLiteral("C:/definitely/missing.onnx")));
     QVERIFY(!service.isTrackingReady());
+
+    // The box API reports the same truth: no model ⇒ the inference did not
+    // run (ok == false), not "detected nothing".
+    QVERIFY(!service.detectObjects(syntheticFrame()).ok);
 }
 
 void TestAIService::theDetectionModelLoadsAndDetects()
@@ -102,9 +106,9 @@ void TestAIService::theDetectionModelLoadsAndDetects()
 
     // The whole pipeline: preprocess → inference → postprocess.
     const cv::Mat frame = syntheticFrame();
-    const auto objects = service.detectObjects(frame);
-    QVERIFY(objects.size() >= 0);   // a synthetic frame may hold nothing
-    for (const auto &object : objects) {
+    const AIDetectionOutcome objects = service.detectObjects(frame);
+    QVERIFY2(objects.ok, "a loaded model must report the inference as successful");
+    for (const auto &object : objects.objects) {
         QVERIFY(object.confidence >= 0.0f);
         QVERIFY(object.confidence <= 1.0f);
         QVERIFY(object.x >= 0);

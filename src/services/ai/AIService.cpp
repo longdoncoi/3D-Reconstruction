@@ -26,14 +26,19 @@ bool AIService::isSegmentationReady() const {
     return m_processor->isSegmentationModelLoaded();
 }
 
-std::vector<AIDetectionResult> AIService::detectObjects(const cv::Mat& inputImage) {
-    // Every inference entry point goes through the guard: ONNX Runtime and
-    // OpenCV throw, and an exception that escapes a Qt slot or a
-    // QThread::run() aborts the whole process.
-    return ai::runDetectionGuarded(
+AIDetectionOutcome AIService::detectObjects(const cv::Mat& inputImage) {
+    // A model that was never loaded cannot infer. The processor would return
+    // an EMPTY list, which reads as "detected nothing" — the outcome flag is
+    // what tells the caller the backend never ran.
+    if (!m_processor->isDetectionModelLoaded()) {
+        qWarning() << "[AI] detection requested before the model was loaded";
+        return {};
+    }
+    const ai::DetectionOutcome outcome = ai::runDetectionGuarded(
         "detection",
         [this](const cv::Mat& in) { return m_processor->detectObjects(in); },
-        inputImage).results;
+        inputImage);
+    return AIDetectionOutcome{outcome.ok, outcome.results};
 }
 
 cv::Mat AIService::runDetection(const cv::Mat& inputImage) {

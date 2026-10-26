@@ -12,6 +12,14 @@ struct AIDetectionResult {
     int x = 0, y = 0, width = 0, height = 0; // bbox, OpenCV-independent
 };
 
+/// The outcome of a detection call: "nothing detected" and "the inference
+/// failed" are different answers, so the caller gets a flag instead of an
+/// empty vector that means both.
+struct AIDetectionOutcome {
+    bool ok = false;
+    std::vector<AIDetectionResult> objects;
+};
+
 /**
  * @brief Interface trừu tượng cho dịch vụ AI (Detection & Segmentation).
  *
@@ -50,8 +58,14 @@ public:
     // --- Inference ---
     /**
      * Chạy object detection và trả về danh sách bounding boxes có cấu trúc.
+     *
+     * `ok` is what makes the result unambiguous: an empty `objects` list with
+     * `ok == true` means "the inference ran and found nothing", while
+     * `ok == false` means the model is not loaded or the inference failed. A
+     * bare `std::vector` conflated the two, so a caller could not tell a
+     * clean frame from a broken backend.
      */
-    virtual std::vector<AIDetectionResult> detectObjects(const cv::Mat& inputImage) = 0;
+    virtual AIDetectionOutcome detectObjects(const cv::Mat& inputImage) = 0;
 
     /**
      * Chạy object detection trên ảnh đầu vào.

@@ -409,7 +409,7 @@ public:
     bool isDetectionReady() const override { return detectionReady; }
     bool isSegmentationReady() const override { return segmentationReady; }
     bool isTrackingReady() const override { return trackingReady; }
-    std::vector<AIDetectionResult> detectObjects(const cv::Mat &) override { return {}; }
+    AIDetectionOutcome detectObjects(const cv::Mat &) override { return {}; }
     cv::Mat runDetection(const cv::Mat &) override {
         lastInferenceThread = QThread::currentThreadId();
         if (inferenceDelayMs > 0) QThread::msleep(static_cast<unsigned long>(inferenceDelayMs));
