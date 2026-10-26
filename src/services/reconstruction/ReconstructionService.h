@@ -40,6 +40,12 @@ public:
     /// reconstruct().
     bool runPipeline();
 
+protected:
+    /// Test seam: injects the pipeline so the failure path of a run (a
+    /// snapshot conversion that throws) can be exercised without a real,
+    /// multi-gigabyte reconstruction. Production uses the default ctor.
+    explicit ReconstructionService(std::unique_ptr<ReconstructionPipeline> pipeline);
+
 private:
     /// Teardown sau khi worker phát finished(): join thread, xóa worker/thread
     /// theo ownership tường minh (không dùng auto-delete → không có race giữa
@@ -50,7 +56,13 @@ private:
     /// publishes them. The caller MUST hold m_mutex (the pipeline lock) —
     /// the pipeline data is read under it. The publication itself takes
     /// m_publishedMutex, so the lock order stays m_mutex → m_publishedMutex.
-    void publishResult();
+    ///
+    /// Returns false when the snapshot could not be built (the conversion
+    /// allocates, and ONNX/OpenCV/the allocator all throw). The failure is
+    /// reported through m_lastError; it never escapes the caller — both call
+    /// sites (the worker thread and processPointCloud on the GUI thread) must
+    /// survive it. A run whose result could not be published is a FAILED run.
+    bool publishResult();
 
     std::unique_ptr<ReconstructionPipeline> m_pipeline;
     std::atomic<bool> m_running{false};

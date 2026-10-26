@@ -4,6 +4,9 @@
 #include <QTemporaryDir>
 #include <QThread>
 
+#include <memory>
+#include <stdexcept>
+
 #include "ReconstructionService.h"
 #include "SyntheticSceneFixture.h"
 
@@ -43,6 +46,9 @@ private slots:
     void serviceMutatorsDoNotWaitForTheRunningPipeline();
     void servicePublishesNothingWhileTheRunIsInFlight();
     void theServicePublishesTheResultOfTheCompletedRun();
+    void aThrowingPublicationIsReportedAsAFailedRun_data();
+    void aThrowingPublicationIsReportedAsAFailedRun();
+    void aThrowingPublicationDoesNotEscapeProcessPointCloud();
 
 private:
     /// The coverage exporter cannot host the heavy reconstruction: its
@@ -79,6 +85,54 @@ SceneFixture writeScene(const QString& dirPath)
     fixture.paramsFile = scene.paramsFile;
     return fixture;
 }
+
+} // namespace
+
+namespace {
+
+/**
+ * @brief A pipeline that reports a result without running a reconstruction.
+ *
+ * The failure path under test is the *publication* of the result, not the
+ * reconstruction itself: a real run costs minutes and gigabytes, and the
+ * snapshot conversion is exactly where the allocator can throw. The stub
+ * therefore returns "there is a result" and throws from buildSnapshot().
+ */
+class StubPipeline : public ReconstructionPipeline {
+public:
+    enum class Failure { None, StdException, Unknown };
+
+    explicit StubPipeline(Failure failure) : m_failure(failure) {}
+
+    bool reconstruct(const std::function<bool()> &) override { return true; }
+    bool hasResult() const override { return true; }
+
+    std::shared_ptr<const PointCloudSnapshot> buildSnapshot() const override
+    {
+        switch (m_failure) {
+        case Failure::StdException:
+            throw std::runtime_error("the snapshot allocation failed");
+        case Failure::Unknown:
+            throw 42; // not a std::exception: only catch(...) contains it
+        case Failure::None:
+            break;
+        }
+        auto snapshot = std::make_shared<PointCloudSnapshot>();
+        snapshot->points.push_back(Point3D{1.0f, 2.0f, 3.0f});
+        snapshot->colors.push_back(PointColor{1, 2, 3});
+        return snapshot;
+    }
+
+private:
+    Failure m_failure;
+};
+
+/// Exposes the protected injection ctor to the cases below.
+class TestableReconstructionService : public ReconstructionService {
+public:
+    explicit TestableReconstructionService(std::unique_ptr<ReconstructionPipeline> pipeline)
+        : ReconstructionService(std::move(pipeline)) {}
+};
 
 } // namespace
 
@@ -264,6 +318,57 @@ void TestReconstructionService::theServicePublishesTheResultOfTheCompletedRun()
     // ask the pipeline for it.
     QCOMPARE(service.pointCount(), snapshot->points.size());
     QVERIFY(service.hasResult());
+}
+
+void TestReconstructionService::aThrowingPublicationIsReportedAsAFailedRun_data()
+{
+    QTest::addColumn<int>("failure");
+    QTest::newRow("std::exception")
+        << static_cast<int>(StubPipeline::Failure::StdException);
+    QTest::newRow("non-std exception")
+        << static_cast<int>(StubPipeline::Failure::Unknown);
+}
+
+void TestReconstructionService::aThrowingPublicationIsReportedAsAFailedRun()
+{
+    // The snapshot conversion allocates a copy of the cloud; the allocator,
+    // OpenCV and ONNX all throw. The publication therefore lives behind its
+    // own barrier: an exception escaping the worker thread reaches
+    // QThread::run() → std::terminate() and kills the whole application,
+    // instead of the reconstructFinished(false, message) the interface
+    // promises. The run must also be reported as FAILED — "succeeded with
+    // nothing to show" is the silent failure this pins.
+    QFETCH(int, failure);
+
+    auto pipeline = std::make_unique<StubPipeline>(
+        static_cast<StubPipeline::Failure>(failure));
+    TestableReconstructionService service(std::move(pipeline));
+
+    QSignalSpy spy(&service, &IReconstructionService::reconstructFinished);
+    QVERIFY2(service.reconstruct(), "the run did not start");
+
+    QTRY_VERIFY_WITH_TIMEOUT(spy.count() == 1, 5000);
+
+    QCOMPARE(spy.first().at(0).toBool(), false);
+    QVERIFY2(!spy.first().at(1).toString().isEmpty(),
+             "the failed run carries no diagnostic message");
+    QVERIFY2(!service.isRunning(), "the service stayed 'running' after the failure");
+    QVERIFY(!service.hasResult());
+    QVERIFY(!service.pointCloudSnapshot());
+}
+
+void TestReconstructionService::aThrowingPublicationDoesNotEscapeProcessPointCloud()
+{
+    // processPointCloud() runs on the caller's thread (the GUI), so the same
+    // failure must be contained there too: GuardedApplication is the last
+    // line of defence, not the mechanism.
+    auto pipeline = std::make_unique<StubPipeline>(StubPipeline::Failure::Unknown);
+    TestableReconstructionService service(std::move(pipeline));
+
+    service.processPointCloud();
+
+    QVERIFY(!service.hasResult());
+    QVERIFY(!service.isRunning());
 }
 
 QTEST_GUILESS_MAIN(TestReconstructionService)

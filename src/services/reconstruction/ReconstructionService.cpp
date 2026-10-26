@@ -4,7 +4,12 @@
 #include <opencv2/core.hpp>
 
 ReconstructionService::ReconstructionService()
-    : m_pipeline(std::make_unique<ReconstructionPipeline>())
+    : ReconstructionService(std::make_unique<ReconstructionPipeline>())
+{
+}
+
+ReconstructionService::ReconstructionService(std::unique_ptr<ReconstructionPipeline> pipeline)
+    : m_pipeline(std::move(pipeline))
 {
 }
 
@@ -229,7 +234,12 @@ bool ReconstructionService::runPipeline() {
         // cancelled run leaves a partial cloud behind, and the UI must see
         // the state of the run that just ended — never the state of an
         // older one.
-        publishResult();
+        //
+        // Publishing is part of the run: if the snapshot cannot be built
+        // (the conversion allocates), the user has no result, so the run is
+        // reported as FAILED instead of "succeeded with nothing to show".
+        if (!publishResult())
+            ok = false;
     }
     return ok;
 }
@@ -284,19 +294,43 @@ void ReconstructionService::processPointCloud() {
     }
     if (m_running) return;
     m_pipeline->processPointCloud();
-    // The processed cloud replaces the published result.
+    // The processed cloud replaces the published result. A failure to build
+    // the snapshot is logged and reported through m_lastError; it must never
+    // escape this call — it runs on the caller's thread (usually the GUI).
     publishResult();
 }
 
-void ReconstructionService::publishResult() {
+bool ReconstructionService::publishResult() {
     // The caller holds m_mutex (the pipeline lock) — the pipeline data is
     // read under it. The publication takes the published lock, so the lock
     // order stays m_mutex → m_publishedMutex.
     std::lock_guard pub(m_publishedMutex);
     m_snapshot.reset();
     m_publishedPointCount = 0;
-    if (!m_pipeline || !m_pipeline->hasResult()) return;
+    if (!m_pipeline || !m_pipeline->hasResult())
+        return true;
 
-    m_snapshot = m_pipeline->buildSnapshot();
-    m_publishedPointCount = m_snapshot->points.size();
+    // The conversion allocates a copy of the cloud and converts the colours:
+    // std::bad_alloc, cv::Exception and ONNX-side exceptions are all
+    // reachable here. An exception that leaves this function would escape
+    // the worker thread (QThread::run → std::terminate) or a GUI slot.
+    bool ok = true;
+    try {
+        m_snapshot = m_pipeline->buildSnapshot();
+        m_publishedPointCount = m_snapshot->points.size();
+    } catch (const std::exception &e) {
+        ok = false;
+        m_lastError = QStringLiteral("Failed to publish the reconstruction result: %1")
+                          .arg(QString::fromUtf8(e.what()));
+        qWarning() << m_lastError;
+    } catch (...) {
+        ok = false;
+        m_lastError = QStringLiteral("Failed to publish the reconstruction result: unknown error.");
+        qWarning() << m_lastError;
+    }
+    if (!ok) {
+        m_snapshot.reset();
+        m_publishedPointCount = 0;
+    }
+    return ok;
 }

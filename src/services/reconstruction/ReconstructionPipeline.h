@@ -31,7 +31,7 @@
 class APP_EXPORT ReconstructionPipeline {
 public:
     ReconstructionPipeline();
-    ~ReconstructionPipeline();
+    virtual ~ReconstructionPipeline();
 
     void setImages(const std::vector<QString> &imagePaths);
     bool loadCameraParams(const QString &paramsFilePath);
@@ -45,7 +45,9 @@ public:
      *                      errorString() = "Reconstruction cancelled.".
      * @return true nếu có point cloud kết quả.
      */
-    bool reconstruct(const std::function<bool()> &shouldCancel = {});
+    /// Virtual so the service's failure paths (a snapshot conversion that
+    /// throws) can be exercised with a stub instead of a multi-gigabyte run.
+    virtual bool reconstruct(const std::function<bool()> &shouldCancel = {});
 
     /// Lý do thất bại của lần reconstruct() gần nhất (rỗng nếu thành công).
     /// Dùng để hiển thị chẩn đoán cho người dùng thay vì thông báo chung chung.
@@ -58,7 +60,7 @@ public:
     const std::vector<cv::Point3f>& getPointCloud() const;
     const std::vector<cv::Vec3b>& getPointColors() const;
     size_t pointCount() const { return points3D.size(); }
-    bool hasResult() const { return !points3D.empty(); }
+    virtual bool hasResult() const { return !points3D.empty(); }
     std::vector<QString> getImages() const { return imageFiles; }
 
     /// Builds the ABI-neutral snapshot of the current point cloud.
@@ -68,7 +70,7 @@ public:
     /// conversion lives HERE, next to the data it converts, so it can be
     /// measured by the fast pipeline tests instead of only by a completed
     /// reconstruction.
-    std::shared_ptr<const PointCloudSnapshot> buildSnapshot() const;
+    virtual std::shared_ptr<const PointCloudSnapshot> buildSnapshot() const;
 
     /// Pipeline lọc tổng hợp (adaptive ROR → SOR → voxel) trên cloud hiện có.
     /// Delegate sang ReconstructionPostProcessor (không còn nội bộ ở đây).
