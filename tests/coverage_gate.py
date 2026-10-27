@@ -27,10 +27,15 @@ Two gates beyond the per-file floors:
 2. **Debt visibility** — the files with 0 % are listed on every run with
    their line count, so the remaining work is named, not implied.
 
-The floors are also **checked against the measurement**: a file that reaches
-the next whole percent fails the gate until its floor is raised in the same
-commit.  A floor that nobody moves when the code improves stops meaning
-anything, so the ratchet is enforced in both directions.
+A floor is the **conservative minimum of the supported reference
+environments**, not the value of one machine. Line attribution is a property
+of the compiler/PDB pipeline: VS 18 attributes three extra lines to
+``reconstructionservice.cpp`` and VS 17.12 four extra executable lines to
+``logger.cpp``, without a single line of code changing. A floor equal to the
+local measurement therefore fails the CI build for no coverage regression,
+which is why six floors here record the CI minimum (the local number stays in
+the comment). The baseline is still a one-way ratchet: a floor may never be
+lowered below it.
 
 Header only templates (``ServiceRegistry.h``, ``MailThreadGuard.h``,
 ``BlockingCall.h``) compile inline into their callers under ``/O2 /Ob2`` and
@@ -38,14 +43,9 @@ cannot be mapped line-by-line by the tool, so they are pinned by
 ``tests/mutation_check.py`` instead (null registration, GUI-thread warning,
 the completed/never-cancelled promise) — see tests/README.md for the split.
 
-The floors are a ratchet, not an aspiration: they equal the measured value of
-the current suite (rounded down), so any new uncovered line in these files
-fails the gate. Raise a floor when its file reaches the next integer.
-
 Note that the comparison uses the **raw** percentage (covered/valid*100) while
 the table displays it rounded to one decimal: a file measured at 38.967 % shows
-as "39.0 %" but its floor stays 38 — the ratchet may never sit above the value
-that was actually measured.
+as "39.0 %" but its floor stays 38.
 
 Usage (from the repository root, PATH prepared like the CTest step):
 
@@ -177,9 +177,13 @@ TESTS: tuple[tuple[str, str, dict[str, str]], ...] = (
 # Measured floors: repository-relative path -> minimum line coverage in %.
 # A file listed here must appear in the merged report; the measurement mode
 # prints candidates for files that are not listed yet. The number next to each
-# entry is the floor; the comment records the measurement it was ratcheted
-# from (2026-10, MSVC 2022 / VS 17.12, Release). Raise a floor when its file
-# reaches the next integer — never lower one to make a change pass.
+# entry is the floor; the comment records the reference measurement
+# (2026-10, Release: local VS 17.12 / Qt 6.9.3 and CI windows-latest
+# VS 18 / Qt 6.5.3). The floor is the LOWER of the two environments: line
+# attribution differs by compiler/PDB, and a floor above either measurement
+# fails a supported build without a coverage regression. Raise a floor only
+# when the code genuinely gains coverage; never lower one to make a change
+# pass (the baseline in coverage_floors.json enforces that).
 FLOORS: dict[str, float] = {
     # ── Kernel + guard layer: the files every plugin transitively depends on.
     "src/core/pluginhost.cpp": 97,               # measured 97.2
@@ -227,17 +231,17 @@ FLOORS: dict[str, float] = {
     "src/services/reconstruction/poseestimator.cpp": 100,     # measured 100.0 (21/21)
     "src/services/reconstruction/reconstructionpipeline.cpp": 59,  # measured 59.5
     "src/services/reconstruction/reconstructionpostprocessor.cpp": 96,  # measured 96.3
-    "src/services/reconstruction/reconstructionservice.cpp": 89,  # measured 89.1 (155/174)
+    "src/services/reconstruction/reconstructionservice.cpp": 87,  # local 89.1 (155/174), CI 87.6 (155/177)
     "src/services/reconstruction/reconstructionworker.cpp": 100,  # measured 100
     "src/services/reconstruction/sfmstage.cpp": 100,  # measured 100
     "src/services/reconstruction/tracksfm.cpp": 96,   # measured 96.6
     "src/services/reconstruction/triangulator.cpp": 100,  # measured 100
     "src/services/scene/crosshairgeometry.cpp": 93,  # measured 93.2 (41/44)
-    "src/services/scene/crosshairmanager.cpp": 58,   # measured 58.4 (125/214)
+    "src/services/scene/crosshairmanager.cpp": 57,   # local 58.4 (125/214), CI 57.9 (125/216)
     "src/services/scene/sceneservice.cpp": 5,        # measured 5.1 (14/276)
     "src/services/settings/settingsservice.cpp": 100,  # measured 100
     "src/services/shell/shellservice.cpp": 98,    # measured 98.2 (one closing brace)
-    "src/services/viewer/dicomloader.cpp": 50,     # measured 50.4 (68/135)
+    "src/services/viewer/dicomloader.cpp": 49,     # local 50.4 (68/135), CI 49.3 (66/134)
     "src/services/viewer/image2dloader.cpp": 98,    # measured 98.7 (75/76)
     "src/services/viewer/model3dloader.cpp": 100,   # measured 100 (64/64)
     "src/services/viewer/viewerservice.cpp": 13,   # measured 13.6
@@ -247,7 +251,7 @@ FLOORS: dict[str, float] = {
     "src/utils/fileutilities.cpp": 100,           # measured 100 (54/54)
     "src/utils/htmlutilities.cpp": 95,            # measured 95.3
     "src/utils/iconfactory.cpp": 100,             # measured 100
-    "src/utils/logger.cpp": 88,                   # measured 88.5 (54/61)
+    "src/utils/logger.cpp": 87,                   # local 88.5 (54/61), CI 87.7 (50/57)
     "src/utils/moderndialog.cpp": 78,             # measured 78.6
     "src/utils/modernmessagebox.cpp": 46,         # measured 46.8
     "src/utils/stylemanager.cpp": 90,             # measured 90.2
@@ -258,7 +262,7 @@ FLOORS: dict[str, float] = {
     "src/modules/viewerplugin/viewernavigatorui.cpp": 94,           # measured 94.7
     "src/modules/reconstructionplugin/reconstructionribbonui.cpp": 100,  # measured 100.0
     "src/modules/userauthplugin/userauthplugin.cpp": 74,            # measured 74.3 (197/265)
-    "src/modules/userauthplugin/settingsdialog.cpp": 91,             # measured 91.0
+    "src/modules/userauthplugin/settingsdialog.cpp": 90,             # local 91.0, CI 90.7
     "src/modules/userauthplugin/aboutdialog.cpp": 76,               # measured 76.2 (64/84)
     "src/modules/userauthplugin/logindialog.cpp": 68,               # measured 68.6
     "src/modules/userauthplugin/licenseactivationdialog.cpp": 68,   # measured 68.5
@@ -272,7 +276,7 @@ FLOORS: dict[str, float] = {
     "src/modules/viewerplugin/viewerplugin.cpp": 51,                # measured 51.4
     "src/modules/sendmailplugin/sendmailplugin.cpp": 47,            # measured 47.7
     "src/modules/aiprocessorplugin/aitraindockwidget.cpp": 38,       # measured 39.0
-    "src/modules/aiprocessorplugin/aiprocessorplugin.cpp": 46,       # measured 46.0 (209/454)
+    "src/modules/aiprocessorplugin/aiprocessorplugin.cpp": 45,       # local 46.0 (209/454), CI 45.9 (208/453)
     "src/modules/reconstructionplugin/reconstructionplugin.cpp": 21, # measured 21.3
     "src/modules/aiassistantplugin/aiassistantplugin.cpp": 18,       # measured 18.3
     "src/modules/viewerplugin/viewerlistui.cpp": 100,               # measured 100 (59/59)
@@ -580,25 +584,16 @@ def enforce(merged: dict[str, FileCoverage]) -> int:
                 f"{path}: {entry.percent:.1f}% < floor {floor:.1f}% "
                 f"({entry.covered}/{entry.valid} lines)")
 
-    # A floor must FOLLOW the measurement: when a file reaches the next whole
-    # percent, the floor moves with it in the same commit. Without this check a
-    # file measured at 100 % could keep the floor it had at 61 % forever — the
-    # ratchet would be a comment, not a mechanism.  The comparison uses the
-    # same raw rate as the floor check above, which is why a file displayed as
-    # "61.0 %" (208/341 = 60.997 %) keeps the floor 60.
-    for path, floor in sorted(FLOORS.items()):
-        entry = merged.get(path)
-        if entry is None or entry.valid == 0:
-            continue  # already reported as missing data above
-        reached = int(entry.percent + 1e-9)
-        if reached > floor:
-            failures.append(
-                f"{path}: measured {entry.percent:.1f}% "
-                f"({entry.covered}/{entry.valid} lines) but the floor is "
-                f"{floor:g} — raise it to {reached} in the same commit")
-
-    # The ratchet is a one-way street: a floor that is lowered instead of the
-    # code being fixed is a silent decision to stop measuring.
+    # The ratchet is a one-way street: a floor may never be lowered below the
+    # committed baseline — a coverage regression is fixed in the code, not in
+    # the number.
+    #
+    # The other direction (raise the floor whenever a measurement is higher)
+    # is deliberately NOT enforced here: the gate runs on more than one
+    # toolchain, and the same code is attributed a different number of lines
+    # by each PDB. A local measurement cannot become a CI requirement that no
+    # floor can satisfy. Raise floors deliberately when the code genuinely
+    # gains coverage, and record the measurement in the comment.
     baseline = load_baseline()
     for path, floor in sorted(FLOORS.items()):
         previous = baseline.get(path)

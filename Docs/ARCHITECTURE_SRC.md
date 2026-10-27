@@ -15,7 +15,7 @@
 |---|------|------|-------------------|
 | 1 | Ranh giới kiến trúc | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | 14 nhóm luật: plugin↔service, service↔app, confinement của singleton, khớp heavy/light PCH, `src/utils` không heavy SDK, teardown có biên (không `waitForFinished()` trần), event filter phải gỡ được, không dò cửa sổ shell, blocking I/O không qua pool không sở hữu, include path của plugin không chứa `src/core`, **mỗi lời gọi inference phải đi qua exception guard**, plugin không ghi vào `ServiceRegistry`, `IAIService` không phơi loader đồng bộ |
 | 2 | Bộ test | `ctest --test-dir build -C Release --output-on-failure` | Hành vi quan sát được của toàn bộ hợp đồng đã test (49 CTest entry: 43 executable + 6 CMake-script test) |
-| 3 | Coverage gate | `python tests/coverage_gate.py` | Mọi TU đo được có floor riêng; không TU nào "thoát" khỏi phép đo; **floor không được hạ** và **phải bám theo số đo** (file đạt mốc nguyên tiếp theo → floor tăng trong cùng commit) |
+| 3 | Coverage gate | `python tests/coverage_gate.py` | Mọi TU đo được có floor riêng; không TU nào "thoát" khỏi phép đo; **floor không được hạ** dưới baseline đã commit; floor là **giá trị nhỏ hơn** trong hai môi trường tham chiếu (local VS 17.12/Qt 6.9.3 và CI VS 18/Qt 6.5.3) vì PDB gán số dòng thực thi khác nhau cho cùng một file nguồn |
 | 4 | Mutation check | `python tests/mutation_check.py` | Mọi quyết định bảo vệ (guard) đã được *ghim*: đảo quyết định → test phải đỏ (82 mutant) |
 
 **Tiền kiểm của gate 4 (đóng 2026-10-22).** Gate 4 từng **chết âm thầm**: một mutant trỏ vào `src/core/ServiceRegistry.h` sau khi file đã chuyển sang `src/include/`, nên script abort bằng `FileNotFoundError` *sau* khi pre-flight đã xanh — trông như gate đã chạy và không báo gì. Ba commit mang theo mutant hỏng, và tuyên bố "52/52 mutant ✅" chưa từng được kiểm chứng.
@@ -47,7 +47,7 @@ Chi tiết cách chạy, biến môi trường và bảng số đo: `tests/READM
 |---|----------|---------------|----------------------|----------------------|
 | **C1** | 4 gate xanh | §1 — cả 4 lệnh exit 0 | *Một gate chết **im lặng*** | Tiền kiểm tự-mục tiêu của gate 4 (§1): mỗi mutant phải trỏ vào file tồn tại với anchor đúng một lần → sai là **đỏ ngay** |
 | **C2** | Không TU nào thoát khỏi phép đo | Mọi `.cpp` trong `src/` (trừ 4 mục miễn trừ có lý do) xuất hiện trong báo cáo coverage | *Code **header-only*** — không phải TU nên gate 3 không thấy | §4.9 — `PINNED_HEADERS`: mọi header mang quyết định đều phải có ≥ 1 mutant, gate 4 từ chối khi thiếu |
-| **C3** | Floor không bao giờ giảm | Mỗi file đo được có floor suy ra từ giá trị đo (làm tròn xuống) **và** ≥ baseline đã commit | *Một quyết định quan trọng nằm trong file có coverage cao* | coverage đo **dòng**, không đo **quyết định** → gate 4 ghim quyết định |
+| **C3** | Floor không bao giờ giảm | Mỗi file đo được có floor là **min của các môi trường tham chiếu** (làm tròn xuống) **và** ≥ baseline đã commit | *Một quyết định quan trọng nằm trong file có coverage cao* | coverage đo **dòng**, không đo **quyết định** → gate 4 ghim quyết định |
 | **C4** | Nợ coverage được ghi nhận tường minh | File 0 % nằm trong bảng nợ (README) + in ra mỗi lần chạy | *Một lớp lỗi sống dưới một guard đã ghim ở **một thể hiện*** | §4.8 + §4.10 + §4.12 — mutant theo **lớp** quyết định, không theo một hàm |
 | **C5** | Tài liệu khớp code | `AGENTS.md` + `tests/README.md` + file này mô tả đúng trạng thái đo được | *Tài liệu tự đánh giá mình* | Số liệu trong tài liệu **lấy từ output của gate**, không viết tay (§6) |
 | **C6** | **Không lớp lỗi nào sống sót dưới một guard đã có** | Mỗi guard phải ghim **cả lớp** quyết định | — | §4.8 (khoá pipeline), §4.10 (exception barrier) và §4.12 (inference ra khỏi GUI thread) — 11 mutant mới, mỗi cái đảo một quyết định khác nhau trong cùng lớp |
@@ -154,6 +154,23 @@ những dòng vừa hiện ra** (nhánh CORONAL, ảnh 1 kênh, dock mail) và *
 floor, tuyệt đối không hạ floor. Đây cũng là lý do `tests/README.md` ghi
 riêng bài học "run bị kill chỉ khôi phục source, không khôi phục binary":
 cùng một hiện tượng, cùng một cách chẩn đoán sai.
+
+**Bài học portability (2026-10-26).** Lần đầu gate 3 chạy trên CI
+(`windows-latest`, VS 18 + Qt 6.5.3), **6 file tụt nhẹ dưới floor** trong khi
+tử số gần như không đổi — cùng một hiện tượng PDB gán dòng, nhưng lần này do
+**môi trường biên dịch khác**, không phải do rebuild. Ví dụ
+`reconstructionservice.cpp`: local 155/174 (89,1 %), CI 155/177 (87,6 %);
+`logger.cpp`: local 54/61, CI 50/57. Một floor bằng đúng số đo local biến
+một môi trường được hỗ trợ thành build đỏ dù không có regression.
+
+Vì vậy floor từ nay là **min của hai môi trường tham chiếu**, không phải giá
+trị đo của một máy; gate **bỏ** cơ chế tự nâng floor khi một lần đo cao hơn
+(một lần đo local không thể trở thành yêu cầu cho compiler khác). Chiều còn
+lại vẫn là ratchet một chiều: `coverage_floors.json` là baseline, floor không
+được hạ dưới nó — hạ floor vì CI là quyết định có ghi lý do, không phải phản
+xạ. Sáu floor được hạ trong cùng commit với số đo CI: `aiprocessorplugin`
+46 → 45, `settingsdialog` 91 → 90, `reconstructionservice` 89 → 87,
+`crosshairmanager` 58 → 57, `dicomloader` 50 → 49, `logger` 88 → 87.
 
 Đợt trước mở khoá lớp **service**: **49,6 % → 55,2 %**. Ba file được phủ bằng
 test thật (không phải mock), vì cả ba là logic thuần CPU-side nên test được
