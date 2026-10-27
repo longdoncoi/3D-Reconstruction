@@ -242,15 +242,28 @@ jobs:
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       # ── Configure ─────────────────────────────────────────────────────
+      # The vcpkg cache holds the fully installed x64-windows tree. Running
+      # the manifest install plan again costs hours (vcpkg rebuilds VTK/PCL
+      # even when the tree is already there) and pushes the job towards its
+      # timeout. Reuse the restored tree when it is complete; only fall back
+      # to the install plan on a cold cache.
       - name: Configure CMake
         shell: pwsh
         run: |
+          $vtkShare = Join-Path $env:VCPKG_INSTALLED_DIR "x64-windows/share/vtk"
+          if (Test-Path $vtkShare) {
+            $manifest = "-DVCPKG_MANIFEST_INSTALL=OFF"
+          } else {
+            $manifest = "-DVCPKG_MANIFEST_INSTALL=ON"
+          }
+          Write-Host "vcpkg installed tree: $(Test-Path $vtkShare) -> $manifest"
           cmake -B build -S . `
             "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
             "-DVCPKG_INSTALLED_DIR=$env:VCPKG_INSTALLED_DIR" `
             "-DVCPKG_INSTALL_OPTIONS=--clean-after-build" `
             "-DVCPKG_OVERLAY_TRIPLETS=${{ github.workspace }}/custom-triplets" `
             "-DVCPKG_OVERLAY_PORTS=${{ github.workspace }}/custom-ports" `
+            $manifest `
             "-DCMAKE_BUILD_TYPE=Release" `
             "-DFETCHCONTENT_SOURCE_DIR_ONNXRUNTIME=$env:ONNXRUNTIME_DIR" `
             "-DBUILD_TESTING=ON"
