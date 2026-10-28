@@ -4,11 +4,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ai_assistant.tools.registry import ToolRegistry
+    from ai_assistant.ports import AgentToolCatalog
 
 
 def build_agent_system_prompt(
-    tool_registry: "ToolRegistry | str | None" = None,
+    tool_registry: "AgentToolCatalog | str | None" = None,
     language: str = "vi",
 ) -> str:
     """Build the system prompt dynamically from the registered tool set."""

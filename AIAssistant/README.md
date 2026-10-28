@@ -193,7 +193,10 @@ AIAssistant/
 │  │
 │  └─ bootstrap/                      # ── BOOTSTRAP: composition root, bị import bởi không ai ──
 │     ├─ __init__.py                  # DI container + app factory
-│     ├─ server.py                    # Entry point: compose() lười (ADR 0020/0022), main(), uvicorn
+│     ├─ server.py                    # Composition root: compose() lười (ADR 0020/0022), state process-wide
+│     ├─ lifecycle.py                 # FastAPI lifespan: discovery/prune lúc start, đóng store lúc stop
+│     ├─ cli.py                       # Entry point: main() + watcher graceful stop (uvicorn)
+│     ├─ platform_patch.py            # Shim pipe-reset của Windows proactor (ADR 0046)
 │     ├─ server_manager.py            # Supervisor mà Qt khởi chạy (in `[SUCCESS]`, tail log)
 │     ├─ app_factory.py               # Biên FastAPI: middleware, lifespan, trace header
 │     ├─ modules.py                   # LlmModule/RagModule/RuntimeModules — instance state, root tiêm
@@ -603,12 +606,14 @@ PYTHONPATH=src python scripts/mutation_check.py
 Các cổng là **cấu hình**, không phải cờ dòng lệnh: `pyproject.toml` sở hữu breadth
 lint (`E/W/F/I/BLE/S/RUF/C90/N/TRY`, complexity ≤ 15), thiết lập mypy strict và
 sàn coverage theo branch (`fail_under = 100`), nên lần chạy cục bộ và CI đo cùng
-một thứ. Theo lần đo ngày 2026-10-24 (các con số đo được được ghi lại trong
+một thứ. Theo lần đo ngày 2026-10-28 (các con số đo được được ghi lại trong
 `Docs/SCORECARD.md` — **đã theo git** từ ADR 0032): **100.00%** statement *và*
-branch toàn package (9 662 statement / 2 604 branch, 2 214 test), và **160/160**
-kill trong mutation check. Số mutant tối thiểu cũng là một cổng
+branch toàn package (10 290 statement / 2 800 branch, 2 413 test), và
+**226/226** kill trong mutation check. Số mutant tối thiểu cũng là một cổng
 (`MIN_MUTANTS`): xoá một mutant là một quyết định, và cổng biến nó thành
-quyết định *nhìn thấy được*.
+quyết định *nhìn thấy được*. Từ 2026-10-28, cổng còn có sàn **theo từng file**
+(`PINNED_DECISION_FILES`): một file mang quyết định load-bearing phải khai báo
+ít nhất một mutant, nên tổng số không thể che việc một file mất mutant cuối.
 
 Nhưng một bảng cổng xanh **không phải** là một hệ thống an toàn. Vòng review
 2026-10-21 thứ ba (ADR 0034) tìm ra tám lỗi mà **mọi cổng đều không thấy** —

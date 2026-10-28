@@ -208,6 +208,40 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertEqual(found[0]["text"], "")
         self.assertEqual(found[0]["metadata"], {})
 
+    def test_a_non_numeric_column_skips_only_that_row(self) -> None:
+        """A tampered timestamp must not take the healthy rows with it.
+
+        ``float()`` used to run outside the per-row guard, so one non-numeric
+        column raised out of ``candidates`` and the caller lost the whole
+        recall (``MemoryService`` contains it as "remember nothing"). The row
+        has to be dropped locally instead — the ADR 0036 shape.
+        """
+        store = self._open()
+        store.add(_record(id="good"))
+        store.add(_record(id="bad"))
+        connection = sqlite3.connect(self.path)
+        with connection:
+            connection.execute(
+                "UPDATE memories SET salience = 'not-a-number' WHERE id = 'bad'",
+            )
+        connection.close()
+        found = store.candidates("u", frozenset({"semantic"}))
+        self.assertEqual([r["id"] for r in found], ["good"])
+
+    def test_a_blob_in_a_numeric_column_is_skipped_too(self) -> None:
+        """``float(b"\\x00")`` raises ``TypeError``, the other coercion failure."""
+        store = self._open()
+        store.add(_record(id="good"))
+        store.add(_record(id="bad"))
+        connection = sqlite3.connect(self.path)
+        with connection:
+            connection.execute(
+                "UPDATE memories SET created_at = X'00' WHERE id = 'bad'",
+            )
+        connection.close()
+        found = store.candidates("u", frozenset({"semantic"}))
+        self.assertEqual([r["id"] for r in found], ["good"])
+
     def test_prune_drops_only_rows_past_the_retention_window(self) -> None:
         store = self._open()
         store.add(_record(id="old", created_at=NOW - 100 * DAY))

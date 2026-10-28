@@ -34,10 +34,16 @@ from ..orchestration.specialists.code import (
 from ..orchestration.specialists.code import (
     instruction as coding_instruction,
 )
-from ..ports import LLMRuntime, PendingActionPort, ShortTermMemoryPort, ToolGateway
-from ..tools.factory import create_tool_registry
-from ..tools.registry import ToolRegistry
+from ..ports import (
+    AgentToolCatalog,
+    LLMRuntime,
+    LockLike,
+    PendingActionPort,
+    ShortTermMemoryPort,
+    ToolGateway,
+)
 from .approval_service import ApprovalService
+from .catalog import default_agent_catalog
 from .context import AgentRunContext, require_llm_runtime
 from .models import (
     AgentApproveRequest,
@@ -81,7 +87,7 @@ class AgentService:
 
     def __init__(self, *, llm_runtime: LLMRuntime | None = None,
                  pending_actions: PendingActionPort | None = None,
-                 pending_lock: Any = None, tool_registry: ToolRegistry | None = None,
+                 pending_lock: LockLike | None = None, tool_registry: AgentToolCatalog | None = None,
                  tool_gateway: ToolGateway | None = None,
                  checkpointer: Any = None, a2a_router: Any = None,
                  task_coordinator: TaskCoordinator | None = None,
@@ -114,7 +120,9 @@ class AgentService:
         )
         # The composition root owns one catalog and one coordinator; a bare
         # instance (tests, embeds) builds its own so the facade stays usable.
-        self.tool_registry = tool_registry if tool_registry is not None else create_tool_registry()
+        self.tool_registry: AgentToolCatalog = (
+            tool_registry if tool_registry is not None else default_agent_catalog()
+        )
         self.tool_gateway = tool_gateway
         self.task_coordinator = task_coordinator if task_coordinator is not None else TaskCoordinator()
         # LangGraph persistence and the A2A transport are adapter concerns

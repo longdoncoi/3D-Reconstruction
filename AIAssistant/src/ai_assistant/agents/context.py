@@ -41,8 +41,9 @@ from ..orchestration.state import Step
 from ..orchestration.supervisor import audit as audit_agent
 from ..orchestration.supervisor import authorise as authorise_delegation
 from ..orchestration.supervisor import delegate, reflect_result, verify_result
-from ..ports import LLMRuntime, PendingActionPort, ToolGateway
+from ..ports import AgentToolCatalog, LLMRuntime, LockLike, PendingActionPort, ToolGateway
 from ..tools.tool_contract import validate_tool_call
+from .catalog import default_agent_catalog
 from .deps import RunDeps
 from .ids import generate_action_id
 from .pending_store import MemoryPendingStore
@@ -161,9 +162,9 @@ class AgentRunContext:
 
     llm_runtime: LLMRuntime | None = None
     pending_actions: PendingActionPort = field(default_factory=MemoryPendingStore)
-    pending_lock: Any = field(default_factory=threading.Lock)
+    pending_lock: LockLike = field(default_factory=threading.Lock)
     tool_gateway: ToolGateway | None = None
-    tool_registry: Any = None
+    tool_registry: AgentToolCatalog | None = None
     checkpointer: Any = None
     task_coordinator: TaskCoordinator = field(default_factory=TaskCoordinator)
     a2a_router: Any = None
@@ -250,13 +251,18 @@ class AgentRunContext:
         bundle, and the graph engine/``Specialist`` are supplied here so no
         service repeats them.
         """
+        # A bare context (tests, embeds) builds the built-in catalogue on the
+        # first run; the composition root always injects one.
+        tool_registry = self.tool_registry
+        if tool_registry is None:
+            tool_registry = default_agent_catalog()
         deps = RunDeps(
             # ── shared wiring owned by the context ──────────────────────────
             llm_runtime=self.llm_runtime,
             backend_mode_fn=self.backend_mode_fn,
             openai_compatible_fn=self.openai_compatible_fn,
             record_token_usage_fn=self.record_token_usage_fn,
-            tool_registry=self.tool_registry,
+            tool_registry=tool_registry,
             tool_gateway=_execution_view(self.tool_gateway),
             pending_actions=self.pending_actions,
             pending_lock=self.pending_lock,
@@ -322,9 +328,9 @@ class ContextService:
         *,
         llm_runtime: LLMRuntime | None = None,
         pending_actions: PendingActionPort | None = None,
-        pending_lock: Any = None,
+        pending_lock: LockLike | None = None,
         tool_gateway: ToolGateway | None = None,
-        tool_registry: Any = None,
+        tool_registry: AgentToolCatalog | None = None,
         checkpointer: Any = None,
         task_coordinator: TaskCoordinator | None = None,
         delegate_fn: Callable[..., Any] | None = None,
@@ -356,7 +362,7 @@ class ContextService:
         return self._ctx.pending_actions
 
     @property
-    def pending_lock(self) -> Any:
+    def pending_lock(self) -> LockLike:
         return self._ctx.pending_lock
 
     @property
@@ -364,7 +370,7 @@ class ContextService:
         return self._ctx.tool_gateway
 
     @property
-    def tool_registry(self) -> Any:
+    def tool_registry(self) -> AgentToolCatalog | None:
         return self._ctx.tool_registry
 
     @property

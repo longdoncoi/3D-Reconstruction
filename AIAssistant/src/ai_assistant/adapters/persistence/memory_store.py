@@ -54,6 +54,22 @@ def memory_context(record_id: str) -> str:
     return f"{MEMORY_CONTEXT_PREFIX}:{record_id}:payload"
 
 
+def _as_float(value: object) -> float | None:
+    """Read one numeric column, or ``None`` when it is not numeric.
+
+    The columns are written by this adapter, but the file is attacker-writable
+    (ADR 0036 treats the whole store as untrusted). ``float()`` on a tampered
+    value raises, and a raise here would escape the per-row skip and drop
+    **every** candidate of the scan instead of the one bad row — the exact
+    opposite of the "bad rows are skipped, never served" contract. Returning
+    ``None`` keeps the failure local to the row.
+    """
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 class MemoryStore:
     """``LongTermMemoryPort`` over SQLite with row-bound sealed payloads."""
 
@@ -160,6 +176,12 @@ class MemoryStore:
         if not is_memory_kind(sealed_kind) or sealed_kind != kind or data.get("owner") != owner:
             logger.warning("Skipping memory row %s with a mismatched sealed identity", row_id)
             return None
+        created = _as_float(created_at)
+        last_used = _as_float(last_used_at)
+        salience_value = _as_float(salience)
+        if created is None or last_used is None or salience_value is None:
+            logger.warning("Skipping memory row %s with non-numeric columns", row_id)
+            return None
         text = data.get("text")
         metadata = data.get("metadata")
         return {
@@ -167,9 +189,9 @@ class MemoryStore:
             "kind": sealed_kind,
             "owner": owner,
             "text": text if isinstance(text, str) else "",
-            "created_at": float(created_at),
-            "last_used_at": float(last_used_at),
-            "salience": float(salience),
+            "created_at": created,
+            "last_used_at": last_used,
+            "salience": salience_value,
             "metadata": metadata if isinstance(metadata, dict) else {},
         }
 

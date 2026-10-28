@@ -22,8 +22,13 @@ from typing import Any
 
 from ..domain.parallel import PARALLEL_MAX_DEFAULT
 from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
-from ..ports import LLMRuntime, PendingActionPort, ToolExecutionGateway
-from ..tools.registry import ToolRegistry
+from ..ports import (
+    AgentToolCatalog,
+    LLMRuntime,
+    LockLike,
+    PendingActionPort,
+    ToolExecutionGateway,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,9 +42,9 @@ class RunDeps:
     record_token_usage_fn: Callable[[int, int], None]
 
     # ── Tool catalog, policy gateway and persistence ──────────────────────
-    tool_registry: ToolRegistry
+    tool_registry: AgentToolCatalog
     pending_actions: PendingActionPort
-    pending_lock: Any
+    pending_lock: LockLike
     task_coordinator: Any
 
     # ── Supervisor policy (delegation, verification, reflection) ──────────

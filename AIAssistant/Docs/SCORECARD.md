@@ -1,7 +1,7 @@
 # AIAssistant Scorecard
 
 > Measured signals, each produced by a command in this repository — nothing
-> here is an estimate. **Last measured: 2026-10-26**, Windows, Python 3.11,
+> here is an estimate. **Last measured: 2026-10-28**, Windows, Python 3.11,
 > dependencies per `requirements-test.lock` (hash-pinned: `faiss-cpu`, `rank-bm25`, `mcp`).
 > A stripped environment measures less: the optional-dependency branches flip
 > with it (ADR 0014).
@@ -12,16 +12,16 @@
 
 ## Quality gates
 
-| Gate | Command | Measured 2026-10-26 |
+| Gate | Command | Measured 2026-10-28 |
 |------|---------|---------------------|
 | Lint | `python -m ruff check .` | 0 issues |
-| Types | `python -m mypy src/ai_assistant` | 0 issues, 147 files, `strict = true` (3 SDK-boundary modules relax 2 flags, ADR 0022) |
+| Types | `python -m mypy src/ai_assistant` | 0 issues, 151 files, `strict = true` (3 SDK-boundary modules relax 2 flags, ADR 0022) |
 | Layer contracts | `PYTHONPATH=src lint-imports --no-logo` | 9/9 contracts kept (ADR 0032: the application layer may no longer import the plugin package — the catalogue is a port) |
 | Byte-compile | `python -m compileall -q evals src` | clean |
-| Tests | `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"` | 2 400 tests, 0 failures, 6 skipped |
-| Coverage | `PYTHONPATH=src python -m coverage run … && python -m coverage report` | **100.00%** — 10 217 statements, 2 792 branches, 0 missed, 0 partial |
-| Mutation | `PYTHONPATH=src python scripts/mutation_check.py` | **221/221 killed** (ADR 0044 added 22 and ADR 0043 added 39; ADR 0042 added ten: the owner-enforced reload window and its startup caller, the fail-closed scope map, the missing-policy and missing-catalogue bootstrap refusals, the graceful stop (event, watcher, route) and the public RAG surface (property, health read); ADR 0041 added nine: the single model owner and its real release, the two health/model-list truths and the admission gate — submit, resume, worker slot, HTTP 429 and JSON-RPC backpressure; ADR 0032 added 7: the policy-tree write deny and its prefix match, the OpenAPI surface, the log redaction, the compare-and-set, the checkpoint seal, the adapter's CAS guard and the volatile-key rule; ADR 0033 added one: the write target is resolved, so a symlink into a policy tree is matched on the file it points at; ADR 0034 added five: the secret-file read guard, the PATH scan that never consults the current directory, the case-insensitive write deny, the sealed-regime read refusal and the value-shaped egress check; ADR 0035 added six: the path-shaped program name, the case-insensitive blocked-directory rule, the path confinement itself, the LSP server resolution, the fail-closed git resolution and the attachment gate, and one more: the registered-but-not-enabled declaration, plus the two halves of the path confinement — the spelling half and the resolved half, which are different rules; ADR 0036 replaced the implicit-migration mutant with the two guards that replaced it: a plaintext task store and a plaintext pending file are both refused; ADR 0037 added seventeen: the leading-option allow-list, the git destination confinement, the attached git config spelling, the pytest plugin options, the ctest option allow-list, the two write deny-tree guards, the classification comparison, the clearance derivation, the unknown classification label, the isolation gate's default, the row-bound associated data, the identity verification, the refusal of a pre-row-bound state, the success rule, the cursor detection, the cursor use and the regular-file gate on the attachment; ADR 0038 added seven: the corpus link rule, the secret names, the shared blocked directories, the one-walk-one-owner rule, the cache hash coverage, the refusal to re-seal an already-sealed state and the confined path positionals; ADR 0039 replaced the stale registered-but-not-enabled mutant with the unknown-tool fail-closed policy guard and added twenty-two: the alias execution refusal, the builtin merge guard, the plugin route, the dynamic authorise row, the builtin allow-list, plugin provenance, mutating-plugin approval, the session-lock release, the session-id bound, the MCP approval and alias filters, the cloud-policy AND/gate/response bound, the unpinned-pin, case-folded hash, pinned-reuse, post-download mismatch and mmproj revision rules, and the checkpointer/config/get_state forwarding; ADR 0040 added four: the model lease on execute, approve, the desktop ack and the chat route; the 2026-10-23 follow-up added three: the two resume budget sites and the shared release), 0 survived, 0 stale |
-| Mutation floor | `scripts/mutation_check.py` | `MIN_MUTANTS = 221` — deleting a mutant now fails the gate (ADR 0032) |
+| Tests | `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"` | 2 413 tests, 0 failures, 6 skipped |
+| Coverage | `PYTHONPATH=src python -m coverage run … && python -m coverage report` | **100.00%** — 10 290 statements, 2 800 branches, 0 missed, 0 partial |
+| Mutation | `PYTHONPATH=src python scripts/mutation_check.py` | **226/226 killed** (the 2026-10-28 follow-up added five: the `LazyEncoder` load lock, its double-check, the tampered-column row skip, the `Referer`-to-origin normalisation and the contained shutdown close; ADR 0044 added 22 and ADR 0043 added 39; ADR 0042 added ten: the owner-enforced reload window and its startup caller, the fail-closed scope map, the missing-policy and missing-catalogue bootstrap refusals, the graceful stop (event, watcher, route) and the public RAG surface (property, health read); ADR 0041 added nine: the single model owner and its real release, the two health/model-list truths and the admission gate — submit, resume, worker slot, HTTP 429 and JSON-RPC backpressure; ADR 0032 added 7: the policy-tree write deny and its prefix match, the OpenAPI surface, the log redaction, the compare-and-set, the checkpoint seal, the adapter's CAS guard and the volatile-key rule; ADR 0033 added one: the write target is resolved, so a symlink into a policy tree is matched on the file it points at; ADR 0034 added five: the secret-file read guard, the PATH scan that never consults the current directory, the case-insensitive write deny, the sealed-regime read refusal and the value-shaped egress check; ADR 0035 added six: the path-shaped program name, the case-insensitive blocked-directory rule, the path confinement itself, the LSP server resolution, the fail-closed git resolution and the attachment gate, and one more: the registered-but-not-enabled declaration, plus the two halves of the path confinement — the spelling half and the resolved half, which are different rules; ADR 0036 replaced the implicit-migration mutant with the two guards that replaced it: a plaintext task store and a plaintext pending file are both refused; ADR 0037 added seventeen: the leading-option allow-list, the git destination confinement, the attached git config spelling, the pytest plugin options, the ctest option allow-list, the two write deny-tree guards, the classification comparison, the clearance derivation, the unknown classification label, the isolation gate's default, the row-bound associated data, the identity verification, the refusal of a pre-row-bound state, the success rule, the cursor detection, the cursor use and the regular-file gate on the attachment; ADR 0038 added seven: the corpus link rule, the secret names, the shared blocked directories, the one-walk-one-owner rule, the cache hash coverage, the refusal to re-seal an already-sealed state and the confined path positionals; ADR 0039 replaced the stale registered-but-not-enabled mutant with the unknown-tool fail-closed policy guard and added twenty-two: the alias execution refusal, the builtin merge guard, the plugin route, the dynamic authorise row, the builtin allow-list, plugin provenance, mutating-plugin approval, the session-lock release, the session-id bound, the MCP approval and alias filters, the cloud-policy AND/gate/response bound, the unpinned-pin, case-folded hash, pinned-reuse, post-download mismatch and mmproj revision rules, and the checkpointer/config/get_state forwarding; ADR 0040 added four: the model lease on execute, approve, the desktop ack and the chat route; the 2026-10-23 follow-up added three: the two resume budget sites and the shared release), 0 survived, 0 stale |
+| Mutation floor | `scripts/mutation_check.py` | `MIN_MUTANTS = 226` — deleting a mutant now fails the gate (ADR 0032); `PINNED_DECISION_FILES` adds a per-file floor |
 | Policy evals | `python evals/run_tool_eval.py`, `python evals/run_agentic_eval.py` | exit 0; tool: 16/16 (adversarial included); agentic: 132 cases / 27 scenarios, 0 failed, **0 skipped** (ADR 0025; ADR 0043/0044 added the `memory-policy` and `parallel-policy` scenarios) |
 | Model pins | `python scripts/verify_models.py` | 5 artifact local khớp pin, 1 chưa tải, **0 mismatched** (ADR 0023) |
 | Supply chain | `python scripts/generate_sbom.py` | CycloneDX 1.5: 171 distribution (kèm **3 941 SHA-256**) + 6 artifact GGUF kèm commit/SHA-256 (ADR 0023) |
@@ -79,6 +79,69 @@ Measured on 2026-10-26:
 p95 3.94s**; case trượt `en_003` nằm nguyên trong report. Không có backend thì
 script in `SKIP` và exit 0 **không kèm** số accuracy, nên một lần chạy xanh
 không bao giờ là con số tổng hợp giả.
+
+## Independent review follow-up (2026-10-28): the concurrency decision ADR 0044 exposed
+
+The 2026-10-27 review asked whether the package had reached 10/10. It had
+not: ADR 0044 added real concurrency **inside** one workflow and fixed the
+check-then-set in `_delegation_cache` (§6), but the same shape remained in
+`rag.embeddings.LazyEncoder` — on the exact path every `rag_search` branch
+takes. A warm cache deliberately leaves the encoder unloaded, so two branches
+could both call the factory and load two transformers (double RAM/VRAM, one
+instance leaked when the second assignment overwrites it).
+
+Closed in this round:
+
+- **`LazyEncoder` is locked.** The load runs under a `threading.Lock` with a
+  double-check inside it; the fast path after a completed load stays
+  lock-free. `tests/unit/test_embedding_loader.py` starts eight threads on a
+  barrier against a cold encoder and asserts the factory ran **once**; two
+  mutants (lock removed, double-check removed) are killed by that test.
+- **A tampered numeric column skips its own row.** `MemoryStore._rehydrate`
+  coerces `created_at`/`last_used_at`/`salience` through `_as_float`; the old
+  `float()` sat outside the per-row guard, so a non-numeric column raised out
+  of `candidates` and the caller lost **every** healthy row instead of the one
+  bad one. One mutant pins it.
+- **Shutdown closes both stores independently.** A raising
+  `memory_store.close()` used to skip `platform.tasks.close()` and leave the
+  task store open; each close is now contained and logged. One mutant
+  restores the un-contained close and is killed by
+  `tests/integration/test_server_module.py` (the task store must still be
+  closed after the memory store raises).
+- **`Referer` is reduced to its origin.** A browser `Referer` is a full URL,
+  so the verbatim comparison against an origin-only allow-list rejected every
+  legitimate same-origin request (403). `urlsplit` normalises both headers;
+  an opaque `null` and a non-HTTP `file:` referer stay fail-closed. One mutant
+  compares the header verbatim again and is killed by the same-origin
+  `Referer` test.
+- **The mutation gate has a per-file floor.** `PINNED_DECISION_FILES` names
+  the files whose decision is load-bearing and requires at least one mutant
+  per file, so a global count cannot hide a file losing its last one.
+- **`pending_lock` is a port.** `AgentService`, `AgentRunContext` and
+  `RunDeps` type it as `LockLike` instead of `Any`.
+
+Measured on 2026-10-28: **2 413 tests, 0 failures, 6 skipped**; coverage
+**100.00 %** (10 290 statements, 2 800 branches, 0 missed, 0 partial);
+mutation **226/226 killed** (`MIN_MUTANTS = 226`); lint, types, layer
+contracts and byte-compile unchanged (0 issues, 151 files, 9/9 contracts).
+
+Design debt closed in the same round (ADR 0045/0046):
+
+- **The agent prompt/grammar surface is a port.** `AgentToolSpec` and
+  `AgentToolCatalog` describe the record `AgentService`, `AgentRunContext`,
+  `RunDeps`, the prompt builder and the dispatch guard consume;
+  `tools.registry.ToolRegistry` satisfies both ports structurally. The agent
+  layer no longer imports the concrete `ToolRegistry`/factory at module load —
+  `agents/catalog.py` builds the built-in default lazily, so a bare facade or
+  context still works without a composition root.
+- **The composition root is split by responsibility.** `bootstrap/lifecycle.py`
+  owns the FastAPI lifespan, `bootstrap/cli.py` the uvicorn entry point and the
+  graceful-stop watcher, and `bootstrap/platform_patch.py` the Windows proactor
+  shim. `bootstrap/server.py` keeps `compose()` and the process-wide state, and
+  re-exports the moved names, so the documented entry points
+  (`server.main`, `python src/ai_assistant/bootstrap/server.py`) and the tests
+  keep working. The two mutants that pin the shutdown decisions moved with
+  their code, and `cli.py`/`lifecycle.py` joined `PINNED_DECISION_FILES`.
 
 ## Follow-up on the 2026-10-22 review (ADR 0039)
 
@@ -267,10 +330,12 @@ property + health read), so `MIN_MUTANTS` is **150 → 160**. Measured again:
 **160/160 killed, 0 survived, 0 stale**; **2 214 tests, 0 failures, 6
 skipped**; coverage **100.00 %** (9 662 statements, 2 604 branches).
 
-Tracked constraint: the 72 broad `except Exception` handlers are unchanged.
-They sit at boundaries (tool execution, HTTP translation, optional SDKs,
-background workers) where a failure has to become a structured result or a log
-line rather than a process abort. Narrowing them is behavioural work, not a
+Tracked constraint: the broad `except Exception` handlers are unchanged in
+kind, though their count moved from 72 to 77 (ADR 0043/0044 added three net,
+and the 2026-10-28 shutdown fix added the two contained store closes). They
+sit at boundaries (tool execution, HTTP translation, optional SDKs, background
+workers) where a failure has to become a structured result or a log line
+rather than a process abort. Narrowing them is behavioural work, not a
 security gate — every security decision has its own guard above.
 
 ## Independent review follow-up (2026-10-21, ADR 0032)

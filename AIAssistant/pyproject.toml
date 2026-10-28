@@ -51,15 +51,16 @@ source = ["ai_assistant"]
 # ``exclude_also`` *extends* coverage's defaults (pragma, TYPE_CHECKING,
 # overload, NotImplementedError) instead of replacing them. What it claims is
 # only the one-line interpreter dispatch: the entry *bodies* live in
-# ``server.main`` and ``server_manager.configure_stdio_for_qt``/``qt_entry``
-# and are unit-tested (``tests/integration/test_main_entry_points.py``,
-# ADR 0015), so nothing behind the guard is unmeasured.
+# ``bootstrap.cli.main`` and ``server_manager.configure_stdio_for_qt``/
+# ``qt_entry`` and are unit-tested
+# (``tests/integration/test_main_entry_points.py``, ADR 0015), so nothing
+# behind the guard is unmeasured.
 exclude_also = [
     "if __name__ == .__main__.:",
 ]
-# Measured, not aspirational (ADR 0015): 100.00% of 9642 statements and 2600
-# branches on 2026-10-23 with the full suite (2209 tests) on Python 3.11 with
-# ``faiss``/``sentence-transformers`` installed. The number is recorded in
+# Measured, not aspirational (ADR 0015): 100.00% of 10 290 statements and
+# 2 800 branches on 2026-10-28 with the full suite (2 413 tests) on Python 3.11
+# with ``faiss``/``sentence-transformers`` installed. The number is recorded in
 # README.md (section ``## Kiểm thử``) together with the excluded entry
 # points; a stripped-down environment (no optional RAG stack) reports less
 # because the optional-dependency branches flip with the environment.

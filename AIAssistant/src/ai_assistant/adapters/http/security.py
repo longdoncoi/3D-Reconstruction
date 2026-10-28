@@ -24,6 +24,7 @@ import hmac
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from typing import Any, NoReturn
+from urllib.parse import urlsplit
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -87,17 +88,34 @@ def require_loopback(request: Request, surface: str) -> None:
         _reject(403, f"{surface} is restricted to loopback callers")
 
 
+def _origin_of(value: str) -> str:
+    """Reduce an ``Origin``/``Referer`` header to ``scheme://host[:port]``.
+
+    ``Origin`` already has that shape, but ``Referer`` is a **full URL**: the
+    old verbatim comparison against an origin-only allow-list rejected every
+    browser that sent one (the path made it differ). ``urlsplit`` normalises
+    both, and a value without a scheme or a netloc (``"null"``,
+    ``about:blank``) is returned as-is so it can only ever match a literal
+    allow-list entry — fail-closed.
+    """
+    parts = urlsplit(value)
+    if not parts.scheme or not parts.netloc:
+        return value.rstrip("/")
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}"
+
+
 def require_local_origin(request: Request, policy: TransportPolicy, surface: str) -> None:
     """Reject browser requests whose Origin is outside the deployment allow-list."""
-    origin = request.headers.get("origin") or request.headers.get("referer")
-    if not origin:
+    raw = request.headers.get("origin") or request.headers.get("referer")
+    if not raw:
         return  # non-browser caller (Qt, curl, tests) — the peer check applies
-    allowed = {item.rstrip("/") for item in policy.allowed_origins}
+    origin = _origin_of(raw)
+    allowed = {item.rstrip("/").lower() for item in policy.allowed_origins}
     allowed.update(f"http://{DEFAULT_HOST}:{port}" for port in _ALLOWED_LOOPBACK_PORT)
     allowed.update(f"http://localhost:{port}" for port in _ALLOWED_LOOPBACK_PORT)
     allowed.add(f"http://{DEFAULT_HOST}")
     allowed.add("http://localhost")
-    if origin.rstrip("/") not in allowed:
+    if origin not in allowed:
         _reject(403, f"{surface} does not accept this origin")
 
 

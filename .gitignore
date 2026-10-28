@@ -107,6 +107,9 @@ CMakeLists.txt.user*
 /AIAssistant/Models/
 /AIAssistant/agent_audit.jsonl
 /AIAssistant/tasks.sqlite
+# Long-term memory store (ADR 0043): a runtime artifact created by a default
+# path, never a source file.
+/AIAssistant/memory.sqlite
 # Runtime pending-approval / UI-ACK state, rewritten on every agent run.
 /AIAssistant/pending_agent_actions.json
 # Eval run output — rewritten by `evals/run_*.py` and uploaded as a CI artifact

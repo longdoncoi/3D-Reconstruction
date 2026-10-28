@@ -225,6 +225,67 @@ class ToolCatalog(Protocol):
         ...
 
 
+class AgentToolSpec(Protocol):
+    """The tool record the *agent* surface reads (ADR 0032 follow-up).
+
+    ``ToolCatalog`` covers the execution chokepoint (``tool``/``specs``); the
+    prompt builder, the constrained-decoder grammar and the dispatch guard need
+    the registrable record instead: the display fields, the parameter map and
+    the handler-existence check. ``tools.definition.ToolDefinition`` satisfies
+    this structurally, so the agent layer states the contract it consumes
+    without importing the concrete tool package.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def description(self) -> str: ...
+
+    @property
+    def parameters(self) -> dict[str, Any]: ...
+
+    @property
+    def requires_approval(self) -> bool: ...
+
+    @property
+    def handler(self) -> Callable[[dict[str, Any]], dict[str, Any]] | None: ...
+
+    def to_openai_format(self) -> dict[str, Any]: ...
+
+
+class AgentToolCatalog(Protocol):
+    """The catalogue the agent prompt/grammar/dispatch surface needs.
+
+    This is deliberately a *second* port, not an extension of
+    :class:`ToolCatalog`: the execution chokepoint must not inherit the
+    prompt-shaped listings, and a catalogue that only serves execution stays
+    a valid ``ToolCatalog``. ``tools.registry.ToolRegistry`` satisfies both.
+    """
+
+    def get_all(self) -> Sequence[AgentToolSpec]:
+        """Every registrable tool, in registration order."""
+        ...
+
+    def get(self, name: str) -> AgentToolSpec | None:
+        """The tool with this name, or ``None`` when it is unknown."""
+        ...
+
+    def get_openai_tools(self) -> list[dict[str, Any]]:
+        """The tool list in the OpenAI function-calling shape."""
+        ...
+
+    @property
+    def grammar(self) -> str:
+        """The llama.cpp grammar schema for the current catalogue."""
+        ...
+
+    @property
+    def models(self) -> dict[str, type]:
+        """The compiled parameter models, keyed by tool name."""
+        ...
+
+
 class LLMRuntime(Protocol):
     """Infrastructure LLM handle injected into the agent decision loop.
 

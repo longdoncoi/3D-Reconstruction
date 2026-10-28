@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import threading
 from typing import Any, Callable, Protocol, runtime_checkable
 
 logger = logging.getLogger("ai_assistant.rag.embeddings")
@@ -141,23 +142,38 @@ class LazyEncoder:
     model at startup for it would be wasted work. Queries trigger the load on
     first use, through the same :func:`load_embedding_model` factory the build
     path uses, so both paths resolve to one encoder instance.
+
+    The load is **guarded** (ADR 0044 §9): the tool node fans independent
+    ``rag_search`` branches out on worker threads, and the first query against
+    a warm cache is exactly where two branches reach this check-then-set at
+    the same time. Without the lock both threads call the factory, so the
+    process pays for two transformer instances (double RAM/VRAM) and one of
+    them is leaked the moment the second assignment overwrites it. The lock
+    makes "load once" a guarantee; the second thread waits for the in-flight
+    load instead of repeating it. The fast path stays lock-free because a
+    completed load never changes again.
     """
 
     def __init__(self, factory: Callable[[], tuple[Any, bool]]) -> None:
         self._factory = factory
         self._encoder: Any | None = None
         self._loaded = False
+        self._load_lock = threading.Lock()
 
     @property
     def is_loaded(self) -> bool:
+        """Whether the encoder has been resolved (a hint, never a gate)."""
         return self._loaded
 
     @property
     def encoder(self) -> Any:
         """Force the underlying load and return the resolved encoder."""
-        if not self._loaded:
-            self._encoder, _ = self._factory()
-            self._loaded = True
+        if self._loaded:
+            return self._encoder
+        with self._load_lock:
+            if not self._loaded:
+                self._encoder, _ = self._factory()
+                self._loaded = True
         return self._encoder
 
     def encode(self, texts: str | list[str], **kwargs: Any) -> Any:

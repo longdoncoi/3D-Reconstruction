@@ -140,6 +140,22 @@ span `agent.tool` của gateway trong từng nhánh là con của span cha đó.
   `step_answer`, chưa có thì mới đòi search. Nếu không, model sẽ search lại
   đúng bước vừa chạy — lặp vô ích và trái với evidence vừa xác minh.
 
+### 9. Vá `LazyEncoder` — cùng lớp lỗi với §6, trên đúng đường fan-out
+
+`rag.embeddings.LazyEncoder.encoder` là một check-then-set **không có lock**:
+nó hỏi "đã nạp chưa" rồi mới nạp. §6 đã sửa đúng lớp lỗi này cho
+`_delegation_cache` nhưng bỏ sót encoder — trong khi đây chính là đường mà
+mỗi nhánh `rag_search` đi qua. Trên một cache-hit, `_wire_index` cố ý **không**
+nạp encoder (nạp một transformer lúc khởi động là việc bị bỏ qua); lần query đầu
+tiên mới nạp, và ADR 0044 chạy nhiều query đó song song. Hai nhánh cùng thấy
+`_loaded == False` → hai `SentenceTransformer` được nạp (RAM/VRAM gấp đôi, một
+instance bị ghi đè và leak), đúng lúc tài nguyên khan hiếm nhất.
+
+`LazyEncoder` nay giữ `threading.Lock` quanh lần nạp và double-check bên
+trong: nhánh thứ hai **chờ** lần nạp đang chạy thay vì lặp lại nó; fast path
+sau khi nạp vẫn không khoá vì giá trị đã bất biến. Test dùng barrier 8 thread
++ factory ngủ 20 ms để race thật sự xảy ra nếu thiếu lock.
+
 ## Hệ quả
 
 - Plan có các bước RAG/độc lập chạy nhanh hơn theo độ rộng nhóm, không đổi
@@ -172,6 +188,9 @@ span `agent.tool` của gateway trong từng nhánh là con của span cha đó.
   đòi `step_answer` khi evidence đã có, đòi search khi chưa có.
 - `tests/unit/test_completion_guard_paths.py`: `PLANNER_JSON_SCHEMA` khai báo
   `step_kinds` (đúng enum) và `parallel_groups`.
+- `tests/unit/test_embedding_loader.py`: barrier 8 thread trên một encoder
+  cold; factory phải chạy **đúng một lần** và mọi thread nhận cùng instance
+  (§9).
 - Mutant (22, `MIN_MUTANTS` 199 → 221): bỏ điều kiện approval-free, bỏ
   fallback width, bỏ kiểm tra cancel từng nhánh, bỏ join, bỏ reset streak,
   bỏ sibling evidence, gộp cả nhóm thành 1 call, đóng dấu head vào `steps[0]`,
@@ -179,6 +198,9 @@ span `agent.tool` của gateway trong từng nhánh là con của span cha đó.
   nhóm từ checkpoint, bỏ lock cache, bỏ warm-up, bỏ sàn/cap width, bỏ bốn
   guard của `valid_parallel_group` (kích thước, thứ tự/trùng, biên plan,
   `bool`), directive quay lại luôn đòi search, schema mất `step_kinds`.
+- Mutant bổ sung cho §9 (2): bỏ lock của `LazyEncoder`, bỏ double-check bên
+  trong. Cùng với mutant cột-số của ADR 0043, mutant `Referer` normalization
+  và mutant shutdown close containment, sàn `MIN_MUTANTS` 221 → 226.
 
 ## Không thay đổi
 

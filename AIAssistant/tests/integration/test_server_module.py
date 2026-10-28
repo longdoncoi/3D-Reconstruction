@@ -323,6 +323,39 @@ class LifespanTests(unittest.TestCase):
             )
         self.assertEqual(result, "yielded")
 
+    def test_a_failing_memory_close_does_not_skip_the_task_store(self) -> None:
+        """One handle failing must not leave the other open on shutdown.
+
+        The previous shape closed the memory store first and let an exception
+        escape the ``finally`` block, so the task store's connection stayed
+        open for the rest of the process (and the WAL was never checkpointed).
+        """
+        store = MagicMock()
+        store.close.side_effect = RuntimeError("wal boom")
+        tasks = MagicMock()
+        with patch.object(server, "memory_store", store):
+            result = self._run_lifespan(
+                SimpleNamespace(settings=SimpleNamespace(enable_mcp=False), tasks=tasks),
+                MagicMock(available=False),
+            )
+        self.assertEqual(result, "yielded")
+        tasks.close.assert_called_once()
+        self.mock_logger.warning.assert_any_call(
+            "Closing the long-term memory store failed: wal boom",
+        )
+
+    def test_a_failing_task_close_is_logged_not_raised(self) -> None:
+        """The last close in the shutdown path must not abort the lifespan."""
+        tasks = MagicMock()
+        tasks.close.side_effect = RuntimeError("task boom")
+        with patch.object(server, "memory_store", None):
+            result = self._run_lifespan(
+                SimpleNamespace(settings=SimpleNamespace(enable_mcp=False), tasks=tasks),
+                MagicMock(available=False),
+            )
+        self.assertEqual(result, "yielded")
+        self.mock_logger.warning.assert_any_call("Closing the task store failed: task boom")
+
     def test_lifespan_logs_a_pruning_failure_without_blocking_startup(self) -> None:
         tasks = MagicMock()
         tasks.prune.side_effect = RuntimeError("prune boom")

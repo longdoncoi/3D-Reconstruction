@@ -9,6 +9,8 @@ lazy wrapper that hides them behind one ``encode`` call.
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -97,6 +99,54 @@ class LazyEncoderTests(unittest.TestCase):
         lazy = lazy_embedding_encoder(RAGSettings.from_env_and_dict({}))
         self.assertIsInstance(lazy, LazyEncoder)
         self.assertFalse(lazy.is_loaded)
+
+    def test_a_cold_load_runs_once_under_concurrent_encode(self) -> None:
+        """ADR 0044 fans ``rag_search`` branches out on worker threads.
+
+        The first query against a warm cache is where two branches race on the
+        check-then-set in ``LazyEncoder.encoder``: without the lock both call
+        the factory and the process pays for two transformer instances (one is
+        leaked when the second assignment overwrites it). The barrier starts
+        every thread inside the same window and the factory sleeps long enough
+        that an unsynchronised implementation is caught, not merely unlucky.
+        """
+        calls = 0
+        calls_lock = threading.Lock()
+        barrier = threading.Barrier(8)
+        resolved = HashingEmbeddingEncoder(16)
+
+        def factory() -> tuple[HashingEmbeddingEncoder, bool]:
+            nonlocal calls
+            with calls_lock:
+                calls += 1
+            # Long enough that every thread reaches the check before the first
+            # load completes; the lock must make them wait, not duplicate it.
+            time.sleep(0.02)
+            return resolved, False
+
+        lazy = LazyEncoder(factory)
+        results: list[object] = []
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                barrier.wait(timeout=5)
+                results.append(lazy.encoder)
+            except BaseException as error:
+                errors.append(error)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive(), "the load must not deadlock")
+
+        self.assertEqual(errors, [])
+        self.assertEqual(calls, 1, "the factory must run exactly once")
+        self.assertEqual(len(results), 8)
+        self.assertTrue(all(result is resolved for result in results))
+        self.assertTrue(lazy.is_loaded)
 
 
 if __name__ == "__main__":

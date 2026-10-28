@@ -87,6 +87,48 @@ class LocalSurfaceGuardTests(unittest.TestCase):
         response = client.get("/probe", headers={"Origin": "http://127.0.0.1"})
         self.assertEqual(response.status_code, 200)
 
+    def test_a_referer_with_a_path_is_reduced_to_its_origin(self) -> None:
+        """A browser ``Referer`` is a full URL, not an origin.
+
+        Comparing it verbatim against the origin-only allow-list rejected
+        every browser that sent one (the path made it differ), so a legitimate
+        same-origin request failed with 403. ``urlsplit`` reduces both headers
+        to the same ``scheme://host[:port]`` shape.
+        """
+        client = _client(TransportPolicy(allowed_origins=("http://127.0.0.1",)), agent_guards)
+        response = client.get(
+            "/probe", headers={"Referer": "http://127.0.0.1/v1/chat?x=1"},
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_a_referer_from_a_foreign_origin_is_still_refused(self) -> None:
+        client = _client(TransportPolicy(allowed_origins=("http://127.0.0.1",)), agent_guards)
+        response = client.get(
+            "/probe", headers={"Referer": "http://evil.example/v1/chat"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_an_opaque_origin_is_refused(self) -> None:
+        """``null`` has no scheme or host, so it can never match an allow-list."""
+        client = _client(TransportPolicy(allowed_origins=("http://127.0.0.1",)), agent_guards)
+        response = client.get("/probe", headers={"Origin": "null"})
+        self.assertEqual(response.status_code, 403)
+
+    def test_a_non_http_referer_is_refused(self) -> None:
+        """A ``file:`` URL has a scheme but no host — never an allowed origin."""
+        client = _client(TransportPolicy(allowed_origins=("http://127.0.0.1",)), agent_guards)
+        response = client.get(
+            "/probe", headers={"Referer": "file:///C:/secret.txt"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_a_referer_host_is_compared_case_insensitively(self) -> None:
+        client = _client(TransportPolicy(allowed_origins=("http://127.0.0.1",)), agent_guards)
+        response = client.get(
+            "/probe", headers={"Referer": "http://LOCALHOST:8080/v1/chat"},
+        )
+        self.assertEqual(response.status_code, 200)
+
     def test_missing_bearer_is_refused_when_a_token_is_configured(self) -> None:
         client = _client(TransportPolicy(admin_token="s3cret"), admin_guards)
         self.assertEqual(client.get("/probe").status_code, 401)

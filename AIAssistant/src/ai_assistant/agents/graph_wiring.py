@@ -21,9 +21,8 @@ from ..domain.context_budget import (
 )
 from ..domain.governance import has_sensitive_content
 from ..orchestration.state import CONTEXT_EXHAUSTED_MESSAGE
-from ..ports import LLMRuntime
+from ..ports import AgentToolCatalog, LLMRuntime
 from ..tools.action_manifest import validate_action_params
-from ..tools.registry import ToolRegistry
 from ..tools.tool_contract import RUNTIME_UNCONFIGURED_RESULT
 from .deps import RunDeps
 
@@ -305,7 +304,7 @@ def build_run_graph(
 
 def _parse_tool_call(
     text: str,
-    tool_registry: ToolRegistry,
+    tool_registry: AgentToolCatalog,
     validate_tool_call_fn: Callable[..., tuple[dict[str, Any] | None, str | None] | None],
     deps: RunDeps,
 ) -> tuple[str | None, dict[str, Any] | None]:

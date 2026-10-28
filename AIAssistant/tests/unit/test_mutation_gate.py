@@ -73,6 +73,29 @@ class MutationGateFloorTests(unittest.TestCase):
                     suite.startswith("tests."), f"{suite!r} is not a test module path"
                 )
 
+    def test_every_pinned_decision_file_declares_a_mutant(self) -> None:
+        """The per-file floor: a file may not lose its last mutant while the
+        global count stays above ``MIN_MUTANTS`` because another file gained
+        two."""
+        self.assertEqual(self.script.pinned_file_violations(), [])
+
+    def test_the_pinned_list_is_not_vacuous(self) -> None:
+        """The list must name the file whose race this round closed."""
+        self.assertIn(
+            "src/ai_assistant/rag/embeddings.py",
+            self.script.PINNED_DECISION_FILES,
+        )
+
+    def test_a_pinned_file_without_a_mutant_is_reported(self) -> None:
+        kept = tuple(
+            mutant for mutant in self.script.MUTANTS
+            if mutant.file != "src/ai_assistant/rag/embeddings.py"
+        )
+        self.assertIn(
+            "src/ai_assistant/rag/embeddings.py",
+            self.script.pinned_file_violations(kept),
+        )
+
     def test_the_labels_are_unique(self) -> None:
         labels = [mutant.label for mutant in self.script.MUTANTS]
         self.assertEqual(len(labels), len(set(labels)))

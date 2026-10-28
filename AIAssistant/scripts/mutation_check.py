@@ -122,7 +122,18 @@ class Mutant:
 #: position, the sibling evidence, the group-wide call budget), the error
 #: streak reset, the fan-out bounds, the evidence-aware step directive and the
 #: planner schema that now declares the contract the prompt asks for.
-MIN_MUTANTS = 221
+#: The lazy-encoder load adds two more (ADR 0044 §9): the lock that makes
+#: "load once" a guarantee when two ``rag_search`` branches hit a cold cache,
+#: and the double-check that stops the waiting branches from repeating a
+#: completed load.
+#: The tampered-column skip adds one more (ADR 0043/0036): a non-numeric
+#: column drops its own row instead of raising out of ``candidates`` and
+#: taking every healthy row with it.
+#: Two more guards from the same follow-up: the ``Referer``-to-origin
+#: normalisation (a full URL must not be refused by an origin-only list) and
+#: the contained memory-store close (one failing handle must not skip the
+#: other on shutdown).
+MIN_MUTANTS = 226
 
 MUTANTS: tuple[Mutant, ...] = (
     # ── Sandbox allow-list (ADR 0011) ────────────────────────────────────────
@@ -1520,7 +1531,7 @@ MUTANTS: tuple[Mutant, ...] = (
         "requested but the event stays clear)",
     ),
     Mutant(
-        "src/ai_assistant/bootstrap/server.py",
+        "src/ai_assistant/bootstrap/cli.py",
         "    shutdown_requested.wait()\n"
         "    server.should_exit = True",
         "    shutdown_requested.wait()\n"
@@ -1715,6 +1726,15 @@ MUTANTS: tuple[Mutant, ...] = (
         ("tests.unit.test_memory_store",),
         "a sealed identity that disagrees with the plain-text columns is "
         "served (the columns stop being a filter hint)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/memory_store.py",
+        "        if created is None or last_used is None or salience_value is None:",
+        "        if False:",
+        ("tests.unit.test_memory_store",),
+        "a non-numeric column is served instead of skipping its row (the "
+        "tampered row reaches the ranker, and the caller loses the healthy "
+        "rows the old raise used to take with it)",
     ),
     Mutant(
         "src/ai_assistant/adapters/persistence/memory_store.py",
@@ -2097,6 +2117,49 @@ MUTANTS: tuple[Mutant, ...] = (
         "the planner grammar drops step_kinds again (the constrained decoder "
         "cannot emit the classification the prompt asks for)",
     ),
+    # ── The lazy encoder load (ADR 0044 §9) ─────────────────────────────────
+    Mutant(
+        "src/ai_assistant/rag/embeddings.py",
+        "        with self._load_lock:\n            if not self._loaded:",
+        "        if True:\n            if not self._loaded:",
+        ("tests.unit.test_embedding_loader",),
+        "the lazy encoder load is not guarded (two rag_search branches on a "
+        "cold cache both call the factory: double RAM/VRAM, one instance "
+        "leaked when the second assignment overwrites the first)",
+    ),
+    Mutant(
+        "src/ai_assistant/rag/embeddings.py",
+        "            if not self._loaded:\n                self._encoder, _ = self._factory()",
+        "            if True:\n                self._encoder, _ = self._factory()",
+        ("tests.unit.test_embedding_loader",),
+        "the double-check is dropped (every waiting branch repeats the load "
+        "after the first one completes)",
+    ),
+    # ── The follow-up 2026-10-28 guards ──────────────────────────────────────
+    Mutant(
+        "src/ai_assistant/adapters/http/security.py",
+        '    parts = urlsplit(value)\n'
+        "    if not parts.scheme or not parts.netloc:\n"
+        '        return value.rstrip("/")\n'
+        '    return f"{parts.scheme.lower()}://{parts.netloc.lower()}"',
+        '    return value.rstrip("/")',
+        ("tests.unit.test_http_security",),
+        "the Referer is compared verbatim again (a full URL never matches the "
+        "origin allow-list, so every legitimate browser request is refused)",
+    ),
+    Mutant(
+        "src/ai_assistant/bootstrap/lifecycle.py",
+        "        if memory_store is not None:\n"
+        "            try:\n"
+        "                memory_store.close()\n"
+        "            except Exception as error:\n"
+        '                logger.warning(f"Closing the long-term memory store failed: {error}")',
+        "        if memory_store is not None:\n"
+        "            memory_store.close()",
+        ("tests.integration.test_server_module",),
+        "a raising memory-store close escapes the lifespan and skips the task "
+        "store close (the task connection stays open for the whole process)",
+    ),
 )
 
 
@@ -2231,7 +2294,47 @@ def floor_violation(mutant_count: int) -> str | None:
     return None
 
 
+#: Files that carry a load-bearing decision and therefore must declare at
+#: least one mutant. ``MIN_MUTANTS`` counts mutants globally; this list makes
+#: a *file* that quietly loses its coverage visible (the C++ gate's
+#: ``PINNED_HEADERS`` shape). Add a file in the same commit that adds the
+#: decision; never remove an entry to make the gate pass.
+PINNED_DECISION_FILES: tuple[str, ...] = (
+    "src/ai_assistant/adapters/http/security.py",
+    "src/ai_assistant/adapters/persistence/memory_store.py",
+    "src/ai_assistant/adapters/persistence/sqlite_store.py",
+    "src/ai_assistant/agents/service.py",
+    "src/ai_assistant/application/memory.py",
+    "src/ai_assistant/bootstrap/cli.py",
+    "src/ai_assistant/bootstrap/lifecycle.py",
+    "src/ai_assistant/bootstrap/server.py",
+    "src/ai_assistant/orchestration/nodes/tool.py",
+    "src/ai_assistant/rag/embeddings.py",
+    "src/ai_assistant/tools/sandbox.py",
+)
+
+
+def pinned_file_violations(
+    mutants: tuple[Mutant, ...] = MUTANTS,
+) -> list[str]:
+    """Pinned files that declare no mutant — the per-file floor.
+
+    ``MIN_MUTANTS`` proves the *total* did not shrink; it cannot see one file
+    lose its last mutant while another file gains two. The list names the
+    files whose decision is load-bearing, so the gate fails on the file, not
+    only on the sum.
+    """
+    covered = {mutant.file for mutant in mutants}
+    return [path for path in PINNED_DECISION_FILES if path not in covered]
+
+
 def main() -> int:
+    pinned = pinned_file_violations()
+    if pinned:
+        print("mutation_check: pinned decision files without a mutant:")
+        for path in pinned:
+            print(f"  {path}")
+        return 1
     survivors: list[str] = []
     stale: list[str] = []
     _acquire_lock()

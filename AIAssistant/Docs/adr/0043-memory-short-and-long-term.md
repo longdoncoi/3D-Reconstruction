@@ -156,7 +156,9 @@ nên type lạ bị bỏ qua an toàn; `validate_steps` giữ nguyên mọi payl
   round-trip, bền vững, payloadsealed (không plaintext), context gắn với id
   dòng, từ chối kind lạ khi ghi, thay thế theo id, cách ly owner, thứ tự +
   giới hạn, bỏ qua dòng không mở được / không phải object / context lạ /
-  identity lệch, prune theo tuổi và theo byte (oldest-first), close idempotent.
+  identity lệch, bỏ qua **cột số bị sửa** (chuỗi và blob: dòng đó bị skip,
+  các dòng lành vẫn trả về), prune theo tuổi và theo byte (oldest-first),
+  close idempotent.
 - `tests/unit/test_memory_service.py`: service fail-closed (store None, top_k=0,
   store ném lỗi, kind lạ bị loại ở biên tin cậy), redaction gate (token shape
   sống sót bị bỏ whole; keyword assignment được mask và bản ghi vẫn vào),
@@ -186,6 +188,11 @@ nên type lạ bị bỏ qua an toàn; `validate_steps` giữ nguyên mọi payl
   tách rỗng; seed bị tắt, không verified, không tính attempt; ba hop
   `prior_plan` bị drop (facade, context, runner) và `graph.run` gửi None.
   `MIN_MUTANTS` 171 → 199 (xem `scripts/mutation_check.py`).
+- Mutant cột-số (1, follow-up 2026-10-28): dòng có cột `created_at`/
+  `salience` không phải số bị **phục vụ** thay vì skip — bản cũ để `float()`
+  ném ra ngoài guard, nên một dòng bị sửa làm mất **toàn bộ** recall thay vì
+  đúng dòng đó. Cùng hai mutant của ADR 0044 §9, mutant `Referer` normalization
+  và mutant shutdown close containment, `MIN_MUTANTS` 221 → 226.
 
 ## Không thay đổi
 

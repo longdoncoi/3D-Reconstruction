@@ -13,7 +13,7 @@ HTTP adapters, modules, and services. Business logic lives in sub-modules:
 
 Composition is explicit and lazy. Importing this module only defines it — no
 log file is opened, no config is read, no ``FastAPI`` app is built and asyncio
-is left alone, and no third-party framework is imported: FastAPI, LangGraph, llama.cpp and the MCP SDK all load inside :func:`compose()` (or the helper that needs them), so importing this module pulls only the standard library and ``ai_assistant.settings``. The whole object graph (logging, model registry, tool catalog,
+is left alone, and no third-party framework is imported: FastAPI, LangGraph, llama.cpp and the MCP SDK all load inside :func:`compose()` (or the helper that needs them), so importing this module pulls only the standard library, ``ai_assistant.settings`` and the three stdlib-only split modules (``bootstrap.cli``, ``bootstrap.lifecycle``, ``bootstrap.platform_patch``). The whole object graph (logging, model registry, tool catalog,
 container, services, app, routers) is built once by :func:`compose`, which
 runs on first access of a composed name (module ``__getattr__``), from
 ``main()``/``bootstrap_runtime()``, or when called directly.
@@ -25,9 +25,8 @@ import logging
 import sys
 import threading
 import time
-from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncGenerator
+from typing import TYPE_CHECKING, Any
 
 # Ensure package root is on path before any ai_assistant import. Both inserts
 # fire only when the file is launched from a source tree without PYTHONPATH;
@@ -41,16 +40,41 @@ _SRC_DIR = str(Path(__file__).resolve().parents[2])
 if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)  # pragma: no cover - source-launch bootstrap
 
+# Absolute imports, not relative: ``python src/ai_assistant/bootstrap/server.py``
+# runs this file as ``__main__`` with no package context, and that documented
+# entry point must keep working. The three sibling modules are stdlib-only at
+# top level, so the import-time contract (stdlib + settings) still holds.
+from ai_assistant.bootstrap.cli import main, stop_server_when_requested
+from ai_assistant.bootstrap.lifecycle import lifespan
+from ai_assistant.bootstrap.platform_patch import patch_proactor_transport
+from ai_assistant.bootstrap.platform_patch import (
+    silence_connection_reset as _silence_connection_reset,
+)
+
+# ``as`` the same name: an explicit re-export, so mypy's no-implicit-reexport
+# lets the split modules read the process-wide binding through this module —
+# the single patch point the lifespan/entry-point tests use.
 from ai_assistant.settings import (
-    agent_bind_host,
-    agent_bind_port,
+    agent_bind_host as agent_bind_host,
+)
+from ai_assistant.settings import (
+    agent_bind_port as agent_bind_port,
+)
+from ai_assistant.settings import (
     apply_startup_environment_defaults,
     load_agent_runtime_settings,
     load_local_dotenv,
     settings_config_dir,
-    task_retention_days,
     vision_llm_enabled,
 )
+from ai_assistant.settings import (
+    task_retention_days as task_retention_days,
+)
+
+#: The graceful-stop watcher is defined with the entry point; the composition
+#: root keeps the historical name (and arms it with the process-wide shutdown
+#: event) because that is the module the entry point and the tests import.
+_stop_server_when_requested = stop_server_when_requested
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -75,31 +99,15 @@ def _ensure_package_root_on_path(package_root: str) -> None:
         sys.path.insert(0, package_root)
 
 
-def _silence_connection_reset(transport_cls: type) -> None:
-    """Wrap ``_call_connection_lost`` so an abrupt client reset is not an error.
-
-    Windows' proactor event loop raises ``ConnectionResetError`` from the pipe
-    shutdown callback after a client disconnects abruptly; the traceback is
-    noise, so the wrapper swallows exactly that exception.
-    """
-    original = transport_cls._call_connection_lost  # type: ignore[attr-defined]
-
-    def _silenced(self: Any, exc: Exception) -> None:
-        try:
-            original(self, exc)
-        except ConnectionResetError:
-            pass
-
-    transport_cls._call_connection_lost = _silenced  # type: ignore[attr-defined]
-
-
 def _patch_proactor_transport() -> None:
-    """Install the Windows proactor pipe-reset shim (no-op on POSIX)."""
-    if sys.platform != "win32":
-        return
-    from asyncio.proactor_events import _ProactorBasePipeTransport
+    """Install the Windows proactor pipe-reset shim (no-op on POSIX).
 
-    _silence_connection_reset(_ProactorBasePipeTransport)
+    The shim itself lives in :mod:`ai_assistant.bootstrap.platform_patch`; this
+    wrapper keeps the single decision point in the composition root (which
+    platform, which silencer), so the tests can patch either input and drive
+    the real branch.
+    """
+    patch_proactor_transport(platform=sys.platform, silence=_silence_connection_reset)
 
 
 _ensure_package_root_on_path(str(Path(__file__).resolve().parents[2]))
@@ -147,7 +155,10 @@ def _resolve_model_idx(argv: list[str], models: list[dict[str, Any]]) -> int:
 # a separate process instead of importing this module twice.
 
 
-# ── Lifespan ──────────────────────────────────────────────────────────────────
+# ── A2A discovery ─────────────────────────────────────────────────────────────
+# The lifespan itself lives in ``bootstrap.lifecycle`` (it reads the composed
+# platform/store through this module at call time); discovery stays here
+# because it is the composition root's registry that answers it.
 async def _discover_a2a_peers(registry: Any) -> None:
     """Populate the remote A2A registry from the deployment allowlist.
 
@@ -164,60 +175,6 @@ async def _discover_a2a_peers(registry: Any) -> None:
         return
     discovered = await asyncio.to_thread(registry.discover, sorted(endpoints))
     logger.info("A2A discovery: %d/%d endpoint(s) reachable", len(discovered), len(endpoints))
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    try:
-        from ai_assistant.adapters.persistence.checkpointing import cleanup_old_checkpoints
-        cleanup_old_checkpoints()
-    except Exception as e:
-        logger.warning(f"Lỗi dọn dẹp checkpoint: {e}")
-
-    registry = getattr(getattr(app, "state", None), "a2a_registry", None)
-    if registry is not None:
-        try:
-            await _discover_a2a_peers(registry)
-        except Exception as e:
-            logger.warning(f"A2A discovery failed: {e}")
-
-    try:
-        retention_days = task_retention_days()
-        if retention_days > 0:
-            removed = platform.tasks.prune(retention_days)
-            if removed:
-                logger.info(
-                    "Pruned %d task(s) past the %d-day retention window",
-                    removed, retention_days,
-                )
-    except Exception as e:
-        logger.warning(f"Task retention pruning failed: {e}")
-
-    total = time.monotonic() - _SERVER_START_TIME
-    logger.info("Server ready in %.1fs — http://%s:%d", total,
-                agent_bind_host(), agent_bind_port())
-    print(f"[SUCCESS] AI Server started successfully ({total:.1f}s)", flush=True)
-    try:
-        if not platform.settings.enable_mcp:
-            # MCP disabled by deployment profile: still yield, otherwise the
-            # asynccontextmanager would raise "generator didn't yield" and the
-            # server could not start with enable_mcp = false.
-            logger.info("MCP endpoint disabled by configuration")
-            yield
-        elif mcp_server.available:
-            async with mcp_server.lifespan():
-                yield
-        else:
-            logger.warning("MCP SDK is not installed; MCP endpoint is unavailable")
-            yield
-    finally:
-        # Close the long-term memory store before the task store: the memory
-        # file is smaller and its WAL flush is the cheaper of the two, and a
-        # shutdown must not leave either handle open (ADR 0043).
-        if memory_store is not None:
-            memory_store.close()
-        platform.tasks.close()
-        logger.info("Server shutdown after %.1fs", time.monotonic() - _SERVER_START_TIME)
 
 
 # ── FastAPI Application ───────────────────────────────────────────────────────
@@ -686,50 +643,6 @@ def bootstrap_runtime() -> None:
         runtime_modules.llm.load_model()
     if runtime_modules.llm.is_vision_model:
         runtime_modules.rag.release_embedding_for_vision()
-
-
-def _stop_server_when_requested(server: Any, shutdown_requested: threading.Event) -> None:
-    """Set ``uvicorn.Server.should_exit`` once the admin route asks to stop.
-
-    ``/admin/shutdown`` used to call ``os._exit``, which skips the lifespan
-    ``finally`` (task-store close, checkpoints, flush). The route now only
-    sets the event; this watcher performs the graceful stop from the serving
-    process. Extracted so the transition is unit-tested.
-    """
-    shutdown_requested.wait()
-    server.should_exit = True
-
-
-def main() -> None:
-    """Process entry point: warm the runtime, then serve until terminated.
-
-    Extracted from the ``__main__`` guard so the two failure paths are unit
-    tests rather than coverage exclusions: a runtime that will not load exits
-    1 (the Qt host reads the log), and a serve that dies is re-raised after
-    being logged.
-    """
-    import uvicorn
-
-    try:
-        compose()
-        bootstrap_runtime()
-    except Exception:
-        logger.exception("AI server startup failed")
-        sys.exit(1)
-    server = uvicorn.Server(uvicorn.Config(
-        app, host=agent_bind_host(), port=agent_bind_port(),
-        log_config=None, access_log=False,
-    ))
-    threading.Thread(
-        target=_stop_server_when_requested,
-        args=(server, runtime_modules.shutdown_requested),
-        name="ai-server-shutdown", daemon=True,
-    ).start()
-    try:
-        server.run()
-    except BaseException:
-        logger.exception("Uvicorn terminated during server startup")
-        raise
 
 
 if __name__ == "__main__":  # one-line interpreter guard (coverage exclude_also)
