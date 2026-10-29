@@ -284,6 +284,20 @@ jobs:
           }
           $exeDir = $exe.DirectoryName
           Write-Host "Found executable at: $($exe.FullName)"
+
+          # The AppCore split was abandoned; a Release tree from that era still
+          # contains AppContracts.dll / AppPlatform.dll / AppRuntime.dll. The
+          # package copies $exeDir/*.dll wholesale, so a stale split DLL would
+          # ship next to AppCore.dll. Fail the package instead of shipping it.
+          $staleSplitDlls = Get-ChildItem $exeDir -Filter "App*.dll" |
+                            Where-Object { $_.Name -ne "AppCore.dll" }
+          if ($staleSplitDlls) {
+            Write-Error ("stale split DLL(s) in ${exeDir}: " +
+                         (($staleSplitDlls | ForEach-Object Name) -join ", ") +
+                         " — the AppCore split was abandoned; clean the build tree")
+            exit 1
+          }
+
           Copy-Item $exe.FullName "$dist/" -Force
 
           # Copy all runtime DLLs (from exe directory)

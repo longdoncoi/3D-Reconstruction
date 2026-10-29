@@ -69,6 +69,15 @@ add_test(NAME TestAgentActionsContract
                  "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
                  -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckAgentActions.cmake")
 
+# Service-key guard — the registry identifies a service by one string. A
+# duplicate key across two interfaces makes the second registration a no-op
+# and turns get<B>() into a void* reinterpretation of A. The registry cannot
+# check this from a void*, so the keys are scanned here instead.
+add_test(NAME TestServiceKeys
+         COMMAND ${CMAKE_COMMAND}
+                 "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+                 -P "${CMAKE_CURRENT_SOURCE_DIR}/CheckServiceKeys.cmake")
+
 # Deploy guard — the ~4.1 GB runtime deploy must decide with stat() only:
 # copy when missing/size-differs/source-newer, never rewrite an up-to-date file.
 add_test(NAME TestDeployRuntime
@@ -799,6 +808,23 @@ target_link_libraries(TestViewerLoaders PRIVATE
 )
 add_test(NAME TestViewerLoaders COMMAND TestViewerLoaders)
 
+# Test ViewerService — 2-D paging state and auto-navigation, with a fake scene.
+# The service owns the image list/index and the timer; the plugin only calls it.
+qt_add_executable(TestViewerService TestViewerService.cpp)
+target_include_directories(TestViewerService PRIVATE
+    ../src/include
+    ../src/services/viewer
+    ${OpenCV_INCLUDE_DIRS}
+    ${VTK_INCLUDE_DIRS}
+)
+target_link_libraries(TestViewerService PRIVATE
+    Qt6::Test Qt6::Core
+    ${OpenCV_LIBS}
+    ${VTK_LIBRARIES}
+    AppCore
+)
+add_test(NAME TestViewerService COMMAND TestViewerService)
+
 # Test SceneService — 3-D scene manager, VTK actor lifecycle, point clouds, view settings.
 qt_add_executable(TestSceneService TestSceneService.cpp)
 target_include_directories(TestSceneService PRIVATE
@@ -814,6 +840,12 @@ target_link_libraries(TestSceneService PRIVATE
     AppCore
 )
 add_test(NAME TestSceneService COMMAND TestSceneService)
+# The DICOM rendering path needs a real series. The repository already tracks
+# one; the test copies three slices into a temp directory so DicomLoader's
+# cache file never lands in the source tree.
+target_compile_definitions(TestSceneService PRIVATE
+    TEST_DICOM_DIR="${CMAKE_SOURCE_DIR}/Dicom/HippocampalMRISlices/01"
+)
 
 # ── UTF-8 source literals in the tests ───────────────────────────────────────
 # The test sources contain Vietnamese literals (mail previews, user-facing

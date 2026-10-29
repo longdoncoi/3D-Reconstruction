@@ -30,13 +30,13 @@
 #include <vtkPointData.h>
 #include <vtkVertexGlyphFilter.h>
 
-SceneService::SceneService(IUserPreferences* prefs, QVTKOpenGLNativeWidget* vtkWidget, QObject* parent) 
-    : QObject(parent), m_prefs(prefs), m_vtkWidget(vtkWidget) 
+SceneService::SceneService(IUserPreferences* prefs, QVTKOpenGLNativeWidget* vtkWidget, QObject* parent, vtkRenderWindow* renderWindow)
+    : QObject(parent), m_prefs(prefs), m_vtkWidget(vtkWidget), m_renderWindow(renderWindow)
 {
     m_renderer = vtkSmartPointer<vtkRenderer>::New();
     m_renderer->SetBackground(0, 0, 0);
-    if (m_vtkWidget && m_vtkWidget->renderWindow()) {
-        m_vtkWidget->renderWindow()->AddRenderer(m_renderer);
+    if (vtkRenderWindow* rw = this->renderWindow()) {
+        rw->AddRenderer(m_renderer);
     }
 
     vtkSmartPointer<vtkLight> headlight = vtkSmartPointer<vtkLight>::New();
@@ -86,9 +86,15 @@ void SceneService::setPointCloudActor(vtkSmartPointer<vtkActor> actor) {
 }
 
 void SceneService::render() {
-    if (m_vtkWidget && m_vtkWidget->renderWindow()) {
-        m_vtkWidget->renderWindow()->Render();
+    if (vtkRenderWindow* rw = renderWindow()) {
+        rw->Render();
     }
+}
+
+vtkRenderWindow* SceneService::renderWindow() const
+{
+    if (m_renderWindow) return m_renderWindow;
+    return m_vtkWidget ? m_vtkWidget->renderWindow() : nullptr;
 }
 
 void SceneService::setPointCloudData(const std::vector<Point3D>& points,
@@ -172,7 +178,7 @@ void SceneService::resetToSingleRenderer() {
         m_crosshair = nullptr;
     }
     m_crosshairStyle = nullptr;
-    auto *rw = m_vtkWidget ? m_vtkWidget->renderWindow() : nullptr;
+    auto *rw = renderWindow();
     
     if (rw) {
         if (m_axialRenderer) { m_axialRenderer->RemoveAllViewProps(); rw->RemoveRenderer(m_axialRenderer); m_axialRenderer = nullptr; }
@@ -266,7 +272,7 @@ void SceneService::setupDicomRenderers(vtkSmartPointer<vtkImageData> volume) {
     m_coronalRenderer->SetBackground(0, 0, 0);
     m_renderer->SetBackground(0, 0, 0);
 
-    auto *rw = m_vtkWidget ? m_vtkWidget->renderWindow() : nullptr;
+    auto *rw = renderWindow();
     if (rw) {
         rw->AddRenderer(m_axialRenderer);
         rw->AddRenderer(m_sagittalRenderer);
@@ -340,8 +346,8 @@ void SceneService::setupCrosshairInteractor() {
     style->renderer3D = m_renderer;
     m_crosshairStyle = style;
 
-    if (m_vtkWidget && m_vtkWidget->renderWindow() && m_vtkWidget->renderWindow()->GetInteractor()) {
-        m_vtkWidget->renderWindow()->GetInteractor()->SetInteractorStyle(m_crosshairStyle);
+    if (vtkRenderWindow* rw = renderWindow(); rw && rw->GetInteractor()) {
+        rw->GetInteractor()->SetInteractorStyle(m_crosshairStyle);
     }
 }
 
@@ -374,9 +380,7 @@ void SceneService::applyViewSettings(const QString& username) {
     // 2. Axes
     bool showAxes = prefs->getUserPref(username, "view_show_axes", "true") == "true";
     if (showAxes) {
-        auto *interactor = (m_vtkWidget && m_vtkWidget->renderWindow())
-                               ? m_vtkWidget->renderWindow()->GetInteractor()
-                               : nullptr;
+        auto *interactor = renderWindow() ? renderWindow()->GetInteractor() : nullptr;
         if (interactor) {
             if (!m_axesWidget) {
                 auto axesActor = vtkSmartPointer<vtkAxesActor>::New();

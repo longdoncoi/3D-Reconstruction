@@ -23,7 +23,6 @@ public:
     void resetToSingleRenderer() override {}
     bool onLoadDicom(const QString&) override { return false; }
     vtkRenderer* renderer() override { return nullptr; }
-    QVTKOpenGLNativeWidget* vtkWidget() override { return nullptr; }
     void render() override {}
     void setPointCloudData(const std::vector<Point3D>&, const std::vector<PointColor>&) override {}
     bool isPointCloudVisible() const override { return false; }

@@ -360,7 +360,7 @@ void CrosshairInteractorStyle::OnLeftButtonDown()
     if (manager) {
         m_activeView = detectView();
         if (m_activeView >= 0) {
-            this->CurrentRenderer = manager->renderer(m_activeView);
+            this->SetCurrentRenderer(manager->renderer(m_activeView));
             manager->onLeftButtonDown(m_activeView, x, y);
             if (manager->isDragging(m_activeView)) return; // consumed
         }
@@ -368,7 +368,7 @@ void CrosshairInteractorStyle::OnLeftButtonDown()
 
     // Left-drag in the 3D viewport starts rotation
     if (isIn3DView(x, y)) {
-        if (renderer3D) this->CurrentRenderer = renderer3D;
+        if (renderer3D) this->SetCurrentRenderer(renderer3D);
         m_rotating3D = true;
         m_lastX = x;
         m_lastY = y;
@@ -443,9 +443,9 @@ void CrosshairInteractorStyle::OnRightButtonDown()
 {
     m_activeView = detectView();
     if (m_activeView >= 0) {
-        this->CurrentRenderer = manager->renderer(m_activeView);
+        this->SetCurrentRenderer(manager->renderer(m_activeView));
     } else if (renderer3D && isIn3DView(Interactor->GetEventPosition()[0], Interactor->GetEventPosition()[1])) {
-        this->CurrentRenderer = renderer3D;
+        this->SetCurrentRenderer(renderer3D);
     }
     this->StartPan();
 }
@@ -462,9 +462,9 @@ void CrosshairInteractorStyle::OnMiddleButtonDown()
 {
     m_activeView = detectView();
     if (m_activeView >= 0) {
-        this->CurrentRenderer = manager->renderer(m_activeView);
+        this->SetCurrentRenderer(manager->renderer(m_activeView));
     } else if (renderer3D && isIn3DView(Interactor->GetEventPosition()[0], Interactor->GetEventPosition()[1])) {
-        this->CurrentRenderer = renderer3D;
+        this->SetCurrentRenderer(renderer3D);
     }
     this->StartDolly();
 }

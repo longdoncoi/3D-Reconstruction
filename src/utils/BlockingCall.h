@@ -101,6 +101,43 @@ public:
     /// The number of tasks that were started and not waited for yet.
     int taskCount() const { return static_cast<int>(m_tasks.size()); }
 
+    /// Drop the tasks that have already completed; keep the running ones.
+    ///
+    /// An owner that starts a sequence of tasks on the same tracker (a model
+    /// reload, a second mail request) calls this before it registers the next
+    /// one, so the tracker does not grow by one semaphore per task for the
+    /// whole session. A task that is still running stays tracked and is still
+    /// joined by waitForFinished()/waitForAll().
+    /// @return the number of tasks that were still running.
+    int reapFinished()
+    {
+        int running = 0;
+        std::vector<std::shared_ptr<QSemaphore>> kept;
+        kept.reserve(m_tasks.size());
+        for (auto &done : m_tasks) {
+            if (done->tryAcquire(1)) continue; // completed: release() happened
+            kept.push_back(std::move(done));
+            ++running;
+        }
+        m_tasks.swap(kept);
+        return running;
+    }
+
+    /// Wait for every tracked task with no timeout.
+    ///
+    /// This is deliberately UNBOUNDED and reserved for a teardown path whose
+    /// task captures the owner (`this`) or a collaborator the owner is about
+    /// to destroy. A bounded wait would return with the task still running and
+    /// let it touch freed memory; the process is exiting anyway. Every other
+    /// teardown path uses the bounded waitForFinished(ms).
+    void waitForAll()
+    {
+        for (const auto &done : m_tasks) {
+            done->acquire();
+        }
+        m_tasks.clear();
+    }
+
     /// Register a running task. Called by run() — the tracker keeps the
     /// completion signal alive.
     void track(std::shared_ptr<QSemaphore> done) { m_tasks.push_back(std::move(done)); }

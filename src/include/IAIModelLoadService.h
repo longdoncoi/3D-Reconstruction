@@ -9,8 +9,8 @@
  * @brief Application-lifetime owner of asynchronous AI model loading.
  *
  * Model loading is a long-running operation that must not live in a plugin
- * DLL: a plugin can be unloaded while a QtConcurrent task is still executing
- * its lambda. This service is owned by AppShell (AppCore), so cancellation and
+ * DLL: a plugin can be unloaded while an AppCore-owned worker is still
+ * executing. This service is owned by AppShell (AppCore), so cancellation and
  * teardown are bounded by the application lifetime instead of the plugin
  * lifetime. The plugin only observes progress through the signals below.
  *

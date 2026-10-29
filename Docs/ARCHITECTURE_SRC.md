@@ -14,9 +14,9 @@
 | # | Gate | Lệnh | Chứng minh điều gì |
 |---|------|------|-------------------|
 | 1 | Ranh giới kiến trúc | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | 14 nhóm luật: plugin↔service, service↔app, confinement của singleton, khớp heavy/light PCH, `src/utils` không heavy SDK, teardown có biên (không `waitForFinished()` trần), event filter phải gỡ được, không dò cửa sổ shell, blocking I/O không qua pool không sở hữu, include path của plugin không chứa `src/core`, **mỗi lời gọi inference phải đi qua exception guard**, plugin không ghi vào `ServiceRegistry`, `IAIService` không phơi loader đồng bộ |
-| 2 | Bộ test | `ctest --test-dir build -C Release --output-on-failure` | Hành vi quan sát được của toàn bộ hợp đồng đã test (49 CTest entry: 43 executable + 6 CMake-script test) |
+| 2 | Bộ test | `ctest --test-dir build -C Release --output-on-failure` | Hành vi quan sát được của toàn bộ hợp đồng đã test (51 CTest entry: 44 executable + 7 CMake-script test) |
 | 3 | Coverage gate | `python tests/coverage_gate.py` | Mọi TU đo được có floor riêng; không TU nào "thoát" khỏi phép đo; **floor không được hạ** dưới baseline đã commit; floor là **giá trị nhỏ hơn** trong hai môi trường tham chiếu (local VS 17.12/Qt 6.9.3 và CI VS 18/Qt 6.5.3) vì PDB gán số dòng thực thi khác nhau cho cùng một file nguồn |
-| 4 | Mutation check | `python tests/mutation_check.py` | Mọi quyết định bảo vệ (guard) đã được *ghim*: đảo quyết định → test phải đỏ (82 mutant) |
+| 4 | Mutation check | `python tests/mutation_check.py` | Mọi quyết định bảo vệ (guard) đã được *ghim*: đảo quyết định → test phải đỏ (86 mutant) |
 
 **Tiền kiểm của gate 4 (đóng 2026-10-22).** Gate 4 từng **chết âm thầm**: một mutant trỏ vào `src/core/ServiceRegistry.h` sau khi file đã chuyển sang `src/include/`, nên script abort bằng `FileNotFoundError` *sau* khi pre-flight đã xanh — trông như gate đã chạy và không báo gì. Ba commit mang theo mutant hỏng, và tuyên bố "52/52 mutant ✅" chưa từng được kiểm chứng.
 
@@ -81,7 +81,7 @@ còn lại** — không phải một mutant đại diện.
 | `src/services` | 40 | 2 773 / 4 303 | 64,4 % |
 | `src/utils` (tiện ích dùng chung) | 9 | 408 / 465 | 87,7 % |
 | `src/modules` (lớp plugin) | 35 | 2 771 / 4 448 | 62,3 % |
-| **tổng** | **99** | **7 405 / 10 735** | **69,0 %** |
+| **tổng** | **99** | **7 862 / 10 735** | **73,2 %** |
 
 `src/services` có 41 translation unit **nguồn** nhưng 40 file **đo được**:
 `PanStyle.cpp` chỉ là VTK boilerplate (`vtkStandardNewMacro`), nằm trong
@@ -171,6 +171,8 @@ lại vẫn là ratchet một chiều: `coverage_floors.json` là baseline, floo
 xạ. Sáu floor được hạ trong cùng commit với số đo CI: `aiprocessorplugin`
 46 → 45, `settingsdialog` 91 → 90, `reconstructionservice` 89 → 87,
 `crosshairmanager` 58 → 57, `dicomloader` 50 → 49, `logger` 88 → 87.
+(`crosshairmanager` sau đó được nâng lại **97** khi `TestCrosshairManager`
+phủ state machine của interactor — 2026-10-28.)
 
 Đợt trước mở khoá lớp **service**: **49,6 % → 55,2 %**. Ba file được phủ bằng
 test thật (không phải mock), vì cả ba là logic thuần CPU-side nên test được
@@ -410,6 +412,14 @@ SFINAE rằng write side **không biểu diễn được** qua `ServiceRegistry`
 "the ServiceRegistry write side is public for every consumer" phải làm đỏ nó.
 Rule 13 của guard chặn thêm đường `const_cast` và mọi lời gọi
 `services()->registerService/unregister/clear` trong `src/modules/**`.
+
+**ServiceKey là duy nhất và có namespace (đóng 2026-10).** Registry nhận diện
+service bằng đúng một chuỗi `ServiceKey`; hai interface khai báo trùng chuỗi
+thì lần đăng ký thứ hai bị từ chối, và `get<B>()` sẽ reinterpret con trỏ `A*`
+thành `B*` — UB không thể phát hiện từ `void*`. Vì vậy `TestServiceKeys`
+(`tests/CheckServiceKeys.cmake`) quét `src/include/I*.h`, từ chối key trùng và
+key không theo dạng `com.3dreconstruction.service.<Interface>`; mutant
+"planted: two interfaces declare the same ServiceKey" phải làm đỏ nó.
 
 ### 4.5 Ranh giới plugin: từ regex của guard → **compiler** (đã đóng)
 
@@ -781,8 +791,31 @@ Trước đây `SceneService` phụ thuộc cứng vào `QVTKOpenGLNativeWidget`
 
 Đã đóng:
 * Constructor của `SceneService` cho phép truyền widget null (`SceneService(nullptr, nullptr)`).
-* Toàn bộ các luồng thao tác: `resetToSingleRenderer`, `setupDicomRenderers`, `setupCrosshairInteractor`, `applyViewSettings`, `setPointCloudData`, `loadImageActor`, `clear*` đều được bọc null-guard chặt chẽ đối với `m_vtkWidget` và `renderWindow()`.
-* Bổ sung mục test CTest mới `#49: TestSceneService` (100% pass) kiểm chứng toàn bộ vòng đời đối tượng 3D, point cloud, camera, cấu hình hiển thị trong môi trường headless mà không cần GPU.
+* Constructor nhận thêm một `vtkRenderWindow*` tường minh (tham số thứ tư). Đây là
+  seam thật, không phải test hook: service phụ thuộc vào *render window* thay vì
+  widget cụ thể, nên các nhánh chỉ chạy khi có cửa sổ — gỡ ba renderer MPR trong
+  `resetToSingleRenderer`, dựng layout 2×2 trong `setupDicomRenderers`, gắn
+  `PanStyle`, và bật/tắt orientation marker — đều được chạy trong test.
+* Toàn bộ các luồng thao tác: `resetToSingleRenderer`, `setupDicomRenderers`,
+  `setupCrosshairInteractor`, `applyViewSettings`, `setPointCloudData`,
+  `loadImageActor`, `clear*` đều được bọc null-guard chặt chẽ đối với
+  `m_vtkWidget` và `renderWindow()`.
+* `TestSceneService` dùng một `HeadlessRenderWindow` (chỉ override `Render()`
+  thành no-op) nên không cần GPU/OpenGL, và kiểm chứng: nạp OBJ+MTL, ảnh từ
+  đường dẫn và `cv::Mat`, point cloud, cấu hình hiển thị (nền/lưới/trục), DICOM
+  rỗng/không tồn tại, và một series DICOM thật 3 lát cắt (layout MPR, crosshair,
+  chuyển về single renderer). Series mẫu được copy vào thư mục tạm để
+  `DicomLoader` không ghi cache vào source tree.
+* Đo được: `src/services/scene/sceneservice.cpp` **97.9 % (274/280)** trên tham
+  chiếu cục bộ (VS 17.12, Release). Sáu dòng còn lại là thân `renderWindow()`
+  bị inline (profiler không gán cho lời gọi nào) và hai dòng điều kiện không
+  được gán nhánh — không phải hành vi chưa được test. Floor trong
+  `tests/coverage_floors.json` là **95**.
+* Bề mặt plugin chỉ còn *actor/renderer plumbing*: `ISceneService::vtkWidget()`
+  đã bị gỡ (không có consumer production nào; widget sở hữu OpenGL surface
+  không phải quyền của plugin), `IPlugin::kApiVersion` bump **6 → 7**. Phần
+  VTK còn lại (`vtkRenderer*`, `vtkActor*`, `vtkSmartPointer`) là ngoại lệ
+  được ghi trong header, giới hạn đúng ba dạng đó.
 
 ### 4.17 Vòng đời dỡ nạp plugin Qt và Hợp đồng Zero-Leak QObject (ADR-0032, đã đóng 2026-10)
 
@@ -876,9 +909,9 @@ Bốn gate đều chạy offline (không tải ONNX Runtime 323 MB, không cài 
 | bước | lệnh | phải xanh | nếu đỏ thì nghĩa là gì |
 |------|-------|-----------|-----------------------|
 | 1 | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | exit 0 | một luật ranh giới bị vi phạm |
-| 2 | `ctest --test-dir build -C Release --output-on-failure` | 49/49 | một hợp đồng quan sát được bị phá |
+| 2 | `ctest --test-dir build -C Release --output-on-failure` | 51/51 | một hợp đồng quan sát được bị phá |
 | 3 | `python tests/coverage_gate.py` | "99 file(s) at or above their floors" | một file đã **thoát** khỏi phép đo, hoặc coverage **tụt** dưới floor |
-| 4 | `python tests/mutation_check.py` | "82/82 killed, 0 survived, 0 stale, 0 invalid" | một quyết định bảo vệ **không còn được ghim** |
+| 4 | `python tests/mutation_check.py` | "86/86 killed, 0 survived, 0 stale, 0 invalid" | một quyết định bảo vệ **không còn được ghim** |
 
 Bước 4 **tự kiểm mục tiêu của mình trước khi rebuild** (file tồn tại, anchor
 đúng một lần, header đã ghim) — nên nó đỏ **ngay** với danh sách mutant hỏng,

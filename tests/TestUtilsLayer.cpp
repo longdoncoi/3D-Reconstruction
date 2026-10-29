@@ -104,6 +104,8 @@ private slots:
     // ── BlockingCall ────────────────────────────────────────────────────────
     void blockingTaskTrackerWaitsForTheTask();
     void blockingTaskTrackerReportsATaskThatDidNotFinish();
+    void blockingTaskTrackerReapsOnlyCompletedTasks();
+    void blockingTaskTrackerJoinsEveryTaskUnbounded();
     void blockingRunDeliversACompletedFuture();
     void blockingRunContainsAThrowingCallable();
 
@@ -482,6 +484,47 @@ void TestUtilsLayer::blockingTaskTrackerReportsATaskThatDidNotFinish()
 
     QCOMPARE(tracker.waitForFinished(100), 1);
     release.store(true);
+}
+
+void TestUtilsLayer::blockingTaskTrackerReapsOnlyCompletedTasks()
+{
+    // A long-lived owner (the model loader) registers one task per reload.
+    // reapFinished() may drop the completed ones, but a task that is still
+    // running must stay tracked: the tracker is the only handle teardown has
+    // on that thread, and the owner frees `this` while the task may still be
+    // calling into it.
+    blocking::TaskTracker tracker;
+    QSemaphore release;
+    auto future = blocking::run([&release]() { release.acquire(); }, &tracker);
+    QCOMPARE(tracker.taskCount(), 1);
+
+    QCOMPARE(tracker.reapFinished(), 1);
+    QCOMPARE(tracker.taskCount(), 1);
+
+    release.release();
+    QCOMPARE(tracker.waitForFinished(5000), 0);
+    QCOMPARE(tracker.reapFinished(), 0);
+    QCOMPARE(tracker.taskCount(), 0);
+    QVERIFY(future.isFinished());
+}
+
+void TestUtilsLayer::blockingTaskTrackerJoinsEveryTaskUnbounded()
+{
+    // waitForAll() is the destructor join: it must not return while a task
+    // that captures the owner is still running, otherwise the owner frees
+    // `this` under the worker's feet. The sleep makes an early return
+    // observable without racing the scheduler.
+    blocking::TaskTracker tracker;
+    std::atomic<bool> ran{false};
+    auto future = blocking::run([&ran]() {
+        QThread::msleep(100);
+        ran.store(true);
+    }, &tracker);
+
+    tracker.waitForAll();
+    QVERIFY2(ran.load(), "waitForAll() returned before the tracked task finished");
+    QCOMPARE(tracker.taskCount(), 0);
+    QVERIFY(future.isFinished());
 }
 
 void TestUtilsLayer::blockingRunDeliversACompletedFuture()

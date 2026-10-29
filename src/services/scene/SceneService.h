@@ -10,6 +10,7 @@
 #include "CrosshairManager.h"
 
 class IUserPreferences;
+class vtkRenderWindow;
 
 /**
  * @brief Documented exception (ISceneService): intentionally inherits QObject
@@ -19,11 +20,18 @@ class IUserPreferences;
 class APP_EXPORT SceneService : public QObject, public ISceneService {
     Q_OBJECT
 public:
-    SceneService(IUserPreferences* prefs = nullptr, QVTKOpenGLNativeWidget* vtkWidget = nullptr, QObject* parent = nullptr);
+    /// @param renderWindow Optional explicit render window. When null, the
+    ///        window is taken from @p vtkWidget. The shell always passes a
+    ///        widget; the parameter is a real seam, not a test hook: the
+    ///        service then depends on a render window instead of a concrete
+    ///        QVTK widget, and can be exercised without an OpenGL surface.
+    SceneService(IUserPreferences* prefs = nullptr,
+                 QVTKOpenGLNativeWidget* vtkWidget = nullptr,
+                 QObject* parent = nullptr,
+                 vtkRenderWindow* renderWindow = nullptr);
     ~SceneService();
 
     vtkRenderer*            renderer() override { return m_renderer; }
-    QVTKOpenGLNativeWidget* vtkWidget() override { return m_vtkWidget; }
     
     void setTextureActor(vtkSmartPointer<vtkActor> actor) override;
     void setPointCloudActor(vtkSmartPointer<vtkActor> actor) override;
@@ -50,8 +58,13 @@ private:
     void setupDicomRenderers(vtkSmartPointer<vtkImageData> volume);
     void setupCrosshairInteractor();
 
+    /// The window the service renders into: the explicit one when injected,
+    /// otherwise the one owned by the QVTK widget (null in headless use).
+    vtkRenderWindow* renderWindow() const;
+
     IUserPreferences* m_prefs = nullptr; ///< not owned (AppShell); may be null in tests
     QVTKOpenGLNativeWidget* m_vtkWidget;
+    vtkRenderWindow* m_renderWindow = nullptr; ///< not owned; may be null
     vtkSmartPointer<vtkRenderer> m_renderer;
     vtkSmartPointer<vtkRenderer> m_axialRenderer, m_sagittalRenderer, m_coronalRenderer;
     
@@ -63,7 +76,7 @@ private:
 
     // View settings actors
     vtkSmartPointer<vtkActor> m_gridActor;
-    class vtkOrientationMarkerWidget* m_axesWidget = nullptr;
+    vtkSmartPointer<class vtkOrientationMarkerWidget> m_axesWidget;
 
     CrosshairManager* m_crosshair = nullptr;
     vtkSmartPointer<CrosshairInteractorStyle> m_crosshairStyle;

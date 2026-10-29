@@ -65,7 +65,9 @@ public:
     /// v6: IAIService::detectObjects() returns AIDetectionOutcome — an empty
     ///     box list no longer conflates "nothing detected" with "the
     ///     inference failed".
-    static constexpr int kApiVersion = 6;
+    /// v7: ISceneService no longer exposes the shell's QVTKOpenGLNativeWidget
+    ///     (vtkWidget()); plugins get renderer/actor plumbing only.
+    static constexpr int kApiVersion = 7;
 
     /**
      * Toolchain fingerprint: the virtual surface can stay identical while

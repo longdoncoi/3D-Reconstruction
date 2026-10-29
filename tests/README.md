@@ -8,7 +8,7 @@ after the build step. The reference run recorded here is
 | # | Gate | Command | What it proves |
 |---|------|---------|----------------|
 | 1 | Architecture boundaries | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | Layering invariants (heavy/light PCH split, plugin includes, plugin **include path**, blocking-I/O waits, singleton confinement, event-filter ownership, shell-window lookup …). Runs in CTest as `TestArchitectureBoundaries`. |
-| 2 | Unit + integration suite | `ctest --test-dir build -C Release --output-on-failure` | 49 CTest entries (43 test executables + 6 CMake-script tests): kernel units, plugin host/resolver with an injected loader, real-plugin smoke, `TestAppShell` composition-root wiring, `TestMainWindow` (the tab-panel contract a plugin resolves by tab id), `TestAIAssistant` request state machine (injected transport), AppCore-owned model-load lifetime (`TestAIModelLoadService`), the non-blocking server-process teardown (`TestAIServerProcessController`, which re-runs the test executable as a stand-in for the Python wrapper), the interface ABI guard (`TestInterfaceAbi`), the AI service against the REAL ONNX models (`TestAIService` — needs `git lfs pull`), the at-rest cipher shared with the Python service (`TestAtRestCipher`), the at-rest confidentiality of the user INI (`TestSecretProtection`), the shared utility layer (`TestUtilsLayer`), the scene/viewer layers, the reconstruction service boundary (`TestReconstructionService` — the UI-facing queries and mutators must not wait for the worker, and the published result must be complete), plus `TestReconstructionFinalize` and `TestReconstructionService` (both labelled `slow` — they need a completed reconstruction). |
+| 2 | Unit + integration suite | `ctest --test-dir build -C Release --output-on-failure` | 51 CTest entries (44 test executables + 7 CMake-script tests): kernel units, plugin host/resolver with an injected loader, real-plugin smoke, `TestAppShell` composition-root wiring, `TestMainWindow` (the tab-panel contract a plugin resolves by tab id), `TestAIAssistant` request state machine (injected transport), AppCore-owned model-load lifetime (`TestAIModelLoadService`), the non-blocking server-process teardown (`TestAIServerProcessController`, which re-runs the test executable as a stand-in for the Python wrapper), the interface ABI guard (`TestInterfaceAbi`), the service-key uniqueness guard (`TestServiceKeys`), the AI service against the REAL ONNX models (`TestAIService` — needs `git lfs pull`), the at-rest cipher shared with the Python service (`TestAtRestCipher`), the at-rest confidentiality of the user INI (`TestSecretProtection`), the shared utility layer (`TestUtilsLayer`), the scene/viewer layers (`TestViewerService` covers 2-D paging and auto-navigation with a fake scene; `TestSceneService` drives the MPR layout through a headless render window), the reconstruction service boundary (`TestReconstructionService` — the UI-facing queries and mutators must not wait for the worker, and the published result must be complete), plus `TestReconstructionFinalize` and `TestReconstructionService` (both labelled `slow` — they need a completed reconstruction). |
 | 3 | Coverage gate | `python tests/coverage_gate.py` | Measured line coverage of the kernel/guard, composition, service and utility files, with per-file floors (the minimum of the local and CI reference environments), a completeness check (no translation unit may escape the measurement), a **one-way ratchet** (a floor may never be lowered below the committed baseline), and a printed debt list; runs OpenCppCoverage over the owning tests. |
 | 4 | Mutation check | `python tests/mutation_check.py` | Every load-bearing guard decision is *pinned*: one inverted decision per mutant, rebuilt and re-run; the owning test must fail. |
 
@@ -197,7 +197,7 @@ reporting a gap.
 
 | file | measured | floor |
 |------|----------|-------|
-| `src/services/ai/aimodelloadservice.cpp` | 100.0 % (51/51) | 100 |
+| `src/services/ai/aimodelloadservice.cpp` | 100.0 % (47/47) | 100 |
 | `src/services/ai/aipredictionlogservice.cpp` | 100.0 % (35/35) | 100 |
 | `src/services/ai/airequestqueue.cpp` | 100.0 % (62/62) | 100 |
 | `src/services/ai/aiyolopostprocessor.cpp` | 100.0 % (51/51) | 100 |
@@ -255,9 +255,9 @@ references a vertex the trim removed.
 
 | file | measured | floor |
 |------|----------|-------|
-| `src/services/scene/crosshairgeometry.cpp` | 93.2 % (41/44) | 93 |
-| `src/services/scene/crosshairmanager.cpp` | 58.4 % (125/214) | 57 |
-| `src/services/scene/sceneservice.cpp` | 5.1 % (14/276) | 5 |
+| `src/services/scene/crosshairgeometry.cpp` | 95.5 % (42/44) | 93 |
+| `src/services/scene/crosshairmanager.cpp` | 99.5 % (213/214) | 97 |
+| `src/services/scene/sceneservice.cpp` | 97.9 % (274/280) | 95 |
 
 **service: viewer**
 
@@ -265,8 +265,8 @@ references a vertex the trim removed.
 |------|----------|-------|
 | `src/services/viewer/image2dloader.cpp` | 98.7 % (75/76) | 98 |
 | `src/services/viewer/model3dloader.cpp` | 100.0 % (64/64) | 100 |
-| `src/services/viewer/viewerservice.cpp` | 13.6 % (8/59) | 13 |
-| `src/services/viewer/dicomloader.cpp` | 50.4 % (68/135) | 49 |
+| `src/services/viewer/viewerservice.cpp` | 100.0 % (59/59) | 100 |
+| `src/services/viewer/dicomloader.cpp` | 95.6 % (129/135) | 90 |
 
 **service: settings**
 
@@ -538,7 +538,8 @@ guards that coverage can only say are *executed*:
   lock** (mutation: it waits on the pipeline lock the worker holds for the
   whole run — the UI freezes),
 * `AIModelLoadService` **a throwing loader is a failure** (mutation: it is
-  reported as success),
+  reported as success) and **the load leaves the caller's thread** (mutation:
+  it runs inline, freezing the GUI for the whole load),
 * `AIServerProcessController` **a deferred start is not dropped**, **a
   requested stop is not reported as a crash** and **the kill fallback is
   armed**,
@@ -658,4 +659,4 @@ Discipline (mirrors `AIAssistant/scripts/mutation_check.py`):
   build (or run the gate in CI) while it runs;
 * `--only SUBSTR` runs a subset by label.
 
-Reference result: **82/82 killed, 0 survived, 0 stale, 0 invalid**.
+Reference result: **86/86 killed, 0 survived, 0 stale, 0 invalid**.

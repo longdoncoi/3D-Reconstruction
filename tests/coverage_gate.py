@@ -83,8 +83,10 @@ TESTS: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("TestPluginDependencyResolver", "TestPluginDependencyResolver.exe", {}),
     ("TestPluginHost", "TestPluginHost.exe", {}),
     # Loads the real plugin DLLs through the default QPluginLoader path —
-    # the only test covering PluginHost::loadWithQPluginLoader.
-    ("TestPluginSmoke", "TestPluginSmoke.exe", {}),
+    # the only test covering PluginHost::loadWithQPluginLoader. Offscreen for
+    # the same reason as the CTest property: the child processes create the
+    # real plugins' QApplication, and CI has no desktop.
+    ("TestPluginSmoke", "TestPluginSmoke.exe", {"QT_QPA_PLATFORM": "offscreen"}),
     ("TestAppShell", "TestAppShell.exe", {"QT_QPA_PLATFORM": "offscreen"}),
     # The real shell window: the tab panels a plugin resolves by tab id, the
     # translated labels, the menu bar and the shutdown path.
@@ -154,6 +156,13 @@ TESTS: tuple[tuple[str, str, dict[str, str]], ...] = (
     ("TestCrosshairManager", "TestCrosshairManager.exe", {}),
     # Viewer: the file → VTK actor loaders for 2-D images and 3-D models.
     ("TestViewerLoaders", "TestViewerLoaders.exe", {}),
+    # The 2-D paging service: image list/index, the real Image2DLoader path and
+    # the auto-navigation timer (fake scene, no GL).
+    ("TestViewerService", "TestViewerService.exe", {}),
+    # The 3-D scene service: actor lifecycle, point clouds, view settings, the
+    # DICOM MPR layout and the render-window seam. HeadlessRenderWindow
+    # overrides Render(), so no GL context is needed.
+    ("TestSceneService", "TestSceneService.exe", {"QT_QPA_PLATFORM": "offscreen"}),
     # Plugin helpers that carry real logic (mail preview, inbox row, attachment
     # preview, prediction logger).
     ("TestPluginHelpers", "TestPluginHelpers.exe", {"QT_QPA_PLATFORM": "offscreen"}),
@@ -237,14 +246,14 @@ FLOORS: dict[str, float] = {
     "src/services/reconstruction/tracksfm.cpp": 96,   # measured 96.6
     "src/services/reconstruction/triangulator.cpp": 100,  # measured 100
     "src/services/scene/crosshairgeometry.cpp": 93,  # measured 93.2 (41/44)
-    "src/services/scene/crosshairmanager.cpp": 57,   # local 58.4 (125/214), CI 57.9 (125/216)
-    "src/services/scene/sceneservice.cpp": 5,        # measured 5.1 (14/276)
+    "src/services/scene/crosshairmanager.cpp": 97,   # local 99.5 (213/214), CI 98.6 (213/216)
+    "src/services/scene/sceneservice.cpp": 95,      # measured 97.9 (274/280) — TestSceneService with a headless render window
     "src/services/settings/settingsservice.cpp": 100,  # measured 100
     "src/services/shell/shellservice.cpp": 98,    # measured 98.2 (one closing brace)
-    "src/services/viewer/dicomloader.cpp": 49,     # local 50.4 (68/135), CI 49.3 (66/134)
+    "src/services/viewer/dicomloader.cpp": 90,     # measured 95.6 (129/135) — TestSceneService loads a real 3-slice series
     "src/services/viewer/image2dloader.cpp": 98,    # measured 98.7 (75/76)
     "src/services/viewer/model3dloader.cpp": 100,   # measured 100 (64/64)
-    "src/services/viewer/viewerservice.cpp": 13,   # measured 13.6
+    "src/services/viewer/viewerservice.cpp": 100,  # measured 100.0 (59/59) — TestViewerService
     # Shared utility layer — the helpers every plugin links against.
     "src/utils/abstractribbonpanel.cpp": 100,     # measured 100
     "src/utils/customprogressdialog.cpp": 95,      # measured 95.2

@@ -757,11 +757,27 @@ MUTANTS: tuple[Mutant, ...] = (
     #    left m_running stuck / no terminal signal.
     Mutant(
         "src/services/ai/AIModelLoadService.cpp",
-        "} catch (const std::exception& e) {\n                ok = false;",
-        "} catch (const std::exception& e) {\n                ok = true;",
+        "} catch (const std::exception& e) {\n        ok = false;",
+        "} catch (const std::exception& e) {\n        ok = true;",
         "TestAIModelLoadService",
         "TestAIModelLoadService",
         "AIModelLoadService: a throwing loader is reported as success",
+    ),
+    # ── AIModelLoadService: the load must leave the caller's thread. Running
+    #    it inline is exactly the QtConcurrent::run failure mode this service
+    #    was moved off: a GUI-triggered load freezes the window for its whole
+    #    duration.
+    Mutant(
+        "src/services/ai/AIModelLoadService.cpp",
+        "    (void)blocking::run(\n"
+        "        [this, detectionPath, segmentationPath, trackingPath] {\n"
+        "            runLoad(detectionPath, segmentationPath, trackingPath);\n"
+        "        },\n"
+        "        &m_tasks);",
+        "    runLoad(detectionPath, segmentationPath, trackingPath);",
+        "TestAIModelLoadService",
+        "TestAIModelLoadService",
+        "AIModelLoadService: the model load runs on the caller's thread",
     ),
     # ── AIServerProcessController: a start() that arrives while the wrapper is
     #    still exiting must be deferred and launched when it dies, not dropped
@@ -819,11 +835,49 @@ MUTANTS: tuple[Mutant, ...] = (
         "                }\n"
         "            } catch (...) {",
         "            } catch (const std::exception &e) {\n"
+        "                // The message is still built before the rethrow, so the\n"
+        "                // mutated code compiles under /W4 /WX: an unused catch\n"
+        "                // parameter would make the mutant INVALID, not KILLED.\n"
+        "                qWarning() << \"blocking::run: the task failed:\" << e.what();\n"
         "                throw;\n"
         "            } catch (...) {",
         "TestUtilsLayer",
         "TestUtilsLayer",
         "BlockingCall: an exception in the callable escapes the worker thread (the app aborts)",
+    ),
+    # ── TaskTracker::reapFinished(): dropping a task that is still RUNNING
+    #    removes the only handle teardown has on that thread; the owner then
+    #    frees `this` under a live worker. Only completed tasks are droppable.
+    Mutant(
+        "src/utils/BlockingCall.h",
+        "            if (done->tryAcquire(1)) continue; // completed: release() happened",
+        "            if (true) continue; // every task is dropped, including a running one",
+        "TestUtilsLayer",
+        "TestUtilsLayer",
+        "BlockingCall: reapFinished() drops a task that is still running",
+    ),
+    # ── TaskTracker::waitForAll(): the destructor join must actually wait. A
+    #    "join" that clears the list returns while the worker still captures
+    #    the owner — a use-after-free during teardown.
+    Mutant(
+        "src/utils/BlockingCall.h",
+        "        for (const auto &done : m_tasks) {\n"
+        "            done->acquire();\n"
+        "        }\n"
+        "        m_tasks.clear();\n"
+        "    }\n"
+        "\n"
+        "    /// Register a running task.",
+        "        for (const auto &done : m_tasks) {\n"
+        "            (void)done; // the join does not wait\n"
+        "        }\n"
+        "        m_tasks.clear();\n"
+        "    }\n"
+        "\n"
+        "    /// Register a running task.",
+        "TestUtilsLayer",
+        "TestUtilsLayer",
+        "BlockingCall: waitForAll() returns without joining the running task",
     ),
     # ── AIInferenceGuard: an inference exception must be CONTAINED. ONNX
     #    Runtime and OpenCV throw; the exception reaches std::terminate() when
@@ -960,6 +1014,21 @@ MUTANTS: tuple[Mutant, ...] = (
         "ReconstructionService: an unknown publication failure is reported as success",
         600,
     ),
+    # ── Service-key guard itself: two interfaces sharing one ServiceKey make
+    #    registerService() refuse the second and turn get<B>() into a void*
+    #    reinterpretation of A. The registry cannot see the collision from a
+    #    void*, so the key scan is the only thing that can reject it.
+    Mutant(
+        "src/include/IAppPaths.h",
+        "",
+        "\nclass MutationProbeDuplicateKey { public:"
+        " static constexpr const char *ServiceKey ="
+        " \"com.3dreconstruction.service.IAppPaths\"; };"
+        " // planted by mutation_check — the key must stay unique\n",
+        _PLANT,
+        "TestServiceKeys",
+        "planted: two interfaces declare the same ServiceKey",
+    ),
     # ── Architecture guard itself: an inference entry point that bypasses the
     #    exception guard must be rejected — the guard exists so an ONNX/OpenCV
     #    exception can never leave a Qt slot or a thread entry point.
@@ -1091,9 +1160,10 @@ MUTANTS: tuple[Mutant, ...] = (
 # gate into a failing one. It is not lowered to make a run pass — a mutant that
 # no longer applies is replaced, not removed.
 #
-# 82 is the number of load-bearing decisions the guard layer pins today
-# (PluginHost, ServiceRegistry, SecretVault, CryptoUtils, UserManager,
-# LicenseKeyLedger, OtpStore, UserSettingsStore, ReconstructionService
+# 86 is the number of load-bearing decisions the guard layer pins today
+# (PluginHost, ServiceRegistry (incl. ServiceKey uniqueness), SecretVault,
+# CryptoUtils, UserManager, LicenseKeyLedger, OtpStore, UserSettingsStore,
+# ReconstructionService
 # (published state + publication barrier), ReconstructionPostProcessor,
 # AIModelLoadService, AIServerProcessController, IPlugin ABI fingerprint
 # (interface hash + SDK versions), AppShell service registration,
@@ -1104,7 +1174,7 @@ MUTANTS: tuple[Mutant, ...] = (
 # ServiceRegistry read-only surface, GuardedApplication barrier, IAIService
 # loader seam, VideoTrackerThread terminate fallback, teardown rule,
 # MainWindow tab contract).
-MIN_MUTANTS = 82
+MIN_MUTANTS = 86
 
 
 #: Header-only files on the plugin-facing surface carry load-bearing decisions

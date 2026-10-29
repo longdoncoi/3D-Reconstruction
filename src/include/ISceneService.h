@@ -10,7 +10,6 @@
 namespace cv { class Mat; }
 
 class vtkRenderer;
-class QVTKOpenGLNativeWidget;
 class vtkActor;
 template <class T> class vtkSmartPointer;
 
@@ -23,8 +22,11 @@ template <class T> class vtkSmartPointer;
  * for little safety gain, since every consumer already links VTK directly.
  * Keep new methods limited to actor/renderer plumbing — no vtk* algorithm
  * types (mappers, filters, volumes) beyond these three forms.
+ *
+ * The shell's QVTKOpenGLNativeWidget is deliberately NOT exposed: a plugin
+ * gets actor/renderer plumbing, never the widget that owns the OpenGL surface
+ * (replacing its interactor or painting over the shell is not a plugin right).
  */
-
 class ISceneService {
 public:
     /// ServiceRegistry lookup key (see ServiceRegistry.h).
@@ -33,7 +35,6 @@ public:
 
     virtual ~ISceneService() = default;
     virtual vtkRenderer*            renderer() = 0;
-    virtual QVTKOpenGLNativeWidget* vtkWidget() = 0;
     virtual void setTextureActor(vtkSmartPointer<vtkActor> actor) = 0;
     virtual void setPointCloudActor(vtkSmartPointer<vtkActor> actor) = 0;
     virtual void clear3DModel()    = 0;

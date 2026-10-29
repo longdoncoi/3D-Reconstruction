@@ -526,7 +526,6 @@ public:
     void loadOBJwithMTL(const QString &path, const QString &) override { lastObjPath = path; }
     bool onLoadDicom(const QString &) override { ++dicomCalls; return dicomSucceeds; }
     vtkRenderer *renderer() override { return m_renderer; }
-    QVTKOpenGLNativeWidget *vtkWidget() override { return nullptr; }
     void render() override {}
     void setPointCloudData(const std::vector<Point3D> &, const std::vector<PointColor> &) override {}
     bool isPointCloudVisible() const override { return false; }

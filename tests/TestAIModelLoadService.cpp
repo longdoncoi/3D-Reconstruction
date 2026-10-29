@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <stdexcept>
+#include <atomic>
 
 /**
  * @brief Contract test for the AppCore-owned async model loader.
@@ -26,6 +27,7 @@ class FakeAIService : public IAIModelAdmin {
 public:
     bool loadDetectionModel(const QString &) override {
         ++loadCalls;
+        loadThread.store(QThread::currentThread());
         if (throwNonStandard) throw 42;             // exercises catch (...)
         if (throwDetection) throw std::runtime_error("detection boom");
         QThread::msleep(100); // give the test time to cancel mid-load
@@ -40,6 +42,7 @@ public:
 
     int loadCalls = 0;
     int segmentationCalls = 0;
+    std::atomic<QThread *> loadThread{nullptr};
     bool failDetection = false;
     bool failSegmentation = false;
     bool throwDetection = false;
@@ -60,6 +63,7 @@ private slots:
     void throwingLoaderReportsFailureAndClearsRunning();
     void throwingLoaderAfterFailureKeepsBothErrors();
     void nonStandardExceptionIsCaught();
+    void loadRunsOffTheCallingThread();
 
 private:
     static bool waitForSignal(QSignalSpy &spy, int timeoutMs = 3000)
@@ -270,6 +274,31 @@ void TestAIModelLoadService::nonStandardExceptionIsCaught()
     const QList<QVariant> args = finished.first();
     QCOMPARE(args.at(0).toBool(), false);
     QVERIFY(args.at(1).toString().contains(QStringLiteral("unknown error")));
+    QVERIFY(!service.isLoading());
+}
+
+void TestAIModelLoadService::loadRunsOffTheCallingThread()
+{
+    FakeAIService ai;
+    AIModelLoadService service(&ai);
+
+    QTemporaryFile detection;
+    QVERIFY(detection.open());
+    detection.write("stub");
+    detection.close();
+
+    QSignalSpy finished(&service, &IAIModelLoadService::finished);
+
+    QThread *const caller = QThread::currentThread();
+    service.loadModelsAsync(detection.fileName(), QString(), QString());
+    QVERIFY(waitForSignal(finished));
+
+    // The contract that makes a GUI-triggered load safe: the loader never
+    // runs on the caller's thread. `QtConcurrent::run` does not guarantee
+    // this (a pool with no free worker runs the task inline), which is why
+    // the service uses blocking::run's dedicated thread.
+    QVERIFY(ai.loadThread.load() != nullptr);
+    QVERIFY(ai.loadThread.load() != caller);
     QVERIFY(!service.isLoading());
 }
 

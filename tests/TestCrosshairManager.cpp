@@ -7,6 +7,7 @@
 #include <vtkNew.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderer.h>
+#include <vtkRenderWindowInteractor.h>
 
 /**
  * @brief Contract of the MPR crosshair overlay (CrosshairManager).
@@ -15,6 +16,11 @@
  * lifecycle is the interesting part: initialize() must install the overlay in
  * all three views, cleanup() must take it out again, and the drag state
  * machine must only start when the pointer is really on the anchor.
+ *
+ * The interactor-style contract is the second half: one style is shared by the
+ * render window, detects the viewport under the pointer and routes a left drag
+ * to the crosshair, the 3-D camera or the VTK default. The test drives that
+ * state machine directly with synthetic event positions.
  *
  * The test never opens a GL context: the renderers and the window are only
  * used for their geometry (viewport, size), which is exactly what the
@@ -29,6 +35,10 @@ private slots:
     void draggingStartsOnlyNearTheAnchor();
     void mouseMoveWithoutDragIsIgnored();
     void invalidViewIndexIsIgnored();
+    void interactorStartsDragInEachMprViewport();
+    void interactorRotatesIn3DViewport();
+    void interactorPansAndDollies();
+    void interactorFallsBackWhenNoViewMatches();
 };
 
 namespace {
@@ -59,6 +69,58 @@ int propsIn(vtkRenderer *renderer)
     return renderer->GetActors()->GetNumberOfItems()
          + renderer->GetViewProps()->GetNumberOfItems();
 }
+
+/// A RenderWindow is only needed for its size and for the interactor's event
+/// plumbing. Overriding Render() keeps the rotation path (which asks the
+/// window to repaint) away from an OpenGL context the test does not have.
+class HeadlessRenderWindow : public vtkRenderWindow {
+public:
+    static HeadlessRenderWindow *New();
+    vtkTypeMacro(HeadlessRenderWindow, vtkRenderWindow);
+    void Render() override {}
+};
+vtkStandardNewMacro(HeadlessRenderWindow);
+
+/// The 2×2 MPR + 3-D layout used by SceneService: the three MPR viewports
+/// tile the left/top halves and the 3-D view occupies the bottom-right.
+/// A fixture is built per test because a drag mutates the shared anchor.
+class MprFixture {
+public:
+    MprFixture()
+    {
+        window->SetSize(300, 300);
+        window->AddRenderer(sagittal);
+        window->AddRenderer(coronal);
+        window->AddRenderer(axial);
+        window->AddRenderer(threeD);
+
+        sagittal->SetViewport(0.0, 0.5, 0.5, 1.0);
+        coronal->SetViewport(0.5, 0.5, 1.0, 1.0);
+        axial->SetViewport(0.0, 0.0, 0.5, 0.5);
+        threeD->SetViewport(0.5, 0.0, 1.0, 0.5);
+
+        manager.initialize(volume, sagittal, coronal, axial, window);
+
+        style->manager = &manager;
+        style->renderer3D = threeD;
+        style->SetInteractor(interactor);
+        interactor->SetRenderWindow(window);
+    }
+
+    void moveTo(int x, int y) { interactor->SetEventPosition(x, y); }
+
+    vtkSmartPointer<vtkImageData> volume = makeVolume();
+    vtkSmartPointer<vtkRenderer> sagittal = vtkSmartPointer<vtkRenderer>::New();
+    vtkSmartPointer<vtkRenderer> coronal = vtkSmartPointer<vtkRenderer>::New();
+    vtkSmartPointer<vtkRenderer> axial = vtkSmartPointer<vtkRenderer>::New();
+    vtkSmartPointer<vtkRenderer> threeD = vtkSmartPointer<vtkRenderer>::New();
+    vtkSmartPointer<HeadlessRenderWindow> window = vtkSmartPointer<HeadlessRenderWindow>::New();
+    vtkSmartPointer<vtkRenderWindowInteractor> interactor =
+        vtkSmartPointer<vtkRenderWindowInteractor>::New();
+    vtkSmartPointer<CrosshairInteractorStyle> style =
+        vtkSmartPointer<CrosshairInteractorStyle>::New();
+    CrosshairManager manager;
+};
 
 } // namespace
 
@@ -187,6 +249,158 @@ void TestCrosshairManager::invalidViewIndexIsIgnored()
     QVERIFY(!manager.anyDragging());
     QVERIFY(manager.renderer(-1) == nullptr);
     QVERIFY(manager.renderer(3) == nullptr);
+}
+
+void TestCrosshairManager::interactorStartsDragInEachMprViewport()
+{
+    // Each viewport owns the anchor at a different pixel; 75/225 are the
+    // quarter boundaries of the 300×300 window.
+    struct Case { int view; int x; int y; };
+    const Case cases[] = {
+        {ORI_SAGITTAL, 75, 225},
+        {ORI_CORONAL, 225, 225},
+        {ORI_AXIAL,    75,  75},
+    };
+
+    for (const Case &c : cases) {
+        MprFixture f;
+
+        if (c.view == ORI_AXIAL) {
+            const double before = f.manager.m_views[ORI_AXIAL].hLine->GetPoint1()[1];
+            f.moveTo(c.x, c.y);
+            f.style->OnLeftButtonDown();
+            QVERIFY2(f.manager.isDragging(c.view),
+                     qPrintable(QStringLiteral("no drag started in view %1").arg(c.view)));
+
+            f.moveTo(c.x + 30, c.y + 30);
+            f.style->OnMouseMove();
+            QVERIFY(f.manager.isDragging(c.view));
+            const double after = f.manager.m_views[ORI_AXIAL].hLine->GetPoint1()[1];
+            QVERIFY2(std::abs(after - before) > 0.01,
+                     "the drag must move the crosshair overlay, not only the flag");
+        } else {
+            f.moveTo(c.x, c.y);
+            f.style->OnLeftButtonDown();
+            QVERIFY2(f.manager.isDragging(c.view),
+                     qPrintable(QStringLiteral("no drag started in view %1").arg(c.view)));
+        }
+
+        f.style->OnLeftButtonUp();
+        QVERIFY(!f.manager.isDragging(c.view));
+        QVERIFY(!f.manager.anyDragging());
+    }
+}
+
+void TestCrosshairManager::interactorRotatesIn3DViewport()
+{
+    MprFixture f;
+
+    double before[3];
+    f.threeD->GetActiveCamera()->GetPosition(before);
+
+    // Bottom-right quadrant is the 3-D viewport: no MPR renderer matches, so
+    // the style starts a trackball rotation instead of a crosshair drag.
+    f.moveTo(225, 75);
+    f.style->OnLeftButtonDown();
+    QVERIFY(!f.manager.anyDragging());
+
+    f.moveTo(255, 105);
+    f.style->OnMouseMove();
+
+    double after[3];
+    f.threeD->GetActiveCamera()->GetPosition(after);
+    const double moved = std::abs(after[0] - before[0])
+                       + std::abs(after[1] - before[1])
+                       + std::abs(after[2] - before[2]);
+    QVERIFY2(moved > 1e-6, "a left drag in the 3-D viewport must rotate the camera");
+
+    f.style->OnLeftButtonUp();
+    QCOMPARE(f.style->GetState(), VTKIS_NONE);
+}
+
+void TestCrosshairManager::interactorPansAndDollies()
+{
+    MprFixture f;
+
+    // Right drag inside an MPR viewport → pan, with that renderer as target.
+    f.moveTo(75, 75);
+    f.style->OnRightButtonDown();
+    QCOMPARE(f.style->GetState(), VTKIS_PAN);
+    f.moveTo(90, 90);
+    f.style->OnMouseMove();
+    f.style->OnRightButtonUp();
+    QCOMPARE(f.style->GetState(), VTKIS_NONE);
+
+    // Right drag inside the 3-D viewport → pan against the 3-D renderer.
+    f.moveTo(225, 75);
+    f.style->OnRightButtonDown();
+    QCOMPARE(f.style->GetState(), VTKIS_PAN);
+    f.moveTo(255, 105);
+    f.style->OnMouseMove();
+    f.style->OnRightButtonUp();
+    QCOMPARE(f.style->GetState(), VTKIS_NONE);
+
+    // Middle drag inside an MPR viewport → dolly against that renderer.
+    f.moveTo(75, 75);
+    f.style->OnMiddleButtonDown();
+    QCOMPARE(f.style->GetState(), VTKIS_DOLLY);
+    f.moveTo(90, 90);
+    f.style->OnMouseMove();
+    f.style->OnMiddleButtonUp();
+    QCOMPARE(f.style->GetState(), VTKIS_NONE);
+
+    // Middle drag inside the 3-D viewport → dolly, with the 3-D renderer.
+    f.moveTo(225, 75);
+    f.style->OnMiddleButtonDown();
+    QCOMPARE(f.style->GetState(), VTKIS_DOLLY);
+    f.moveTo(255, 105);
+    f.style->OnMouseMove();
+    f.style->OnMiddleButtonUp();
+    QCOMPARE(f.style->GetState(), VTKIS_NONE);
+}
+
+void TestCrosshairManager::interactorFallsBackWhenNoViewMatches()
+{
+    // A manager that was never initialized has three null renderers: detectView
+    // must skip them (not crash), and with no 3-D renderer the style must fall
+    // back to VTK's default handling.
+    vtkNew<HeadlessRenderWindow> window;
+    window->SetSize(300, 300);
+    vtkNew<vtkRenderer> viewer;
+    window->AddRenderer(viewer);
+
+    vtkNew<vtkRenderWindowInteractor> interactor;
+    interactor->SetRenderWindow(window);
+
+    CrosshairManager uninitialized;
+    vtkNew<CrosshairInteractorStyle> style;
+    style->manager = &uninitialized;
+    style->renderer3D = nullptr;
+    style->SetInteractor(interactor);
+
+    interactor->SetEventPosition(150, 150);
+    style->OnLeftButtonDown();
+    style->OnMouseMove();
+    style->OnLeftButtonUp();
+    QVERIFY(!uninitialized.anyDragging());
+
+    // No active view + VTKIS_NONE → the move is a no-op, not a pan.
+    interactor->SetEventPosition(150, 150);
+    style->OnMouseMove();
+    QCOMPARE(style->GetState(), VTKIS_NONE);
+
+    // With no viewport under the pointer, pan/dolly still use VTK's defaults.
+    style->OnRightButtonDown();
+    QCOMPARE(style->GetState(), VTKIS_PAN);
+    style->OnMouseMove();
+    style->OnRightButtonUp();
+    QCOMPARE(style->GetState(), VTKIS_NONE);
+
+    style->OnMiddleButtonDown();
+    QCOMPARE(style->GetState(), VTKIS_DOLLY);
+    style->OnMouseMove();
+    style->OnMiddleButtonUp();
+    QCOMPARE(style->GetState(), VTKIS_NONE);
 }
 
 QTEST_GUILESS_MAIN(TestCrosshairManager)
