@@ -305,7 +305,25 @@ jobs:
       # section 5b), which is what lets OpenCppCoverage map lines.
       - name: Install OpenCppCoverage
         shell: pwsh
-        run: choco install opencppcoverage --no-progress -y
+        run: |
+          # Chocolatey's NuGet v2 feed intermittently returns 503 for this
+          # package and (incorrectly) exits successfully afterwards. Download
+          # the pinned upstream installer instead, retry transient failures,
+          # then verify the executable before the coverage gate starts.
+          $version = "0.9.9.0"
+          $installer = Join-Path $env:RUNNER_TEMP "OpenCppCoverageSetup-x64-$version.exe"
+          $installDir = Join-Path $env:RUNNER_TEMP "OpenCppCoverage"
+          $url = "https://github.com/OpenCppCoverage/OpenCppCoverage/releases/download/release-$version/OpenCppCoverageSetup-x64-$version.exe"
+
+          curl.exe --fail --location --retry 3 --retry-all-errors --output $installer $url
+          if ($LASTEXITCODE -ne 0) { Write-Error "OpenCppCoverage download failed with exit code $LASTEXITCODE"; exit 1 }
+
+          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- "/DIR=$installDir"
+          if ($LASTEXITCODE -ne 0) { Write-Error "OpenCppCoverage installer failed with exit code $LASTEXITCODE"; exit 1 }
+
+          $tool = Join-Path $installDir "OpenCppCoverage.exe"
+          if (-not (Test-Path -LiteralPath $tool)) { Write-Error "OpenCppCoverage.exe was not installed at $tool"; exit 1 }
+          "OPENCPPCOVERAGE_EXE=$tool" >> $env:GITHUB_ENV
 
       - name: Coverage gate (guard layer)
         shell: pwsh

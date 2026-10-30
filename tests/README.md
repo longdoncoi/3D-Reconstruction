@@ -480,7 +480,8 @@ Release builds must ship PDBs for gate 3 to map anything: `CMakeLists.txt`
 section 5b adds `/Zi` to the Release compile flags and `/DEBUG /OPT:REF
 /OPT:ICF` to the link flags (symbols without changing Release codegen). The
 tool is discovered through `OPENCPPCOVERAGE_EXE`, `PATH`, or the known install
-locations; CI installs it with `choco install opencppcoverage --no-progress -y`.
+locations; CI installs the pinned `0.9.9.0` upstream release into its temporary
+directory and exports `OPENCPPCOVERAGE_EXE` for the gate.
 
 ## Gate 4 — mutation check
 
