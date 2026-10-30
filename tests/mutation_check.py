@@ -171,7 +171,7 @@ MUTANTS: tuple[Mutant, ...] = (
     # ── PluginHost: API-version gate (stale-ABI plugin must be rejected)
     Mutant(
         "src/core/PluginHost.cpp",
-        "if (plugin->apiVersion() != IPlugin::kApiVersion) {",
+        "if (*apiVersion != IPlugin::kApiVersion) {",
         "if (false) {",
         "TestPluginHost",
         "TestPluginHost",
@@ -181,7 +181,7 @@ MUTANTS: tuple[Mutant, ...] = (
     #    different Qt/MSVC/runtime must be rejected instead of corrupted)
     Mutant(
         "src/core/PluginHost.cpp",
-        "if (plugin->abiFingerprint() != IPlugin::kAbiFingerprint) {",
+        "if (*abiFingerprint != IPlugin::kAbiFingerprint) {",
         "if (false) {",
         "TestPluginHost",
         "TestPluginHost",
@@ -1177,12 +1177,12 @@ MUTANTS: tuple[Mutant, ...] = (
     #    rollback (the whole point of a failed init) can run.
     Mutant(
         "src/core/PluginHost.cpp",
-        "        qWarning() << \"Plugin\" << plugin->pluginName()\n"
+        "        qWarning() << \"Plugin\" << safePluginName(plugin)\n"
         "                   << \"threw an unknown exception during initialize()\";\n"
         "    }\n"
         "    return false;\n"
         "}",
-        "        qWarning() << \"Plugin\" << plugin->pluginName()\n"
+        "        qWarning() << \"Plugin\" << safePluginName(plugin)\n"
         "                   << \"threw an unknown exception during initialize()\";\n"
         "    }\n"
         "    return true; // mutant: a throwing plugin is reported as initialized\n"
