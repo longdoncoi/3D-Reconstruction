@@ -105,6 +105,10 @@ private:
     // Owned services
     SignalBus*                                  m_signalBus    = nullptr;
     std::unique_ptr<MutableServiceRegistry>     m_registry;
+    /// Declared before every consumer: AIAssistant holds ILanguageService*.
+    /// Members are destroyed in reverse declaration order, so this one must
+    /// come first among the services to be destroyed last.
+    std::unique_ptr<LanguageManager>            m_languageManager;
     std::unique_ptr<ShellService>               m_shellService;
     std::unique_ptr<SceneService>               m_sceneService;
     std::unique_ptr<ViewerService>              m_viewerService;
@@ -120,7 +124,6 @@ private:
     std::unique_ptr<AIAssistant>                m_aiAssistant;
     std::unique_ptr<MailService>                m_mailService;
     std::unique_ptr<SmtpOutbox>                 m_outbox; ///< IOutgoingMail seam for UserManager
-    std::unique_ptr<LanguageManager>            m_languageManager;
 };
 
 #endif // APPSHELL_H

@@ -242,6 +242,58 @@ MUTANTS: tuple[Mutant, ...] = (
         "TestPluginHost",
         "shutdown cleans in init order (dependencies torn down before dependents)",
     ),
+    # ── PluginHost: metadata is plugin code too. The barrier on
+    #    initialize()/cleanup() was not class-wide: a throw from pluginName(),
+    #    apiVersion(), abiFingerprint(), dependencies(), loadPhase() or
+    #    loadOrder() escaped discovery/resolution, and in ~PluginHost() (which
+    #    is implicitly noexcept) it reached std::terminate(). The whole class
+    #    goes through one helper, so one mutant disables every call site.
+    Mutant(
+        "src/core/PluginHost.cpp",
+        "{\n"
+        "    try {\n"
+        "        return call();\n"
+        "    } catch (const std::exception &e) {\n"
+        "        *errors << QStringLiteral(\"Plugin %1: %2 threw: %3\")\n"
+        "                       .arg(subject, QString::fromLatin1(method), QString::fromUtf8(e.what()));\n"
+        "    } catch (...) {\n"
+        "        *errors << QStringLiteral(\"Plugin %1: %2 threw an unknown exception\")\n"
+        "                       .arg(subject, QString::fromLatin1(method));\n"
+        "    }\n"
+        "    return std::nullopt;\n"
+        "}",
+        "{\n"
+        "    Q_UNUSED(subject);\n"
+        "    Q_UNUSED(method);\n"
+        "    Q_UNUSED(errors);\n"
+        "    return call();\n"
+        "}",
+        "TestPluginHost",
+        "TestPluginHost",
+        "plugin metadata bypasses the exception barrier (a throw aborts startup teardown)",
+    ),
+    # ── PluginHost: the diagnostic name must not call back into a plugin that
+    #    is already known to throw. initializePlugin() logs the name from its
+    #    catch block; a second throw there escapes the barrier it reports on.
+    #    The same helper keeps ~PluginHost() total.
+    Mutant(
+        "src/core/PluginHost.cpp",
+        "QString safePluginName(IPlugin *plugin)\n"
+        "{\n"
+        "    try {\n"
+        "        return plugin->pluginName();\n"
+        "    } catch (...) {\n"
+        "        return QStringLiteral(\"<unknown plugin>\");\n"
+        "    }\n"
+        "}",
+        "QString safePluginName(IPlugin *plugin)\n"
+        "{\n"
+        "    return plugin->pluginName();\n"
+        "}",
+        "TestPluginHost",
+        "TestPluginHost",
+        "the diagnostic plugin name calls back into a throwing plugin (terminate)",
+    ),
     # ── PluginDependencyResolver: unknown phase is a wiring bug, not a hint
     Mutant(
         "src/core/PluginDependencyResolver.cpp",
@@ -687,6 +739,29 @@ MUTANTS: tuple[Mutant, ...] = (
         _PLANT,
         "TestArchitectureBoundaries",
         "planted: a plugin's include path hands it the concrete kernel headers",
+    ),
+    # ── Architecture guard itself: the public surface (src/include +
+    #    src/utils) must not include an internal header. A header-only helper
+    #    there is compiled into every plugin, so a concrete service/core header
+    #    in its include closure is a boundary leak.
+    Mutant(
+        "src/utils/Logger.h",
+        "",
+        "\n#include \"SecretVault.h\" // planted by mutation_check — public surface must stay internal-free\n",
+        _PLANT,
+        "TestArchitectureBoundaries",
+        "planted: the public utility surface includes a concrete kernel header",
+    ),
+    # ── Architecture guard itself: src/core must not depend UP on src/services
+    #    — the kernel is the lower layer, and the reverse edge would compile
+    #    (both are in AppCore) while inverting the dependency graph silently.
+    Mutant(
+        "src/core/PluginHost.cpp",
+        "",
+        "\n#include \"MailService.h\" // planted by mutation_check — core must not reach up into services\n",
+        _PLANT,
+        "TestArchitectureBoundaries",
+        "planted: the kernel includes a service header (upward dependency)",
     ),
     # ── Teardown rule: a NEW unbounded wait must be rejected, not just the
     #    historical `waitForFinished()` call it was written for. The marker is
@@ -1174,7 +1249,7 @@ MUTANTS: tuple[Mutant, ...] = (
 # ServiceRegistry read-only surface, GuardedApplication barrier, IAIService
 # loader seam, VideoTrackerThread terminate fallback, teardown rule,
 # MainWindow tab contract).
-MIN_MUTANTS = 86
+MIN_MUTANTS = 90
 
 
 #: Header-only files on the plugin-facing surface carry load-bearing decisions

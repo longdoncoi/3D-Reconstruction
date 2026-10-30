@@ -17,13 +17,22 @@ class FakePlugin : public IPlugin {
 public:
     FakePlugin(QString name, QStringList *log) : m_name(std::move(name)), m_log(log) {}
 
-    QString pluginName() const override { return m_name; }
+    QString pluginName() const override {
+        if (metadataThrowsUnknown) throw 42;   // only catch (...) can contain it
+        if (pluginNameThrows)
+            throw std::runtime_error("the plugin exploded in pluginName()");
+        return m_name;
+    }
     bool initialize(IAppContext * /*context*/) override {
         m_log->append("init:" + m_name);
         if (initializeThrowsUnknown)
             throw 42;   // a non-std type: only catch (...) can contain it
-        if (initializeThrows)
+        if (initializeThrows) {
+            // The barrier logs the plugin name from its catch block; a plugin
+            // that throws there too must not escape the barrier it reports on.
+            if (pluginNameThrowsOnInitializeFailure) pluginNameThrows = true;
             throw std::runtime_error("the plugin exploded during initialize");
+        }
         return initializeSucceeds;
     }
     void cleanup() override {
@@ -33,17 +42,42 @@ public:
         if (cleanupThrows)
             throw std::runtime_error("the plugin exploded during cleanup");
     }
-    int loadOrder() const override { return order; }
-    int apiVersion() const override { return version; }
-    quint64 abiFingerprint() const override { return abi; }
-    QStringList dependencies() const override { return deps; }
-    QString loadPhase() const override { return phase; }
+    int loadOrder() const override {
+        if (loadOrderThrows) throw std::runtime_error("the plugin exploded in loadOrder()");
+        return order;
+    }
+    int apiVersion() const override {
+        if (apiVersionThrows) throw std::runtime_error("the plugin exploded in apiVersion()");
+        return version;
+    }
+    quint64 abiFingerprint() const override {
+        if (abiFingerprintThrows)
+            throw std::runtime_error("the plugin exploded in abiFingerprint()");
+        return abi;
+    }
+    QStringList dependencies() const override {
+        if (dependenciesThrows)
+            throw std::runtime_error("the plugin exploded in dependencies()");
+        return deps;
+    }
+    QString loadPhase() const override {
+        if (loadPhaseThrows) throw std::runtime_error("the plugin exploded in loadPhase()");
+        return phase;
+    }
 
     bool initializeSucceeds = true;
     bool initializeThrows = false;
     bool initializeThrowsUnknown = false;
     bool cleanupThrows = false;
     bool cleanupThrowsUnknown = false;
+    bool pluginNameThrows = false;
+    bool pluginNameThrowsOnInitializeFailure = false;
+    bool apiVersionThrows = false;
+    bool abiFingerprintThrows = false;
+    bool dependenciesThrows = false;
+    bool loadPhaseThrows = false;
+    bool loadOrderThrows = false;
+    bool metadataThrowsUnknown = false;
     int order = 100;
     int version = IPlugin::kApiVersion;
     quint64 abi = IPlugin::kAbiFingerprint;
@@ -74,6 +108,11 @@ private slots:
     void initializeFailureRollsBackEarlierPlugins();
     void initializeExceptionRollsBackInsteadOfAborting();
     void aNonStandardExceptionIsContainedToo();
+    void metadataExceptionRejectsThePlugin_data();
+    void metadataExceptionRejectsThePlugin();
+    void aNonStandardMetadataExceptionIsContained();
+    void aThrowingPluginNameDoesNotEscapeShutdown();
+    void aThrowingPluginNameDoesNotEscapeTheInitializeBarrier();
     void cleanupExceptionDoesNotStopTheRemainingCleanups();
     void shutdownCleansUpInReverseInitOrder();
     void missingDirectoryIsReported();
@@ -311,6 +350,158 @@ void TestPluginHost::aNonStandardExceptionIsContainedToo()
     QVERIFY(!host.initializeAll(nullptr));
     QCOMPARE(log, QStringList({"init:alpha", "init:beta", "cleanup:beta", "cleanup:alpha"}));
     QVERIFY(host.isEmpty());
+}
+
+void TestPluginHost::metadataExceptionRejectsThePlugin_data()
+{
+    QTest::addColumn<QString>("hook");
+    QTest::newRow("pluginName") << QStringLiteral("pluginName");
+    QTest::newRow("dependencies") << QStringLiteral("dependencies");
+    QTest::newRow("loadPhase") << QStringLiteral("loadPhase");
+    QTest::newRow("loadOrder") << QStringLiteral("loadOrder");
+    QTest::newRow("apiVersion") << QStringLiteral("apiVersion");
+    QTest::newRow("abiFingerprint") << QStringLiteral("abiFingerprint");
+}
+
+void TestPluginHost::metadataExceptionRejectsThePlugin()
+{
+    // Metadata is plugin code too. Before the barrier, a throw from any of
+    // these virtuals escaped discovery/resolution (startup died with no
+    // diagnosis) or, in shutdown, reached std::terminate() through the
+    // implicitly-noexcept destructor. The class is pinned per hook, not by one
+    // representative: every metadata virtual has a row.
+    QFETCH(QString, hook);
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QDir pluginsDir(dir.filePath("plugins"));
+    QVERIFY(QDir().mkpath(pluginsDir.path()));
+
+    QStringList log;
+    FakePlugin broken("broken", &log);
+    if (hook == QLatin1String("pluginName")) broken.pluginNameThrows = true;
+    else if (hook == QLatin1String("dependencies")) broken.dependenciesThrows = true;
+    else if (hook == QLatin1String("loadPhase")) broken.loadPhaseThrows = true;
+    else if (hook == QLatin1String("loadOrder")) broken.loadOrderThrows = true;
+    else if (hook == QLatin1String("apiVersion")) broken.apiVersionThrows = true;
+    else if (hook == QLatin1String("abiFingerprint")) broken.abiFingerprintThrows = true;
+    else QFAIL("unknown hook");
+
+    const QMap<QString, FakePlugin *> byFile{{"BrokenPlugin.dll", &broken}};
+    QVERIFY(writeFile(pluginsDir.filePath("BrokenPlugin.dll")));
+
+    PluginHost host([&byFile](const QString &path, QString *) -> IPlugin * {
+        return byFile.value(QFileInfo(path).fileName());
+    });
+
+    const bool discoveryHook =
+        hook == QLatin1String("apiVersion") || hook == QLatin1String("abiFingerprint");
+    if (discoveryHook) {
+        // The ABI gate sees the throw during discovery: the plugin is rejected
+        // before it can be appended to m_plugins.
+        QCOMPARE(host.discover(pluginsDir.path()), 0);
+        QVERIFY(host.isEmpty());
+    } else {
+        QCOMPARE(host.discover(pluginsDir.path()), 1);
+        QVERIFY(!host.resolveOrder());
+        QVERIFY(host.isEmpty());   // never continue with a partial order
+    }
+
+    const QStringList errors = host.takeErrors();
+    QVERIFY2(!errors.isEmpty(), "a throwing metadata hook must be reported");
+    bool mentionsHook = false;
+    for (const QString &error : errors) {
+        if (error.contains(hook)) {
+            mentionsHook = true;
+            break;
+        }
+    }
+    QVERIFY2(mentionsHook, qPrintable(errors.join(QStringLiteral(" | "))));
+}
+
+void TestPluginHost::aNonStandardMetadataExceptionIsContained()
+{
+    // `catch (const std::exception&)` alone would miss `throw 42` — the same
+    // reason the lifecycle barrier has a catch (...) clause.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QDir pluginsDir(dir.filePath("plugins"));
+    QVERIFY(QDir().mkpath(pluginsDir.path()));
+
+    QStringList log;
+    FakePlugin broken("broken", &log);
+    broken.pluginNameThrows = true;
+    broken.metadataThrowsUnknown = true;
+    const QMap<QString, FakePlugin *> byFile{{"BrokenPlugin.dll", &broken}};
+    QVERIFY(writeFile(pluginsDir.filePath("BrokenPlugin.dll")));
+
+    PluginHost host([&byFile](const QString &path, QString *) -> IPlugin * {
+        return byFile.value(QFileInfo(path).fileName());
+    });
+
+    QCOMPARE(host.discover(pluginsDir.path()), 1);
+    QVERIFY(!host.resolveOrder());
+    QVERIFY(host.isEmpty());
+    QVERIFY2(host.errors().join(QStringLiteral(" | ")).contains(
+                 QStringLiteral("unknown exception")),
+             qPrintable(host.errors().join(QStringLiteral(" | "))));
+}
+
+void TestPluginHost::aThrowingPluginNameDoesNotEscapeShutdown()
+{
+    // ~PluginHost() is implicitly noexcept and calls shutdown(). A pluginName()
+    // that throws there used to reach std::terminate() at application exit.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QDir pluginsDir(dir.filePath("plugins"));
+    QVERIFY(QDir().mkpath(pluginsDir.path()));
+
+    QStringList log;
+    FakePlugin alpha("alpha", &log);
+    const QMap<QString, FakePlugin *> byFile{{"APlugin.dll", &alpha}};
+    QVERIFY(writeFile(pluginsDir.filePath("APlugin.dll")));
+
+    PluginHost host([&byFile](const QString &path, QString *) -> IPlugin * {
+        return byFile.value(QFileInfo(path).fileName());
+    });
+
+    QCOMPARE(host.discover(pluginsDir.path()), 1);
+    QVERIFY(host.resolveOrder());
+    QVERIFY(host.initializeAll(nullptr));
+
+    alpha.pluginNameThrows = true;   // only the teardown log can see it now
+    host.shutdown();                 // must not terminate the process
+    QVERIFY(host.isEmpty());
+    QCOMPARE(log, QStringList({"init:alpha", "cleanup:alpha"}));
+}
+
+void TestPluginHost::aThrowingPluginNameDoesNotEscapeTheInitializeBarrier()
+{
+    // The barrier logs the plugin name from its catch block. If that second
+    // call also throws, the exception escapes the barrier that is reporting
+    // the first one — the failure mode is still std::terminate().
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QDir pluginsDir(dir.filePath("plugins"));
+    QVERIFY(QDir().mkpath(pluginsDir.path()));
+
+    QStringList log;
+    FakePlugin broken("broken", &log);
+    broken.initializeThrows = true;
+    broken.pluginNameThrowsOnInitializeFailure = true;
+    const QMap<QString, FakePlugin *> byFile{{"BrokenPlugin.dll", &broken}};
+    QVERIFY(writeFile(pluginsDir.filePath("BrokenPlugin.dll")));
+
+    PluginHost host([&byFile](const QString &path, QString *) -> IPlugin * {
+        return byFile.value(QFileInfo(path).fileName());
+    });
+
+    QCOMPARE(host.discover(pluginsDir.path()), 1);
+    QVERIFY(host.resolveOrder());
+    QVERIFY(!host.initializeAll(nullptr));
+    QVERIFY(host.isEmpty());
+    QVERIFY2(host.errors().last().contains(QStringLiteral("<unknown plugin>")),
+             qPrintable(host.errors().join(QStringLiteral(" | "))));
 }
 
 void TestPluginHost::cleanupExceptionDoesNotStopTheRemainingCleanups()

@@ -41,6 +41,10 @@
 #  14. IAIService không được phơi loader model đồng bộ: plugin kích hoạt load
 #      qua IAIModelLoadService (worker AppCore sở hữu), loader thật nằm ở
 #      IAIModelAdmin (src/services/ai, PRIVATE).
+#  15. Bề mặt công khai (src/include + src/utils) không được include header nội
+#      bộ (core/services/app/modules): nó được biên dịch vào mọi plugin.
+#  16. src/core không được phụ thuộc ngược lên services/app/modules — kernel là
+#      lớp thấp nhất; chiều ngược lại vẫn compile nên chỉ rule này bắt được.
 #
 # Bypass-resistance: so sánh tên header là KHÔNG phân biệt hoa/thường (Windows
 # filesystem cũng vậy) và include bằng <...> được kiểm tra y như "...".
@@ -453,6 +457,68 @@ if(EXISTS "${_iai_header}")
             "src/include/IAIService.h: loader model đồng bộ lộ ra plugin — chuyển sang IAIModelAdmin (src/services/ai) và IAIModelLoadService")
     endif()
 endif()
+
+
+# ── 15. Bề mặt công khai không được include header nội bộ ────────────────────
+#     src/include + src/utils được biên dịch vào MỌI plugin: header nội bộ
+#     trong include closure của chúng là rò rỉ ranh giới, kể cả khi plugin
+#     không include trực tiếp. Build graph chặn phần lớn trường hợp (src/core
+#     không nằm trên include path của plugin), nhưng một header chỉ được
+#     include từ AppCore thì vẫn lọt — rule này bắt ngay tại nguồn.
+file(GLOB_RECURSE MODULE_HEADERS "${SOURCE_DIR}/src/modules/*.h")
+set(INTERNAL_BASENAMES "")
+foreach(h IN LISTS CORE_HEADERS SERVICE_HEADERS APP_HEADERS MODULE_HEADERS)
+    get_filename_component(base "${h}" NAME)
+    normalise_name(base "${base}")
+    list(APPEND INTERNAL_BASENAMES "${base}")
+endforeach()
+list(REMOVE_DUPLICATES INTERNAL_BASENAMES)
+
+foreach(h IN LISTS PUBLIC_HEADERS UTILS_HEADERS)
+    file(READ "${h}" content)
+    string(REGEX MATCHALL "#[ \t]*include[ \t]+[\"<][^\">]+[\">]" includes "${content}")
+    foreach(inc IN LISTS includes)
+        string(REGEX REPLACE ".*[\"<]([^\">]+)[\">].*" "\\1" path "${inc}")
+        get_filename_component(base "${path}" NAME)
+        normalise_name(base "${base}")
+        if(base IN_LIST INTERNAL_BASENAMES)
+            file(RELATIVE_PATH rel "${SOURCE_DIR}" "${h}")
+            list(APPEND VIOLATIONS
+                "${rel}: bề mặt công khai include header nội bộ \"${path}\" — src/include + src/utils là ABI dùng chung, không được kéo core/services/app/modules")
+        endif()
+    endforeach()
+endforeach()
+
+
+# ── 16. src/core không được phụ thuộc ngược lên services/app/modules ─────────
+#     Kernel là lớp thấp nhất: service/app/module được include core, không phải
+#     chiều ngược lại. Chiều ngược lại vẫn compile (mọi thứ nằm trong AppCore)
+#     nên không có lỗi biên dịch nào bắt được — chỉ rule này.
+set(UPWARD_BASENAMES "")
+foreach(h IN LISTS SERVICE_HEADERS APP_HEADERS MODULE_HEADERS)
+    get_filename_component(base "${h}" NAME)
+    normalise_name(base "${base}")
+    list(APPEND UPWARD_BASENAMES "${base}")
+endforeach()
+list(REMOVE_DUPLICATES UPWARD_BASENAMES)
+
+file(GLOB_RECURSE CORE_SOURCES
+    "${SOURCE_DIR}/src/core/*.cpp"
+    "${SOURCE_DIR}/src/core/*.h")
+foreach(source IN LISTS CORE_SOURCES)
+    file(READ "${source}" content)
+    string(REGEX MATCHALL "#[ \t]*include[ \t]+[\"<][^\">]+[\">]" includes "${content}")
+    foreach(inc IN LISTS includes)
+        string(REGEX REPLACE ".*[\"<]([^\">]+)[\">].*" "\\1" path "${inc}")
+        get_filename_component(base "${path}" NAME)
+        normalise_name(base "${base}")
+        if(base IN_LIST UPWARD_BASENAMES)
+            file(RELATIVE_PATH rel "${SOURCE_DIR}" "${source}")
+            list(APPEND VIOLATIONS
+                "${rel}: src/core include header cấp cao hơn \"${path}\" — kernel là lớp thấp nhất; service/app/module được include core, không phải ngược lại")
+        endif()
+    endforeach()
+endforeach()
 
 
 if(VIOLATIONS)

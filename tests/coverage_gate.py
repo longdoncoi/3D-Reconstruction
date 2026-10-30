@@ -195,7 +195,7 @@ TESTS: tuple[tuple[str, str, dict[str, str]], ...] = (
 # pass (the baseline in coverage_floors.json enforces that).
 FLOORS: dict[str, float] = {
     # ── Kernel + guard layer: the files every plugin transitively depends on.
-    "src/core/pluginhost.cpp": 97,               # measured 97.2
+    "src/core/pluginhost.cpp": 97,               # measured 98.1 (152/155)
     "src/core/plugindependencyresolver.cpp": 93,  # measured 93.3
     "src/core/secretvault.cpp": 94,               # measured 94.6
     "src/core/cryptoutils.cpp": 100,              # measured 100

@@ -87,9 +87,10 @@ AppShell::AppShell(QMainWindow*           mainWindow,
 
 AppShell::~AppShell() {
   // UserManager is a process-lifetime static singleton that outlives this
-  // shell. Detach the injected outbox BEFORE m_outbox is destroyed (it is the
-  // last member, hence the first destroyed), otherwise any later UserManager
-  // email path would dereference a dangling IOutgoingMail pointer.
+  // shell. Detach the injected outbox here, in the destructor BODY: the body
+  // runs before ANY member is destroyed, so a later UserManager email path
+  // never dereferences a dangling IOutgoingMail pointer. (Do not rely on
+  // m_outbox's declaration position for this — it is not the last member.)
   UserManager::instance()->setOutgoingMail(nullptr);
   // Registry không sở hữu services, nhưng phải ngừng expose chúng trước khi
   // các unique_ptr dưới đây giải phóng impl — bất kỳ get() trễ nào trong

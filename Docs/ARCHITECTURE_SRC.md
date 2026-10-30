@@ -13,10 +13,10 @@
 
 | # | Gate | Lệnh | Chứng minh điều gì |
 |---|------|------|-------------------|
-| 1 | Ranh giới kiến trúc | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | 14 nhóm luật: plugin↔service, service↔app, confinement của singleton, khớp heavy/light PCH, `src/utils` không heavy SDK, teardown có biên (không `waitForFinished()` trần), event filter phải gỡ được, không dò cửa sổ shell, blocking I/O không qua pool không sở hữu, include path của plugin không chứa `src/core`, **mỗi lời gọi inference phải đi qua exception guard**, plugin không ghi vào `ServiceRegistry`, `IAIService` không phơi loader đồng bộ |
+| 1 | Ranh giới kiến trúc | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | 16 nhóm luật: plugin↔service, service↔app, confinement của singleton, khớp heavy/light PCH, `src/utils` không heavy SDK, teardown có biên (không `waitForFinished()` trần), event filter phải gỡ được, không dò cửa sổ shell, blocking I/O không qua pool không sở hữu, include path của plugin không chứa `src/core`, **mỗi lời gọi inference phải đi qua exception guard**, plugin không ghi vào `ServiceRegistry`, `IAIService` không phơi loader đồng bộ, **bề mặt công khai không include header nội bộ**, **`src/core` không phụ thuộc ngược lên services/app/modules** |
 | 2 | Bộ test | `ctest --test-dir build -C Release --output-on-failure` | Hành vi quan sát được của toàn bộ hợp đồng đã test (51 CTest entry: 44 executable + 7 CMake-script test) |
 | 3 | Coverage gate | `python tests/coverage_gate.py` | Mọi TU đo được có floor riêng; không TU nào "thoát" khỏi phép đo; **floor không được hạ** dưới baseline đã commit; floor là **giá trị nhỏ hơn** trong hai môi trường tham chiếu (local VS 17.12/Qt 6.9.3 và CI VS 18/Qt 6.5.3) vì PDB gán số dòng thực thi khác nhau cho cùng một file nguồn |
-| 4 | Mutation check | `python tests/mutation_check.py` | Mọi quyết định bảo vệ (guard) đã được *ghim*: đảo quyết định → test phải đỏ (86 mutant) |
+| 4 | Mutation check | `python tests/mutation_check.py` | Mọi quyết định bảo vệ (guard) đã được *ghim*: đảo quyết định → test phải đỏ (90 mutant) |
 
 **Tiền kiểm của gate 4 (đóng 2026-10-22).** Gate 4 từng **chết âm thầm**: một mutant trỏ vào `src/core/ServiceRegistry.h` sau khi file đã chuyển sang `src/include/`, nên script abort bằng `FileNotFoundError` *sau* khi pre-flight đã xanh — trông như gate đã chạy và không báo gì. Ba commit mang theo mutant hỏng, và tuyên bố "52/52 mutant ✅" chưa từng được kiểm chứng.
 
@@ -48,9 +48,9 @@ Chi tiết cách chạy, biến môi trường và bảng số đo: `tests/READM
 | **C1** | 4 gate xanh | §1 — cả 4 lệnh exit 0 | *Một gate chết **im lặng*** | Tiền kiểm tự-mục tiêu của gate 4 (§1): mỗi mutant phải trỏ vào file tồn tại với anchor đúng một lần → sai là **đỏ ngay** |
 | **C2** | Không TU nào thoát khỏi phép đo | Mọi `.cpp` trong `src/` (trừ 4 mục miễn trừ có lý do) xuất hiện trong báo cáo coverage | *Code **header-only*** — không phải TU nên gate 3 không thấy | §4.9 — `PINNED_HEADERS`: mọi header mang quyết định đều phải có ≥ 1 mutant, gate 4 từ chối khi thiếu |
 | **C3** | Floor không bao giờ giảm | Mỗi file đo được có floor là **min của các môi trường tham chiếu** (làm tròn xuống) **và** ≥ baseline đã commit | *Một quyết định quan trọng nằm trong file có coverage cao* | coverage đo **dòng**, không đo **quyết định** → gate 4 ghim quyết định |
-| **C4** | Nợ coverage được ghi nhận tường minh | File 0 % nằm trong bảng nợ (README) + in ra mỗi lần chạy | *Một lớp lỗi sống dưới một guard đã ghim ở **một thể hiện*** | §4.8 + §4.10 + §4.12 — mutant theo **lớp** quyết định, không theo một hàm |
+| **C4** | Nợ coverage được ghi nhận tường minh | File 0 % nằm trong bảng nợ (README) + in ra mỗi lần chạy | *Một lớp lỗi sống dưới một guard đã ghim ở **một thể hiện*** | §4.8 + §4.10 + §4.12 + §4.18 — mutant theo **lớp** quyết định, không theo một hàm |
 | **C5** | Tài liệu khớp code | `AGENTS.md` + `tests/README.md` + file này mô tả đúng trạng thái đo được | *Tài liệu tự đánh giá mình* | Số liệu trong tài liệu **lấy từ output của gate**, không viết tay (§6) |
-| **C6** | **Không lớp lỗi nào sống sót dưới một guard đã có** | Mỗi guard phải ghim **cả lớp** quyết định | — | §4.8 (khoá pipeline), §4.10 (exception barrier) và §4.12 (inference ra khỏi GUI thread) — 11 mutant mới, mỗi cái đảo một quyết định khác nhau trong cùng lớp |
+| **C6** | **Không lớp lỗi nào sống sót dưới một guard đã có** | Mỗi guard phải ghim **cả lớp** quyết định | — | §4.8 (khoá pipeline), §4.10 (exception barrier), §4.12 (inference ra khỏi GUI thread) và §4.18 (metadata plugin) — mỗi lần đóng lớp kèm mutant cho từng quyết định trong lớp |
 
 ### 2.1 Vì sao C6 là tiêu chí mới — và nó bắt được gì
 
@@ -76,12 +76,12 @@ còn lại** — không phải một mutant đại diện.
 
 | lớp | file .cpp | dòng đo được | tỉ lệ |
 |-----|-----------|----------------|--------|
-| `src/core` (kernel + guard) | 13 | 1 258 / 1 273 | 98,8 % |
+| `src/core` (kernel + guard) | 13 | 1 287 / 1 302 | 98,8 % |
 | `src/app` (composition root) | 2 | 195 / 246 | 79,3 % |
-| `src/services` | 40 | 2 773 / 4 303 | 64,4 % |
+| `src/services` | 40 | 3 230 / 4 303 | 75,1 % |
 | `src/utils` (tiện ích dùng chung) | 9 | 408 / 465 | 87,7 % |
 | `src/modules` (lớp plugin) | 35 | 2 771 / 4 448 | 62,3 % |
-| **tổng** | **99** | **7 862 / 10 735** | **73,2 %** |
+| **tổng** | **99** | **7 891 / 10 764** | **73,3 %** |
 
 `src/services` có 41 translation unit **nguồn** nhưng 40 file **đo được**:
 `PanStyle.cpp` chỉ là VTK boilerplate (`vtkStandardNewMacro`), nằm trong
@@ -121,8 +121,9 @@ inference dựng và đóng **hộp thoại cảnh báo thật**, kéo `src/util
 commit.
 
 Đợt §4.13 (đóng lớp "inference thất bại bị báo thành công") đo lại toàn bộ
-`src/`: **99 file đo được, 7 405 / 10 735 dòng = 69,0 %** (`MainWindow.cpp` gia
-nhập phép đo cùng `TestMainWindow`). Các file có quyết định mới
+`src/`: **99 file đo được, 7 405 / 10 735 dòng = 69,0 % tại thời điểm đó**
+(`MainWindow.cpp` gia nhập phép đo cùng `TestMainWindow`; số hiện tại là
+**7 891 / 10 764** — xem bảng §2). Các file có quyết định mới
 đều **tăng**, vì test mới đi qua đúng nhánh vừa được thêm:
 
 | file | trước | sau | vì sao |
@@ -826,6 +827,39 @@ Kiến trúc đã đóng đinh hợp đồng tách biệt giữa vòng đời á
 * Quy chuẩn hoá thành văn bản kiến trúc chính thức: `Docs/ADR_PLUGIN_UNLOAD_LIFECYCLE.md` (ADR-0032).
 * Được ghim và kiểm chứng tự động bởi `TestPluginSmoke`: cây widget của host shell sau `cleanup()` phải chứa **0** đối tượng của plugin.
 
+### 4.18 Đóng **cả lớp** "exception từ metadata plugin" (đã đóng 2026-10)
+
+§4.10 đã đóng lớp exception cho `initialize()` / `cleanup()` và cho các entry
+point inference. Nhưng `PluginHost` còn gọi **sáu virtual khác** của plugin
+trước khi bất kỳ widget nào được tạo:
+
+| lời gọi | nơi gọi | hậu quả nếu ném |
+|---------|---------|-----------------|
+| `apiVersion()`, `abiFingerprint()` | `discover()` | exception thoát khỏi `load()`; app khởi động thất bại, không nêu plugin nào |
+| `pluginName()`, `dependencies()`, `loadPhase()`, `loadOrder()` | `resolveOrder()` | thoát khỏi `load()` với `m_plugins` đã có phần tử, `m_errors` rỗng |
+| `pluginName()` | `shutdown()` (gọi từ `~PluginHost()`) | destructor là `noexcept` ⇒ `std::terminate()` lúc thoát app |
+| `pluginName()` | catch của `initializePlugin()` / `cleanupPlugin()` | exception thứ hai thoát khỏi chính barrier đang báo lỗi thứ nhất |
+
+Đây đúng là lỗi C6: guard đã có cho hai entry point của cùng lớp (plugin code
+do host gọi), nhưng các anh em metadata thì không. Metadata là code plugin
+thật: một `QString` có thể ném `std::bad_alloc`, một plugin SDK có thể ném
+kiểu riêng, và plugin build thiếu `/EHsc` có thể ném `int`.
+
+Đã đóng bằng **một helper duy nhất**:
+`pluginMetadata(subject, method, &m_errors, call)` trả `std::optional<T>`,
+bắt `std::exception` + `...`, ghi lỗi kèm tên method và biến "plugin hỏng"
+thành "plugin bị loại". Mọi call site đi qua nó; `safePluginName()` là biến
+thể không bao giờ ném, dùng cho chính các thông điệp lỗi và cho `shutdown()`.
+Vì barrier nằm ở một chỗ, **một mutant** đảo nó làm đỏ toàn bộ lớp; test dữ
+liệu hoá (`metadataExceptionRejectsThePlugin`) chạy **sáu hook**, không phải
+một đại diện.
+
+Ghim: **2 mutant** (barrier trung tâm, `safePluginName`) + 4 test mới
+(`metadataExceptionRejectsThePlugin` với 6 dòng dữ liệu,
+`aNonStandardMetadataExceptionIsContained`,
+`aThrowingPluginNameDoesNotEscapeShutdown`,
+`aThrowingPluginNameDoesNotEscapeTheInitializeBarrier`).
+
 ## 5. Nợ còn lại (có đo, chưa xử lý)
 
 Xem bảng "coverage debt" trong `tests/README.md` — mỗi dòng là một file chưa
@@ -911,7 +945,7 @@ Bốn gate đều chạy offline (không tải ONNX Runtime 323 MB, không cài 
 | 1 | `cmake -DSOURCE_DIR=<repo> -P tests/CheckArchitectureBoundaries.cmake` | exit 0 | một luật ranh giới bị vi phạm |
 | 2 | `ctest --test-dir build -C Release --output-on-failure` | 51/51 | một hợp đồng quan sát được bị phá |
 | 3 | `python tests/coverage_gate.py` | "99 file(s) at or above their floors" | một file đã **thoát** khỏi phép đo, hoặc coverage **tụt** dưới floor |
-| 4 | `python tests/mutation_check.py` | "86/86 killed, 0 survived, 0 stale, 0 invalid" | một quyết định bảo vệ **không còn được ghim** |
+| 4 | `python tests/mutation_check.py` | "90/90 killed, 0 survived, 0 stale, 0 invalid" | một quyết định bảo vệ **không còn được ghim** |
 
 Bước 4 **tự kiểm mục tiêu của mình trước khi rebuild** (file tồn tại, anchor
 đúng một lần, header đã ghim) — nên nó đỏ **ngay** với danh sách mutant hỏng,

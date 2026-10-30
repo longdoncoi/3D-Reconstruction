@@ -188,7 +188,7 @@ reporting a gap.
 | `src/core/usermanager.cpp` | 100.0 % (351/351) | 100 |
 | `src/core/usersettingsstore.cpp` | 100.0 % (106/106) | 100 |
 | `src/core/appconfig.cpp` | 98.8 % (79/80) | 98 |
-| `src/core/pluginhost.cpp` | 97.6 % (123/126) | 97 |
+| `src/core/pluginhost.cpp` | 98.1 % (152/155) | 97 |
 | `src/core/languagemanager.cpp` | 96.5 % (55/57) | 96 |
 | `src/core/secretvault.cpp` | 94.6 % (53/56) | 94 |
 | `src/core/plugindependencyresolver.cpp` | 93.3 % (84/90) | 93 |
@@ -378,15 +378,16 @@ Rules for the table:
     only in an installation without the translation files) and the
     `mkpath()` failure of `AppConfig` (38, only with a read-only profile);
   * **branches that need a fixture the headless CI cannot provide** — the
-    DICOM pipeline (`dicomloader` 1.5 %), the ONNX-backed AI services
-    (`aiservice` 10 %, `aiprocessor` 9.5 %), the TLS SMTP dialogue
-    (`smtpmailer` 21.6 %, the server must present a trusted certificate),
-    the heavy reconstruction post-processing (`reconstructionpostprocessor`
-    20.0 %) and the VTK scene (`sceneservice` 4.9 % — the constructor needs a
-    real `QVTKOpenGLNativeWidget`, i.e. an OpenGL context, which the
-    offscreen platform does not provide).  These files are *measured* (they
-    have floors), so a regression in their reachable code still fails the
-    gate; only the fixture-bound branches stay uncovered.
+    ONNX-backed `aiprocessor` (the exporter multiplies every allocation and
+    session creation dies with `std::bad_alloc`, so the gate sets
+    `AI_SERVICE_NO_MODELS`) and the TLS SMTP dialogue (`smtpmailer`, the
+    server must present a trusted certificate).  These files are *measured*
+    (they have floors), so a regression in their reachable code still fails
+    the gate; only the fixture-bound branches stay uncovered.  The DICOM
+    pipeline, the ONNX service wrapper, the reconstruction post-processing
+    and the VTK scene are covered by fixture-based tests; their numbers are
+    in the table above and are deliberately not repeated here — a second copy
+    is a number that can drift.
   The guard layer's remaining lines all fall into the classes above — no
   branch was left unnamed; the floors reflect that (90-100 %).
 * The former
@@ -659,4 +660,4 @@ Discipline (mirrors `AIAssistant/scripts/mutation_check.py`):
   build (or run the gate in CI) while it runs;
 * `--only SUBSTR` runs a subset by label.
 
-Reference result: **86/86 killed, 0 survived, 0 stale, 0 invalid**.
+Reference result: **90/90 killed, 0 survived, 0 stale, 0 invalid**.

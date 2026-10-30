@@ -12,8 +12,54 @@
 #include <QStringList>
 
 #include <exception>
+#include <optional>
 
 namespace {
+
+/// Runs one piece of plugin metadata behind the same barrier as the lifecycle
+/// hooks.
+///
+/// Metadata is plugin code too: `pluginName()`, `dependencies()` and the rest
+/// are virtuals implemented in the plugin DLL. A `QString` allocation can
+/// throw `std::bad_alloc`, an SDK-backed plugin can throw its own type, and a
+/// plugin built without `/EHsc` can throw an `int`. Letting one escape has two
+/// outcomes, both fatal:
+///   * discovery/resolution — the exception leaves `load()` and aborts startup
+///     without reporting which plugin caused it;
+///   * shutdown — `~PluginHost()` is implicitly `noexcept`, so the same
+///     exception becomes `std::terminate()` during application teardown.
+/// The barrier turns "this plugin is broken" into "this plugin is rejected",
+/// which every caller already handles (drop it + record the reason).
+template <typename F>
+auto pluginMetadata(const QString &subject, const char *method, QStringList *errors, F &&call)
+    -> std::optional<decltype(call())>
+{
+    try {
+        return call();
+    } catch (const std::exception &e) {
+        *errors << QStringLiteral("Plugin %1: %2 threw: %3")
+                       .arg(subject, QString::fromLatin1(method), QString::fromUtf8(e.what()));
+    } catch (...) {
+        *errors << QStringLiteral("Plugin %1: %2 threw an unknown exception")
+                       .arg(subject, QString::fromLatin1(method));
+    }
+    return std::nullopt;
+}
+
+/// The diagnostic name, used from error paths and destructors.
+///
+/// It must never call back into plugin code that is already known to throw:
+/// `initializePlugin()` logs the plugin name from its `catch` block, and a
+/// `pluginName()` that throws there would escape the barrier it is reporting
+/// on. The same helper keeps `~PluginHost()` total.
+QString safePluginName(IPlugin *plugin)
+{
+    try {
+        return plugin->pluginName();
+    } catch (...) {
+        return QStringLiteral("<unknown plugin>");
+    }
+}
 
 /// Runs a plugin hook with an exception barrier.
 ///
@@ -31,10 +77,10 @@ bool initializePlugin(IPlugin *plugin, IAppContext *context)
     try {
         return plugin->initialize(context);
     } catch (const std::exception &e) {
-        qWarning() << "Plugin" << plugin->pluginName()
+        qWarning() << "Plugin" << safePluginName(plugin)
                    << "threw during initialize():" << e.what();
     } catch (...) {
-        qWarning() << "Plugin" << plugin->pluginName()
+        qWarning() << "Plugin" << safePluginName(plugin)
                    << "threw an unknown exception during initialize()";
     }
     return false;
@@ -48,10 +94,10 @@ void cleanupPlugin(IPlugin *plugin)
     try {
         plugin->cleanup();
     } catch (const std::exception &e) {
-        qWarning() << "Plugin" << plugin->pluginName()
+        qWarning() << "Plugin" << safePluginName(plugin)
                    << "threw during cleanup():" << e.what();
     } catch (...) {
-        qWarning() << "Plugin" << plugin->pluginName()
+        qWarning() << "Plugin" << safePluginName(plugin)
                    << "threw an unknown exception during cleanup()";
     }
 }
@@ -86,19 +132,35 @@ int PluginHost::discover(const QString &directory, const QString &nameFilter) {
         IPlugin *plugin = m_loader ? m_loader(filePath, &error)
                                    : loadWithQPluginLoader(filePath, &error);
         if (plugin) {
-            if (plugin->apiVersion() != IPlugin::kApiVersion) {
+            const auto apiVersion = pluginMetadata(
+                fileName, "apiVersion()", &m_errors,
+                [plugin] { return plugin->apiVersion(); });
+            if (!apiVersion) {
+                m_errors << QStringLiteral("Plugin %1: rejected (its apiVersion() threw)")
+                                .arg(fileName);
+                continue;
+            }
+            if (*apiVersion != IPlugin::kApiVersion) {
                 m_errors << QStringLiteral("Plugin %1: unsupported API version %2 (expected %3)")
                                 .arg(fileName)
-                                .arg(plugin->apiVersion())
+                                .arg(*apiVersion)
                                 .arg(IPlugin::kApiVersion);
                 continue;
             }
-            if (plugin->abiFingerprint() != IPlugin::kAbiFingerprint) {
+            const auto abiFingerprint = pluginMetadata(
+                fileName, "abiFingerprint()", &m_errors,
+                [plugin] { return plugin->abiFingerprint(); });
+            if (!abiFingerprint) {
+                m_errors << QStringLiteral("Plugin %1: rejected (its abiFingerprint() threw)")
+                                .arg(fileName);
+                continue;
+            }
+            if (*abiFingerprint != IPlugin::kAbiFingerprint) {
                 m_errors << QStringLiteral(
                                 "Plugin %1: incompatible ABI fingerprint 0x%2 (host 0x%3) — "
                                 "rebuild it with the same Qt/MSVC/configuration")
                                 .arg(fileName)
-                                .arg(plugin->abiFingerprint(), 0, 16)
+                                .arg(*abiFingerprint, 0, 16)
                                 .arg(IPlugin::kAbiFingerprint, 0, 16);
                 continue;
             }
@@ -114,11 +176,33 @@ bool PluginHost::resolveOrder() {
     QList<PluginDependencyResolver::PluginInfo> infos;
     infos.reserve(m_plugins.size());
     for (int i = 0; i < m_plugins.size(); ++i) {
+        IPlugin *plugin = m_plugins[i];
+        const QString subject = QStringLiteral("index %1").arg(i);
+
+        const auto name = pluginMetadata(
+            subject, "pluginName()", &m_errors,
+            [plugin] { return plugin->pluginName(); });
+        const auto dependencies = pluginMetadata(
+            subject, "dependencies()", &m_errors,
+            [plugin] { return plugin->dependencies(); });
+        const auto phase = pluginMetadata(
+            subject, "loadPhase()", &m_errors,
+            [plugin] { return plugin->loadPhase(); });
+        const auto loadOrder = pluginMetadata(
+            subject, "loadOrder()", &m_errors,
+            [plugin] { return plugin->loadOrder(); });
+        if (!name || !dependencies || !phase || !loadOrder) {
+            // Never resolve a partial order: the plugin whose metadata threw
+            // is not trustworthy, and the others may depend on it.
+            shutdown();
+            return false;
+        }
+
         PluginDependencyResolver::PluginInfo info;
-        info.name           = m_plugins[i]->pluginName();
-        info.dependencies   = m_plugins[i]->dependencies();
-        info.phase          = m_plugins[i]->loadPhase();
-        info.loadOrder      = m_plugins[i]->loadOrder();
+        info.name           = *name;
+        info.dependencies   = *dependencies;
+        info.phase          = *phase;
+        info.loadOrder      = *loadOrder;
         info.discoveryIndex = i;
         infos.append(info);
     }
@@ -146,7 +230,7 @@ bool PluginHost::initializeAll(IAppContext *context) {
     for (IPlugin *plugin : m_plugins) {
         if (!initializePlugin(plugin, context)) {
             m_errors << QStringLiteral("Plugin %1 failed to initialize; aborting plugin loading.")
-                            .arg(plugin->pluginName());
+                            .arg(safePluginName(plugin));
             // The failing plugin is cleaned up as well: it may already have
             // installed widgets into the shell, and its DLL is released right
             // after the rollback below.
@@ -166,7 +250,7 @@ bool PluginHost::initializeAll(IAppContext *context) {
 
 void PluginHost::shutdown() {
     for (auto it = m_initialized.rbegin(); it != m_initialized.rend(); ++it) {
-        qDebug() << "Cleaning up plugin:" << (*it)->pluginName();
+        qDebug() << "Cleaning up plugin:" << safePluginName(*it);
         cleanupPlugin(*it);
     }
     m_initialized.clear();
@@ -211,7 +295,7 @@ IPlugin *PluginHost::loadWithQPluginLoader(const QString &filePath, QString *err
     auto counter = std::make_shared<int>(0);
     QObject::connect(object, &QObject::destroyed, [counter]() { ++*counter; });
     m_releaseCounters.push_back(counter);
-    qDebug() << "Loaded plugin:" << plugin->pluginName();
+    qDebug() << "Loaded plugin:" << safePluginName(plugin);
     return plugin;
 }
 

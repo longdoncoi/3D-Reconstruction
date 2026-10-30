@@ -17,7 +17,9 @@
 #     executable/CMake-script split (a script test passes `-P`);
 #   * the coverage snapshot: coverage_floors.json ↔ tests/README.md table ↔
 #     the "tổng" row in Docs/ARCHITECTURE_SRC.md (file count, covered/total
-#     lines and percentage).
+#     lines and percentage), AND the five per-layer rows must sum to that
+#     total — the total-row check alone cannot see a stale layer cell;
+#   * the plugin-facing directory in AGENTS.md (src/include, never src/core).
 #
 # A docs change that updates a number without the tree (or the reverse) is
 # exactly the drift this gate exists to catch.
@@ -37,6 +39,18 @@ set(_problems "")
 function(_problem)
     string(JOIN " " _message ${ARGN})
     set(_problems "${_problems}\n  - ${_message}" PARENT_SCOPE)
+endfunction()
+
+# One decimal, rounded half up, with the Vietnamese decimal comma.
+function(_percent_one_decimal out covered total)
+    if(total GREATER 0)
+        math(EXPR _pct10 "((1000 * ${covered}) + (${total} / 2)) / ${total}")
+        math(EXPR _whole "${_pct10} / 10")
+        math(EXPR _frac "${_pct10} % 10")
+        set(${out} "${_whole},${_frac}" PARENT_SCOPE)
+    else()
+        set(${out} "" PARENT_SCOPE)
+    endif()
 endfunction()
 
 # ── Inputs ────────────────────────────────────────────────────────────────────
@@ -256,6 +270,68 @@ else()
             _problem("Docs/ARCHITECTURE_SRC.md total percentage is ${_doc_percent} %;"
                      "the README rows compute to ${_expected_percent} %")
         endif()
+    endif()
+endif()
+
+# ── 5b. Per-layer coverage rows must sum to the total ────────────────────────
+# The total-row check above compares against the README sum, which is the
+# source of truth. It therefore cannot see a stale LAYER cell: in 2026-10 the
+# `src/services` row still said 2 773 while the README rows summed to 3 230,
+# and the total row was correct — the table contradicted itself and the gate
+# stayed green. Sum the five rows and check each one's percentage against its
+# own cells.
+set(_layer_covered 0)
+set(_layer_total 0)
+set(_layer_rows 0)
+# Read + split: `file(STRINGS)` skips the two rows that carry Vietnamese
+# descriptions on this CMake version, which made the check silently partial.
+file(READ "${_arch}" _arch_layers_text)
+string(REPLACE "\n" ";" _arch_lines "${_arch_layers_text}")
+foreach(_line IN LISTS _arch_lines)
+    if(_line MATCHES "\\| `(src/[a-z]+)`[^|]*\\| ([0-9]+) \\| ([0-9 ]+) / ([0-9 ]+) \\| ([0-9,]+) % \\|")
+        set(_layer "${CMAKE_MATCH_1}")
+        set(_layer_cov "${CMAKE_MATCH_3}")
+        set(_layer_all "${CMAKE_MATCH_4}")
+        set(_layer_pct "${CMAKE_MATCH_5}")
+        string(REPLACE " " "" _layer_cov "${_layer_cov}")
+        string(REPLACE " " "" _layer_all "${_layer_all}")
+        math(EXPR _layer_rows "${_layer_rows} + 1")
+        math(EXPR _layer_covered "${_layer_covered} + ${_layer_cov}")
+        math(EXPR _layer_total "${_layer_total} + ${_layer_all}")
+        _percent_one_decimal(_expected "${_layer_cov}" "${_layer_all}")
+        if(NOT _layer_pct STREQUAL _expected)
+            _problem("Docs/ARCHITECTURE_SRC.md layer ${_layer} says ${_layer_pct} %;"
+                     "its cells ${_layer_cov}/${_layer_all} compute to ${_expected} %")
+        endif()
+    endif()
+endforeach()
+if(NOT _layer_rows EQUAL 5)
+    _problem("Docs/ARCHITECTURE_SRC.md: expected 5 per-layer coverage rows,"
+             "found ${_layer_rows} — the layer table shape changed")
+endif()
+if(NOT _layer_covered EQUAL _readme_covered OR NOT _layer_total EQUAL _readme_total)
+    _problem("Docs/ARCHITECTURE_SRC.md per-layer rows sum to"
+             "${_layer_covered}/${_layer_total}; the total row / README sums to"
+             "${_readme_covered}/${_readme_total}")
+endif()
+
+# ── 5c. AGENTS.md: the plugin-facing directory ───────────────────────────────
+# C5 names AGENTS.md explicitly, but this gate used to read only the two
+# architecture docs. The interface directory is the single most consequential
+# path in the file (it is the ABI surface), and it had already drifted to the
+# removed `src/core/I*.h`.
+set(_agents "${SOURCE_DIR}/AGENTS.md")
+if(NOT EXISTS "${_agents}")
+    _problem("AGENTS.md is missing")
+else()
+    file(READ "${_agents}" _agents_text)
+    if(_agents_text MATCHES "src/core/I\\*\\.h")
+        _problem("AGENTS.md points plugins at src/core/I*.h; the plugin-facing"
+                 "interfaces live in src/include/I*.h (src/core is PRIVATE)")
+    endif()
+    if(NOT _agents_text MATCHES "src/include/I\\*\\.h")
+        _problem("AGENTS.md does not state the plugin-facing interface directory"
+                 " (src/include/I*.h)")
     endif()
 endif()
 

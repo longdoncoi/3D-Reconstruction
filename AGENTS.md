@@ -96,7 +96,7 @@ problems. Revisit only if plugins from outside this repo must be supported.
 
 ## Plugin-facing service interfaces
 
-Plugins talk to app services only through `src/core/I*.h` interfaces resolved
+Plugins talk to app services only through `src/include/I*.h` interfaces resolved
 from the `ServiceRegistry` (`ctx->services()->get<T>()`), never through
 concrete singletons or exe classes. Conventions:
 
@@ -322,6 +322,14 @@ reach them needs a barrier.
 - **A thread entry point** wraps its body and reports the failure through a
   signal (`VideoTrackerThread::run()` emits `errorOccurred` +
   `finishedTracking`). An exception that escapes is a process abort.
+- **Plugin metadata is plugin code too.** `PluginHost` routes every metadata
+  virtual (`pluginName()`, `apiVersion()`, `abiFingerprint()`,
+  `dependencies()`, `loadPhase()`, `loadOrder()`) through one exception
+  barrier, not only `initialize()`/`cleanup()`. A throw there used to escape
+  discovery/resolution (startup abort with no diagnosis) or reach
+  `std::terminate()` from `~PluginHost()` (implicitly `noexcept`). The
+  diagnostic name is fetched through `safePluginName()` so a throwing
+  `pluginName()` cannot escape the barrier that is logging it.
 - **A blocking call on a worker thread** is contained by `blocking::run`
   (see above).
 - The model-**load** path already had its barrier (`AIProcessor::

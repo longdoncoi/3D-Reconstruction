@@ -10,6 +10,17 @@ class APP_EXPORT SignalBus : public QObject {
 public:
     explicit SignalBus(QObject *parent = nullptr);
 
+    // Ownership convention (trusted first-party plugins — NOT a security
+    // boundary). Signals that mirror AppCore state (image list/index,
+    // auto-navigation, language, scene) are emitted by the service that owns
+    // that state; feature signals (user, reconstruction, AI, agent actions)
+    // are emitted by the feature plugin that owns the feature, and every other
+    // plugin only subscribes. `stateChanged` is the generic "settings/state
+    // changed" pulse after a settings write. The bus stays concrete and
+    // mutable on purpose: splitting it into emitter/observer interfaces would
+    // add an ABI surface for a convention the plugin layer already follows,
+    // and CheckAgentActions enforces the same one-owner rule for actions.
+
 signals:
     // --- Existing signals (backward-compatible) ---
     // Data/State signals

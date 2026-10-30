@@ -27,6 +27,14 @@ class QPluginLoader;
  *  - cleanup() runs in reverse order of successful initialization, exactly
  *    once per plugin.
  *
+ * Every call into plugin code — lifecycle hooks AND metadata virtuals
+ * (`pluginName()`, `apiVersion()`, `abiFingerprint()`, `dependencies()`,
+ * `loadPhase()`, `loadOrder()`) — goes through an exception barrier. Metadata
+ * throws are not hypothetical: a QString allocation or an SDK exception in a
+ * plugin virtual would otherwise escape discovery, or reach `std::terminate()`
+ * through the implicitly-noexcept destructor. A throwing plugin is rejected
+ * with an error instead.
+ *
  * The shell keeps the two responsibilities that need the concrete window:
  * picking the plugin directory and registering the deferred services before
  * initializeAll() is called.
