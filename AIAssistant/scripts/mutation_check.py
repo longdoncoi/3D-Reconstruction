@@ -133,7 +133,11 @@ class Mutant:
 #: normalisation (a full URL must not be refused by an origin-only list) and
 #: the contained memory-store close (one failing handle must not skip the
 #: other on shutdown).
-MIN_MUTANTS = 226
+#: Consolidation on resume adds six more (ADR 0043 §10): the parked action
+#: carries the run's owner, the shared context consolidates only completed
+#: runs and forwards that owner, a chained desktop action keeps the owner,
+#: and the two non-graph completion fallbacks still consolidate.
+MIN_MUTANTS = 242
 
 MUTANTS: tuple[Mutant, ...] = (
     # ── Sandbox allow-list (ADR 0011) ────────────────────────────────────────
@@ -1770,21 +1774,12 @@ MUTANTS: tuple[Mutant, ...] = (
     Mutant(
         "src/ai_assistant/agents/service.py",
         "        if memory is not None and memory.enabled:\n"
-        "            recalled = memory.recall(task_with_attachments)",
+        "            recalled = memory.recall(task_with_attachments, owner=owner)",
         "        if False:\n"
-        "            recalled = memory.recall(task_with_attachments)",
+        "            recalled = memory.recall(task_with_attachments, owner=owner)",
         ("tests.unit.test_memory_service",),
         "long-term recall is never applied before a run (memory is written "
         "but never read)",
-    ),
-    Mutant(
-        "src/ai_assistant/agents/service.py",
-        "        if memory is not None and memory.enabled:\n"
-        '            if result.get("status") == "completed":',
-        "        if memory is not None and memory.enabled:\n"
-        "            if True:",
-        ("tests.unit.test_memory_service",),
-        "a parked or failed run is consolidated into long-term memory",
     ),
     Mutant(
         "src/ai_assistant/agents/service.py",
@@ -1795,15 +1790,70 @@ MUTANTS: tuple[Mutant, ...] = (
         "memory_recall step (the model is told there is memory when there "
         "is none)",
     ),
+    # ── Consolidation on every completion path (ADR 0043 §10) ───────────────
+    Mutant(
+        "src/ai_assistant/agents/response.py",
+        '            "owner": owner,',
+        '            "owner": "default",',
+        ("tests.unit.test_runner",),
+        "a parked approval/UI action forgets the run's tenant (the resume "
+        "consolidates into the default namespace)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/context.py",
+        '        if result.get("status") != "completed":\n'
+        "            return",
+        "        if False:\n"
+        "            return",
+        ("tests.unit.test_agent_run_context", "tests.unit.test_memory_service"),
+        "a parked or failed run is consolidated into long-term memory",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/context.py",
+        "        memory.consolidate_run(task, session_id, result.get(\"steps\") or [], owner=owner)",
+        "        memory.consolidate_run(task, session_id, result.get(\"steps\") or [])",
+        ("tests.unit.test_agent_run_context", "tests.unit.test_memory_service"),
+        "consolidation ignores the resume's owner (a tenant's completed "
+        "resume is written into the default namespace)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/ui_action_service.py",
+        '                "owner": owner,',
+        '                "owner": DEFAULT_MEMORY_OWNER,',
+        ("tests.unit.test_agent_resume_services",),
+        "a chained desktop action drops the run's tenant (the next ack "
+        "resumes under the default namespace)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/approval_service.py",
+        "        self._ctx.consolidate_completed(\n"
+        '            result, task=action["task"], session_id=action["session_id"], owner=owner,\n'
+        "        )\n"
+        "        return result",
+        "        return result",
+        ("tests.unit.test_agent_resume_services",),
+        "a no-graph approval completes without remembering the run",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/ui_action_service.py",
+        "        self._ctx.consolidate_completed(\n"
+        '            result, task=action["task"], session_id=action["session_id"], owner=owner,\n'
+        "        )\n"
+        "        return result",
+        "        return result",
+        ("tests.unit.test_agent_resume_services",),
+        "a desktop workflow finalised without a graph resume is never "
+        "remembered",
+    ),
     # ── Procedural memory seed (ADR 0043 §7) ──────────────────────────────────
     Mutant(
         "src/ai_assistant/application/memory.py",
         "        if self._store is None or self._top_k <= 0:\n"
         "            return None\n"
-        "        signature = task_signature(task)",
+        "        target = self._resolve_owner(owner)",
         "        if self._store is None:\n"
         "            return None\n"
-        "        signature = task_signature(task)",
+        "        target = self._resolve_owner(owner)",
         ("tests.unit.test_memory_service",),
         "the top_k off switch does not disable the procedural lookup "
         "(AGENT_MEMORY_LTM_TOP_K=0 turns off only half of memory)",
@@ -1856,6 +1906,101 @@ MUTANTS: tuple[Mutant, ...] = (
         "text that splits into nothing returns an empty plan instead of "
         "None (the caller cannot tell 'no recipe' from 'empty recipe')",
     ),
+    # ── Memory ownership (ADR 0043) ──────────────────────────────────────────
+    Mutant(
+        "src/ai_assistant/domain/memory.py",
+        "    if owner == DEFAULT_MEMORY_OWNER:\n"
+        '        return ""',
+        "    if True:\n"
+        '        return ""',
+        ("tests.unit.test_memory_domain",),
+        "every owner keeps the historical un-namespaced id (two tenants "
+        "running the same task collide on the primary key and replace each "
+        "other's procedural row)",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        "        resolved = owner.strip()\n"
+        "        if not resolved:",
+        "        resolved = owner.strip()\n"
+        "        if False:",
+        ("tests.unit.test_memory_service",),
+        "an empty owner is accepted (every read misses and every write lands "
+        "in a namespace nothing reads)",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        "        return self._owner if owner is None else self._validated_owner(owner)",
+        "        return self._owner",
+        ("tests.unit.test_memory_service",),
+        "the per-call owner is ignored (the A2A tenant always falls back to "
+        "the composition's default namespace)",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        "        for record in build_run_records(task, session_id, list(steps), target):",
+        "        for record in build_run_records(task, session_id, list(steps), self._owner):",
+        ("tests.unit.test_memory_service",),
+        "consolidation writes under the configured owner instead of the "
+        "run's tenant",
+    ),
+    Mutant(
+        "src/ai_assistant/application/memory.py",
+        "        if stored and self._retention_days > 0:",
+        "        if False:",
+        ("tests.unit.test_memory_service",),
+        "a successful consolidation never runs retention (the store grows "
+        "between process restarts)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/persistence/memory_store.py",
+        '            if existing is not None and existing[0] != record["owner"]:',
+        "            if False:",
+        ("tests.unit.test_memory_store",),
+        "a cross-owner id collision replaces the row (another tenant's "
+        "memory is erased even though the id namespace was supposed to keep "
+        "them apart)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/service.py",
+        "            recalled = memory.recall(task_with_attachments, owner=owner)",
+        "            recalled = memory.recall(task_with_attachments)",
+        ("tests.unit.test_memory_service",),
+        "recall ignores the run's owner (an A2A run reads the default "
+        "tenant's memory)",
+    ),
+    Mutant(
+        "src/ai_assistant/agents/service.py",
+        "            prior_plan = memory.procedural_plan(task_with_attachments, owner=owner)",
+        "            prior_plan = memory.procedural_plan(task_with_attachments)",
+        ("tests.unit.test_memory_service",),
+        "the procedural lookup ignores the run's owner (a tenant reuses the "
+        "default namespace's plan)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/orchestration/langgraph.py",
+        "            return self._map(self._execute(self._execute_request(task), owner=task.owner))",
+        "            return self._map(self._execute(self._execute_request(task)))",
+        ("tests.unit.test_langgraph_adapter",),
+        "the task's tenant is not forwarded to the agent engine (every A2A "
+        "run falls back to the engine's default owner)",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/http/agent_routes.py",
+        "                    request, owner=DEFAULT_MEMORY_OWNER,",
+        '                    request, owner="tenant-x",',
+        ("tests.unit.test_http_agent_routes",),
+        "the loopback execute route scopes a local run to a made-up tenant "
+        "instead of the desktop default",
+    ),
+    Mutant(
+        "src/ai_assistant/adapters/http/agent_routes.py",
+        "            request, owner=DEFAULT_MEMORY_OWNER, client_host=client_host,",
+        '            request, owner="tenant-x", client_host=client_host,',
+        ("tests.unit.test_http_agent_routes",),
+        "the loopback SSE route scopes a local stream to a made-up tenant "
+        "instead of the desktop default",
+    ),
     Mutant(
         "src/ai_assistant/orchestration/nodes/plan.py",
         "    remembered = state.get(\"prior_plan\")\n"
@@ -1888,7 +2033,7 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "src/ai_assistant/agents/service.py",
-        "            prior_plan = memory.procedural_plan(task_with_attachments)",
+        "            prior_plan = memory.procedural_plan(task_with_attachments, owner=owner)",
         "            prior_plan = None",
         ("tests.unit.test_memory_service",),
         "the facade never looks up a remembered plan (procedural memory is "
@@ -2303,7 +2448,11 @@ PINNED_DECISION_FILES: tuple[str, ...] = (
     "src/ai_assistant/adapters/http/security.py",
     "src/ai_assistant/adapters/persistence/memory_store.py",
     "src/ai_assistant/adapters/persistence/sqlite_store.py",
+    "src/ai_assistant/agents/approval_service.py",
+    "src/ai_assistant/agents/context.py",
+    "src/ai_assistant/agents/response.py",
     "src/ai_assistant/agents/service.py",
+    "src/ai_assistant/agents/ui_action_service.py",
     "src/ai_assistant/application/memory.py",
     "src/ai_assistant/bootstrap/cli.py",
     "src/ai_assistant/bootstrap/lifecycle.py",
@@ -2328,6 +2477,24 @@ def pinned_file_violations(
     return [path for path in PINNED_DECISION_FILES if path not in covered]
 
 
+def dirty_tree_violations(
+    mutants: tuple[Mutant, ...] = MUTANTS,
+) -> list[Mutant]:
+    """Anchors that are not present exactly once *before* the run starts.
+
+    A gate killed mid-mutant (Ctrl-C, a machine restart) restores nothing: the
+    next run would measure the remaining mutants against a tree that still
+    holds one — false kills, and one "stale" report for what is really a
+    leftover. Refuse to start on a dirty tree instead of measuring it. The
+    check is the same anchor count ``run_mutant`` performs, just applied to the
+    whole tuple up front.
+    """
+    return [
+        mutant for mutant in mutants
+        if (BASE / mutant.file).read_text(encoding="utf-8").count(mutant.original) != 1
+    ]
+
+
 def main() -> int:
     pinned = pinned_file_violations()
     if pinned:
@@ -2335,10 +2502,20 @@ def main() -> int:
         for path in pinned:
             print(f"  {path}")
         return 1
-    survivors: list[str] = []
-    stale: list[str] = []
     _acquire_lock()
     try:
+        # Only meaningful under the lock: an in-flight run is *supposed* to
+        # have one mutant applied. Held by us, a dirty anchor means the
+        # previous run was killed and restored nothing.
+        dirty = dirty_tree_violations()
+        if dirty:
+            print("mutation_check: the tree still holds a mutant (a previous run was killed):")
+            for mutant in dirty:
+                print(f"  {mutant.file}: {mutant.label}")
+            print("  restore those files from git before measuring again.")
+            return 1
+        survivors: list[str] = []
+        stale: list[str] = []
         for index, mutant in enumerate(MUTANTS, start=1):
             verdict = run_mutant(mutant)
             print(

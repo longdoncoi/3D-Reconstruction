@@ -16,6 +16,7 @@ from ai_assistant.adapters.http.agent_routes import (
     _sse_events,
     build_agent_router,
 )
+from ai_assistant.domain.memory import DEFAULT_MEMORY_OWNER
 
 
 class _FakeAgentService:
@@ -24,8 +25,8 @@ class _FakeAgentService:
         self.execute_error = execute_error
         self.calls: list[tuple[str, object]] = []
 
-    def execute(self, request, event_sink=None, client_host=None):
-        self.calls.append(("execute", (request, event_sink, client_host)))
+    def execute(self, request, *, owner=None, event_sink=None, client_host=None):
+        self.calls.append(("execute", (request, owner, event_sink, client_host)))
         if self.execute_error is not None:
             raise self.execute_error
         if event_sink is not None:
@@ -67,13 +68,14 @@ class AgentRoutesTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "ok")
-        (name, (request, event_sink, _)) = service.calls[0]
+        (name, (request, owner, event_sink, _)) = service.calls[0]
         self.assertEqual(name, "execute")
         self.assertIsNone(event_sink)
+        self.assertEqual(owner, DEFAULT_MEMORY_OWNER)
         self.assertEqual(request.task, "summarize the repo")
 
     def test_execute_streams_sse_events(self) -> None:
-        client, _ = _build_client()
+        client, service = _build_client()
         response = client.post(
             "/v1/agent/execute",
             json={"task": "do something"},
@@ -86,6 +88,10 @@ class AgentRoutesTest(unittest.TestCase):
         self.assertIn("event: step", body)
         self.assertIn("event: done", body)
         self.assertIn('"status": "ok"', body)
+        (name, (_request, owner, event_sink, _host)) = service.calls[0]
+        self.assertEqual(name, "execute")
+        self.assertEqual(owner, DEFAULT_MEMORY_OWNER)
+        self.assertIsNotNone(event_sink)
 
     def test_execute_streams_error_event_when_service_fails(self) -> None:
         failing = _FakeAgentService(execute_error=RuntimeError("boom"))

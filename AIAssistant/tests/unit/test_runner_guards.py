@@ -111,6 +111,7 @@ def _invoke(**overrides):
         "temperature": 0.3,
         "language": "vi",
         "request_started": time.monotonic(),
+        "owner": "tenant-a",
         "deps": _deps(),
     }
     dep_overrides = {k: v for k, v in overrides.items() if k in RunDeps.__dataclass_fields__}

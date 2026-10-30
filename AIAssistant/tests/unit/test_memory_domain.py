@@ -13,6 +13,7 @@ import unittest
 
 from ai_assistant.domain.memory import (
     CONTEXT_TOTAL_LIMIT,
+    DEFAULT_MEMORY_OWNER,
     MAX_SEMANTIC_PER_RUN,
     MEMORY_HALF_LIFE_DAYS,
     MEMORY_KINDS,
@@ -271,12 +272,47 @@ class BuildRunRecordTests(unittest.TestCase):
     def test_a_plan_step_adds_a_procedural_record_keyed_by_the_signature(self) -> None:
         records = build_run_records("tim file", "s1", [
             {"type": "plan", "steps": ["doc thu muc", "tim ten file"]},
-        ], "u")
+        ], DEFAULT_MEMORY_OWNER)
         procedural = [r for r in records if r["kind"] == "procedural"]
         self.assertEqual(len(procedural), 1)
         self.assertEqual(procedural[0]["id"],
                          f"proc-{task_signature('tim file')[:24]}")
         self.assertEqual(procedural[0]["text"], "doc thu muc | tim ten file")
+
+    def test_a_non_default_owner_gets_an_owner_namespaced_id(self) -> None:
+        """The id is the store's primary key and a rerun replaces on it.
+        Without the owner in the id, two tenants running the same task would
+        overwrite each other's procedural row (ADR 0043)."""
+        records = build_run_records("tim file", "s1", [
+            {"type": "plan", "steps": ["doc thu muc"]},
+        ], "tenant-a")
+        procedural = next(r for r in records if r["kind"] == "procedural")
+        self.assertNotEqual(procedural["id"], f"proc-{task_signature('tim file')[:24]}")
+        self.assertTrue(procedural["id"].startswith("proc-"))
+        self.assertEqual(procedural["owner"], "tenant-a")
+
+    def test_two_owners_running_the_same_task_share_no_record_id(self) -> None:
+        """Every kind is namespaced: episodic, procedural and semantic rows
+        written by different owners must be distinct primary keys even when
+        the task, the plan and the fact are identical."""
+        steps = [
+            {"type": "plan", "steps": ["doc thu muc", "tim ten file"]},
+            {"type": "final_answer", "content": "Toi thich mau xanh"},
+        ]
+        alice = build_run_records("tim file", "s1", steps, "alice", now=NOW)
+        bob = build_run_records("tim file", "s2", steps, "bob", now=NOW)
+        alice_ids = {record["id"] for record in alice}
+        bob_ids = {record["id"] for record in bob}
+        self.assertEqual(len(alice_ids), 3)
+        self.assertEqual(len(bob_ids), 3)
+        self.assertEqual(alice_ids & bob_ids, set())
+
+    def test_the_default_owner_keeps_the_historical_episodic_id(self) -> None:
+        """Rows written before ownership existed must remain addressable."""
+        records = build_run_records("tim file", "s1", [], DEFAULT_MEMORY_OWNER,
+                                    now=NOW)
+        self.assertEqual(records[0]["id"],
+                         f"ep-{task_signature('tim file')[:16]}-{int(NOW)}")
 
     def test_a_plan_step_without_a_list_adds_no_procedural_record(self) -> None:
         records = build_run_records("tim file", "s1", [

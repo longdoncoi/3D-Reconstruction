@@ -70,6 +70,7 @@ def _store_pending_action(
     action_id: str,
     request_id: str,
     is_ui_ack: bool,
+    owner: str,
 ) -> None:
     """Persist the parked action so approval/UI-ack resume survives a restart."""
     pending = state["pending_tool"]
@@ -90,6 +91,10 @@ def _store_pending_action(
             "language": language,
             "created_at": time.time(),
             "ui_ack": is_ui_ack,
+            # The run's memory namespace travels with the parked action: the
+            # resume may happen in another request (or after a restart), so it
+            # cannot read the owner off the caller's stack (ADR 0043).
+            "owner": owner,
             "approval_scope": pending.get("approval_scope", ""),
             "approval_preview": pending.get("approval_preview"),
         }
@@ -107,6 +112,7 @@ def _pending_response(
     request_started: float,
     prior_step_count: int,
     action_id_fn: Callable[[], str],
+    owner: str,
     save_pending_fn: Callable[[], None] | None,
 ) -> dict[str, Any] | None:
     """The two shapes a parked action returns, or ``None`` when nothing is parked."""
@@ -126,6 +132,7 @@ def _pending_response(
         deps=deps, save_pending_fn=save_pending_fn, session_id=session_id, task=task,
         state=state, temperature=temperature, language=language,
         action_id=action_id, request_id=request_id, is_ui_ack=is_ui_ack,
+        owner=owner,
     )
     total_ms = round((time.monotonic() - request_started) * 1000)
     if is_ui_ack:

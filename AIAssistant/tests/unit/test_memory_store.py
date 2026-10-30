@@ -125,6 +125,20 @@ class MemoryStoreTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["text"], "buoc 2")
 
+    def test_a_cross_owner_id_collision_is_refused_not_replaced(self) -> None:
+        """Replacement is scoped to the owner: the id namespace should keep
+        this from happening, and the store must not erase another tenant's
+        row if it ever does (ADR 0043)."""
+        store = self._open()
+        store.add(_record(id="shared", owner="alice", text="alice fact"))
+        with self.assertRaises(ValueError):
+            store.add(_record(id="shared", owner="bob", text="bob fact"))
+        self.assertEqual(
+            [r["text"] for r in store.candidates("alice", frozenset({"semantic"}))],
+            ["alice fact"],
+        )
+        self.assertEqual(store.candidates("bob", frozenset({"semantic"})), [])
+
     def test_an_empty_kind_set_scans_nothing(self) -> None:
         store = self._open()
         store.add(_record())

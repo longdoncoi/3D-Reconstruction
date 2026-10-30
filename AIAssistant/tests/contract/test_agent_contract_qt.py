@@ -26,6 +26,7 @@ from ai_assistant.agents.models import (
     AgentExecuteRequest,
     AgentUiActionResultRequest,
 )
+from ai_assistant.domain.memory import DEFAULT_MEMORY_OWNER
 
 # The request bodies the Qt client actually sends.
 QT_EXECUTE_PAYLOAD = {
@@ -48,9 +49,11 @@ class _RecordingAgentService:
 
     def __init__(self) -> None:
         self.requests: dict[str, object] = {}
+        self.owners: list[str | None] = []
 
-    def execute(self, request, *, event_sink=None, client_host: str = "") -> dict:
+    def execute(self, request, *, owner=None, event_sink=None, client_host: str = "") -> dict:
         self.requests["execute"] = request
+        self.owners.append(owner)
         return {"status": "completed", "content": "ok", "steps": []}
 
     def cancel(self, request) -> dict:
@@ -129,6 +132,7 @@ class QtTransportContractTests(unittest.TestCase):
         forwarded = service.requests["execute"]
         self.assertIsInstance(forwarded, AgentExecuteRequest)
         self.assertEqual(forwarded.task, QT_EXECUTE_PAYLOAD["task"])
+        self.assertEqual(service.owners, [DEFAULT_MEMORY_OWNER])
         self.assertEqual(response.json()["status"], "completed")
 
     def test_approve_endpoint_forwards_the_parsed_request(self) -> None:

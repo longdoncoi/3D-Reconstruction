@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..application.coordination import TaskCoordinator
+from ..application.memory import MemoryService
 from ..domain.errors import ModelNotLoadedError
 from ..domain.parallel import PARALLEL_MAX_DEFAULT
 from ..llm.defaults import CHARS_PER_TOKEN, LLM_N_CTX
@@ -167,6 +168,11 @@ class AgentRunContext:
     tool_registry: AgentToolCatalog | None = None
     checkpointer: Any = None
     task_coordinator: TaskCoordinator = field(default_factory=TaskCoordinator)
+    #: Long-term memory (ADR 0043). ``None`` is the off switch; the context
+    #: owns the consolidation decision so every completion path — fresh run,
+    #: approval resume, desktop-ack resume, non-graph fallback — remembers a
+    #: completed run exactly once.
+    memory_service: MemoryService | None = None
     a2a_router: Any = None
     # The graph engine class is injected so the context stays framework-free at
     # import time; the composition root (or a service default) supplies it.
@@ -218,6 +224,24 @@ class AgentRunContext:
             return False
         return True
 
+    def consolidate_completed(self, result: dict[str, Any], *, task: str,
+                              session_id: str, owner: str) -> None:
+        """Remember a completed run under the owner it ran as (ADR 0043).
+
+        Every graph-completion path funnels through here, and the non-graph
+        fallbacks call it explicitly, so a run that finishes after an approval
+        or a desktop acknowledgement is remembered exactly like a fresh one.
+        A parked, cancelled or failed run is not worth remembering; the memory
+        service contains its own failures, so this can never turn a succeeded
+        run into a failed one.
+        """
+        memory = self.memory_service
+        if memory is None or not memory.enabled:
+            return
+        if result.get("status") != "completed":
+            return
+        memory.consolidate_run(task, session_id, result.get("steps") or [], owner=owner)
+
     def run(
         self,
         *,
@@ -227,6 +251,7 @@ class AgentRunContext:
         temperature: float,
         language: str,
         request_started: float,
+        owner: str,
         initial_messages: list[dict[str, str]] | None = None,
         initial_steps: list[Step] | None = None,
         prior_plan: list[str] | None = None,
@@ -250,6 +275,10 @@ class AgentRunContext:
         packed once into a frozen :class:`~ai_assistant.agents.deps.RunDeps`
         bundle, and the graph engine/``Specialist`` are supplied here so no
         service repeats them.
+
+        ``owner`` is required because memory is tenant-scoped: every completion
+        path — fresh run, approval resume, desktop-ack resume — must remember
+        the run under the same namespace it read from (ADR 0043).
         """
         # A bare context (tests, embeds) builds the built-in catalogue on the
         # first run; the composition root always injects one.
@@ -285,7 +314,7 @@ class AgentRunContext:
             parallel_max=self.parallel_max,
             save_pending_fn=self.save_pending,
         )
-        return run_langgraph_agent(
+        result = run_langgraph_agent(
             deps=deps,
             system_prompt=system_prompt,
             task=task,
@@ -293,6 +322,7 @@ class AgentRunContext:
             temperature=temperature,
             language=language,
             request_started=request_started,
+            owner=owner,
             initial_messages=initial_messages,
             initial_steps=initial_steps,
             prior_plan=prior_plan,
@@ -307,6 +337,10 @@ class AgentRunContext:
             validate_tool_call_fn=validate_tool_call_fn,
             generate_action_id_fn=generate_action_id_fn,
         )
+        self.consolidate_completed(
+            result, task=task, session_id=session_id, owner=owner,
+        )
+        return result
 
 
 class ContextService:
@@ -333,6 +367,7 @@ class ContextService:
         tool_registry: AgentToolCatalog | None = None,
         checkpointer: Any = None,
         task_coordinator: TaskCoordinator | None = None,
+        memory_service: MemoryService | None = None,
         delegate_fn: Callable[..., Any] | None = None,
         authorise_delegation_fn: Callable[..., tuple[bool, str | None]] | None = None,
         parallel_max: int = PARALLEL_MAX_DEFAULT,
@@ -348,6 +383,7 @@ class ContextService:
             tool_registry=tool_registry,
             checkpointer=checkpointer,
             task_coordinator=TaskCoordinator() if task_coordinator is None else task_coordinator,
+            memory_service=memory_service,
             delegate_fn=delegate if delegate_fn is None else delegate_fn,
             parallel_max=parallel_max,
             **supervisor_policy,

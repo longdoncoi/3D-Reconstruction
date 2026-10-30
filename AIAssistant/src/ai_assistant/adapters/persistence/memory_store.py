@@ -106,6 +106,14 @@ class MemoryStore:
         ``INSERT OR REPLACE`` is what makes the procedural record's
         signature-derived id a *reuse* rather than a pile: rerunning the same
         task refreshes its plan instead of adding a copy.
+
+        Replacement is scoped to the **same owner**. The service namespaces
+        ids by owner (``domain.memory._owner_namespace``), so a cross-owner
+        collision should be impossible; refusing it here keeps a bug in that
+        naming, or a caller writing the store directly, from erasing another
+        tenant's row. The refusal is an error, not a silent skip: a write
+        that cannot be applied is a caller defect the consolidation layer
+        logs and counts as a miss.
         """
         kind = record["kind"]
         if not is_memory_kind(kind):
@@ -121,6 +129,13 @@ class MemoryStore:
             context=memory_context(record["id"]),
         )
         with self._lock, self._conn:
+            existing = self._conn.execute(
+                "SELECT owner FROM memories WHERE id = ?", (record["id"],),
+            ).fetchone()
+            if existing is not None and existing[0] != record["owner"]:
+                msg = (f"refusing to replace memory {record['id']!r}: "
+                       "the row belongs to another owner")
+                raise ValueError(msg)
             self._conn.execute(
                 "INSERT OR REPLACE INTO memories "
                 "(id, owner, kind, salience, created_at, last_used_at, payload) "

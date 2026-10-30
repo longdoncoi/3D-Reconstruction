@@ -154,6 +154,9 @@ class AgentService:
             "tool_registry": self.tool_registry,
             "checkpointer": self._checkpointer,
             "task_coordinator": self.task_coordinator,
+            # Every completion path (fresh, approval resume, desktop-ack
+            # resume) consolidates through the same context-owned decision.
+            "memory_service": memory_service,
             # ADR 0044: the same fan-out bound applies to the approve/resume
             # paths, which build their own context from this block.
             "parallel_max": parallel_max,
@@ -239,9 +242,17 @@ class AgentService:
         if slots is not None:
             slots.release()
 
-    def execute(self, request: AgentExecuteRequest, *,
+    def execute(self, request: AgentExecuteRequest, *, owner: str,
                 event_sink: Callable[[dict[str, Any]], None] | None = None,
                 client_host: str = "unknown") -> dict[str, Any]:
+        """Run one agent request.
+
+        ``owner`` is the memory namespace this run reads and writes. It is
+        required on purpose: the local desktop route passes
+        ``DEFAULT_MEMORY_OWNER`` and the A2A orchestrator passes the task's
+        tenant, so a caller cannot forget the scope and silently fall into
+        another tenant's memory (ADR 0043).
+        """
         self._cleanup_pending()
         self._require_llm()
         req_start = time.monotonic()
@@ -265,7 +276,7 @@ class AgentService:
                 with self._model_lease():
                     return self._execute_locked(
                         request, session_id=session_id, task=task, req_start=req_start,
-                        event_sink=event_sink, client_host=client_host,
+                        event_sink=event_sink, client_host=client_host, owner=owner,
                     )
             finally:
                 self._release_run_slot(slots)
@@ -273,7 +284,7 @@ class AgentService:
     def _execute_locked(
         self, request: AgentExecuteRequest, *, session_id: str, task: str,
         req_start: float, event_sink: Callable[[dict[str, Any]], None] | None,
-        client_host: str,
+        client_host: str, owner: str,
     ) -> dict[str, Any]:
         """The ``execute`` body, already holding the session's run lock."""
         self.task_coordinator.start(session_id, task=request.task)
@@ -317,7 +328,7 @@ class AgentService:
         initial_steps: list[Step] | None = None
         prior_plan: list[str] | None = None
         if memory is not None and memory.enabled:
-            recalled = memory.recall(task_with_attachments)
+            recalled = memory.recall(task_with_attachments, owner=owner)
             memory_block = format_memory_block(recalled)
             if memory_block:
                 system_prompt = f"{system_prompt}\n\n{memory_block}"
@@ -325,7 +336,7 @@ class AgentService:
             # The procedural half (ADR 0043 §7): an exact-signature plan
             # lookup, independent of the keyword recall above — a task can
             # have a remembered recipe without any matching fact.
-            prior_plan = memory.procedural_plan(task_with_attachments)
+            prior_plan = memory.procedural_plan(task_with_attachments, owner=owner)
 
         initial_msgs = [
             {"role": "system", "content": system_prompt},
@@ -342,6 +353,7 @@ class AgentService:
             temperature=request.temperature,
             language=request.language,
             request_started=req_start,
+            owner=owner,
             initial_messages=initial_msgs,
             initial_steps=initial_steps,
             prior_plan=prior_plan,
@@ -362,15 +374,6 @@ class AgentService:
             if answer:
                 turns.append({"role": "assistant", "content": answer})
             short_term.record(session_id, conversation_turns(turns))
-        # Consolidate into long-term memory on success only (ADR 0043 §4): a
-        # parked or cancelled run is not worth remembering, and the service
-        # contains its own failures — a store problem is logged, never
-        # raised back into the response of a run that already succeeded.
-        if memory is not None and memory.enabled:
-            if result.get("status") == "completed":
-                memory.consolidate_run(
-                    task_with_attachments, session_id, result.get("steps") or [],
-                )
         return result
 
     def cancel(self, request: AgentCancelRequest) -> dict[str, Any]:

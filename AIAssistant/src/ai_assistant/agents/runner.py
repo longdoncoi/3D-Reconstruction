@@ -95,6 +95,7 @@ def run_langgraph_agent(
     temperature: float,
     language: str,
     request_started: float,
+    owner: str,
     # Optional state for resume
     initial_messages: list[dict[str, str]] | None = None,
     initial_steps: list[Step] | None = None,
@@ -161,7 +162,7 @@ def run_langgraph_agent(
         deps=deps, session_id=session_id, task=task, state=state,
         temperature=temperature, language=language, request_started=request_started,
         prior_step_count=prior_step_count, action_id_fn=action_id_fn,
-        save_pending_fn=deps.save_pending_fn,
+        owner=owner, save_pending_fn=deps.save_pending_fn,
     )
     if parked is not None:
         return parked

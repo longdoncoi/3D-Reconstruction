@@ -23,6 +23,7 @@ from ai_assistant.agents.models import (
     AgentExecuteRequest,
     AgentUiActionResultRequest,
 )
+from ai_assistant.domain.memory import DEFAULT_MEMORY_OWNER
 
 from .security import TransportPolicy, agent_guards
 
@@ -117,16 +118,25 @@ def build_agent_router(agent_service: "AgentService | None" = None,
 
     @router.post("/v1/agent/execute", response_model=None)
     def agent_execute(request: AgentExecuteRequest, http_req: Request) -> dict[str, Any] | StreamingResponse:
-        """Execute an agentic task with tool-calling loop (JSON or SSE)."""
+        """Execute an agentic task with tool-calling loop (JSON or SSE).
+
+        This surface is loopback-only (``agent_guards(allow_remote=False)``),
+        so every run belongs to the local desktop install and therefore to
+        ``DEFAULT_MEMORY_OWNER``. A multi-tenant caller enters through A2A,
+        where the task's tenant scopes the memory instead (ADR 0043).
+        """
         client_host = _client_host(http_req)
         if "text/event-stream" in http_req.headers.get("accept", ""):
             return _stream_langgraph_execution(
                 lambda sink: agent_service.execute(
-                    request, event_sink=sink, client_host=client_host,
+                    request, owner=DEFAULT_MEMORY_OWNER,
+                    event_sink=sink, client_host=client_host,
                 ),
                 on_disconnect=partial(_cancel_agent_run, agent_service, request.session_id),
             )
-        return agent_service.execute(request, client_host=client_host)
+        return agent_service.execute(
+            request, owner=DEFAULT_MEMORY_OWNER, client_host=client_host,
+        )
 
     @router.post("/v1/agent/cancel")
     def agent_cancel(request: AgentCancelRequest) -> dict[str, Any]:

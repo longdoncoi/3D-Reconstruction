@@ -42,6 +42,12 @@ MemoryKind = Literal["semantic", "episodic", "procedural"]
 
 MEMORY_KINDS: frozenset[str] = frozenset({"semantic", "episodic", "procedural"})
 
+#: The owner of a single-user desktop install. Spelled in the domain because
+#: the record-id namespace below special-cases it: rows written before
+#: ownership existed carry no owner prefix, so a desktop upgrade must keep
+#: reading — and replacing — them after the multi-tenant split (ADR 0043).
+DEFAULT_MEMORY_OWNER = "default"
+
 
 class MemoryRecord(TypedDict):
     """One durable memory. ``text`` is the payload the recall path injects.
@@ -311,6 +317,7 @@ def build_run_records(
     """
     moment = time.time() if now is None else now
     signature = task_signature(task)
+    namespace = _owner_namespace(owner)
     answer = ""
     plan_items: list[str] = []
     tools_used: list[str] = []
@@ -328,7 +335,7 @@ def build_run_records(
             if isinstance(tool, str) and tool:
                 tools_used.append(tool)
     records: list[MemoryRecord] = [{
-        "id": f"ep-{signature[:16]}-{int(moment)}",
+        "id": f"ep-{namespace}{signature[:16]}-{int(moment)}",
         "kind": "episodic",
         "owner": owner,
         "text": f"Task: {task[:160]}" + (f" — answer: {answer[:240]}" if answer else ""),
@@ -343,7 +350,7 @@ def build_run_records(
         # task replaces its procedural record instead of piling up copies
         # (``INSERT OR REPLACE`` in the store).
         records.append({
-            "id": f"proc-{signature[:24]}",
+            "id": f"proc-{namespace}{signature[:24]}",
             "kind": "procedural",
             "owner": owner,
             "text": " | ".join(plan_items)[:600],
@@ -355,7 +362,7 @@ def build_run_records(
         })
     for fact in _preference_facts(f"{task}\n{answer}"):
         records.append({
-            "id": f"sem-{hashlib.sha256(fact.encode('utf-8')).hexdigest()[:24]}",
+            "id": f"sem-{namespace}{hashlib.sha256(fact.encode('utf-8')).hexdigest()[:24]}",
             "kind": "semantic",
             "owner": owner,
             "text": fact,
@@ -365,6 +372,21 @@ def build_run_records(
             "metadata": {"session_id": session_id, "task_signature": signature},
         })
     return records
+
+
+def _owner_namespace(owner: str) -> str:
+    """The id prefix that keeps two owners' records from colliding.
+
+    ``id`` is the store's primary key and ``INSERT OR REPLACE`` is what makes
+    a rerun refresh its procedural row, so the identity itself has to carry
+    the owner: two tenants running the same task must not overwrite each
+    other's plan, and two owners who state the same fact must keep one fact
+    each. ``DEFAULT_MEMORY_OWNER`` keeps the historical, un-prefixed shape so
+    a desktop install keeps reading and replacing the rows it already has.
+    """
+    if owner == DEFAULT_MEMORY_OWNER:
+        return ""
+    return f"{hashlib.sha256(owner.encode('utf-8')).hexdigest()[:16]}-"
 
 
 def format_memory_block(records: Sequence[Mapping[str, Any]]) -> str:
@@ -427,6 +449,7 @@ __all__ = [
     "CONTEXT_MESSAGE_LIMIT",
     "CONTEXT_SYSTEM_LIMIT",
     "CONTEXT_TOTAL_LIMIT",
+    "DEFAULT_MEMORY_OWNER",
     "MAX_SEMANTIC_PER_RUN",
     "MEMORY_HALF_LIFE_DAYS",
     "MEMORY_KINDS",

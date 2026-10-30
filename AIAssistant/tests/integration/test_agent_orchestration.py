@@ -33,11 +33,13 @@ class _FakeEngine:
     def __init__(self, results: list[dict]) -> None:
         self.results = list(results)
         self.executed = []
+        self.owners: list[str] = []
         self.approved = []
         self.ui_results = []
 
-    def execute(self, request):
+    def execute(self, request, *, owner: str):
         self.executed.append(request)
+        self.owners.append(owner)
         return self.results.pop(0)
 
     def approve(self, request):
@@ -65,6 +67,7 @@ class LangGraphOrchestratorTests(unittest.TestCase):
         self.assertEqual(engine.executed[0].task, "hi")
         self.assertEqual(engine.executed[0].session_id, task.id)
         self.assertEqual(engine.executed[0].language, "en")
+        self.assertEqual(engine.owners, [task.owner])
 
     def test_approval_pause_round_trips_through_the_continuation(self):
         engine = _FakeEngine([
@@ -114,8 +117,9 @@ class LangGraphOrchestratorTests(unittest.TestCase):
     def test_least_privilege_principal_is_bound_during_execution(self):
         observed: list[Principal | None] = []
 
-        def execute(_request):
+        def execute(_request, *, owner):
             observed.append(current_principal())
+            self.assertEqual(owner, "default")
             return _completed()
 
         orchestrator = LangGraphAgentOrchestrator(execute, lambda _request: _completed(), None)

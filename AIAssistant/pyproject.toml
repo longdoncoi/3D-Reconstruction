@@ -58,8 +58,8 @@ source = ["ai_assistant"]
 exclude_also = [
     "if __name__ == .__main__.:",
 ]
-# Measured, not aspirational (ADR 0015): 100.00% of 10 290 statements and
-# 2 800 branches on 2026-10-28 with the full suite (2 413 tests) on Python 3.11
+# Measured, not aspirational (ADR 0015): 100.00% of 10 337 statements and
+# 2 808 branches on 2026-10-29 with the full suite (2 443 tests) on Python 3.11
 # with ``faiss``/``sentence-transformers`` installed. The number is recorded in
 # README.md (section ``## Kiểm thử``) together with the excluded entry
 # points; a stripped-down environment (no optional RAG stack) reports less

@@ -16,6 +16,7 @@ from typing import Any
 
 from ..domain.approvals import approval_fingerprint, issue_grant_pair
 from ..domain.errors import AuthorizationError, NotFoundError
+from ..domain.memory import DEFAULT_MEMORY_OWNER
 from ..observability import record_approval, record_tool
 from ..orchestration.state import Step
 from ..orchestration.supervisor import audit as audit_agent
@@ -96,6 +97,10 @@ class ApprovalService(ContextService):
     def _approved(self, action: dict[str, Any]) -> dict[str, Any]:
         tool_name = action["tool"]
         tool_params = action["params"]
+        # The parked action carries the owner of the run that parked it; a
+        # legacy entry (written before ownership existed) falls back to the
+        # desktop default rather than to an empty namespace (ADR 0043).
+        owner = action.get("owner", DEFAULT_MEMORY_OWNER)
         fingerprint = approval_fingerprint(tool_name, tool_params)
         # One approval authorises exactly two single-use grants, both bound to
         # this invocation (minted by the shared domain policy): one for the
@@ -156,6 +161,7 @@ class ApprovalService(ContextService):
                 temperature=action["temperature"],
                 language=action.get("language", "vi"),
                 request_started=time.monotonic(),
+                owner=owner,
                 initial_messages=messages,
                 initial_steps=steps,
                 initial_iteration=action["iteration"],
@@ -168,12 +174,18 @@ class ApprovalService(ContextService):
                 generate_action_id_fn=RESUME_ACTION_ID,
             )
 
-        return {
+        # No graph to resume (a bare deployment or a missing framework): the
+        # direct execution is the whole run, so it still has to be remembered.
+        result: dict[str, Any] = {
             "status": "completed",
             "session_id": action["session_id"],
             "prior_step_count": prior_step_count,
             "steps": steps,
         }
+        self._ctx.consolidate_completed(
+            result, task=action["task"], session_id=action["session_id"], owner=owner,
+        )
+        return result
 
     def _execute_approved(self, tool_name: str, tool_params: dict[str, Any], approval_token: str) -> dict[str, Any]:
         if self._ctx.tool_gateway is None:

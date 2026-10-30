@@ -33,9 +33,11 @@ class _Recorder:
             {"type": "final_answer", "content": "done"},
         ]}
         self.requests: list[Any] = []
+        self.owners: list[str] = []
 
-    def __call__(self, request) -> dict[str, Any]:
+    def __call__(self, request, *, owner: str = "default") -> dict[str, Any]:
         self.requests.append(request)
+        self.owners.append(owner)
         return self.result
 
 
@@ -95,6 +97,13 @@ class RequestNormalisationTests(unittest.TestCase):
         orchestrator.run(task, _principal())
         self.assertEqual(execute.requests[0].task, "rebuild the index")
         self.assertEqual(execute.requests[0].session_id, task.id)
+
+    def test_the_task_owner_is_forwarded_as_the_memory_namespace(self):
+        """The tenant is the memory owner; the principal is per task, so it
+        cannot be used instead (ADR 0043)."""
+        orchestrator, execute, _ = _orchestrator()
+        orchestrator.run(replace(_task(), owner="tenant-a"), _principal())
+        self.assertEqual(execute.owners, ["tenant-a"])
 
 
 class ApprovalResumeTests(unittest.TestCase):

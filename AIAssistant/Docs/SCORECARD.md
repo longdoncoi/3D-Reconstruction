@@ -12,16 +12,16 @@
 
 ## Quality gates
 
-| Gate | Command | Measured 2026-10-28 |
+| Gate | Command | Measured 2026-10-29 |
 |------|---------|---------------------|
 | Lint | `python -m ruff check .` | 0 issues |
 | Types | `python -m mypy src/ai_assistant` | 0 issues, 151 files, `strict = true` (3 SDK-boundary modules relax 2 flags, ADR 0022) |
 | Layer contracts | `PYTHONPATH=src lint-imports --no-logo` | 9/9 contracts kept (ADR 0032: the application layer may no longer import the plugin package — the catalogue is a port) |
 | Byte-compile | `python -m compileall -q evals src` | clean |
-| Tests | `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"` | 2 413 tests, 0 failures, 6 skipped |
-| Coverage | `PYTHONPATH=src python -m coverage run … && python -m coverage report` | **100.00%** — 10 290 statements, 2 800 branches, 0 missed, 0 partial |
-| Mutation | `PYTHONPATH=src python scripts/mutation_check.py` | **226/226 killed** (the 2026-10-28 follow-up added five: the `LazyEncoder` load lock, its double-check, the tampered-column row skip, the `Referer`-to-origin normalisation and the contained shutdown close; ADR 0044 added 22 and ADR 0043 added 39; ADR 0042 added ten: the owner-enforced reload window and its startup caller, the fail-closed scope map, the missing-policy and missing-catalogue bootstrap refusals, the graceful stop (event, watcher, route) and the public RAG surface (property, health read); ADR 0041 added nine: the single model owner and its real release, the two health/model-list truths and the admission gate — submit, resume, worker slot, HTTP 429 and JSON-RPC backpressure; ADR 0032 added 7: the policy-tree write deny and its prefix match, the OpenAPI surface, the log redaction, the compare-and-set, the checkpoint seal, the adapter's CAS guard and the volatile-key rule; ADR 0033 added one: the write target is resolved, so a symlink into a policy tree is matched on the file it points at; ADR 0034 added five: the secret-file read guard, the PATH scan that never consults the current directory, the case-insensitive write deny, the sealed-regime read refusal and the value-shaped egress check; ADR 0035 added six: the path-shaped program name, the case-insensitive blocked-directory rule, the path confinement itself, the LSP server resolution, the fail-closed git resolution and the attachment gate, and one more: the registered-but-not-enabled declaration, plus the two halves of the path confinement — the spelling half and the resolved half, which are different rules; ADR 0036 replaced the implicit-migration mutant with the two guards that replaced it: a plaintext task store and a plaintext pending file are both refused; ADR 0037 added seventeen: the leading-option allow-list, the git destination confinement, the attached git config spelling, the pytest plugin options, the ctest option allow-list, the two write deny-tree guards, the classification comparison, the clearance derivation, the unknown classification label, the isolation gate's default, the row-bound associated data, the identity verification, the refusal of a pre-row-bound state, the success rule, the cursor detection, the cursor use and the regular-file gate on the attachment; ADR 0038 added seven: the corpus link rule, the secret names, the shared blocked directories, the one-walk-one-owner rule, the cache hash coverage, the refusal to re-seal an already-sealed state and the confined path positionals; ADR 0039 replaced the stale registered-but-not-enabled mutant with the unknown-tool fail-closed policy guard and added twenty-two: the alias execution refusal, the builtin merge guard, the plugin route, the dynamic authorise row, the builtin allow-list, plugin provenance, mutating-plugin approval, the session-lock release, the session-id bound, the MCP approval and alias filters, the cloud-policy AND/gate/response bound, the unpinned-pin, case-folded hash, pinned-reuse, post-download mismatch and mmproj revision rules, and the checkpointer/config/get_state forwarding; ADR 0040 added four: the model lease on execute, approve, the desktop ack and the chat route; the 2026-10-23 follow-up added three: the two resume budget sites and the shared release), 0 survived, 0 stale |
-| Mutation floor | `scripts/mutation_check.py` | `MIN_MUTANTS = 226` — deleting a mutant now fails the gate (ADR 0032); `PINNED_DECISION_FILES` adds a per-file floor |
+| Tests | `PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"` | 2 443 tests, 0 failures, 6 skipped |
+| Coverage | `PYTHONPATH=src python -m coverage run … && python -m coverage report` | **100.00%** — 10 337 statements, 2 808 branches, 0 missed, 0 partial |
+| Mutation | `PYTHONPATH=src python scripts/mutation_check.py` | **242/242 killed** (the 2026-10-29 consolidation-on-resume follow-up added six: the parked action carries the run's owner, the shared context consolidates only completed runs and forwards that owner, a chained desktop action keeps the owner, and the two non-graph completion fallbacks consolidate; ADR 0043's ownership follow-up added twelve: owner-namespaced record ids, the required owner on `MemoryService` and `AgentService.execute`, its three memory call sites, the cross-owner store refusal, the orchestrator's `task.owner` forwarding and the two loopback route defaults; the same 2026-10-28 follow-up added five: the `LazyEncoder` load lock, its double-check, the tampered-column row skip, the `Referer`-to-origin normalisation and the contained shutdown close; ADR 0044 added 22 and ADR 0043 added 39; ADR 0042 added ten: the owner-enforced reload window and its startup caller, the fail-closed scope map, the missing-policy and missing-catalogue bootstrap refusals, the graceful stop (event, watcher, route) and the public RAG surface (property, health read); ADR 0041 added nine: the single model owner and its real release, the two health/model-list truths and the admission gate — submit, resume, worker slot, HTTP 429 and JSON-RPC backpressure; ADR 0032 added 7: the policy-tree write deny and its prefix match, the OpenAPI surface, the log redaction, the compare-and-set, the checkpoint seal, the adapter's CAS guard and the volatile-key rule; ADR 0033 added one: the write target is resolved, so a symlink into a policy tree is matched on the file it points at; ADR 0034 added five: the secret-file read guard, the PATH scan that never consults the current directory, the case-insensitive write deny, the sealed-regime read refusal and the value-shaped egress check; ADR 0035 added six: the path-shaped program name, the case-insensitive blocked-directory rule, the path confinement itself, the LSP server resolution, the fail-closed git resolution and the attachment gate, and one more: the registered-but-not-enabled declaration, plus the two halves of the path confinement — the spelling half and the resolved half, which are different rules; ADR 0036 replaced the implicit-migration mutant with the two guards that replaced it: a plaintext task store and a plaintext pending file are both refused; ADR 0037 added seventeen: the leading-option allow-list, the git destination confinement, the attached git config spelling, the pytest plugin options, the ctest option allow-list, the two write deny-tree guards, the classification comparison, the clearance derivation, the unknown classification label, the isolation gate's default, the row-bound associated data, the identity verification, the refusal of a pre-row-bound state, the success rule, the cursor detection, the cursor use and the regular-file gate on the attachment; ADR 0038 added seven: the corpus link rule, the secret names, the shared blocked directories, the one-walk-one-owner rule, the cache hash coverage, the refusal to re-seal an already-sealed state and the confined path positionals; ADR 0039 replaced the stale registered-but-not-enabled mutant with the unknown-tool fail-closed policy guard and added twenty-two: the alias execution refusal, the builtin merge guard, the plugin route, the dynamic authorise row, the builtin allow-list, plugin provenance, mutating-plugin approval, the session-lock release, the session-id bound, the MCP approval and alias filters, the cloud-policy AND/gate/response bound, the unpinned-pin, case-folded hash, pinned-reuse, post-download mismatch and mmproj revision rules, and the checkpointer/config/get_state forwarding; ADR 0040 added four: the model lease on execute, approve, the desktop ack and the chat route; the 2026-10-23 follow-up added three: the two resume budget sites and the shared release), 0 survived, 0 stale |
+| Mutation floor | `scripts/mutation_check.py` | `MIN_MUTANTS = 242` — deleting a mutant now fails the gate (ADR 0032); `PINNED_DECISION_FILES` adds a per-file floor |
 | Policy evals | `python evals/run_tool_eval.py`, `python evals/run_agentic_eval.py` | exit 0; tool: 16/16 (adversarial included); agentic: 132 cases / 27 scenarios, 0 failed, **0 skipped** (ADR 0025; ADR 0043/0044 added the `memory-policy` and `parallel-policy` scenarios) |
 | Model pins | `python scripts/verify_models.py` | 5 artifact local khớp pin, 1 chưa tải, **0 mismatched** (ADR 0023) |
 | Supply chain | `python scripts/generate_sbom.py` | CycloneDX 1.5: 171 distribution (kèm **3 941 SHA-256**) + 6 artifact GGUF kèm commit/SHA-256 (ADR 0023) |
@@ -114,15 +114,66 @@ Closed in this round:
   an opaque `null` and a non-HTTP `file:` referer stay fail-closed. One mutant
   compares the header verbatim again and is killed by the same-origin
   `Referer` test.
+- **Long-term memory is scoped to the caller, not the process.** One
+  `MemoryService` serves the whole process, so `MemoryService` now requires an
+  owner and every read/write takes a per-call one; `AgentService.execute`
+  requires `owner`; the A2A orchestrator forwards `task.owner` (the tenant),
+  the loopback routes pass `DEFAULT_MEMORY_OWNER`; record ids carry
+  `sha256(owner)[:16]` (the default keeps the historical shape), and the store
+  refuses a cross-owner replacement. `tests/integration/test_memory_tenant_isolation.py`
+  drives the real sealed store through the real orchestrator and proves two
+  tenants — and the local default — cannot recall or overwrite each other;
+  twelve mutants pin the class (id namespace, service, facade, store, adapter,
+  orchestrator, both routes).
 - **The mutation gate has a per-file floor.** `PINNED_DECISION_FILES` names
   the files whose decision is load-bearing and requires at least one mutant
   per file, so a global count cannot hide a file losing its last one.
 - **`pending_lock` is a port.** `AgentService`, `AgentRunContext` and
   `RunDeps` type it as `LockLike` instead of `Any`.
 
-Measured on 2026-10-28: **2 413 tests, 0 failures, 6 skipped**; coverage
-**100.00 %** (10 290 statements, 2 800 branches, 0 missed, 0 partial);
-mutation **226/226 killed** (`MIN_MUTANTS = 226`); lint, types, layer
+Measured on 2026-10-28: **2 433 tests, 0 failures, 6 skipped**; coverage
+**100.00 %** (10 321 statements, 2 808 branches, 0 missed, 0 partial);
+mutation **238/238 killed** (`MIN_MUTANTS = 238`); lint, types, layer
+contracts and byte-compile unchanged (0 issues, 151 files, 9/9 contracts).
+
+## Consolidation-on-resume follow-up (2026-10-29): the write decision has one owner
+
+The 2026-10-28 ownership round scoped every read and write to a tenant, but it
+left the *completion* decision in one path. A fresh run consolidated inside
+`AgentService._execute_locked`; an approval resume, a desktop-ack resume and a
+desktop workflow that finalised without a graph resume all returned
+`completed` without remembering anything. The owner also stopped at the
+request boundary: the parked approval/UI-ack entry carried no tenant, so a
+resume that did consolidate would have written into the default namespace.
+
+Closed in this round:
+
+- **The completion decision has one owner.** `AgentRunContext` holds the
+  injected `MemoryService` and exposes `consolidate_completed(result, …)`;
+  `AgentRunContext.run` requires `owner` and calls it after *every* graph
+  completion. The fresh run no longer has a private consolidation block.
+- **The non-graph completion paths call the same helper.** `ApprovalService.
+  _approved` (direct execution when there is no graph to resume) and
+  `UIActionService._finalize` (plain-text finalisation) both consolidate the
+  completed envelope; a failed desktop ack and a parked/rejected/cancelled run
+  still write nothing.
+- **The owner travels with the parked action.** `run_langgraph_agent` requires
+  `owner`, stores it in the pending payload, and a chained desktop action
+  copies it onto the next queued entry. A legacy entry without the key falls
+  back to `DEFAULT_MEMORY_OWNER` instead of crashing or writing to an empty
+  namespace.
+- **Six mutants pin the class** (parked owner dropped, parked/failed run
+  consolidated, resume owner dropped, chained owner reset, either non-graph
+  fallback skipped), and the resume tests assert the owner on both the runner
+  call and the stored record. The four files that carry the decision
+  (`agents/context.py`, `agents/response.py`, `agents/approval_service.py`,
+  `agents/ui_action_service.py`) joined `PINNED_DECISION_FILES`, so a file
+  cannot quietly lose its last mutant while the global count stays above the
+  floor.
+
+Measured on 2026-10-29: **2 443 tests, 0 failures, 6 skipped**; coverage
+**100.00 %** (10 337 statements, 2 808 branches, 0 missed, 0 partial);
+mutation **242/242 killed** (`MIN_MUTANTS = 242`); lint, types, layer
 contracts and byte-compile unchanged (0 issues, 151 files, 9/9 contracts).
 
 Design debt closed in the same round (ADR 0045/0046):

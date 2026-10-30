@@ -276,7 +276,7 @@ class DesktopAckServiceTests(unittest.TestCase):
             "temperature": 0.2,
         }
         with patch.object(AgentRunContext, "run", return_value={"status": "ok"}) as run:
-            service._resume_langgraph(action, [], success=True)
+            service._resume_langgraph(action, [], success=True, owner="tenant-a")
         user_message = run.call_args.kwargs["initial_messages"][-1]["content"]
         self.assertIn("... [truncated]", user_message)
 

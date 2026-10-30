@@ -26,11 +26,13 @@ from ai_assistant.agents.models import (
     AgentUiActionResultRequest,
 )
 from ai_assistant.agents.ui_action_service import UIActionService
+from ai_assistant.application.memory import MemoryService
 from ai_assistant.domain.errors import (
     AuthorizationError,
     NotFoundError,
     UnprocessableRequestError,
 )
+from ai_assistant.domain.memory import DEFAULT_MEMORY_OWNER
 
 # A desktop action id that validates with no required parameters, used by the
 # multi-step chaining tests below.
@@ -41,6 +43,21 @@ def _llm() -> MagicMock:
     llm = MagicMock()
     llm.llm = MagicMock()
     return llm
+
+
+class _MemoryStore:
+    """The write half of ``LongTermMemoryPort`` used by the resume tests."""
+
+    def __init__(self) -> None:
+        self.added: list[dict] = []
+
+    def add(self, record: dict) -> None:
+        self.added.append(record)
+
+
+def _memory() -> tuple[MemoryService, _MemoryStore]:
+    store = _MemoryStore()
+    return MemoryService(store, owner=DEFAULT_MEMORY_OWNER), store  # type: ignore[arg-type]
 
 
 def _approval_action(**over) -> dict:
@@ -149,10 +166,10 @@ class ApprovalServiceLifecycleTests(_ServiceFixture):
 class ApprovalExecutionTests(_ServiceFixture):
     """Grant issuance, execution, and the completed/resume fork."""
 
-    def _service(self, gateway, *, graph: bool = True) -> ApprovalService:
+    def _service(self, gateway, *, graph: bool = True, **over) -> ApprovalService:
         svc = ApprovalService(
             llm_runtime=_llm(), pending_actions=self.store,
-            pending_lock=self.lock, tool_gateway=gateway,
+            pending_lock=self.lock, tool_gateway=gateway, **over,
         )
         if not graph:
             # No graph engine wired => the resume branch is skipped and the
@@ -256,6 +273,51 @@ class ApprovalExecutionTests(_ServiceFixture):
             )
         self.assertEqual(runner.call_args.kwargs["system_prompt"], "you are terse")
 
+    def test_resume_consolidates_under_the_parked_owner(self) -> None:
+        """The approval may arrive in another request, so the run's tenant
+        must travel on the parked action and reach consolidation (ADR 0043)."""
+        gateway = MagicMock()
+        gateway.execute_approved.return_value = {"ok": True}
+        self.store["a-1"] = _approval_action(owner="tenant-a")
+        memory, memory_store = _memory()
+        with patch.object(agents_context, "run_langgraph_agent", return_value={
+            "status": "completed",
+            "steps": [{"type": "final_answer", "content": "done"}],
+        }) as runner:
+            out = self._service(gateway, memory_service=memory).approve(
+                AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1")
+            )
+        self.assertEqual(out["status"], "completed")
+        self.assertEqual(runner.call_args.kwargs["owner"], "tenant-a")
+        self.assertEqual([record["owner"] for record in memory_store.added], ["tenant-a"])
+
+    def test_a_no_graph_approval_still_consolidates_the_run(self) -> None:
+        """The direct-execution fallback is a completion path too."""
+        gateway = MagicMock()
+        gateway.execute_approved.return_value = {"ok": True}
+        self.store["a-1"] = _approval_action(owner="tenant-a")
+        memory, memory_store = _memory()
+        out = self._service(
+            gateway, graph=False, memory_service=memory,
+        ).approve(AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1"))
+        self.assertEqual(out["status"], "completed")
+        self.assertEqual([record["owner"] for record in memory_store.added], ["tenant-a"])
+
+    def test_a_legacy_action_without_an_owner_uses_the_desktop_namespace(self) -> None:
+        """An entry parked before ownership existed must still resume and be
+        remembered, not crash on a missing key or write to an empty owner."""
+        gateway = MagicMock()
+        gateway.execute_approved.return_value = {"ok": True}
+        self.store["a-1"] = _approval_action()
+        memory, memory_store = _memory()
+        out = self._service(
+            gateway, graph=False, memory_service=memory,
+        ).approve(AgentApproveRequest(action_id="a-1", approved=True, session_id="sess-1"))
+        self.assertEqual(out["status"], "completed")
+        self.assertEqual(
+            [record["owner"] for record in memory_store.added], [DEFAULT_MEMORY_OWNER],
+        )
+
 
 class UIActionServiceTests(_ServiceFixture):
     """Desktop ack processing, multi-step chaining, and finalisation."""
@@ -265,6 +327,7 @@ class UIActionServiceTests(_ServiceFixture):
             llm_runtime=_llm(), pending_actions=self.store, pending_lock=self.lock,
             tool_gateway=over.pop("tool_gateway", None),
             tool_registry=over.pop("tool_registry", None),
+            **over,
         )
 
     def test_shared_wiring_properties_surface_the_injected_objects(self) -> None:
@@ -335,6 +398,54 @@ class UIActionServiceTests(_ServiceFixture):
         self.assertEqual(self.store[next_id]["iteration"], 2)
         self.assertTrue(self.store[next_id]["ui_ack"])
         self.assertEqual(out["steps"][-1]["type"], "tool_call")
+
+    def test_chaining_carries_the_owner_onto_the_queued_action(self) -> None:
+        """A multi-step desktop workflow may be acknowledged in several
+        requests; the tenant must follow the plan, not reset to the default."""
+        self.store["r-1"] = _ui_action(
+            owner="tenant-a",
+            next_actions=[{"action": "admin.logout"}, {"action": "admin.login"}],
+        )
+        out = self._service().ui_action_result(
+            AgentUiActionResultRequest(request_id="r-1", success=True)
+        )
+        next_id = out["request_id"]
+        self.assertEqual(self.store[next_id]["owner"], "tenant-a")
+
+    def test_desktop_ack_resume_consolidates_under_the_parked_owner(self) -> None:
+        self.store["r-1"] = _ui_action(
+            owner="tenant-a", messages=[{"role": "system", "content": "be brief"}],
+        )
+        memory, memory_store = _memory()
+        with patch.object(agents_context, "run_langgraph_agent", return_value={
+            "status": "completed",
+            "steps": [{"type": "final_answer", "content": "done"}],
+        }) as runner:
+            out = self._service(memory_service=memory).ui_action_result(
+                AgentUiActionResultRequest(request_id="r-1", success=True)
+            )
+        self.assertEqual(out["status"], "completed")
+        self.assertEqual(runner.call_args.kwargs["owner"], "tenant-a")
+        self.assertEqual([record["owner"] for record in memory_store.added], ["tenant-a"])
+
+    def test_a_finalised_ack_without_a_resume_is_still_remembered(self) -> None:
+        """The plain-text finalisation is a completion path too."""
+        self.store["r-1"] = _ui_action(owner="tenant-a", messages=[])
+        memory, memory_store = _memory()
+        out = self._service(memory_service=memory).ui_action_result(
+            AgentUiActionResultRequest(request_id="r-1", success=True)
+        )
+        self.assertEqual(out["status"], "completed")
+        self.assertEqual([record["owner"] for record in memory_store.added], ["tenant-a"])
+
+    def test_a_failed_ack_is_never_remembered(self) -> None:
+        self.store["r-1"] = _ui_action(owner="tenant-a", messages=[])
+        memory, memory_store = _memory()
+        out = self._service(memory_service=memory).ui_action_result(
+            AgentUiActionResultRequest(request_id="r-1", success=False)
+        )
+        self.assertEqual(out["status"], "failed")
+        self.assertEqual(memory_store.added, [])
 
     def test_chaining_rejects_a_non_dict_entry(self) -> None:
         self.store["r-1"] = _ui_action(next_actions=["admin.logout"])

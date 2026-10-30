@@ -140,6 +140,7 @@ def _base_kwargs(**overrides):
         temperature=0.3,
         language="vi",
         request_started=time.monotonic(),
+        owner="tenant-a",
         validate_tool_call_fn=lambda name, params, models: (params, None),
         generate_action_id_fn=lambda: "id-123",
     )
@@ -235,6 +236,9 @@ class RunLanggraphAgentTests(unittest.TestCase):
         self.assertEqual(result["status"], "pending_ui_action")
         self.assertEqual(result["ui_action"]["request_id"], "rq-9")
         self.assertEqual(kwargs["deps"].pending_actions["rq-9"]["tool"], "application_action")
+        # The parked ack resumes in another request, so the run's memory
+        # namespace must travel with the entry (ADR 0043).
+        self.assertEqual(kwargs["deps"].pending_actions["rq-9"]["owner"], "tenant-a")
 
     def test_pending_approval_request(self):
         _FakeGraph.state = {
@@ -254,6 +258,7 @@ class RunLanggraphAgentTests(unittest.TestCase):
         self.assertEqual(result["status"], "pending_approval")
         self.assertEqual(result["action_id"], "id-123")
         self.assertEqual(kwargs["deps"].pending_actions["id-123"]["tool"], "run_command")
+        self.assertEqual(kwargs["deps"].pending_actions["id-123"]["owner"], "tenant-a")
         self.assertEqual(result["steps"][0]["type"], "pending_approval")
 
     def test_a_resumed_run_still_mints_an_id_for_a_newly_parked_approval(self):

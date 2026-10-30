@@ -504,6 +504,7 @@ def _compose_once() -> None:
         from ai_assistant.adapters.persistence.memory_store import MemoryStore
         from ai_assistant.agents.short_term_memory import BoundedShortTermMemory
         from ai_assistant.application.memory import MemoryService
+        from ai_assistant.domain.memory import DEFAULT_MEMORY_OWNER
 
         # Short-term memory (ADR 0043): the composition root is the only place
         # that decides whether the buffer exists — ``AGENT_MEMORY_ENABLED=0``
@@ -538,7 +539,13 @@ def _compose_once() -> None:
                 if runtime_settings.memory_enabled else None
             ),
             memory_service=MemoryService(
-                memory_store, top_k=runtime_settings.memory_ltm_top_k,
+                memory_store,
+                # The local desktop composition is the default namespace; an
+                # A2A run overrides it per call with the task's tenant.
+                owner=DEFAULT_MEMORY_OWNER,
+                top_k=runtime_settings.memory_ltm_top_k,
+                retention_days=runtime_settings.memory_retention_days,
+                retention_max_bytes=runtime_settings.memory_retention_max_mb * 1024 * 1024,
             ),
             parallel_max=runtime_settings.parallel_max,
             delegate_fn=delegate_fn,

@@ -31,6 +31,7 @@ from ai_assistant.agents.models import (
 from ai_assistant.agents.service import AgentService
 from ai_assistant.agents.session_locks import SessionLockPool
 from ai_assistant.domain.errors import ServiceUnavailableError
+from ai_assistant.domain.memory import DEFAULT_MEMORY_OWNER
 
 # Generous on purpose: a gate timeout means the lock itself broke, not that
 # the machine is slow.
@@ -71,12 +72,14 @@ class SessionSerializationTests(unittest.TestCase):
             first = threading.Thread(
                 target=service.execute,
                 args=(AgentExecuteRequest(task="first", session_id="s1"),),
+                kwargs={"owner": DEFAULT_MEMORY_OWNER},
             )
             first.start()
             self.assertTrue(first_inside.wait(timeout=_GATE_TIMEOUT))
             second = threading.Thread(
                 target=service.execute,
                 args=(AgentExecuteRequest(task="second", session_id="s1"),),
+                kwargs={"owner": DEFAULT_MEMORY_OWNER},
             )
             second.start()
             # Give the second run every chance to break in: while the first
@@ -114,12 +117,14 @@ class SessionSerializationTests(unittest.TestCase):
             first = threading.Thread(
                 target=service.execute,
                 args=(AgentExecuteRequest(task="blocked", session_id="s1"),),
+                kwargs={"owner": DEFAULT_MEMORY_OWNER},
             )
             first.start()
             self.assertTrue(first_inside.wait(timeout=_GATE_TIMEOUT))
             second = threading.Thread(
                 target=service.execute,
                 args=(AgentExecuteRequest(task="parallel", session_id="s2"),),
+                kwargs={"owner": DEFAULT_MEMORY_OWNER},
             )
             second.start()
             second.join(timeout=_GATE_TIMEOUT)
@@ -179,6 +184,7 @@ class SessionSerializationTests(unittest.TestCase):
                 run_thread = threading.Thread(
                     target=service.execute,
                     args=(AgentExecuteRequest(task="block", session_id="s1"),),
+                    kwargs={"owner": DEFAULT_MEMORY_OWNER},
                 )
                 run_thread.start()
                 self.assertTrue(run_inside.wait(timeout=_GATE_TIMEOUT))
@@ -225,6 +231,7 @@ class SessionSerializationTests(unittest.TestCase):
             run_thread = threading.Thread(
                 target=service.execute,
                 args=(AgentExecuteRequest(task="block", session_id="s1"),),
+                kwargs={"owner": DEFAULT_MEMORY_OWNER},
             )
             run_thread.start()
             self.assertTrue(run_inside.wait(timeout=_GATE_TIMEOUT))
@@ -373,6 +380,7 @@ class GlobalRunBudgetTests(unittest.TestCase):
                 threading.Thread(
                     target=service.execute,
                     args=(AgentExecuteRequest(task=f"t{idx}", session_id=f"s{idx}"),),
+                    kwargs={"owner": DEFAULT_MEMORY_OWNER},
                 )
                 for idx in range(2)
             ]
@@ -384,13 +392,15 @@ class GlobalRunBudgetTests(unittest.TestCase):
                 self.assertEqual(state["max_active"], 2)
             # A third session is refused while both slots are occupied…
             with self.assertRaises(ServiceUnavailableError):
-                service.execute(AgentExecuteRequest(task="overflow", session_id="s3"))
+                service.execute(AgentExecuteRequest(task="overflow", session_id="s3"),
+                                owner=DEFAULT_MEMORY_OWNER)
             release.set()
             for thread in threads:
                 thread.join(timeout=_GATE_TIMEOUT)
             self.assertFalse(any(thread.is_alive() for thread in threads))
             # …and admitted once a slot frees up (the budget is released).
-            result = service.execute(AgentExecuteRequest(task="after", session_id="s4"))
+            result = service.execute(AgentExecuteRequest(task="after", session_id="s4"),
+                                     owner=DEFAULT_MEMORY_OWNER)
         self.assertEqual(result["status"], "completed")
 
     def test_a_failed_run_releases_its_slot(self) -> None:
@@ -400,8 +410,10 @@ class GlobalRunBudgetTests(unittest.TestCase):
             side_effect=[RuntimeError("boom"), {"status": "completed"}],
         ):
             with self.assertRaises(RuntimeError):
-                service.execute(AgentExecuteRequest(task="explode", session_id="s1"))
-            result = service.execute(AgentExecuteRequest(task="retry", session_id="s2"))
+                service.execute(AgentExecuteRequest(task="explode", session_id="s1"),
+                                owner=DEFAULT_MEMORY_OWNER)
+            result = service.execute(AgentExecuteRequest(task="retry", session_id="s2"),
+                                     owner=DEFAULT_MEMORY_OWNER)
         self.assertEqual(result["status"], "completed")
 
     def test_a_resume_is_refused_while_the_budget_is_full(self) -> None:

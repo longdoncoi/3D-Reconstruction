@@ -24,6 +24,23 @@ from ai_assistant.agents.context import (
 )
 from ai_assistant.agents.pending_store import MemoryPendingStore
 from ai_assistant.application.coordination import TaskCoordinator
+from ai_assistant.application.memory import MemoryService
+from ai_assistant.domain.memory import DEFAULT_MEMORY_OWNER
+
+
+class _RecordingStore:
+    """The write half of ``LongTermMemoryPort`` used by the context tests."""
+
+    def __init__(self) -> None:
+        self.added: list[dict] = []
+
+    def add(self, record: dict) -> None:
+        self.added.append(record)
+
+
+def _memory() -> tuple[MemoryService, _RecordingStore]:
+    store = _RecordingStore()
+    return MemoryService(store, owner=DEFAULT_MEMORY_OWNER), store  # type: ignore[arg-type]
 
 
 def _capture(**overrides) -> dict:
@@ -32,7 +49,7 @@ def _capture(**overrides) -> dict:
     with patch.object(agents_context, "run_langgraph_agent", return_value={"status": "completed"}) as runner:
         ctx.run(
             system_prompt="sys", task="t", session_id="s", temperature=0.3,
-            language="vi", request_started=0.0,
+            language="vi", request_started=0.0, owner="tenant-a",
         )
     return runner.call_args.kwargs
 
@@ -91,7 +108,7 @@ class AgentRunContextWiringTests(unittest.TestCase):
         with patch.object(agents_context, "run_langgraph_agent", return_value={}) as runner:
             AgentRunContext().run(
                 system_prompt="s", task="t", session_id="s", temperature=0.3,
-                language="vi", request_started=0.0,
+                language="vi", request_started=0.0, owner="tenant-a",
                 validate_tool_call_fn=custom_validator,
                 generate_action_id_fn=RESUME_ACTION_ID,
             )
@@ -102,7 +119,8 @@ class AgentRunContextWiringTests(unittest.TestCase):
         with patch.object(agents_context, "run_langgraph_agent", return_value={}) as runner:
             AgentRunContext().run(
                 system_prompt="sys", task="do", session_id="sess", temperature=0.1,
-                language="en", request_started=1.5, initial_messages=[{"role": "user", "content": "x"}],
+                language="en", request_started=1.5, owner="tenant-a",
+                initial_messages=[{"role": "user", "content": "x"}],
                 initial_steps=[{"type": "memory_recall", "count": 1}],
                 prior_plan=["Buoc mot"],
                 approval_granted=True, approval_token="tok", granted_fingerprint="fp",
@@ -130,6 +148,37 @@ class AgentRunContextWiringTests(unittest.TestCase):
         self.assertEqual(kwargs["granted_fingerprint"], "")
         self.assertFalse(kwargs["resume_with_reflection"])
         self.assertIsNone(kwargs["event_sink"])
+
+
+class AgentRunContextMemoryTests(unittest.TestCase):
+    """A completed run is remembered once, under the owner it ran as."""
+
+    def _run(self, memory, result: dict, *, owner: str = "tenant-a") -> None:
+        with patch.object(agents_context, "run_langgraph_agent", return_value=result):
+            AgentRunContext(memory_service=memory).run(
+                system_prompt="sys", task="do the thing", session_id="sess-1",
+                temperature=0.3, language="vi", request_started=0.0, owner=owner,
+            )
+
+    def test_a_completed_run_is_consolidated_under_its_owner(self) -> None:
+        memory, store = _memory()
+        self._run(memory, {
+            "status": "completed",
+            "steps": [{"type": "final_answer", "content": "done"}],
+        })
+        self.assertEqual([record["owner"] for record in store.added], ["tenant-a"])
+        self.assertIn("do the thing", store.added[0]["text"])
+
+    def test_a_parked_run_is_not_consolidated(self) -> None:
+        memory, store = _memory()
+        self._run(memory, {
+            "status": "pending_approval",
+            "steps": [{"type": "pending_approval", "action_id": "a-1"}],
+        })
+        self.assertEqual(store.added, [])
+
+    def test_a_context_without_memory_still_runs(self) -> None:
+        self._run(None, {"status": "completed", "steps": []})
 
 
 class AgentRunContextPendingTests(unittest.TestCase):
@@ -202,7 +251,7 @@ class ServiceContextWiringTests(unittest.TestCase):
         with patch.object(agents_context, "run_langgraph_agent", return_value={}) as runner:
             svc._ctx.run(
                 system_prompt="s", task="t", session_id="s", temperature=0.3,
-                language="vi", request_started=0.0,
+                language="vi", request_started=0.0, owner="tenant-a",
                 generate_action_id_fn=RESUME_ACTION_ID,
             )
         kwargs = runner.call_args.kwargs
@@ -225,7 +274,7 @@ class ServiceContextWiringTests(unittest.TestCase):
         with patch.object(agents_context, "run_langgraph_agent", return_value={}) as runner:
             svc._ctx.run(
                 system_prompt="s", task="t", session_id="s", temperature=0.3,
-                language="vi", request_started=0.0,
+                language="vi", request_started=0.0, owner="tenant-a",
                 generate_action_id_fn=RESUME_ACTION_ID,
             )
         kwargs = runner.call_args.kwargs
@@ -245,7 +294,7 @@ class ServiceContextWiringTests(unittest.TestCase):
         with patch.object(agents_context, "run_langgraph_agent", return_value={}) as runner:
             svc._ctx.run(
                 system_prompt="s", task="t", session_id="s", temperature=0.3,
-                language="vi", request_started=0.0,
+                language="vi", request_started=0.0, owner="tenant-a",
             )
         kwargs = runner.call_args.kwargs
         # The main execute path keeps the A2A router; sub-services do not.

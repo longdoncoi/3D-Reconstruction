@@ -16,6 +16,7 @@ from unittest.mock import patch
 from ai_assistant.agents.models import AgentExecuteRequest
 from ai_assistant.agents.service import AgentService
 from ai_assistant.agents.short_term_memory import BoundedShortTermMemory
+from ai_assistant.domain.memory import DEFAULT_MEMORY_OWNER
 from ai_assistant.ports import ShortTermMemoryPort
 
 
@@ -129,6 +130,7 @@ class FacadeWiringTests(unittest.TestCase):
             AgentExecuteRequest(task="the question", session_id="s1", history=history),
             session_id="s1", task="the question", req_start=0.0,
             event_sink=None, client_host="test",
+            owner=DEFAULT_MEMORY_OWNER,
         )
 
     def test_no_buffer_means_no_server_side_state_at_all(self) -> None:

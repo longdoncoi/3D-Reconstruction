@@ -28,6 +28,7 @@ from ai_assistant.agents.models import (
 from ai_assistant.agents.service import AgentService
 from ai_assistant.application.coordination import TaskCoordinator
 from ai_assistant.domain.errors import ModelNotLoadedError, NotFoundError
+from ai_assistant.domain.memory import DEFAULT_MEMORY_OWNER
 from ai_assistant.tools.factory import create_tool_registry, platform_executors
 
 
@@ -109,7 +110,7 @@ class PendingDurabilityTests(unittest.TestCase):
 class ExecuteBranchTests(unittest.TestCase):
     def _run(self, service: AgentService, request: AgentExecuteRequest):
         with _run_context() as run:
-            result = service.execute(request)
+            result = service.execute(request, owner=DEFAULT_MEMORY_OWNER)
         return result, run
 
     def test_a_coding_task_gets_the_coding_handoff(self):
@@ -211,7 +212,8 @@ class AgentServiceFacadeTests(unittest.TestCase):
     def test_execute_without_llm_raises_model_not_loaded(self) -> None:
         service = AgentService(llm_runtime=None)
         with self.assertRaises(ModelNotLoadedError):
-            service.execute(AgentExecuteRequest(task="do something"))
+            service.execute(AgentExecuteRequest(task="do something"),
+                            owner=DEFAULT_MEMORY_OWNER)
 
     def test_authorise_delegation_reaches_the_context_and_both_subservices(self) -> None:
         """The composition root's live plugin policy must reach every resume path."""
@@ -244,7 +246,7 @@ class AgentServiceFacadeTests(unittest.TestCase):
 
         with _run_context() as run:
             run.side_effect = _run
-            service.execute(_execute("leased run"))
+            service.execute(_execute("leased run"), owner=DEFAULT_MEMORY_OWNER)
         self.assertEqual(seen, {"entered": True, "exited": False})
         self.assertTrue(runtime.gate.exited)
 
@@ -320,7 +322,8 @@ class AgentServiceFacadeTests(unittest.TestCase):
                     task="summarise", session_id=session, retry_message_index=3,
                     history=[{"role": "user", "content": "  "}, {"role": "assistant", "content": "hi"}],
                     attachments=["a.txt"],
-                )
+                ),
+                owner=DEFAULT_MEMORY_OWNER,
             )
         mock_run.assert_called_once()
         # The facade must inject its own wiring (LLM, catalog, pending store)

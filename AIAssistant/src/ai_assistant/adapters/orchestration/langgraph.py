@@ -31,7 +31,7 @@ _LANGUAGES = frozenset({"vi", "en"})
 class LangGraphAgentOrchestrator:
     """Runs platform tasks on the shared LangGraph agent engine."""
 
-    def __init__(self, execute: Callable[[AgentExecuteRequest], dict[str, Any]],
+    def __init__(self, execute: Callable[..., dict[str, Any]],
                  approve: Callable[[AgentApproveRequest], dict[str, Any]],
                  ui_action_result: Callable[[AgentUiActionResultRequest], dict[str, Any]] | None = None) -> None:
         self._execute = execute
@@ -43,7 +43,11 @@ class LangGraphAgentOrchestrator:
             continuation = task.metadata.get("agent_run.continuation")
             if isinstance(continuation, dict):
                 return self._resume(task, continuation)
-            return self._map(self._execute(self._execute_request(task)))
+            # The task's tenant is the memory namespace of the run. It is
+            # deliberately not the principal: the principal's subject is the
+            # A2A task (``a2a:<task id>``), which would give every task its
+            # own namespace and lose the tenant's accumulated memory.
+            return self._map(self._execute(self._execute_request(task), owner=task.owner))
 
     # ── Fresh run ────────────────────────────────────────────────────────────
 

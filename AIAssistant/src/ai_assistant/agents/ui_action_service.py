@@ -15,6 +15,7 @@ import time
 from typing import Any
 
 from ..domain.errors import NotFoundError, UnprocessableRequestError
+from ..domain.memory import DEFAULT_MEMORY_OWNER
 from ..orchestration.state import Step
 from ..orchestration.supervisor import audit as audit_agent
 from ..orchestration.supervisor import verify_result
@@ -45,6 +46,9 @@ class UIActionService(ContextService):
             raise NotFoundError(msg)
 
         params = action["params"]
+        # The parked entry carries the owner of the run that opened this
+        # desktop action; legacy entries fall back to the desktop default.
+        owner = action.get("owner", DEFAULT_MEMORY_OWNER)
         result = {"success": request.success, "action": params["action"], **request.result}
         steps: list[Step] = [{
             "type": "tool_result",
@@ -72,9 +76,9 @@ class UIActionService(ContextService):
 
         next_actions = action.get("next_actions") or []
         if request.success and isinstance(next_actions, list) and next_actions:
-            return self._chain_next_action(action, steps, next_actions)
+            return self._chain_next_action(action, steps, next_actions, owner=owner)
 
-        return self._finalize(action, steps, request.success)
+        return self._finalize(action, steps, request.success, owner=owner)
 
     # ── Private helpers ─────────────────────────────────────────────────────
 
@@ -83,6 +87,8 @@ class UIActionService(ContextService):
         action: dict[str, Any],
         steps: list[Step],
         next_actions: list[dict[str, Any]],
+        *,
+        owner: str,
     ) -> dict[str, Any]:
         """Queue the next UI action in a multi-step desktop workflow."""
         queued = next_actions[0]
@@ -106,6 +112,9 @@ class UIActionService(ContextService):
                 "iteration": action.get("iteration", 0) + 1,
                 "temperature": action.get("temperature", 0.3),
                 "language": action.get("language", "vi"), "created_at": time.time(),
+                # The queued step resumes in the same tenant as the run that
+                # planned it (ADR 0043).
+                "owner": owner,
             }
             self._save_pending()
         return {
@@ -120,10 +129,12 @@ class UIActionService(ContextService):
         action: dict[str, Any],
         steps: list[Step],
         success: bool,
+        *,
+        owner: str,
     ) -> dict[str, Any]:
         """Finalize the UI action workflow, optionally resuming LangGraph."""
         if action.get("messages") and self._ctx.resume_available(require_llm_ready=True):
-            return self._resume_langgraph(action, steps, success)
+            return self._resume_langgraph(action, steps, success, owner=owner)
 
         content = (f"Đã thực thi {action['params']['action']}." if success
                    else f"Không thể thực thi {action['params']['action']}: unknown error")
@@ -131,7 +142,7 @@ class UIActionService(ContextService):
         all_steps = action.get("steps", []) + steps
         self._ctx.task_coordinator.finish(action["session_id"], success=success)
         retry_idx_stored = action.get("retry_message_index")
-        return {
+        result: dict[str, Any] = {
             "status": "completed" if success else "failed",
             "session_id": action["session_id"],
             "request_id": action.get("request_id", ""),
@@ -139,12 +150,20 @@ class UIActionService(ContextService):
             "steps": all_steps,
             **({"retry_message_index": retry_idx_stored} if retry_idx_stored is not None else {}),
         }
+        # A desktop workflow that ends without a graph resume is still a
+        # completed run and is remembered under the same owner (ADR 0043).
+        self._ctx.consolidate_completed(
+            result, task=action["task"], session_id=action["session_id"], owner=owner,
+        )
+        return result
 
     def _resume_langgraph(
         self,
         action: dict[str, Any],
         steps: list[Step],
         success: bool,
+        *,
+        owner: str,
     ) -> dict[str, Any]:
         """Resume LangGraph after a desktop UI action acknowledgement."""
         from .prompts import build_agent_system_prompt
@@ -170,6 +189,7 @@ class UIActionService(ContextService):
             temperature=action["temperature"],
             language=action.get("language", "vi"),
             request_started=time.monotonic(),
+            owner=owner,
             initial_messages=messages,
             initial_steps=action.get("steps", []) + steps,
             initial_iteration=action.get("iteration", 0),

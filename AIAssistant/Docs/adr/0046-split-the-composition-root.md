@@ -90,9 +90,10 @@ giữ nguyên tên.
 - Import-time contract không đổi: `bootstrap.server` top-level chỉ còn
   stdlib + `ai_assistant.settings`; `lifecycle`/`cli`/`platform_patch` cũng
   chỉ stdlib ở top-level (uvicorn và proactor internals vẫn import trong hàm).
-- Đo lại 2026-10-28: **2 413 test, 0 fail, 6 skip**; coverage **100.00 %**
-  (10 290 statement, 2 800 branch); mutation **226/226 killed**; mypy **151
-  file**, 0 issue; lint-imports **9/9**.
+- Đo lại 2026-10-29 (sau follow-up consolidation-on-resume của ADR 0043):
+  **2 443 test, 0 fail, 6 skip**; coverage **100.00 %** (10 337 statement,
+  2 808 branch); mutation **242/242 killed**; mypy **151 file**, 0 issue;
+  lint-imports **9/9**.
 
 ## Không thay đổi
 
