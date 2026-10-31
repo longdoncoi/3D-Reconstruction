@@ -316,12 +316,25 @@ jobs:
           $url = "https://github.com/OpenCppCoverage/OpenCppCoverage/releases/download/release-$version/OpenCppCoverageSetup-x64-$version.exe"
 
           curl.exe --fail --location --retry 3 --retry-all-errors --output $installer $url
-          if ($LASTEXITCODE -ne 0) { Write-Error "OpenCppCoverage download failed with exit code $LASTEXITCODE"; exit 1 }
+          $curlExit = $LASTEXITCODE
+          if ($curlExit -ne 0) { Write-Error "OpenCppCoverage download failed with exit code $curlExit"; exit 1 }
 
-          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- "/DIR=$installDir"
-          if ($LASTEXITCODE -ne 0) { Write-Error "OpenCppCoverage installer failed with exit code $LASTEXITCODE"; exit 1 }
+          # `& $installer` returns immediately for a GUI-subsystem process, so
+          # the verification below raced the extraction and never saw the file.
+          # Start-Process -Wait blocks on the installer itself; -PassThru gives
+          # us its exit code (the Inno Setup /VERYSILENT contract).
+          $process = Start-Process -FilePath $installer `
+              -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',"/DIR=$installDir" `
+              -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+              Write-Error "OpenCppCoverage installer failed with exit code $($process.ExitCode)"
+              exit 1
+          }
 
           $tool = Join-Path $installDir "OpenCppCoverage.exe"
+          for ($attempt = 0; $attempt -lt 10 -and -not (Test-Path -LiteralPath $tool); $attempt++) {
+              Start-Sleep -Milliseconds 500
+          }
           if (-not (Test-Path -LiteralPath $tool)) { Write-Error "OpenCppCoverage.exe was not installed at $tool"; exit 1 }
           "OPENCPPCOVERAGE_EXE=$tool" >> $env:GITHUB_ENV
 
