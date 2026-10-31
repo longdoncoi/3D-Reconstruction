@@ -402,6 +402,8 @@ public:
     /// failure, not as "detected nothing".
     bool returnEmpty = false;
     int inferenceDelayMs = 0;
+    int detectionStarts = 0;
+    int segmentationStarts = 0;
     int detectionCalls = 0;
     int segmentationCalls = 0;
     Qt::HANDLE lastInferenceThread = nullptr;
@@ -412,6 +414,7 @@ public:
     AIDetectionOutcome detectObjects(const cv::Mat &) override { return {}; }
     cv::Mat runDetection(const cv::Mat &) override {
         lastInferenceThread = QThread::currentThreadId();
+        ++detectionStarts;
         if (inferenceDelayMs > 0) QThread::msleep(static_cast<unsigned long>(inferenceDelayMs));
         if (throwOnInference) throw std::runtime_error("the inference backend failed");
         ++detectionCalls;
@@ -420,6 +423,7 @@ public:
     }
     cv::Mat runSegmentation(const cv::Mat &) override {
         lastInferenceThread = QThread::currentThreadId();
+        ++segmentationStarts;
         if (inferenceDelayMs > 0) QThread::msleep(static_cast<unsigned long>(inferenceDelayMs));
         if (throwOnInference) throw std::runtime_error("the inference backend failed");
         ++segmentationCalls;

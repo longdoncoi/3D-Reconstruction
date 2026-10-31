@@ -500,18 +500,28 @@ void TestPluginUi::oneInferenceAtATime()
 
     context.viewerService().setCurrent2DImagePath(imagePath);
     context.ai().detectionReady = true;
-    context.ai().inferenceDelayMs = 250; // keep the first request in flight
+    context.ai().inferenceDelayMs = 1000; // keep the first request in flight
 
     RunningAIProcessorPlugin instance(context);
     QVERIFY(instance.initialized);
 
     QSignalSpy finished(context.signalBus(), &SignalBus::aiInferenceFinished);
     QVERIFY(QMetaObject::invokeMethod(&instance.plugin, "onObjectDetection"));
+    // Wait for the worker to enter runDetection before the second click:
+    // clicking earlier would race the busy flag and make the assertion below
+    // vacuous (the first task might not have started yet either).
+    QTRY_COMPARE_WITH_TIMEOUT(context.ai().detectionStarts, 1, 5000);
+
     // A second click while the first inference is still running: the ONNX
     // session is shared, and two results would race for the same viewer.
     QVERIFY(QMetaObject::invokeMethod(&instance.plugin, "onObjectDetection"));
-    QVERIFY2(finished.wait(5000), "the detection result never arrived");
+    // A dispatched second task enters runDetection almost immediately; give
+    // it a bounded window to do so, then assert it never started. The window
+    // is shorter than the first inference, so the result is still in flight.
+    QTest::qWait(500);
+    QCOMPARE(context.ai().detectionStarts, 1);
 
+    QVERIFY2(finished.wait(5000), "the detection result never arrived");
     QCOMPARE(context.ai().detectionCalls, 1);
     QCOMPARE(finished.count(), 1);
 
@@ -519,6 +529,7 @@ void TestPluginUi::oneInferenceAtATime()
     // result is applied a new request must run again.
     QVERIFY(QMetaObject::invokeMethod(&instance.plugin, "onObjectDetection"));
     QVERIFY2(finished.wait(5000), "the second detection result never arrived");
+    QCOMPARE(context.ai().detectionStarts, 2);
     QCOMPARE(context.ai().detectionCalls, 2);
 }
 
