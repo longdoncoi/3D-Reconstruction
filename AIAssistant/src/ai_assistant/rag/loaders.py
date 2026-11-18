@@ -273,12 +273,20 @@ class CppHeaderLoader(BaseDocumentLoader):
                 if not self._is_quality_chunk(block):
                     continue
                 header = block.split("\n")[0].strip().rstrip("{").strip()
-                results.append(ChunkResult(
-                    text=f"[Source: {rel}] {header}\n{block[:self.chunk_chars]}",
-                    source_path=fp,
-                    loader_type="source",
-                    metadata={"symbol": header},
-                ))
+                prefix = f"[Source: {rel}] {header}\n"
+                if len(block) <= self.chunk_chars:
+                    results.append(ChunkResult(
+                        text=f"{prefix}{block}",
+                        source_path=fp,
+                        loader_type="source",
+                        metadata={"symbol": header},
+                    ))
+                else:
+                    for sc in self._sliding_window_chunks(block, fp, project_dir, label="Source"):
+                        sc.text = prefix + sc.text.split("\n", 1)[-1]
+                        sc.loader_type = "source"
+                        sc.metadata = {"symbol": header}
+                        results.append(sc)
         else:
             results = self._sliding_window_chunks(content, fp, project_dir, label="Source")
         return results
@@ -323,21 +331,41 @@ class CppHeaderLoader(BaseDocumentLoader):
                     mblock = "\n".join(lines[ms:me]).strip()
                     if not self._is_quality_chunk(mblock):
                         continue
+                    header = f"Method: {node.name}.{method.name}"
+                    prefix = f"[Source: {rel}] {header}\n"
+                    if len(mblock) <= self.chunk_chars:
+                        results.append(ChunkResult(
+                            text=f"{prefix}{mblock}",
+                            source_path=fp,
+                            loader_type="source",
+                            metadata={"symbol": method.name, "scope": "Method", "class": node.name},
+                            parent_text=class_text,
+                            hierarchy_level=2,
+                        ))
+                    else:
+                        for sc in self._sliding_window_chunks(mblock, fp, project_dir, label="Source"):
+                            sc.text = prefix + sc.text.split("\n", 1)[-1]
+                            sc.loader_type = "source"
+                            sc.metadata = {"symbol": method.name, "scope": "Method", "class": node.name}
+                            sc.parent_text = class_text
+                            sc.hierarchy_level = 2
+                            results.append(sc)
+            else:
+                header = f"{scope}: {node.name}"
+                prefix = f"[Source: {rel}] {header}\n"
+                if len(block) <= self.chunk_chars:
                     results.append(ChunkResult(
-                        text=f"[Source: {rel}] Method: {node.name}.{method.name}\n{mblock[:self.chunk_chars]}",
+                        text=f"{prefix}{block}",
                         source_path=fp,
                         loader_type="source",
-                        metadata={"symbol": method.name, "scope": "Method", "class": node.name},
-                        parent_text=class_text,
-                        hierarchy_level=2,
+                        metadata={"symbol": node.name, "scope": scope},
                     ))
-            else:
-                results.append(ChunkResult(
-                    text=f"[Source: {rel}] {scope}: {node.name}\n{block[:self.chunk_chars]}",
-                    source_path=fp,
-                    loader_type="source",
-                    metadata={"symbol": node.name, "scope": scope},
-                ))
+                else:
+                    for sc in self._sliding_window_chunks(block, fp, project_dir, label="Source"):
+                        sc.text = prefix + sc.text.split("\n", 1)[-1]
+                        sc.loader_type = "source"
+                        sc.metadata = {"symbol": node.name, "scope": scope}
+                        results.append(sc)
 
         return results or self._sliding_window_chunks(content, fp, project_dir, label="Source")
 

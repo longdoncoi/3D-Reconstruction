@@ -691,7 +691,7 @@ lint (`E/W/F/I/BLE/S/RUF/C90/N/TRY`, complexity ≤ 15), thiết lập mypy stri
 sàn coverage theo branch (`fail_under = 100`), nên lần chạy cục bộ và CI đo cùng
 một thứ. Theo lần đo ngày 2026-11-17 (các con số đo được được ghi lại trong
 `Docs/SCORECARD.md` — **đã theo git** từ ADR 0032): **100.00%** statement *và*
-branch toàn package (12 206 statement / 3 404 branch, 2 712 test);
+branch toàn package (12 286 statement / 3 440 branch, 2 727 test);
 inventory mutation hiện có **363/363** killed, 0 survived, 0 stale trong sandbox
 biệt lập của ADR 0056/0058/0059/0060/0061/0062/0063.
 Số mutant tối thiểu cũng là một cổng

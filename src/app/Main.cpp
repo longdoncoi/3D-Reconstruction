@@ -64,10 +64,19 @@ int main(int argc, char* argv[])
     // _setmode(_O_BINARY) + SetConsoleOutputCP(CP_UTF8) đảm bảo bytes UTF-8
     // thuần túy được gửi ra stdout mà không bị Windows API chuyển đổi.
 #ifdef Q_OS_WIN
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        FILE* fp = nullptr;
+        freopen_s(&fp, "CONOUT$", "w", stdout);
+        freopen_s(&fp, "CONOUT$", "w", stderr);
+    }
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
-    _setmode(_fileno(stdout), _O_BINARY);
-    _setmode(_fileno(stderr), _O_BINARY);
+    if (_fileno(stdout) >= 0) {
+        _setmode(_fileno(stdout), _O_BINARY);
+    }
+    if (_fileno(stderr) >= 0) {
+        _setmode(_fileno(stderr), _O_BINARY);
+    }
 #endif
 
     Logger::setLogsDir(AppConfig::bootstrap().logsDir());

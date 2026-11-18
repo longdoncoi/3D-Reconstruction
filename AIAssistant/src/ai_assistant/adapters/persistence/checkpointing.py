@@ -105,6 +105,54 @@ def _serializer(cipher: FieldCipher | None) -> Any:
     return EncryptedSerializer(_FieldCipherAdapter(cipher))
 
 
+def _fallback_checkpoint_extension(path: Path) -> Path:
+    """Fallback between .sql and .sqlite if the requested extension doesn't exist."""
+    if not path.exists():
+        if path.suffix == ".sqlite" and path.with_suffix(".sql").exists():
+            return path.with_suffix(".sql")
+        if path.suffix == ".sql" and path.with_suffix(".sqlite").exists():
+            return path.with_suffix(".sqlite")
+    return path
+
+
+def _migrate_legacy_checkpoint(target: Path) -> None:
+    """Migrate legacy project-relative checkpoint.sql to centralized cache directory."""
+    if target.exists():
+        return
+    for legacy_cand in (
+        Path("AIAssistant/Cache/checkpoint.sql"),
+        Path("Cache/checkpoint.sql"),
+        Path.cwd() / "Cache/checkpoint.sql",
+        Path.cwd() / "AIAssistant/Cache/checkpoint.sql",
+    ):
+        if legacy_cand.is_file() and legacy_cand.resolve() != target.resolve():
+            import shutil
+
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(legacy_cand), str(target))
+                for ext in ("-wal", "-shm"):
+                    wal = legacy_cand.with_name(legacy_cand.name + ext)
+                    if wal.exists():
+                        shutil.move(str(wal), str(target.parent / (target.name + ext)))
+                break
+            except OSError:
+                pass
+
+
+def _resolve_app_data_checkpoint(p: Path, app_data_env: str) -> Path:
+    """Resolve checkpoint path inside APP_DATA_DIR."""
+    data_root = Path(app_data_env).resolve()
+    if data_root.name.casefold() != "aiassistant":
+        data_root = data_root / "AIAssistant"
+    parts = p.parts
+    if parts and parts[0].casefold() == "aiassistant":
+        parts = parts[1:]
+    resolved = data_root / Path(*parts)
+    _migrate_legacy_checkpoint(resolved)
+    return _fallback_checkpoint_extension(resolved)
+
+
 def _resolve_checkpoint_path(raw_path: str) -> str:
     """Normalize checkpoint path so relative paths resolve to the right Cache directory.
 
@@ -122,21 +170,21 @@ def _resolve_checkpoint_path(raw_path: str) -> str:
         # the one the deployment configured.
         return raw_path
 
+    app_data_env = os.environ.get("APP_DATA_DIR")
+    if app_data_env:
+        return str(_resolve_app_data_checkpoint(p, app_data_env))
+
     cwd = Path.cwd()
     parts = p.parts
 
     if cwd.name == "AIAssistant" and len(parts) > 1 and parts[0] == "AIAssistant":
         resolved = Path(*parts[1:])
+    elif cwd.name != "AIAssistant" and (cwd / "AIAssistant").is_dir() and len(parts) > 0 and parts[0] == "Cache":
+        resolved = Path("AIAssistant") / p
     else:
         resolved = p
 
-    if not resolved.exists():
-        if resolved.suffix == ".sqlite" and resolved.with_suffix(".sql").exists():
-            resolved = resolved.with_suffix(".sql")
-        elif resolved.suffix == ".sql" and resolved.with_suffix(".sqlite").exists():
-            resolved = resolved.with_suffix(".sqlite")
-
-    return str(resolved)
+    return str(_fallback_checkpoint_extension(resolved))
 
 
 def _ensure_parent_directory(path: str) -> None:

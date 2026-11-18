@@ -236,6 +236,15 @@ class RetrieverGuardTests(unittest.TestCase):
             [1, 2],
         )
 
+    def test_bm25_retriever_large_corpus_uses_partition_and_orders_top_k(self) -> None:
+        table = SimpleNamespace(get_scores=lambda tokens: [float(i) for i in range(100)])
+        retriever = BM25Retriever(table, k=5)
+        hits = retriever.retrieve("hi")
+        self.assertEqual(
+            [hit.node.metadata["chunk_index"] for hit in hits],
+            [99, 98, 97, 96, 95],
+        )
+
     def test_build_retrievers_refuses_to_invent_an_index(self) -> None:
         settings = RAGSettings.from_env_and_dict({})
         self.assertEqual(

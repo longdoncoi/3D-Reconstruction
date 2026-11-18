@@ -97,7 +97,11 @@ class BM25Retriever:
         # Only zero entries are dropped: with a tiny corpus BM25Okapi can emit
         # negative scores (negative idf), and the rank — not the sign — is what
         # the fusion in ``hybrid_retrieve`` consumes.
-        order = np.argsort(scores)[::-1]
+        if scores.size > self._k * 2:
+            top_k_indices = np.argpartition(scores, -self._k)[-self._k:]
+            order = top_k_indices[np.argsort(scores[top_k_indices])[::-1]]
+        else:
+            order = np.argsort(scores)[::-1]
         results: list[ScoredNode] = []
         for chunk_id in order[: self._k]:
             score = float(scores[chunk_id])

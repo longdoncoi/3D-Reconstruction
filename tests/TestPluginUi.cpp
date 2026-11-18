@@ -71,6 +71,9 @@ private slots:
     void theAgentTraceRendersEveryStepKind();
     void userAttachmentsAreRenderedSafely();
     void theThinkingIndicatorFollowsTheInsertIndex();
+    void theThinkingIndicatorIsNotDuplicatedWhenAgentIsRunning();
+    void theAgentTraceRendersStepAnswersWhileInProgress();
+    void theAgentTraceSuppressesDuplicateStepAnswersWhenFinalAnswerArrives();
 };
 
 namespace {
@@ -979,6 +982,16 @@ void TestPluginUi::theAgentTraceRendersEveryStepKind()
 
 void TestPluginUi::userAttachmentsAreRenderedSafely()
 {
+    const QString oldKey = qEnvironmentVariable("AI_STORAGE_KEY");
+    qputenv("AI_STORAGE_KEY", "hex:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
+    struct EnvGuard {
+        QString key;
+        ~EnvGuard() {
+            if (key.isEmpty()) qunsetenv("AI_STORAGE_KEY");
+            else qputenv("AI_STORAGE_KEY", key.toLocal8Bit());
+        }
+    } guard{oldKey};
+
     PluginMock::AppContext context(QDir::tempPath());
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -1074,6 +1087,110 @@ void TestPluginUi::theThinkingIndicatorFollowsTheInsertIndex()
     QTextBrowser idle;
     ChatMessageRenderer::renderChatHistory(&idle, &context, history, false, -1);
     QVERIFY(!idle.toHtml().contains(QStringLiteral("ai.thinking")));
+}
+
+void TestPluginUi::theThinkingIndicatorIsNotDuplicatedWhenAgentIsRunning()
+{
+    PluginMock::AppContext context(QDir::tempPath());
+    QTextBrowser browser;
+
+    QList<ChatMessage> history;
+    history.append(makeMessage(ChatRole::User, QStringLiteral("câu hỏi")));
+
+    QJsonObject envelope;
+    envelope["status"] = QStringLiteral("running");
+    envelope["stream_status"] = QStringLiteral("plan: started");
+    history.append(makeMessage(ChatRole::AgentTrace,
+                               QString::fromUtf8(QJsonDocument(envelope).toJson(QJsonDocument::Compact))));
+
+    // When the agent trace is running and has stream_status, the typing indicator div should NOT be appended
+    ChatMessageRenderer::renderChatHistory(&browser, &context, history, true, -1);
+    const QString html = browser.toHtml();
+    QVERIFY(!html.contains(QStringLiteral("class=\"typing\"")) && !html.contains(QStringLiteral("class='typing'")));
+    QVERIFY(html.contains(QStringLiteral("plan: started")));
+}
+
+void TestPluginUi::theAgentTraceRendersStepAnswersWhileInProgress()
+{
+    PluginMock::AppContext context(QDir::tempPath());
+    QTextBrowser browser;
+
+    QJsonObject stepAnswer;
+    stepAnswer["type"] = QStringLiteral("step_answer");
+    stepAnswer["content"] = QStringLiteral("câu trả lời bước 1");
+    QJsonArray steps;
+    steps.append(stepAnswer);
+
+    QJsonObject envelope;
+    envelope["steps"] = steps;
+    envelope["status"] = QStringLiteral("running");
+    envelope["stream_status"] = QStringLiteral("reason: started");
+
+    QList<ChatMessage> history;
+    history.append(makeMessage(ChatRole::AgentTrace,
+                               QString::fromUtf8(QJsonDocument(envelope).toJson(QJsonDocument::Compact))));
+
+    ChatMessageRenderer::renderChatHistory(&browser, &context, history, false, -1);
+    const QString html = browser.toHtml();
+    QVERIFY2(html.contains(QStringLiteral("câu trả lời bước 1")),
+             "the step answer must be visible while agent is running or before final_answer arrives");
+}
+
+void TestPluginUi::theAgentTraceSuppressesDuplicateStepAnswersWhenFinalAnswerArrives()
+{
+    PluginMock::AppContext context(QDir::tempPath());
+    QTextBrowser browser;
+
+    QJsonObject stepAnswer;
+    stepAnswer["type"] = QStringLiteral("step_answer");
+    stepAnswer["content"] = QStringLiteral("kết quả rag_search");
+
+    QJsonObject toolCall;
+    toolCall["type"] = QStringLiteral("tool_call");
+    toolCall["tool"] = QStringLiteral("application_action");
+    toolCall["params"] = QJsonObject{{"action", QStringLiteral("viewer.load_2d")}};
+
+    QJsonArray earlierSteps;
+    earlierSteps.append(stepAnswer);
+    earlierSteps.append(toolCall);
+
+    QJsonObject earlierEnvelope;
+    earlierEnvelope["steps"] = earlierSteps;
+    earlierEnvelope["status"] = QStringLiteral("pending_ui_action");
+    earlierEnvelope["prior_step_count"] = 0;
+
+    QJsonObject toolResult;
+    toolResult["type"] = QStringLiteral("tool_result");
+    toolResult["tool"] = QStringLiteral("application_action");
+    toolResult["result"] = QJsonObject{{"success", true}};
+
+    QJsonObject finalAnswer;
+    finalAnswer["type"] = QStringLiteral("final_answer");
+    finalAnswer["content"] = QStringLiteral("kết quả rag_search\n\nđã hoàn tất");
+
+    QJsonArray laterSteps;
+    laterSteps.append(stepAnswer);
+    laterSteps.append(toolCall);
+    laterSteps.append(toolResult);
+    laterSteps.append(finalAnswer);
+
+    QJsonObject laterEnvelope;
+    laterEnvelope["steps"] = laterSteps;
+    laterEnvelope["status"] = QStringLiteral("completed");
+    laterEnvelope["prior_step_count"] = 2;
+
+    QList<ChatMessage> history;
+    history.append(makeMessage(ChatRole::AgentTrace,
+                               QString::fromUtf8(QJsonDocument(earlierEnvelope).toJson(QJsonDocument::Compact))));
+    history.append(makeMessage(ChatRole::AgentTrace,
+                               QString::fromUtf8(QJsonDocument(laterEnvelope).toJson(QJsonDocument::Compact))));
+
+    ChatMessageRenderer::renderChatHistory(&browser, &context, history, false, -1);
+    const QString html = browser.toHtml();
+
+    QVERIFY2(html.contains(QStringLiteral("kết quả rag_search")),
+             "final answer containing the RAG search result must be visible");
+    QCOMPARE(html.count(QStringLiteral("kết quả rag_search")), 1);
 }
 
 QTEST_MAIN(TestPluginUi)

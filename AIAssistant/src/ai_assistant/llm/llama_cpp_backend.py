@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Any, cast
 
@@ -58,8 +59,40 @@ class LlamaCppBackend(LLMBackend):
             raise ValueError(msg)
 
         release_ml_memory()
-        logger.info("loading model: %s", self.model_path)
         
+        raw_layers = os.environ.get("AI_LLM_GPU_LAYERS")
+        gpu_layers = 99
+        if raw_layers is not None:
+            try:
+                gpu_layers = int(raw_layers)
+            except ValueError:
+                gpu_layers = 99
+
+        raw_flash = os.environ.get("AI_LLM_FLASH_ATTN")
+        if raw_flash is not None:
+            use_flash_attn = raw_flash.strip() in {"1", "true", "True"}
+        else:
+            use_flash_attn = (gpu_layers > 0)
+
+        raw_threads = os.environ.get("AI_LLM_THREADS")
+        cpu_count = os.cpu_count() or 4
+        if raw_threads is not None:
+            try:
+                n_threads = int(raw_threads)
+            except ValueError:
+                n_threads = max(1, min(8, cpu_count))
+        else:
+            n_threads = max(1, min(8, cpu_count))
+        n_threads_batch = max(n_threads, min(16, cpu_count))
+
+        if gpu_layers == 0:
+            self._used_cpu = True
+            logger.info("loading model on CPU: %s (threads=%d, threads_batch=%d)",
+                        self.model_path, n_threads, n_threads_batch)
+        else:
+            logger.info("loading model with GPU offload (gpu_layers=%d, threads=%d, flash_attn=%s): %s",
+                        gpu_layers, n_threads, use_flash_attn, self.model_path)
+
         try:
             if self._is_vision:
                 from llama_cpp.llama_chat_format import Qwen25VLChatHandler
@@ -71,23 +104,29 @@ class LlamaCppBackend(LLMBackend):
                     model_path=self.model_path,
                     chat_handler=self._chat_handler,
                     chat_format="qwen2.5-vl",
-                    n_gpu_layers=99,
+                    n_gpu_layers=gpu_layers,
                     n_ctx=n_ctx,
                     n_batch=256,
+                    n_threads=n_threads,
+                    n_threads_batch=n_threads_batch,
                     verbose=False,
                     use_mmap=True,
                     use_mlock=False,
+                    flash_attn=use_flash_attn,
                     chat_format_kwargs={"enable_thinking": False}
                 )
             else:
                 self._llm = Llama(
                     model_path=self.model_path,
-                    n_gpu_layers=99,
+                    n_gpu_layers=gpu_layers,
                     n_ctx=n_ctx,
                     n_batch=512,
+                    n_threads=n_threads,
+                    n_threads_batch=n_threads_batch,
                     verbose=False,
                     use_mmap=True,
                     use_mlock=False,
+                    flash_attn=use_flash_attn,
                     chat_format_kwargs={"enable_thinking": False}
                 )
         except Exception as gpu_error:
@@ -108,6 +147,8 @@ class LlamaCppBackend(LLMBackend):
                     n_gpu_layers=0,
                     n_ctx=n_ctx,
                     n_batch=128,
+                    n_threads=n_threads,
+                    n_threads_batch=n_threads_batch,
                     verbose=False,
                     use_mmap=True,
                     use_mlock=False,
@@ -119,14 +160,53 @@ class LlamaCppBackend(LLMBackend):
                     n_gpu_layers=0,
                     n_ctx=n_ctx,
                     n_batch=128,
+                    n_threads=n_threads,
+                    n_threads_batch=n_threads_batch,
                     verbose=False,
                     use_mmap=True,
                     use_mlock=False,
                     chat_format="qwen3",
                     chat_format_kwargs={"enable_thinking": False}
                 )
-                
+
+        self._attach_cache()
+        self._configure_thinking()
         logger.info("[Application Output] Model loaded: %s", self.model_description)
+
+    def _configure_thinking(self) -> None:
+        """Configure thinking tokens in the chat template formatter."""
+        if self._llm is None:
+            return
+        enable_thinking = os.environ.get("AI_LLM_ENABLE_THINKING", "0").strip() in {"1", "true", "True"}
+        try:
+            handlers = getattr(self._llm, "_chat_handlers", {})
+            for handler in handlers.values():
+                if hasattr(handler, "__closure__") and handler.__closure__:
+                    for cell in handler.__closure__:
+                        formatter = cell.cell_contents
+                        if hasattr(formatter, "_environment") and hasattr(formatter._environment, "globals"):
+                            formatter._environment.globals["enable_thinking"] = enable_thinking
+                            logger.debug("Configured chat template enable_thinking=%s", enable_thinking)
+        except Exception as error:
+            logger.debug("Could not configure thinking flag on chat template: %s", error)
+
+    def _attach_cache(self) -> None:
+        """Attach a RAM cache to the Llama instance if available and enabled."""
+        if self._llm is None or os.environ.get("AI_LLM_CACHE_ENABLED", "1") == "0":
+            return
+        try:
+            import llama_cpp
+            cache_cls = getattr(llama_cpp, "LlamaRAMCache", None)
+            if cache_cls is not None and hasattr(self._llm, "set_cache"):
+                raw_mb = os.environ.get("AI_LLM_CACHE_CAPACITY_MB", "512")
+                try:
+                    mb = max(16, int(raw_mb))
+                except ValueError:
+                    mb = 512
+                self._llm.set_cache(cache_cls(capacity_bytes=mb * 1024 * 1024))
+                logger.debug("LlamaRAMCache attached to LLM context (%d MB)", mb)
+        except Exception as error:
+            logger.debug("Could not attach LlamaRAMCache: %s", error)
 
     def generate(
         self,

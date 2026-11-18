@@ -234,6 +234,7 @@ class RetrievalPipelineTests(unittest.TestCase):
                 "line_start": 10,
                 "line_end": 11,
             },
+            parent_text="class ReconstructionService:\n    pass",
         )
         dense = [_Item(_Node({"chunk_index": 0}), 0.9)]
         sparse = [_Item(_Node({"chunk_index": 0}), 2.0)]
@@ -248,6 +249,8 @@ class RetrievalPipelineTests(unittest.TestCase):
         self.assertEqual(result.hits[0].symbol, "reconstruct")
         self.assertEqual(result.hits[0].line_start, 10)
         self.assertEqual(result.hits[0].to_dict(text_limit=3)["text"], "def")
+        self.assertEqual(result.hits[0].parent_text, "class ReconstructionService:\n    pass")
+        self.assertEqual(result.hits[0].to_dict(text_limit=5)["parent_text"], "class")
 
     def test_structured_search_fails_closed_below_confidence_threshold(self):
         chunk = _chunk("only sparse", "docs/a.md")

@@ -128,9 +128,22 @@ void ChatMessageRenderer::renderChatHistory(QTextBrowser* browser, IAppContext* 
     }
 
     QJsonArray previousAgentSteps;
+    bool hasActiveRunningAgent = false;
+    for (const ChatMessage& m : history) {
+        if (m.role == ChatRole::AgentTrace) {
+            const QJsonObject res = m.agentTrace();
+            if (res.value("status").toString() == "running") {
+                hasActiveRunningAgent = true;
+                break;
+            }
+        }
+    }
+    const bool showTyping = isThinking && !hasActiveRunningAgent;
+
     for (int i = 0; i < history.size(); ++i) {
         const auto &m = history[i];
         int skipSteps = -1;
+        bool groupHasFinalAnswer = false;
         if (m.role == ChatRole::AgentTrace) {
             const QJsonObject envelope = m.agentTrace();
             const QJsonArray currentSteps = envelope["steps"].toArray();
@@ -140,20 +153,50 @@ void ChatMessageRenderer::renderChatHistory(QTextBrowser* browser, IAppContext* 
             skipSteps = qMax(envelope["prior_step_count"].toInt(),
                              commonStepPrefixLength(previousAgentSteps, currentSteps));
             previousAgentSteps = currentSteps;
+
+            // Check if any AgentTrace in this interaction group has committed final_answer.
+            // If so, intermediate step_answers should be suppressed across the group
+            // so results (e.g. from rag_search) are not rendered twice.
+            for (int j = i; j < history.size() && history[j].role == ChatRole::AgentTrace; ++j) {
+                const QJsonObject env = history[j].agentTrace();
+                const QJsonArray st = env["steps"].toArray();
+                for (const QJsonValue &val : st) {
+                    const QJsonObject s = val.toObject();
+                    if (s["type"].toString() == "final_answer" && !s.value("streaming").toBool()) {
+                        groupHasFinalAnswer = true;
+                        break;
+                    }
+                }
+                if (groupHasFinalAnswer) break;
+            }
+            if (!groupHasFinalAnswer) {
+                for (int j = i - 1; j >= 0 && history[j].role == ChatRole::AgentTrace; --j) {
+                    const QJsonObject env = history[j].agentTrace();
+                    const QJsonArray st = env["steps"].toArray();
+                    for (const QJsonValue &val : st) {
+                        const QJsonObject s = val.toObject();
+                        if (s["type"].toString() == "final_answer" && !s.value("streaming").toBool()) {
+                            groupHasFinalAnswer = true;
+                            break;
+                        }
+                    }
+                    if (groupHasFinalAnswer) break;
+                }
+            }
         } else {
             previousAgentSteps = QJsonArray();
         }
         QJsonArray attachments;
         for (const QString &attachment : m.attachments) attachments.append(attachment);
         h += buildMessageHtml(m.roleName(), m.content, attachments,
-                              m.timestamp, i, ctx, resolvedActions, skipSteps);
+                              m.timestamp, i, ctx, resolvedActions, skipSteps, groupHasFinalAnswer);
         
-        if (isThinking && thinkingInsertIndex == i) {
+        if (showTyping && thinkingInsertIndex == i) {
             h += QString("<div class='typing'>%1</div>").arg(ctx->translate("ai.thinking"));
         }
     }
     
-    if (isThinking && (thinkingInsertIndex == -1 || thinkingInsertIndex >= history.size())) {
+    if (showTyping && (thinkingInsertIndex == -1 || thinkingInsertIndex >= history.size())) {
         h += QString("<div class='typing'>%1</div>").arg(ctx->translate("ai.thinking"));
     }
     
@@ -163,7 +206,8 @@ void ChatMessageRenderer::renderChatHistory(QTextBrowser* browser, IAppContext* 
 
 QString ChatMessageRenderer::buildMessageHtml(const QString &role, const QString &content, const QJsonArray &attachments,
                                              const QString &timestamp, int index, IAppContext* ctx,
-                                             const QSet<QString>& resolvedActions, int skipSteps) {
+                                             const QSet<QString>& resolvedActions, int skipSteps,
+                                             bool groupHasCommittedFinalAnswer) {
     if (role == "assistant") {
         return ChatTemplates::AI_MESSAGE_CONTAINER.arg(HtmlUtilities::mdToHtml(content));
     } else if (role == "assistant_agent") {
@@ -212,6 +256,18 @@ QString ChatMessageRenderer::buildMessageHtml(const QString &role, const QString
         for (int i = priorStepCount; i < steps.size(); ++i) {
             if (steps[i].toObject()["type"].toString() == "plan_reflection") lastReflectionIndex = i;
         }
+        // When a final_answer is present, it aggregates all completed step_answers;
+        // while in-progress, we show each completed step_answer so the user sees results.
+        bool hasCommittedFinalAnswer = groupHasCommittedFinalAnswer;
+        if (!hasCommittedFinalAnswer) {
+            for (const QJsonValue& value : steps) {
+                const QJsonObject stepObj = value.toObject();
+                if (stepObj["type"].toString() == "final_answer" && !stepObj.value("streaming").toBool()) {
+                    hasCommittedFinalAnswer = true;
+                    break;
+                }
+            }
+        }
         for (int i = priorStepCount; i < steps.size(); ++i) {
             QJsonObject step = steps[i].toObject();
             QString type = step["type"].toString();
@@ -219,24 +275,38 @@ QString ChatMessageRenderer::buildMessageHtml(const QString &role, const QString
                 QString title = ctx->translate("ai.agent_thinking");
                 if (title == "ai.agent_thinking") title = "🤔 " + ctx->translate("ai.thinking");
                 if (title == "🤔 ai.thinking") title = "🤔 Thinking...";
-                html += ChatTemplates::AGENT_THINKING.arg(title, step["content"].toString().toHtmlEscaped());
+                const bool isStreaming = step.value("streaming").toBool();
+                QString thinkingContent = step["content"].toString().toHtmlEscaped();
+                if (isStreaming) {
+                    thinkingContent += QStringLiteral(" <span style='color:#8b5cf6; font-weight:bold;'>▌</span>");
+                }
+                html += ChatTemplates::AGENT_THINKING.arg(title, thinkingContent);
             } else if (type == "plan") {
                 if (i != lastPlanIndex) continue; // superseded draft
                 const QJsonArray planSteps = step["steps"].toArray();
+                const bool isStreaming = step.value("streaming").toBool();
                 QString planHtml;
                 for (int pi = 0; pi < planSteps.size(); ++pi) {
+                    QString itemText = planSteps[pi].toString().toHtmlEscaped();
+                    if (isStreaming && pi == planSteps.size() - 1) {
+                        itemText += QStringLiteral(" <span style='color:#8b5cf6; font-weight:bold;'>▌</span>");
+                    }
                     planHtml += QString("<div style='margin:2px 0;'><span style='color:#8b5cf6; font-weight:bold;'>%1.</span> %2</div>")
                         .arg(pi + 1)
-                        .arg(planSteps[pi].toString().toHtmlEscaped());
+                        .arg(itemText);
                 }
                 html += ChatTemplates::AGENT_THINKING.arg(ctx->translate("ai.plan"), planHtml);
             } else if (type == "plan_reflection") {
                 if (i != lastReflectionIndex) continue; // superseded draft
                 const QJsonObject review = step["result"].toObject();
                 const bool passed = review.value("passed").toBool();
+                const bool isStreaming = step.value("streaming").toBool();
                 const QString status = passed ? "Plan verification passed" : "Plan verification failed";
-                html += ChatTemplates::AGENT_THINKING.arg(status,
-                    review.value("reason").toString().toHtmlEscaped());
+                QString reason = review.value("reason").toString().toHtmlEscaped();
+                if (isStreaming) {
+                    reason += QStringLiteral(" <span style='color:#8b5cf6; font-weight:bold;'>▌</span>");
+                }
+                html += ChatTemplates::AGENT_THINKING.arg(status, reason);
             } else if (type == "delegation") {
                 const QString agent = step["agent"].toString().toHtmlEscaped();
                 const QString tool = step["tool"].toString().toHtmlEscaped();
@@ -256,10 +326,14 @@ QString ChatMessageRenderer::buildMessageHtml(const QString &role, const QString
             } else if (type == "verification") {
                 if (step["tool"].toString() == "rag_search") continue;
                 const QJsonObject result = step["result"].toObject();
-                const QString status = result.value("passed").toBool()
-                    ? "Verification passed" : "Verification failed";
-                html += ChatTemplates::AGENT_THINKING.arg(status,
-                    result.value("reason").toString().toHtmlEscaped());
+                const bool passed = result.value("passed").toBool();
+                const bool isStreaming = step.value("streaming").toBool();
+                const QString status = passed ? "Verification passed" : "Verification failed";
+                QString reason = result.value("reason").toString().toHtmlEscaped();
+                if (isStreaming) {
+                    reason += QStringLiteral(" <span style='color:#8b5cf6; font-weight:bold;'>▌</span>");
+                }
+                html += ChatTemplates::AGENT_THINKING.arg(status, reason);
             } else if (type == "pending_approval") {
                 QString toolName = step["tool"].toString();
                 QString actionId = step["action_id"].toString();
@@ -284,8 +358,20 @@ QString ChatMessageRenderer::buildMessageHtml(const QString &role, const QString
                                                                       ctx->translate("ai.agent_approve"),
                                                                       ctx->translate("ai.agent_reject"));
                 }
+            } else if (type == "step_answer") {
+                if (!hasCommittedFinalAnswer) {
+                    QString answerHtml = HtmlUtilities::mdToHtml(step["content"].toString());
+                    if (step.value("streaming").toBool()) {
+                        answerHtml += QStringLiteral(" <span style='color:#8b5cf6; font-weight:bold;'>▌</span>");
+                    }
+                    html += ChatTemplates::AI_MESSAGE_CONTAINER.arg(answerHtml);
+                }
             } else if (type == "final_answer") {
-                html += ChatTemplates::AI_MESSAGE_CONTAINER.arg(HtmlUtilities::mdToHtml(step["content"].toString()));
+                QString answerHtml = HtmlUtilities::mdToHtml(step["content"].toString());
+                if (step.value("streaming").toBool()) {
+                    answerHtml += QStringLiteral(" <span style='color:#8b5cf6; font-weight:bold;'>▌</span>");
+                }
+                html += ChatTemplates::AI_MESSAGE_CONTAINER.arg(answerHtml);
             } else if (type == "error") {
                 html += ChatTemplates::AI_MESSAGE_CONTAINER.arg("<span style='color:#ef4444;'>" + ctx->translate("ai.agent_error") + ": " + step["content"].toString().toHtmlEscaped() + "</span>");
             }

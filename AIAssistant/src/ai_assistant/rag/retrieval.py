@@ -261,6 +261,7 @@ class RetrievalPipeline:
                 line_start=int(metadata["line_start"]) if metadata.get("line_start") is not None else None,
                 line_end=int(metadata["line_end"]) if metadata.get("line_end") is not None else None,
                 is_image=chunk.is_image,
+                parent_text=getattr(chunk, "parent_text", None),
             ))
 
         confidence = hits[0].confidence if hits else 0.0

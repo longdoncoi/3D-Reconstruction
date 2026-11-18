@@ -28,6 +28,10 @@ def _reuse_prior_plan(state: AgentState) -> dict[str, Any] | None:
     if state.get("replan_requested"):
         return None
 
+    if state.get("skip_plan"):
+        logger.info("[NODE: plan] Fast-path: skip_plan đã được kích hoạt.")
+        return {"plan": None, "plan_spec": {"requires_plan": False}, "replan_requested": False}
+
     previous_review = next(
         (step.get("result", {}) for step in reversed(state.get("steps", []))
          if has_step_type(step, "plan_reflection")), None)
@@ -76,6 +80,15 @@ def _reuse_prior_plan(state: AgentState) -> dict[str, Any] | None:
     return None
 
 
+def _is_conversational_turn(text: str) -> bool:
+    """True when the user text is a trivial conversational greeting or acknowledgment."""
+    cleaned = text.strip().casefold()
+    return cleaned in {
+        "xin chào", "chào", "chào bạn", "hello", "hi", "hey",
+        "cảm ơn", "cảm ơn bạn", "thank you", "thanks", "tks",
+    }
+
+
 def plan_node(state: AgentState, plan_complete: Completion) -> dict[str, Any]:
     """Sinh ke hoach cac buoc. Skip neu cau ngan (likely UI action)."""
     logger.info("[NODE: plan] Bắt đầu sinh kế hoạch.")
@@ -93,6 +106,14 @@ def plan_node(state: AgentState, plan_complete: Completion) -> dict[str, Any]:
         if m.get("role") == "user":
             user_msg = m.get("content", "")
             break
+
+    if _is_conversational_turn(user_msg):
+        logger.info("[NODE: plan] Fast-path: phát hiện hội thoại ngắn ('%s'), bỏ qua lập kế hoạch.", user_msg)
+        return {
+            "plan": None,
+            "plan_spec": {"requires_plan": False, "step_kinds": ["direct_answer"]},
+            "replan_requested": False,
+        }
 
     planning_msgs = [
         {"role": "system", "content": PLANNER_PROMPT},

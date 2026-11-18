@@ -538,6 +538,7 @@ class LocalAgentGraph:
         approval_scope: str = "",
         granted_fingerprint: str = "",
         prior_plan: list[str] | None = None,
+        skip_plan: bool = False,
     ) -> AgentState:
         self._emitted_steps = len(steps or [])
         restored_plan = next(
@@ -583,6 +584,7 @@ class LocalAgentGraph:
             "replan_count": 0,
             "max_replans": 2,
             "max_tool_calls": max(4, self._max_iterations),
+            "skip_plan": skip_plan,
         }
 
         if required_ui_actions is not None:

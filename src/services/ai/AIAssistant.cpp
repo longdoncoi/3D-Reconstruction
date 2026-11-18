@@ -62,6 +62,10 @@ AIAssistant::AIAssistant(ILanguageService* lang, IAuthService* auth,
                 reportUiActionResult(requestId, false, QVariantMap{{"error", error}});
             });
 
+    m_agentStepTimer = new QTimer(this);
+    m_agentStepTimer->setInterval(20);
+    connect(m_agentStepTimer, &QTimer::timeout, this, &AIAssistant::onAgentStepTimerTick);
+
     loadAllSessions(); // cũng chọn session cuối cùng làm hiện tại
 
     // If no sessions exist, create the first one
@@ -673,6 +677,134 @@ void AIAssistant::updateAgentStreamDraft(
     emit historyChanged();
 }
 
+void AIAssistant::enqueueAgentStepForStreaming(
+    QNetworkReply *reply,
+    const QueuedCompletionRequest &request,
+    const QJsonObject &step)
+{
+    StreamingStepState &st = m_agentStepStreamers[reply];
+    st.request = request;
+    st.pendingSteps.enqueue(step);
+    if (m_agentStepTimer && !m_agentStepTimer->isActive()) {
+        m_agentStepTimer->start();
+    }
+}
+
+void AIAssistant::flushPendingAgentSteps(QNetworkReply *reply)
+{
+    if (!m_agentStepStreamers.contains(reply)) return;
+    StreamingStepState st = m_agentStepStreamers.take(reply);
+    QJsonArray &steps = m_agentStreamSteps[reply];
+    if (!st.activeStep.isEmpty()) {
+        steps.append(st.activeStep);
+    }
+    while (!st.pendingSteps.isEmpty()) {
+        steps.append(st.pendingSteps.dequeue());
+    }
+    if (m_agentStepStreamers.isEmpty() && m_agentStepTimer && m_agentStepTimer->isActive()) {
+        m_agentStepTimer->stop();
+    }
+}
+
+void AIAssistant::onAgentStepTimerTick()
+{
+    if (m_agentStepStreamers.isEmpty()) {
+        if (m_agentStepTimer && m_agentStepTimer->isActive()) m_agentStepTimer->stop();
+        return;
+    }
+    const auto replies = m_agentStepStreamers.keys();
+    for (QNetworkReply *reply : replies) {
+        if (!m_agentStepStreamers.contains(reply)) continue;
+        StreamingStepState &st = m_agentStepStreamers[reply];
+
+        if (st.activeStep.isEmpty()) {
+            if (st.pendingSteps.isEmpty()) {
+                m_agentStepStreamers.remove(reply);
+                continue;
+            }
+            st.activeStep = st.pendingSteps.dequeue();
+            st.progress = 0;
+            const QString type = st.activeStep.value("type").toString();
+            if (type == "plan_reflection" || type == "verification") {
+                st.targetLength = st.activeStep.value("result").toObject().value("reason").toString().length();
+            } else if (type == "plan") {
+                int total = 0;
+                for (const QJsonValue &v : st.activeStep.value("steps").toArray()) {
+                    total += v.toString().length();
+                }
+                st.targetLength = total;
+            } else if (type == "thinking" || type == "step_answer") {
+                st.targetLength = st.activeStep.value("content").toString().length();
+            } else if (type == "tool_call") {
+                const QString paramsStr = QString::fromUtf8(
+                    QJsonDocument(st.activeStep.value("params").toObject()).toJson(QJsonDocument::Compact));
+                st.targetLength = paramsStr.length();
+            } else {
+                st.targetLength = 0;
+            }
+        }
+
+        const int speed = st.pendingSteps.isEmpty() ? 5 : (15 * (st.pendingSteps.size() + 1));
+        st.progress += speed;
+
+        const QString type = st.activeStep.value("type").toString();
+        const bool stepDone = (st.targetLength <= 0 || st.progress >= st.targetLength);
+
+        QJsonObject currentVisibleStep = st.activeStep;
+        if (!stepDone) {
+            currentVisibleStep["streaming"] = true;
+            if (type == "plan_reflection" || type == "verification") {
+                QJsonObject resObj = currentVisibleStep.value("result").toObject();
+                const QString full = resObj.value("reason").toString();
+                resObj["reason"] = full.left(st.progress);
+                currentVisibleStep["result"] = resObj;
+            } else if (type == "plan") {
+                const QJsonArray fullArr = currentVisibleStep.value("steps").toArray();
+                QJsonArray partialArr;
+                int remaining = st.progress;
+                for (const QJsonValue &v : fullArr) {
+                    const QString s = v.toString();
+                    if (remaining >= s.length()) {
+                        partialArr.append(s);
+                        remaining -= s.length();
+                    } else if (remaining > 0) {
+                        partialArr.append(s.left(remaining));
+                        remaining = 0;
+                    }
+                }
+                currentVisibleStep["steps"] = partialArr;
+            } else if (type == "thinking" || type == "step_answer") {
+                const QString full = currentVisibleStep.value("content").toString();
+                currentVisibleStep["content"] = full.left(st.progress);
+            }
+        }
+
+        QJsonArray visibleSteps = m_agentStreamSteps.value(reply);
+        visibleSteps.append(currentVisibleStep);
+
+        if (stepDone) {
+            m_agentStreamSteps[reply].append(st.activeStep);
+            st.activeStep = QJsonObject();
+            st.progress = 0;
+            st.targetLength = 0;
+        }
+
+        if (!m_agentStreamTexts.value(reply).isEmpty()) {
+            QJsonObject draftAnswer;
+            draftAnswer["type"] = QStringLiteral("final_answer");
+            draftAnswer["content"] = m_agentStreamTexts.value(reply);
+            draftAnswer["streaming"] = true;
+            visibleSteps.append(draftAnswer);
+        }
+
+        QJsonObject envelope;
+        envelope["status"] = QStringLiteral("running");
+        envelope["stream_status"] = m_agentStreamStatuses.value(reply);
+        envelope["steps"] = visibleSteps;
+        updateAgentStreamDraft(reply, st.request, envelope);
+    }
+}
+
 void AIAssistant::consumeCompletionStream(
     QNetworkReply *reply, const QueuedCompletionRequest &request) {
     QByteArray &buffer = m_streamBuffers[reply];
@@ -702,12 +834,8 @@ void AIAssistant::consumeCompletionStream(
             const QJsonObject chunk = QJsonDocument::fromJson(data).object();
             if (request.isAgent) {
                 if (eventName == "step") {
-                    QJsonArray &steps = m_agentStreamSteps[reply];
-                    steps.append(chunk);
-                    QJsonObject envelope;
-                    envelope["status"] = QStringLiteral("running");
-                    envelope["steps"] = steps;
-                    updateAgentStreamDraft(reply, request, envelope);
+                    m_agentStreamTexts[reply].clear();
+                    enqueueAgentStepForStreaming(reply, request, chunk);
                 } else if (eventName == "status") {
                     const QString node = chunk.value("node").toString();
                     const QString phase = chunk.value("phase").toString();
@@ -721,6 +849,7 @@ void AIAssistant::consumeCompletionStream(
                     envelope["steps"] = m_agentStreamSteps.value(reply);
                     updateAgentStreamDraft(reply, request, envelope);
                 } else if (eventName == "delta") {
+                    flushPendingAgentSteps(reply);
                     QString &answer = m_agentStreamTexts[reply];
                     answer += chunk.value("content").toString();
                     QJsonArray visibleSteps = m_agentStreamSteps.value(reply);
@@ -735,9 +864,11 @@ void AIAssistant::consumeCompletionStream(
                     envelope["steps"] = visibleSteps;
                     updateAgentStreamDraft(reply, request, envelope);
                 } else if (eventName == "done") {
+                    flushPendingAgentSteps(reply);
                     m_agentStreamResults.insert(reply, chunk);
                     updateAgentStreamDraft(reply, request, chunk);
                 } else if (eventName == "error") {
+                    flushPendingAgentSteps(reply);
                     m_streamErrors.insert(
                         reply, chunk.value("detail").toString());
                 }
@@ -774,6 +905,7 @@ void AIAssistant::onReplyReadyRead(QNetworkReply *reply) {
 }
 
 void AIAssistant::clearStreamState(QNetworkReply *reply) {
+    flushPendingAgentSteps(reply);
     m_streamBuffers.remove(reply);
     m_streamDraftIndices.remove(reply);
     m_streamErrors.remove(reply);
@@ -781,6 +913,7 @@ void AIAssistant::clearStreamState(QNetworkReply *reply) {
     m_agentStreamResults.remove(reply);
     m_agentStreamTexts.remove(reply);
     m_agentStreamStatuses.remove(reply);
+    m_agentStepStreamers.remove(reply);
 }
 
 void AIAssistant::onServerFinished(int exitCode, bool crashed) {
@@ -844,8 +977,13 @@ void AIAssistant::onReplyFinished(QNetworkReply* reply) {
     QueuedCompletionRequest request = m_requests.takeReply(reply);
     QString sessionId = request.sessionId;  // Remove from pending and get sessionId
     
+    if (request.isAgent) {
+        flushPendingAgentSteps(reply);
+    }
+    
     if (reply->error() == QNetworkReply::NoError) {
         if (request.isAgent) {
+            flushPendingAgentSteps(reply);
             QJsonObject res = streamed
                 ? m_agentStreamResults.value(reply)
                 : QJsonDocument::fromJson(reply->readAll()).object();

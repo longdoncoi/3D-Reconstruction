@@ -86,6 +86,28 @@ class RagSearchToolTests(unittest.TestCase):
         self.assertEqual(payload["hits"][0]["symbol"], "answer")
         self.assertEqual(payload["results"][0]["source"], "source_code")
 
+    def test_structured_hits_with_documentation_evidence(self):
+        hit = RagHit(
+            chunk_id=1, text="doc evidence", source_path="docs/guide.md", loader_type="markdown",
+            rank=1, fusion_score=0.01, confidence=0.9, heading="Intro",
+        )
+        result = RetrievalResult("q", (hit,), 0.9, True, "evidence_found")
+        provider = SimpleNamespace(
+            search=lambda query, result_k: result,
+        )
+        payload = rag_search_tool(provider)({"query": "q"})
+        self.assertTrue(payload["found"])
+        self.assertEqual(payload["results"][0]["source"], "documentation")
+
+    def test_structured_hits_empty_results_reports_not_found(self):
+        result = RetrievalResult("q", (), 0.9, True, "evidence_found")
+        provider = SimpleNamespace(
+            search=lambda query, result_k: result,
+        )
+        payload = rag_search_tool(provider)({"query": "q"})
+        self.assertFalse(payload["found"])
+        self.assertIn("Không tìm thấy", payload["message"])
+
     def test_low_confidence_structured_result_is_an_explicit_miss(self):
         result = RetrievalResult.empty("q", "low_confidence")
         provider = SimpleNamespace(

@@ -257,7 +257,21 @@ def build_container(base_dir: Path, legacy_tools: "list[Any]",
         if coordinator is not None
         else TaskCoordinator(recovery_observer=record_recovery)
     )
-    store = SqliteTaskStore(settings.data_dir / "tasks.sqlite", cipher=storage_cipher)
+    task_cache_dir = settings.data_dir / "Cache"
+    task_cache_dir.mkdir(parents=True, exist_ok=True)
+    task_db_path = task_cache_dir / "tasks.sqlite"
+    legacy_task_db = settings.data_dir / "tasks.sqlite"
+    if legacy_task_db.exists() and not task_db_path.exists():
+        import shutil
+        try:
+            shutil.move(str(legacy_task_db), str(task_db_path))
+            for ext in ("-wal", "-shm"):
+                wal = legacy_task_db.with_name(legacy_task_db.name + ext)
+                if wal.exists():
+                    shutil.move(str(wal), str(task_cache_dir / wal.name))
+        except OSError:
+            task_db_path = legacy_task_db
+    store = SqliteTaskStore(task_db_path, cipher=storage_cipher)
     task_service = TaskService(store, task_executor, settings.agent_capabilities,
                                shared_coordinator,
                                max_concurrent_tasks=settings.max_concurrent_tasks)

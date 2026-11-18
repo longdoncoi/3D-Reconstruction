@@ -36,6 +36,12 @@ class TokenizeVnTests(unittest.TestCase):
         tokens = tokenize_vn("xây dựng hệ thống dữ liệu")
         self.assertEqual(tokens, ["xây", "dựng", "hệ_thống", "dữ_liệu"])
 
+    def test_joins_3d_and_cv_compounds(self) -> None:
+        tokens = tokenize_vn("tính toán đám mây điểm và bản đồ độ sâu với ma trận xoay")
+        self.assertIn("đám_mây_điểm", tokens)
+        self.assertIn("bản_đồ_độ_sâu", tokens)
+        self.assertIn("ma_trận_xoay", tokens)
+
     def test_code_identifiers_stay_single_tokens(self) -> None:
         tokens = tokenize_vn("vector_retriever và point3d")
         self.assertIn("vector_retriever", tokens)

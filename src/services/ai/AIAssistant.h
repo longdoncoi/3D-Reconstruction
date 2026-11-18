@@ -10,6 +10,8 @@
 #include <QHash>
 #include <QStringList>
 #include <QDateTime>
+#include <QQueue>
+#include <QTimer>
 #include "Global.h"
 #include "IAIAssistantService.h"
 #include "ChatSessionManager.h"
@@ -111,6 +113,22 @@ private:
     QHash<QNetworkReply *, QJsonObject> m_agentStreamResults;
     QHash<QNetworkReply *, QString> m_agentStreamTexts;
     QHash<QNetworkReply *, QString> m_agentStreamStatuses;
+
+    struct StreamingStepState {
+        QueuedCompletionRequest request;
+        QQueue<QJsonObject> pendingSteps;
+        QJsonObject activeStep;
+        int progress = 0;
+        int targetLength = 0;
+    };
+    QHash<QNetworkReply *, StreamingStepState> m_agentStepStreamers;
+    QTimer *m_agentStepTimer = nullptr;
+
+    void enqueueAgentStepForStreaming(QNetworkReply *reply,
+                                      const QueuedCompletionRequest &request,
+                                      const QJsonObject &step);
+    void flushPendingAgentSteps(QNetworkReply *reply);
+    void onAgentStepTimerTick();
 
     ChatSession* currentSession();
     ChatSession* getSession(const QString &sessionId);

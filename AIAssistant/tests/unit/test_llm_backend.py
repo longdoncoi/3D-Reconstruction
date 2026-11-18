@@ -25,6 +25,7 @@ from ai_assistant.llm.llama_cpp_backend import LlamaCppBackend
 # like "llama_cpp.Llama" resolve in the offline CI environment as well.
 _FAKE_LLAMA_CPP = SimpleNamespace(
     Llama=object,
+    LlamaRAMCache=MagicMock,
     llama_chat_format=SimpleNamespace(Qwen25VLChatHandler=object),
 )
 
@@ -206,6 +207,72 @@ class LlamaCppBackendTests(unittest.TestCase):
         with patch("ai_assistant.llm.llama_cpp_backend.LlamaCppBackend._load"):
             backend = LlamaCppBackend(model_path="test.gguf", desc="Test model")
             self.assertIn("Test model", backend.model_description)
+
+
+class LlamaCppBackendCacheAndConfigTests(unittest.TestCase):
+    """Exercise RAM cache attachment and GPU/flash-attn env settings."""
+
+    def test_cache_attached_by_default(self) -> None:
+        instance = MagicMock()
+        with _PatchedLoad(instance):
+            backend = LlamaCppBackend(model_path="m.gguf")
+        self.assertIsNotNone(backend)
+        instance.set_cache.assert_called_once()
+
+    def test_cache_disabled_via_env(self) -> None:
+        instance = MagicMock()
+        with _PatchedLoad(instance), patch.dict(os.environ, {"AI_LLM_CACHE_ENABLED": "0"}):
+            backend = LlamaCppBackend(model_path="m.gguf")
+        self.assertIsNotNone(backend)
+        instance.set_cache.assert_not_called()
+
+    def test_cache_capacity_custom_and_fallback(self) -> None:
+        instance = MagicMock()
+        with _PatchedLoad(instance), patch.dict(os.environ, {"AI_LLM_CACHE_CAPACITY_MB": "256"}):
+            backend = LlamaCppBackend(model_path="m.gguf")
+        self.assertIsNotNone(backend)
+        instance.set_cache.assert_called_once()
+
+        instance_invalid = MagicMock()
+        with _PatchedLoad(instance_invalid), patch.dict(os.environ, {"AI_LLM_CACHE_CAPACITY_MB": "invalid"}):
+            backend_invalid = LlamaCppBackend(model_path="m.gguf")
+        self.assertIsNotNone(backend_invalid)
+        instance_invalid.set_cache.assert_called_once()
+
+    def test_cache_attach_error_is_contained(self) -> None:
+        instance = MagicMock()
+        instance.set_cache.side_effect = RuntimeError("cache error")
+        with _PatchedLoad(instance):
+            backend = LlamaCppBackend(model_path="m.gguf")
+        self.assertIs(backend._llm, instance)
+
+    def test_attach_cache_noop_when_llm_is_none(self) -> None:
+        with patch("ai_assistant.llm.llama_cpp_backend.LlamaCppBackend._load"):
+            backend = LlamaCppBackend(model_path="m.gguf")
+            backend._llm = None
+            backend._attach_cache()
+
+    def test_attach_cache_noop_when_class_missing(self) -> None:
+        instance = MagicMock()
+        with _PatchedLoad(instance), patch.object(_FAKE_LLAMA_CPP, "LlamaRAMCache", None):
+            backend = LlamaCppBackend(model_path="m.gguf")
+        self.assertIsNotNone(backend)
+        instance.set_cache.assert_not_called()
+
+    def test_gpu_layers_and_flash_attn_env_parsing(self) -> None:
+        instance = MagicMock()
+        with _PatchedLoad(instance), patch.dict(
+            os.environ, {"AI_LLM_GPU_LAYERS": "33", "AI_LLM_FLASH_ATTN": "1"}
+        ):
+            backend = LlamaCppBackend(model_path="m.gguf")
+        self.assertIs(backend._llm, instance)
+
+        instance2 = MagicMock()
+        with _PatchedLoad(instance2), patch.dict(
+            os.environ, {"AI_LLM_GPU_LAYERS": "not_an_int"}
+        ):
+            backend = LlamaCppBackend(model_path="m.gguf")
+        self.assertIs(backend._llm, instance2)
 
 
 # ── Backend factory lifecycle (ADR 0041: no process-wide owner) ──

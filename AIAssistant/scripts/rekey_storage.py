@@ -100,7 +100,8 @@ class _Report:
 
 def _state_files(state_dir: Path) -> tuple[Path, Path]:
     """The task database and the pending-action file inside ``state_dir``."""
-    return state_dir / TASKS_DB, state_dir / PENDING_FILE
+    task_db = state_dir / "Cache" / TASKS_DB if (state_dir / "Cache" / TASKS_DB).exists() else state_dir / TASKS_DB
+    return task_db, state_dir / PENDING_FILE
 
 
 def _state_dirs(data_dir: str) -> tuple[Path, Path]:

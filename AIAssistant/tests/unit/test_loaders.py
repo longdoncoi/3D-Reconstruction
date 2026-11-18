@@ -636,6 +636,46 @@ class CppEdgeCasesTests(unittest.TestCase):
         self.assertIn("Class", scopes)
         self.assertIn("Method", scopes)
 
+    def test_cpp_long_function_uses_sliding_window_chunks(self):
+        loader = CppHeaderLoader(chunk_chars=120, overlap_chars=30, min_chunk_chars=15)
+        long_body = "    int step = 0;\n" * 20
+        content = f"void processLongPipeline() {{\n{long_body}}}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            fp = os.path.join(tmp, "pipeline.cpp")
+            Path(fp).write_text(content, encoding="utf-8")
+            chunks = loader.load(fp, tmp)
+        self.assertGreater(len(chunks), 1)
+        for c in chunks:
+            self.assertEqual(c.metadata["symbol"], "void processLongPipeline()")
+            self.assertTrue(c.text.startswith("[Source: "))
+
+    def test_python_long_method_and_function_use_sliding_window_chunks(self):
+        loader = CppHeaderLoader(chunk_chars=120, overlap_chars=30, min_chunk_chars=15)
+        method_lines = "        value = value * 2 + 1\n" * 15
+        func_lines = "    x = x * 2 + 1\n" * 15
+        content = (
+            "class Engine:\n"
+            "    def compute(self, value):\n"
+            f"{method_lines}"
+            "        return value\n"
+            "\n"
+            "def standalone_func(x):\n"
+            f"{func_lines}"
+            "    return x\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            fp = os.path.join(tmp, "engine.py")
+            Path(fp).write_text(content, encoding="utf-8")
+            chunks = loader.load(fp, tmp)
+        method_chunks = [c for c in chunks if c.metadata.get("scope") == "Method"]
+        func_chunks = [c for c in chunks if c.metadata.get("scope") == "Function"]
+        self.assertGreater(len(method_chunks), 1)
+        self.assertGreater(len(func_chunks), 1)
+        for c in method_chunks:
+            self.assertIsNotNone(c.parent_text)
+            self.assertEqual(c.metadata["class"], "Engine")
+
+
 
 class ImageLoaderErrorTests(unittest.TestCase):
     def test_load_swallows_path_errors(self):

@@ -10,6 +10,22 @@ _COMPOUNDS = {
     "tái tạo": "tái_tạo", "hình ảnh": "hình_ảnh", "mô hình": "mô_hình",
     "dữ liệu": "dữ_liệu", "hệ thống": "hệ_thống", "đầu vào": "đầu_vào",
     "đầu ra": "đầu_ra", "cấu hình": "cấu_hình", "giao diện": "giao_diện",
+    # 3D Reconstruction & Computer Vision
+    "đám mây điểm": "đám_mây_điểm", "mây điểm": "mây_điểm",
+    "ma trận xoay": "ma_trận_xoay", "ma trận": "ma_trận",
+    "bản đồ độ sâu": "bản_đồ_độ_sâu", "độ sâu": "độ_sâu",
+    "điểm ảnh": "điểm_ảnh", "khung hình": "khung_hình",
+    "đối sánh đặc trưng": "đối_sánh_đặc_trưng", "đối sánh": "đối_sánh",
+    "tư thế camera": "tư_thế_camera", "ước lượng": "ước_lượng",
+    "phân vùng": "phân_vùng", "phân đoạn": "phân_đoạn",
+    "nhận diện": "nhận_diện", "phát hiện": "phát_hiện",
+    "điểm đặc trưng": "điểm_đặc_trưng", "đặc trưng": "đặc_trưng",
+    "lưới tam giác": "lưới_tam_giác", "bề mặt": "bề_mặt",
+    "khớp nối": "khớp_nối", "nội suy": "nội_suy",
+    # Qt / Application architecture
+    "tiến trình": "tiến_trình", "luồng nền": "luồng_nền",
+    "hàng đợi": "hàng_đợi", "bộ điều khiển": "bộ_điều_khiển",
+    "hợp đồng": "hợp_đồng", "xác thực": "xác_thực",
 }
 # Basic Vietnamese + English function words.
 _STOPWORDS = frozenset({"là", "của", "và", "các", "trong", "được", "có", "cho", "với", "để", "những"})

@@ -53,6 +53,25 @@ def _state(**over: Any) -> dict[str, Any]:
 
 
 class PlanReuseTests(unittest.TestCase):
+    def test_skip_plan_flag_bypasses_planner(self):
+        planner = MagicMock()
+        state = _state(skip_plan=True)
+        outcome = plan_node(state, planner)
+        self.assertIsNone(outcome["plan"])
+        self.assertFalse(outcome["plan_spec"]["requires_plan"])
+        self.assertFalse(outcome["replan_requested"])
+        planner.assert_not_called()
+
+    def test_conversational_turn_fast_path_bypasses_planner(self):
+        planner = MagicMock()
+        state = _state(messages=[{"role": "user", "content": "Xin chào"}])
+        outcome = plan_node(state, planner)
+        self.assertIsNone(outcome["plan"])
+        self.assertEqual(outcome["plan_spec"]["step_kinds"], ["direct_answer"])
+        self.assertFalse(outcome["plan_spec"]["requires_plan"])
+        self.assertFalse(outcome["replan_requested"])
+        planner.assert_not_called()
+
     def test_replan_request_bypasses_an_existing_plan(self):
         planner = MagicMock(return_value=json.dumps({
             "steps": ["New step"], "requires_plan": True,

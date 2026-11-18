@@ -46,10 +46,11 @@ class RagHit:
     line_start: int | None = None
     line_end: int | None = None
     is_image: bool = False
+    parent_text: str | None = None
 
     def to_dict(self, *, text_limit: int = 1_200) -> dict[str, Any]:
         """Return the bounded wire representation used by ``rag_search``."""
-        return {
+        payload = {
             "chunk_id": self.chunk_id,
             "source_path": self.source_path,
             "loader_type": self.loader_type,
@@ -64,6 +65,9 @@ class RagHit:
             "is_image": self.is_image,
             "text": self.text[:text_limit],
         }
+        if self.parent_text is not None:
+            payload["parent_text"] = self.parent_text[:text_limit]
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

@@ -58,6 +58,27 @@ def reflect_node(state: AgentState, ctx: ReflectContext) -> dict[str, Any]:
 
     scope_note = ""
     completed_steps = completed_plan_steps(state["steps"], plan)
+
+    # Deterministic fast-path: application_action is executed by Qt desktop client
+    # with explicit UI acknowledgement. When the action matches the plan step and verification passed,
+    # do not waste 20+ seconds calling LLM critic.
+    if tool_name == "application_action":
+        fast_params: dict[str, Any] = call.get("params") or {}
+        selected_action = (result_step.get("result") or {}).get("action") or fast_params.get("action", "")
+        current_step_text = plan[completed_steps] if (plan and completed_steps < len(plan)) else ""
+        match = step_matches_action(current_step_text, str(selected_action)) if current_step_text else True
+        success = bool((result_step.get("result") or {}).get("success", False))
+        error = (result_step.get("result") or {}).get("error", "")
+
+        if success and not error and verification.get("passed") and match is True:
+            fast_reflection: dict[str, Any] = {
+                "passed": True,
+                "decision": "continue",
+                "reason": f"Tool 'application_action' ({selected_action}) executed successfully via desktop client.",
+            }
+            logger.info("[NODE: reflect] Deterministic desktop action fast-path | plan_step=%s | action=%s | passed=True",
+                        current_step_text or "none", selected_action)
+            return _record_reflection(state, call, fast_reflection)
     if plan and completed_steps < len(plan):
         current_step_text = plan[completed_steps]
         scope_note = (
@@ -80,39 +101,42 @@ def reflect_node(state: AgentState, ctx: ReflectContext) -> dict[str, Any]:
     raw = ctx.reflect_complete(critic_msgs, max(0.1, state["temperature"] - 0.1)).strip()
     logger.debug(f"[AGENT TRACE] ── Reflect node LLM output: {raw[:150]}")
 
-    reflection = None
+    parsed_reflection: dict[str, Any] | None = None
     try:
-        reflection = json.loads(raw)
-        if not isinstance(reflection, dict):
-            reflection = None
+        raw_obj = json.loads(raw)
+        if isinstance(raw_obj, dict):
+            parsed_reflection = raw_obj
     except (ValueError, json.JSONDecodeError):
         pass
 
-    if reflection and (
-        not isinstance(reflection.get("passed"), bool)
-        or reflection.get("decision") not in _REFLECT_DECISIONS
-        or not isinstance(reflection.get("reason"), str)
+    if parsed_reflection and (
+        not isinstance(parsed_reflection.get("passed"), bool)
+        or parsed_reflection.get("decision") not in _REFLECT_DECISIONS
+        or not isinstance(parsed_reflection.get("reason"), str)
     ):
-        reflection = None
+        parsed_reflection = None
 
+    reflection: dict[str, Any]
     if not verification.get("passed"):
         reflection = ctx.reflect_result(call["tool"], call["params"], result_step["result"], verification) \
             if ctx.reflect_result else {
                 "passed": False, "decision": "revise",
-                "reason": verification.get("reason", "Verification failed."),
+                "reason": str(verification.get("reason", "Verification failed.")),
             }
-    elif not reflection or "passed" not in reflection:
+    elif not parsed_reflection or "passed" not in parsed_reflection:
         logger.warning("[NODE: reflect] LLM parse lỗi, dùng verification fallback.")
         if ctx.reflect_result:
             reflection = ctx.reflect_result(call["tool"], call["params"], result_step["result"], verification)
         else:
             reflection = {"passed": bool(verification.get("passed")), "decision": "continue",
-                          "reason": verification.get("reason", "No critic configured.")}
+                          "reason": str(verification.get("reason", "No critic configured."))}
+    else:
+        reflection = parsed_reflection
 
     if plan and completed_steps < len(plan) and call["tool"] == "application_action":
         current_step_text = plan[completed_steps]
-        call_params: dict[str, Any] = call.get("params") or {}
-        selected_action = (result_step.get("result") or {}).get("action") or call_params.get("action", "")
+        step_params: dict[str, Any] = call.get("params") or {}
+        selected_action = (result_step.get("result") or {}).get("action") or step_params.get("action", "")
         canonical_selected = canonical_action(str(selected_action))
         match = step_matches_action(current_step_text, str(selected_action))
         logger.info("[NODE: reflect] Semantic check | plan_step=%s | action=%s | canonical=%s | match=%s",
@@ -127,9 +151,10 @@ def reflect_node(state: AgentState, ctx: ReflectContext) -> dict[str, Any]:
                 ),
             }
 
+    reason_str = str(reflection.get("reason") or "")
     logger.info("[NODE: reflect] Kết quả phản ánh | plan_step=%s | passed=%s | reason=%s",
                 plan[completed_steps] if plan and completed_steps < len(plan) else "none",
-                reflection.get("passed"), reflection.get("reason", "")[:200])
+                reflection.get("passed"), reason_str[:200])
 
     return _record_reflection(state, call, reflection)
 

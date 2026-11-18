@@ -16,7 +16,8 @@ public:
     static void renderChatHistory(QTextBrowser* browser, IAppContext* ctx, const QList<ChatMessage>& history, bool isThinking, int thinkingInsertIndex = -1);
     static QString buildMessageHtml(const QString &role, const QString &content, const QJsonArray &attachments,
                                     const QString &timestamp, int index, IAppContext* ctx,
-                                    const QSet<QString>& resolvedActions, int skipSteps = -1);
+                                    const QSet<QString>& resolvedActions, int skipSteps = -1,
+                                    bool groupHasCommittedFinalAnswer = false);
 };
 
 #endif // CHAT_MESSAGE_RENDERER_H

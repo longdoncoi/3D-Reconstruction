@@ -47,6 +47,7 @@ class AgentState(TypedDict):
     replan_count: int                          # bounded number of runtime replans
     max_replans: int                           # hard guard against critic/replan loops
     max_tool_calls: int                        # run-wide tool budget
+    skip_plan: bool                            # fast-path bypass plan generation
 
 
 WorkflowDecision = Literal[
